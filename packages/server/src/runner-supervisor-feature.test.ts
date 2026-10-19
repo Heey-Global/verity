@@ -738,6 +738,32 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS');
   });
 
+  it.each([{ planning: true }, { knowledgeIsolation: true }])(
+    'requires private process metadata for confined OpenCode: %j',
+    (isolation) => {
+      const spec = agentLaunchSpec(
+        {
+          command: 'opencode-acp',
+          args: [],
+          cwd: '/work/project',
+          knowledgeHome: '/tmp/home',
+          ...isolation,
+        },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '0' },
+        },
+      );
+      expect(spec.args).toContain('--self-proc-maps');
+      expect(spec.spawnOptions.env).not.toHaveProperty(
+        'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE',
+      );
+      expect(spec.args).toContain(isolation.planning ? '--read-only-root' : '--write-isolated');
+    },
+  );
+
   it('launches OpenCode ACP through the fixed wrapper, with XDG_CONFIG_HOME and no secrets', () => {
     const spec = agentLaunchSpec(
       { command: 'opencode-acp', args: [], cwd: '/work/project' },
@@ -774,13 +800,22 @@ describe('verity-runner supervisor runtime', () => {
     });
     // A custom model provider otherwise hides websearch even when inference succeeds.
     expect(spec.spawnOptions.env).toMatchObject({
-      OPENCODE_ENABLE_EXA: '1',
-      OPENCODE_WEBSEARCH_PROVIDER: 'exa',
       OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-      OPENCODE_PURE: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
     });
-    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toEqual({
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
       instructions: ['/work/project/AGENTS.md'],
+      websearch: { provider: 'exa' },
+      permissions: [
+        { action: 'external_directory', resource: '*', effect: 'ask' },
+        { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+      ],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
     });
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_DIR');
     expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
@@ -810,10 +845,18 @@ describe('verity-runner supervisor runtime', () => {
       },
     );
     // A Wiki turn must not import instructions from the project it cannot access.
-    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: [],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
     expect(spec.spawnOptions.env).toMatchObject({
       OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-      OPENCODE_PURE: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
     });
   });
 

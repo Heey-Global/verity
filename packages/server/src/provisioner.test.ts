@@ -114,6 +114,7 @@ describe('openCodeSettingsConfig', () => {
       },
       provider: {
         verity: {
+          npm: '@opencode/ai/providers/openai-compatible',
           options: {
             baseURL: 'http://127.0.0.1:47821/opencode',
             apiKey: 'verity-opencode-gateway-placeholder-v1',

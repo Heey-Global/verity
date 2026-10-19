@@ -33,17 +33,9 @@
 # `opencode` shim the agent's own PATH resolves with it — and both are fixed the same
 # way, by re-running this script against the new layer, which re-resolves the path.
 #
-# The subcommand is pinned here, and the trailing argv is refused on the other side:
-# the broker appends a request's `args` after the executable for every agent command,
-# and it rejects a non-empty argv for `opencode-acp` specifically. Measured against
-# opencode 1.18.21 and re-measured unchanged against 1.18.31, the version both callers
-# pin: `opencode acp` accepts --print-logs, --log-level, --pure, --port,
-# --hostname, --mdns, --mdns-domain, --cors and --cwd — no config-path flag, so argv
-# cannot reach the provider or MCP configuration the way a `--config` would, but
-# `--cwd` would move the working directory the broker had just validated against the
-# worktree roots. Verity's OpenCode profile passes no arguments, so refusing them
-# outright costs nothing; see the comment on that check in
-# verity-agent-spawn-broker.mjs.
+# The broker refuses caller arguments: a flag must not change the cwd or launch
+# policy after the broker validates it. OpenCode V2 starts a private server beneath
+# `opencode acp`; descendants inherit the same environment and filesystem boundary.
 #
 # Written unconditionally rather than skipped when something already answers to the
 # name. The broker execs ONE absolute path, so a PATH-based "already there" check

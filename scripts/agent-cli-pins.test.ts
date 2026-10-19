@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import semver from 'semver';
 import { describe, expect, it } from 'vitest';
@@ -71,7 +71,7 @@ describe('agent CLI version pins', () => {
     // `RUN`, a renamed shell variable — which is exactly when the pins start to
     // drift unobserved.
     expect(shared).toEqual(
-      expect.arrayContaining(['@anthropic-ai/claude-code', '@openai/codex', 'opencode-ai']),
+      expect.arrayContaining(['@anthropic-ai/claude-code', '@openai/codex', '@opencode/cli']),
     );
     for (const name of shared) {
       expect(image.get(name), `${name} is pinned to different versions`).toBe(sandbox.get(name));
@@ -150,4 +150,16 @@ describe('agent CLI version pins', () => {
       );
     }
   });
+});
+
+it('runs the OpenCode native probes in the architecture smoke matrix', () => {
+  const workflow = readFileSync('.github/workflows/verity-sandbox.yml', 'utf8');
+  const probes = readdirSync('scripts/probes').filter(
+    (name) => name.startsWith('opencode-') && name.endsWith('.mjs'),
+  );
+  expect(probes.length).toBeGreaterThan(0);
+  for (const name of probes) expect(workflow).toContain(`/verity-source/scripts/probes/${name}`);
+  expect(workflow).toContain('scripts/fixtures/opencode-v1/**');
+  // The planning probe resolves its native helper from the mounted checkout.
+  expect(workflow).toContain('--workdir /verity-source');
 });

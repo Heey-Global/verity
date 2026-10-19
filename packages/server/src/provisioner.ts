@@ -1790,7 +1790,7 @@ export function openCodeSettingsConfig(
       permission: OPENCODE_KNOWLEDGE_READ_PERMISSION,
       provider: {
         verity: {
-          npm: '@ai-sdk/openai-compatible',
+          npm: '@opencode/ai/providers/openai-compatible',
           name: 'OpenAI-compatible',
           options: {
             baseURL: `http://127.0.0.1:${String(connectorPort)}/opencode`,

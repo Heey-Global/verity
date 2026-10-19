@@ -49,8 +49,8 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 CODEX_VERSION="${CODEXVERSION:-0.162.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.2.2}"
-# renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.19.0}"
+# renovate: datasource=npm depName=@opencode/cli
+OPENCODE_VERSION="${OPENCODEVERSION:-2.0.29}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -362,7 +362,7 @@ if command -v npm >/dev/null 2>&1; then
     node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex-acp "$CODEX_ACP_VERSION"
   fi
   if [ "$INSTALL_OPENCODE" = "true" ]; then
-    echo ">> verity-sandbox-toolkit: installing opencode-ai@$OPENCODE_VERSION"
+    echo ">> verity-sandbox-toolkit: installing @opencode/cli@$OPENCODE_VERSION"
     node "$FEATURE_DIR/bin/verity-cli-install.mjs" opencode "$OPENCODE_VERSION"
     # opencode's updater can target a user-writable dir (unlike the root-owned
     # npm global), so root-ownership alone doesn't stop it. Pin it off via its

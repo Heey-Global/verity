@@ -76,7 +76,7 @@
         "@agentclientprotocol/claude-agent-acp",
         "@openai/codex",
         "@agentclientprotocol/codex-acp",
-        "opencode-ai"
+        "@opencode/cli"
       ],
       "matchUpdateTypes": ["patch", "minor"],
       "schedule": ["* 1-5 * * *"],
@@ -159,6 +159,11 @@
       "matchPackageNames": ["node", "@types/node"],
       "allowedVersions": ">=26 <27",
       "groupName": "Node runtime"
+    },
+    {
+      "description": "Freeze the V1 upgrade fixture so migration tests retain the previous production baseline.",
+      "matchFileNames": ["scripts/fixtures/opencode-v1/**"],
+      "enabled": false
     }
   ],
   "customManagers": [
@@ -218,7 +223,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the opencodeVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's opencode-ai pin.",
+      "description": "Track the opencodeVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's @opencode/cli pin.",
       "managerFilePatterns": [
         "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
       ],
@@ -226,7 +231,7 @@
         "\"opencodeVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
       ],
       "datasourceTemplate": "npm",
-      "depNameTemplate": "opencode-ai"
+      "depNameTemplate": "@opencode/cli"
     },
     {
       "customType": "regex",

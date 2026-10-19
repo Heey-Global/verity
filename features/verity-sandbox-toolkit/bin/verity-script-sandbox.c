@@ -2,6 +2,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <stddef.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <linux/landlock.h>
 #include <limits.h>
 #include <mntent.h>
@@ -33,6 +40,153 @@ static void allow_path(int ruleset, const char *path, __u64 rights) {
   if (syscall(SYS_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) < 0)
     fail("landlock_add_rule");
   close(parent);
+}
+
+/* glibc discovers a main thread's stack through /proc/self/maps. Granting
+   /proc read access would also expose peer agents' environments. A supervisor
+   outside Landlock instead supplies only the requesting process's own maps.
+   Descendants inherit the filter, not access to the supervisor or other procfs
+   files. Namespace isolation already has a private procfs and needs no broker. */
+static void supervise_self_maps(void) {
+  int channel[2];
+  if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel) < 0)
+    fail("create process metadata channel");
+  if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) < 0) fail("track isolated descendants");
+  pid_t child = fork();
+  if (child < 0) fail("start process metadata supervisor");
+  if (child == 0) {
+    close(channel[0]);
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0) fail("bind metadata supervisor lifetime");
+    if (getppid() == 1) _exit(126);
+#if defined(__x86_64__)
+    const unsigned int architecture = AUDIT_ARCH_X86_64;
+#elif defined(__aarch64__)
+    const unsigned int architecture = AUDIT_ARCH_AARCH64;
+#else
+#error Unsupported sandbox architecture
+#endif
+    struct sock_filter instructions[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, architecture, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef SYS_open
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_open, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {
+      .len = sizeof(instructions) / sizeof(instructions[0]), .filter = instructions,
+    };
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
+    int listener = (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,
+                               SECCOMP_FILTER_FLAG_NEW_LISTENER, &program);
+    if (listener < 0) fail("self maps notification filter");
+    char byte = 'x';
+    struct iovec data = {.iov_base = &byte, .iov_len = 1};
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr message = {
+      .msg_iov = &data, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control),
+    };
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(header), &listener, sizeof(listener));
+    if (sendmsg(channel[1], &message, 0) != 1) fail("send process metadata listener");
+    close(listener);
+    close(channel[1]);
+    return;
+  }
+  close(channel[1]);
+  /* The child can inspect its own memory, but must not ptrace this supervisor. */
+  if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) fail("protect metadata supervisor");
+  char byte;
+  struct iovec data = {.iov_base = &byte, .iov_len = 1};
+  char control[CMSG_SPACE(sizeof(int))] = {0};
+  struct msghdr message = {
+    .msg_iov = &data, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control),
+  };
+  if (recvmsg(channel[0], &message, 0) != 1) fail("receive process metadata listener");
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  if (header == NULL || header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(sizeof(int))) {
+    errno = EPROTO; fail("invalid process metadata listener");
+  }
+  int listener;
+  memcpy(&listener, CMSG_DATA(header), sizeof(listener));
+  close(channel[0]);
+  int primary_status = 126 << 8;
+  for (;;) {
+    int status;
+    pid_t reaped;
+    while ((reaped = waitpid(-1, &status, WNOHANG)) > 0)
+      if (reaped == child) primary_status = status;
+    if (reaped < 0 && errno == ECHILD) break;
+    struct pollfd ready = {.fd = listener, .events = POLLIN};
+    int count = poll(&ready, 1, 100);
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) fail("poll process metadata listener");
+    if (count == 0 || !(ready.revents & POLLIN)) continue;
+    struct seccomp_notif request = {0};
+    if (ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) < 0) {
+      if (errno == ENOENT || errno == EINTR) continue;
+      fail("receive process metadata request");
+    }
+    struct seccomp_notif_resp response = {
+      .id = request.id, .flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+    };
+    int path_arg = request.data.nr == SYS_openat ? 1 : 0;
+    char memory[64];
+    snprintf(memory, sizeof(memory), "/proc/%u/mem", request.pid);
+    int mem = open(memory, O_RDONLY | O_CLOEXEC);
+    if (mem < 0) { response.flags = 0; response.error = -errno; }
+    else {
+      if (ioctl(listener, SECCOMP_IOCTL_NOTIF_ID_VALID, &request.id) < 0) {
+        close(mem);
+        if (errno == ENOENT) continue;
+        fail("validate process metadata request");
+      }
+      char path[PATH_MAX] = {0};
+      ssize_t length = pread(mem, path, sizeof(path) - 1, (off_t)request.data.args[path_arg]);
+      close(mem);
+      if (length > 0 && memchr(path, '\0', (size_t)length) != NULL && !strcmp(path, "/proc/self/maps")) {
+        response.flags = 0;
+        unsigned long flags = request.data.args[path_arg + 1];
+        if (flags & ~(unsigned long)(O_CLOEXEC | O_LARGEFILE)) response.error = -EACCES;
+        else {
+          char maps[64];
+          snprintf(maps, sizeof(maps), "/proc/%u/maps", request.pid);
+          int fd = open(maps, O_RDONLY | O_CLOEXEC);
+          if (fd < 0) response.error = -errno;
+          else {
+            /* Supplying this exact fd is safe even if hostile code races its
+               pathname: it can receive only its own read-only mappings. */
+            struct seccomp_notif_addfd add = {
+              .id = request.id, .flags = SECCOMP_ADDFD_FLAG_SEND, .srcfd = (__u32)fd,
+              .newfd_flags = flags & O_CLOEXEC,
+            };
+            int result = ioctl(listener, SECCOMP_IOCTL_NOTIF_ADDFD, &add);
+            int saved_errno = errno;
+            close(fd);
+            if (result >= 0) continue;
+            if (saved_errno == ENOENT) continue;
+            errno = saved_errno;
+            fail("supply process mappings");
+          }
+        }
+      }
+    }
+    if (ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response) < 0 && errno != ENOENT)
+      fail("complete process metadata request");
+  }
+  close(listener);
+  if (WIFEXITED(primary_status)) exit(WEXITSTATUS(primary_status));
+  if (WIFSIGNALED(primary_status)) exit(128 + WTERMSIG(primary_status));
+  exit(126);
 }
 
 static void write_mapping(const char *path, unsigned int inside, unsigned int outside) {
@@ -311,6 +465,11 @@ int main(int argc, char **argv) {
     isolate_writes = 2;
     command++;
   }
+  int self_maps = 0;
+  if (command < argc && !strcmp(argv[command], "--self-proc-maps")) {
+    self_maps = 1;
+    command++;
+  }
   int secret_start = command;
   while (command + 1 < argc && (!strcmp(argv[command], "--secret") ||
       (isolate_writes == 2 && !strcmp(argv[command], "--runtime-root")))) {
@@ -331,6 +490,11 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[6], "dynamic") && dynamic_root == NULL) {
     errno = EINVAL;
     fail("missing dynamic root");
+  }
+  if (self_maps) {
+    int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    const char *force = getenv("VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE");
+    if (abi >= 1 && (force == NULL || strcmp(force, "1"))) supervise_self_maps();
   }
   isolate_reads(argv[2], dynamic_root, &argv[secret_start + 1], (command - secret_start) / 2, isolate_writes);
   if (chdir(argv[4]) < 0) fail("chdir");
