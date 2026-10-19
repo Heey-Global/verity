@@ -98,6 +98,8 @@ function acpSpawner(
     loadNotFound?: boolean;
     /** Answer `session/load` with this JSON-RPC error instead. */
     loadError?: { code: number; message: string; data?: unknown };
+    /** Answer `session/prompt` with this JSON-RPC error instead. */
+    promptError?: { code: number; message: string; data?: unknown };
     /** Answer `session/new` without the `model` config option, as an adapter
      *  build that does not expose it would. */
     withoutModelOption?: boolean;
@@ -253,6 +255,8 @@ function acpSpawner(
                   ? sessionResult('codex-session-1')
                   : {},
             });
+          } else if (method === 'session/prompt' && behavior.promptError !== undefined) {
+            push({ jsonrpc: '2.0', id, error: behavior.promptError });
           } else if (method === 'session/prompt' && behavior.cancel !== undefined) {
             push({
               jsonrpc: '2.0',
@@ -1470,6 +1474,31 @@ describe('AcpCodexBackend', () => {
     });
     expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
     expect(result.staleResume).toBe(expected.staleResume);
+  });
+
+  // codex-acp answers a prompt it cannot run with -32603 and leaves stderr empty;
+  // the reason is only in `data.details`. Dropping it left the operator with a
+  // bare "Internal error" and nothing to tell one failure from another.
+  it('keeps the reason a refused prompt carries in its error data', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'example reason with secret-token-123' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Look at this',
+      env: { EXAMPLE_TOKEN: 'secret-token-123' },
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Internal error: example reason with');
+    // The same redaction the agent's own stderr gets before it is stored.
+    expect(result.stderr).not.toContain('secret-token-123');
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {

@@ -30394,6 +30394,17 @@ function processStream(process2, worktree) {
     }
   }));
 }
+var MAX_ACP_ERROR_DETAILS = 1e3;
+function acpErrorMessage(error, env) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof RequestError))
+    return message;
+  const details = error.data?.details;
+  if (typeof details !== "string" || details.trim() === "" || message.includes(details)) {
+    return message;
+  }
+  return `${message}: ${redactProcessStderr(details.trim(), env).slice(0, MAX_ACP_ERROR_DETAILS)}`;
+}
 function imageBlocks(attachments) {
   return (attachments ?? []).filter((attachment) => attachment.kind === "image").flatMap((attachment) => {
     const attachmentId = createHash2("sha256").update(Buffer.from(attachment.data, "base64")).digest("hex");
@@ -30984,7 +30995,7 @@ async function runAcpTurn(opts, profile) {
   } catch (error) {
     const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = acpErrorMessage(error, opts.env ?? process.env);
     await drainUpdates().catch(() => void 0);
     closedOut = true;
     if (!aborted) {

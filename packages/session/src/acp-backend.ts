@@ -312,6 +312,21 @@ function processStream(process: SpawnedProcess, worktree: string): acp.Stream {
   );
 }
 
+/** The reason codex-acp gives for -32603 ("Internal error") travels only in the
+ *  error's `data.details`; its stderr stays empty. Without the details the operator
+ *  sees a bare "Internal error" and the failure cannot be told apart from any other. */
+const MAX_ACP_ERROR_DETAILS = 1_000;
+
+function acpErrorMessage(error: unknown, env: NodeJS.ProcessEnv): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof acp.RequestError)) return message;
+  const details = (error.data as { details?: unknown } | null | undefined)?.details;
+  if (typeof details !== 'string' || details.trim() === '' || message.includes(details)) {
+    return message;
+  }
+  return `${message}: ${redactProcessStderr(details.trim(), env).slice(0, MAX_ACP_ERROR_DETAILS)}`;
+}
+
 /** Turn and steer attachments share one shape, so one signature serves both. */
 function imageBlocks(attachments: RunTurnOptions['attachments']): ContentBlock[] {
   return (attachments ?? [])
@@ -1326,7 +1341,7 @@ export async function runAcpTurn(
   } catch (error) {
     const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = acpErrorMessage(error, opts.env ?? process.env);
     await drainUpdates().catch(() => undefined);
     closedOut = true;
     // Unexpected disconnects preserve buffered prose and completed contracts.
