@@ -1069,10 +1069,59 @@ describe('preview tunnel', () => {
     await vi.advanceTimersByTimeAsync(15_000);
     await connector.waitForDisconnect();
     expect(diagnostics.mock.calls).toEqual([
-      [{ event: 'heartbeat.timeout', phase: 'pong' }],
+      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number) }],
       [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
     ]);
     expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
+  });
+
+  it('does not let a stalled event loop turn a received pong into a heartbeat timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
+    const server = createServer();
+    const websocketServer = new WebSocketServer({ server, autoPong: false });
+    const peerConnected = new Promise<WebSocket>((resolve) =>
+      websocketServer.once('connection', resolve),
+    );
+    const port = await listen(server);
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'stall-test',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      connector.close();
+      for (const peer of websocketServer.clients) peer.terminate();
+      websocketServer.close();
+      await closeServer(server);
+      vi.useRealTimers();
+    });
+    await connector.connect();
+    const peer = await peerConnected;
+    const socket = (connector as unknown as { socket: WebSocket }).socket;
+    const ping = new Promise<Buffer>((resolve) => peer.once('ping', resolve));
+    await vi.advanceTimersByTimeAsync(15_000);
+    const payload = await ping;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // The pong reaches the connector's socket while its event loop is blocked
+    // past the reply deadline: when the loop resumes, the expired timer runs
+    // before the pong is read, exactly as after a GC pause or CPU starvation.
+    const receivedPong = new Promise<void>((resolve) => socket.once('pong', () => resolve()));
+    await new Promise<void>((resolve) => {
+      peer.pong(payload, false, () => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        vi.advanceTimersByTime(15_000);
+        resolve();
+      });
+    });
+    await receivedPong;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(diagnostics).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'heartbeat.timeout' }),
+    );
+    expect(socket.readyState).toBe(WebSocket.OPEN);
   });
 
   it('gives a ping queued behind real socket backpressure its full reply window', async () => {
@@ -1203,7 +1252,11 @@ describe('preview tunnel', () => {
       if (scenario === 'stalled-send') {
         await vi.advanceTimersByTimeAsync(15_000);
         await connector.waitForDisconnect();
-        expect(diagnostics).toHaveBeenCalledWith({ event: 'heartbeat.timeout', phase: 'write' });
+        expect(diagnostics).toHaveBeenCalledWith({
+          event: 'heartbeat.timeout',
+          phase: 'write',
+          lateMs: expect.any(Number),
+        });
         return;
       }
       if (scenario === 'close-pending') {
