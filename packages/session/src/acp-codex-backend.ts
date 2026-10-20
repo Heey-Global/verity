@@ -70,15 +70,17 @@ async function selectModel(setup: AcpSessionSetup, opts: RunTurnOptions): Promis
 
 /** codex-acp answers a load of a thread Codex has no rollout for — one that was
  *  never prompted, or never existed — with -32603 and the reason only in `data`;
- *  an id that is not a thread id at all gets the same code. stderr carries just
- *  "Internal error", so the conductor's Codex phrasebook never sees either, and
- *  without this the session re-resumes the same dead thread forever. */
-function isMissingCodexThread(error: RequestError): boolean {
+ *  an id that is not a thread id at all gets the same code, and so does a thread
+ *  Codex's state database still lists but whose rollout is no longer where it was
+ *  recorded ("thread not found"). stderr carries just "Internal error", so the
+ *  conductor's Codex phrasebook never sees any of them, and without this the
+ *  session re-resumes the same dead thread forever. */
+function isMissingCodexThread(error: RequestError, requestedSessionId: string): boolean {
   const details = (error.data as { details?: unknown } | undefined)?.details;
-  return (
-    typeof details === 'string' &&
-    /\bno rollout found for thread id\b|^invalid session id\b/i.test(details)
-  );
+  if (typeof details !== 'string') return false;
+  if (/\bno rollout found for thread id\b|^invalid session id\b/i.test(details)) return true;
+  // Only about the thread this load asked for; any other thread is not this one.
+  return details.trim() === `thread not found: ${requestedSessionId}`;
 }
 
 const CODEX_ACP_PROFILE: AcpBackendProfile = {

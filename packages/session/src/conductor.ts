@@ -1274,8 +1274,18 @@ export class Conductor {
     // app-server state that is gone by the time the prompt starts the turn. Codex
     // then rejects `turn/start` for that very thread, so no turn ran and nothing
     // the cold retry repeats has happened yet. Any other thread id is not this.
-    const rejected = `Prompt for session ${resumeSessionId} failed: Error: thread not found: ${resumeSessionId}`;
-    return result.stderr.split(/\r?\n/u).some((line) => line.trimEnd().endsWith(rejected));
+    // The rejection reaches stderr as codex-acp logs it, or as the ACP error the
+    // backend appends when the adapter answered the prompt instead of exiting.
+    // That second form does not name the request; it is read as the prompt's
+    // because a load refused this way is already a `staleResume` above, and
+    // setup requests after the load do not look threads up by this id.
+    const rejected = [
+      `Prompt for session ${resumeSessionId} failed: Error: thread not found: ${resumeSessionId}`,
+      `Internal error: thread not found: ${resumeSessionId}`,
+    ];
+    return result.stderr
+      .split(/\r?\n/u)
+      .some((line) => rejected.some((suffix) => line.trimEnd().endsWith(suffix)));
   }
 
   private isStaleClaudeResume(result: RunResult, resumeSessionId: string): boolean {

@@ -30749,7 +30749,7 @@ async function runAcpTurn(opts, profile) {
           ...request2,
           sessionId: opts.resumeSessionId
         }).catch((error) => {
-          if (error instanceof RequestError && (error.code === RESOURCE_NOT_FOUND || profile.isMissingSession?.(error) === true)) {
+          if (error instanceof RequestError && (error.code === RESOURCE_NOT_FOUND || profile.isMissingSession?.(error, opts.resumeSessionId) === true)) {
             loadRefused = true;
           }
           throw error;
@@ -31260,9 +31260,13 @@ async function selectModel(setup, opts) {
     (value, current) => `Codex model "${value}" was not applied; this turn runs on "${current}".`
   );
 }
-function isMissingCodexThread(error) {
+function isMissingCodexThread(error, requestedSessionId) {
   const details = error.data?.details;
-  return typeof details === "string" && /\bno rollout found for thread id\b|^invalid session id\b/i.test(details);
+  if (typeof details !== "string")
+    return false;
+  if (/\bno rollout found for thread id\b|^invalid session id\b/i.test(details))
+    return true;
+  return details.trim() === `thread not found: ${requestedSessionId}`;
 }
 var CODEX_ACP_PROFILE = {
   defaultCommand: "codex-acp",

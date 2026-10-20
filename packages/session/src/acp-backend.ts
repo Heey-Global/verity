@@ -142,7 +142,8 @@ export interface AcpBackendProfile {
   /** An answered `session/load` error that, besides `resourceNotFound`, names a
    *  conversation the agent does not have — for an adapter that reports it some
    *  other way. Only for answers that are about the conversation itself. */
-  readonly isMissingSession?: ((error: acp.RequestError) => boolean) | undefined;
+  readonly isMissingSession?:
+    ((error: acp.RequestError, requestedSessionId: string) => boolean) | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
   sessionMeta(opts: RunTurnOptions): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Model recorded on the `session` event when the turn names none. */
@@ -986,7 +987,8 @@ export async function runAcpTurn(
                 // would discard a conversation the agent still has, permanently.
                 if (
                   error instanceof acp.RequestError &&
-                  (error.code === RESOURCE_NOT_FOUND || profile.isMissingSession?.(error) === true)
+                  (error.code === RESOURCE_NOT_FOUND ||
+                    profile.isMissingSession?.(error, opts.resumeSessionId!) === true)
                 ) {
                   loadRefused = true;
                 }
