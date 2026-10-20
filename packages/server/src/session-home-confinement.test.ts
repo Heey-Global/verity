@@ -162,3 +162,45 @@ if touch /opt/verity/package-managers/confinement-write-probe 2>/dev/null; then 
   expect(result.stdout).toContain('usage: verity-code-review');
   expect(run([], script, true).status).not.toBe(0);
 });
+
+it('launches symlinked npm CLIs without exposing the enclosing user directory', async (context) => {
+  const installation = join(root, 'nvm/versions/node/current/lib/node_modules');
+  const packageRoot = join(installation, 'fixture-agent');
+  await mkdir(packageRoot, { recursive: true });
+  const executable = join(packageRoot, 'cli');
+  await writeFile(executable, '#!/bin/sh\ncat "$(dirname "$(readlink -f "$0")")/data"\n', {
+    mode: 0o755,
+  });
+  await writeFile(join(packageRoot, 'data'), 'fixture-agent-output');
+  await writeFile(join(root, 'nvm/private'), 'private');
+  const link = join(root, 'work/fixture-agent');
+  await symlink(executable, link);
+  const spec = agentLaunchSpec(
+    { command: 'codex-acp', args: [], cwd: join(root, 'work'), managedHome: join(root, 'home') },
+    {
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      codexAcpPath: link,
+      worktreeRoot: root,
+      env: {},
+    },
+  );
+  const index = spec.args.indexOf(installation);
+  expect(index).toBeGreaterThan(0);
+  const extra = spec.args.slice(index - 1, index + 1);
+  expect(extra[0]).toBe('--read-root');
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  const script = `set -eu
+${link}
+if cat '${root}/nvm/private' 2>/dev/null; then exit 41; fi
+if touch '${packageRoot}/unexpected-write' 2>/dev/null; then exit 42; fi
+`;
+  const result = run(extra, script, true);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('fixture-agent-output');
+  expect(run([], script, true).status).not.toBe(0);
+});

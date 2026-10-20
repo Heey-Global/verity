@@ -24,7 +24,7 @@ import {
   truncate,
   writeFile,
 } from 'node:fs/promises';
-import { constants, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
@@ -1563,7 +1563,7 @@ export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
   }
 }
 
-function normalSessionRoots(options) {
+function normalSessionRoots(options, agentPath) {
   const roots = [];
   for (const [flag, path] of [
     // Image-owned hooks and wrapper targets must remain executable under confinement.
@@ -1581,6 +1581,24 @@ function normalSessionRoots(options) {
       if (error.code !== 'ENOENT') throw error;
     }
   }
+  // The installer links existing npm CLIs into /usr/local/bin. Grant their
+  // module installation tree, never the enclosing nvm user home.
+  const moduleRoots = new Set();
+  for (const executable of [
+    agentPath,
+    '/usr/local/bin/codex',
+    '/usr/local/bin/claude',
+    '/usr/local/bin/opencode',
+  ]) {
+    try {
+      const target = realpathSync(executable);
+      const index = target.indexOf('/node_modules/');
+      if (index >= 0) moduleRoots.add(target.slice(0, index + '/node_modules'.length));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  for (const path of moduleRoots) roots.push('--read-root', path);
   // These files are selected by trusted container configuration, never turn input.
   for (const key of [
     'VERITY_FORGE_PROXY_CA_FILE',
@@ -1669,7 +1687,7 @@ export function agentLaunchSpec(request, options) {
             request.planning ? '--read-only-root' : '--write-isolated',
             ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
-            ...(normalConfinement ? normalSessionRoots(options) : []),
+            ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
             '--',
           ]
         : []),
