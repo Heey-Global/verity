@@ -504,7 +504,22 @@ type SandboxWakeFallbackReason =
   | 'container_running'
   | 'ownership_mismatch'
   | 'generation_missing'
-  | 'contract_mismatch';
+  | 'contract_mismatch'
+  | 'stale_runtime_state';
+
+/**
+ * gVisor names the rootfs overlay filestore after the sandbox id, which Docker
+ * sets to the container id, creates it with O_EXCL, and removes it only in
+ * `runsc delete`. After a teardown that skipped that step the retained
+ * container keeps the file in its writable layer, and runsc rejects every later
+ * start of that container with this message. Only a new container clears it.
+ */
+const STALE_GVISOR_FILESTORE_MESSAGE =
+  'repeated submounts are not supported with overlay optimizations';
+
+function isStaleGvisorFilestore(cause: unknown): boolean {
+  return cause instanceof DockerError && cause.message.includes(STALE_GVISOR_FILESTORE_MESSAGE);
+}
 
 // The function form accepts an optional `forceRefresh`: the provision/recreate
 // path passes `true` to bypass the resolver's staleness cache and pin the
@@ -3100,11 +3115,11 @@ export class ProvisionerImpl implements Provisioner {
             sleepingSince: project.sleepingSince ?? null,
             wakeStartedAt: new Date(),
           });
-          if (fallbackReason !== undefined) {
-            // The retained object is no longer the exact Sandbox we put to sleep.
-            // Reuse the established replacement path rather than starting unknown
-            // Docker state or trying to repair its mounts in place.
-            this.observeSandboxWakeFallback(project.id, fallbackReason);
+          const sleepFingerprint = project.sleepCompatibilityFingerprint;
+          const replaceRetained = async (
+            reason: SandboxWakeFallbackReason,
+          ): Promise<ProjectRecord> => {
+            this.observeSandboxWakeFallback(project.id, reason);
             try {
               return await this.recreateContainer(project.id, { confirmWarnings: true });
             } catch (cause) {
@@ -3117,7 +3132,7 @@ export class ProvisionerImpl implements Provisioner {
                   await this.quiesceProjectAfterRestart(latest);
                   await this.confirmSandboxStopped(latest.containerName);
                   await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
-                    sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
+                    sleepCompatibilityFingerprint: sleepFingerprint,
                     sleepingSince: project.sleepingSince ?? new Date(),
                     wakeStartedAt: null,
                   });
@@ -3132,6 +3147,12 @@ export class ProvisionerImpl implements Provisioner {
               }
               throw cause;
             }
+          };
+          if (fallbackReason !== undefined) {
+            // The retained object is no longer the exact Sandbox we put to sleep.
+            // Reuse the established replacement path rather than starting unknown
+            // Docker state or trying to repair its mounts in place.
+            return await replaceRetained(fallbackReason);
           }
           if (inspect === null || generation === undefined) {
             throw new Error('compatible retained Sandbox lost its identity');
@@ -3243,6 +3264,9 @@ export class ProvisionerImpl implements Provisioner {
                 new AggregateError([cause, ...cleanupFailures], message, { cause }),
               );
             }
+            // The retained container can never start again (see
+            // isStaleGvisorFilestore); returning it to sleep would fail every wake.
+            if (isStaleGvisorFilestore(cause)) return await replaceRetained('stale_runtime_state');
             await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
               sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
               sleepingSince: project.sleepingSince ?? new Date(),
@@ -5716,6 +5740,7 @@ export class ProvisionerImpl implements Provisioner {
     };
     try {
       let containerId: string;
+      let reusedExisting = false;
       try {
         const shouldForcePull =
           forcePull && preparedImage === undefined && !image.usesDevcontainerImage;
@@ -5733,11 +5758,26 @@ export class ProvisionerImpl implements Provisioner {
             );
           }
           containerId = inspect.id;
+          reusedExisting = !inspect.running;
         } else {
           throw cause;
         }
       }
-      await this.opts.docker.startContainer(containerId);
+      try {
+        await this.opts.docker.startContainer(containerId);
+      } catch (cause) {
+        if (!reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
+        // Starting a retained container reuses its id, which gVisor also uses as
+        // the sandbox id. A sandbox torn down without `runsc delete` (host memory
+        // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
+        // `.gvisor.filestore.<id>` behind in the container's writable layer, and
+        // runsc refuses to create it again. That container can never start, and
+        // every Repair kept retrying it. Replace it: durable project state lives
+        // in named volumes, which container removal does not touch.
+        await this.opts.docker.removeContainer(containerId);
+        containerId = (await this.createContainerPullingIfMissing(spec, false)).id;
+        await this.opts.docker.startContainer(containerId);
+      }
     } catch (cause) {
       const message = `docker start failed: ${failureMessage(cause)}`;
       await this.opts.store.updateProjectState(project.id, 'failed', message);
