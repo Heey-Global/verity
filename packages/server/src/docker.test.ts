@@ -1025,12 +1025,16 @@ describe('createDockerClient (#174)', () => {
   });
 
   it('stopContainer is no-op on 304 (already-stopped signal — Engine convention)', async () => {
-    // Engine convention: stop returns 304 when the container was already stopped,
-    // a NOT-modified status code that fetch treats as "ok" (2xx-3xx). The client
-    // resolves successfully — the caller doesn't care whether it was already
-    // stopped; only that it stopped / is stopped now.
+    // Engine convention: stop returns 304 when the container was already stopped.
+    // fetch reports 304 as `ok: false` (Response.ok is 2xx only); faking it as ok
+    // hid that the socket-proxy transport rejected every stop of a stopped
+    // container, which made rollbacks after a failed start mark projects failed.
     const fetch = fakeFetch([
-      { match: /\/containers\/abc\/stop/, method: 'POST', resp: res('', { status: 304 }) },
+      {
+        match: /\/containers\/abc\/stop/,
+        method: 'POST',
+        resp: res('', { ok: false, status: 304 }),
+      },
     ]);
     const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
     await expect(docker.stopContainer('abc')).resolves.toBeUndefined();
