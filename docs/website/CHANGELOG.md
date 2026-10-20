@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/Heey-Global/verity/compare/website-v2.5.0...website-v2.5.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **github:** explain and recover missing commit-status permissions ([#1737](https://github.com/Heey-Global/verity/issues/1737)) ([2a2b781](https://github.com/Heey-Global/verity/commit/2a2b7813df93f27a68b92123b3399fe9492545d9))
+
 ## [2.5.0](https://github.com/Heey-Global/verity/compare/website-v2.4.0...website-v2.5.0) (2026-10-18)
 
 
