@@ -884,8 +884,8 @@ export function createUnixSocketFetch(parsed: ParsedUnixBaseUrl): HttpFetch {
             const rawBuffer = Buffer.concat(chunks);
             const raw = rawBuffer.toString('utf8');
             resolve({
-              // Mirror fetch's `ok`: 2xx and 3xx (the Engine's 304 "already
-              // stopped" convention must resolve `ok`, matching the HTTP path).
+              // Unlike fetch (2xx only), 3xx counts as `ok` here. Callers that
+              // accept the Engine's 304 "already stopped" check the status too.
               ok: status >= 200 && status < 400,
               status,
               // Parse lazily like fetch's `.json()`; no await needed (body is
@@ -1479,7 +1479,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
     },
     stopContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/stop`, 'POST', timeoutMs);
-      if (!res.ok) throw await toDockerError(res, id);
+      // 304 means already stopped. fetch reports it as not ok (`ok` is 2xx only),
+      // so the socket-proxy transport failed every stop of a stopped container,
+      // including the rollback of a start that never got the container running.
+      if (!res.ok && res.status !== 304) throw await toDockerError(res, id);
     },
     removeContainer: async (id) => {
       // `v=true` removes the anonymous volumes the daemon minted for this
