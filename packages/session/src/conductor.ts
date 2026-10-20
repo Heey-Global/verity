@@ -1267,7 +1267,7 @@ export class Conductor {
   }
 
   private isStaleCodexResume(result: RunResult, resumeSessionId: string): boolean {
-    if (result.exitCode === 0 || result.aborted) return false;
+    if (result.exitCode === 0 || result.aborted || result.executionObserved === true) return false;
     if (result.staleResume === true) return true;
     if (/thread\/resume failed|no rollout found for thread id/i.test(result.stderr)) return true;
     // codex-acp can accept the load of a thread it never materialized, from live
@@ -1289,7 +1289,7 @@ export class Conductor {
   }
 
   private isStaleClaudeResume(result: RunResult, resumeSessionId: string): boolean {
-    if (result.aborted) return false;
+    if (result.aborted || result.executionObserved === true) return false;
     return namesMissingConversation(result.stderr, resumeSessionId);
   }
 
@@ -1652,7 +1652,12 @@ export class Conductor {
     // read off stderr, `staleResume` an answered `resourceNotFound` — and the
     // backend tests pin it, but the ordering makes the overlap harmless anyway:
     // this cold retry runs first and its own result is what the replay sees.
-    if (!codexStale && resumeSessionId !== undefined && first.result.staleResume === true) {
+    if (
+      !codexStale &&
+      resumeSessionId !== undefined &&
+      first.result.staleResume === true &&
+      first.result.executionObserved !== true
+    ) {
       first.backend.closeSession?.(resumeSessionId);
       await this.clearBackendSessionState(sessionId, backendKey);
       await this.markTurnRunning(sessionId, await this.deps.store.latestEventSeq(sessionId));

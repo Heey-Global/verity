@@ -4158,6 +4158,17 @@ describe('Claude ACP sandbox smoke', () => {
     }
   });
 
+  it('uses the session home for durable transcript recreation and checks loss before restore', () => {
+    const recreate = readFileSync('packages/server/src/runner-claude-recreate-server.ts', 'utf8');
+    expect(recreate).toMatch(/new ServerTranscript\(\{[^}]*veritySessionId: STORE_SESSION_ID/su);
+    expect(recreate).toContain('persistentSessionHomes: true');
+    const lossCheck = recreate.indexOf(
+      'existsSync(serverTranscript.transcriptFile(resumeSessionId, worktree))',
+    );
+    expect(lossCheck).toBeGreaterThan(0);
+    expect(lossCheck).toBeLessThan(recreate.indexOf('client.startTurn('));
+  });
+
   it('answers ACP auth probes with managed settings without starting a session', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-auth-probe-fixture-'));
     try {

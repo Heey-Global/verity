@@ -30564,6 +30564,7 @@ async function runAcpTurn(opts, profile) {
   let acceptingSteering = true;
   let sendSteering;
   let turnHasAgentContent = false;
+  let executionObserved = false;
   opts.onSteer?.((message) => {
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === void 0)
       return false;
@@ -30689,6 +30690,8 @@ async function runAcpTurn(opts, profile) {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession || stopped)
         return Promise.resolve();
+      if (isAgentContent(params.update))
+        executionObserved = true;
       if (profile.telemetryBackend === "codex-acp") {
         if (params.update.sessionUpdate === "agent_message_chunk")
           turnHasAgentContent = false;
@@ -31063,7 +31066,8 @@ ${message}`;
       stderr,
       aborted,
       ...failedBeforeExecution ? { failedBeforeExecution: true } : {},
-      ...loadRefused && !aborted ? { staleResume: true } : {}
+      ...executionObserved ? { executionObserved: true } : {},
+      ...loadRefused && !aborted && !executionObserved ? { staleResume: true } : {}
     };
   } finally {
     if (timeout !== void 0)

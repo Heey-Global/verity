@@ -32,6 +32,7 @@ import {
   isRunnerSupervisorBackend,
   LoopbackRunnerClient,
   SupervisorRunnerClient,
+  requestRunnerSupervisor,
   SupervisorRunnerRecovery,
   brokeredGrantTarget,
   brokeredGrantToolName,
@@ -187,6 +188,11 @@ import {
   createRuntimeReadinessGate,
   validateRuntimeReadinessTtl,
 } from './runtime-readiness-gate.js';
+import {
+  queueSessionCleanup,
+  finishSessionCleanup,
+  pendingSessionCleanups,
+} from './pending-session-cleanup.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
@@ -1289,10 +1295,23 @@ export function buildRunnerConductorWiring(deps: {
           transcript: ephemeral
             ? undefined
             : backend.runnerSupervisorBackend === 'claude-acp'
-              ? new ServerTranscript({ runtimeDir, transcript: deps.transcript })
+              ? new ServerTranscript({
+                  runtimeDir,
+                  transcript: deps.transcript,
+                  ...(isAcpBackend && context.sessionId
+                    ? { veritySessionId: context.sessionId }
+                    : {}),
+                })
               : backend.runnerSupervisorBackend === 'codex-acp'
-                ? new ServerCodexTranscript({ runtimeDir, transcript: deps.transcript })
+                ? new ServerCodexTranscript({
+                    runtimeDir,
+                    transcript: deps.transcript,
+                    ...(isAcpBackend && context.sessionId
+                      ? { veritySessionId: context.sessionId }
+                      : {}),
+                  })
                 : undefined,
+          persistentSessionHomes: isAcpBackend && !ephemeral,
           mapAttachmentPath: sandboxPath,
           mapTurnOptions: (opts) => ({
             ...opts,
@@ -4128,6 +4147,15 @@ export async function buildEmbeddedServer(
             if (runnerProjectIds.size === 0) return;
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
+            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+            if (scope === 'session-delete')
+              await queueSessionCleanup(cleanupRoot, {
+                sessionId,
+                sandboxCwd,
+                runnerProjectIds: [...runnerProjectIds],
+                bindings: [...bindings],
+              });
+
             const removed: string[] = [];
             const absent: string[] = [];
             const absentBound: string[] = [];
@@ -4138,22 +4166,48 @@ export async function buildEmbeddedServer(
             let runtimeSeen = false;
             for (const runnerProjectId of runnerProjectIds) {
               const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              const purge = await purgeSessionArtifactFiles({
-                runtimeDir,
-                sandboxCwd,
-                bindings,
-                sessionId,
-                scope,
-              });
-              removed.push(...purge.removed);
-              absent.push(...purge.absent);
-              absentBound.push(...purge.absentBound);
-              failed.push(...purge.failed);
-              outsideRuntime.push(...purge.outsideRuntime);
-              if (!purge.runtimeMissing) runtimeSeen = true;
-              if (purge.unresolved) unresolved.push(runtimeDir);
-              for (const backend of purge.unknownBackends) unknownBackends.add(backend);
+              // Control sessions may name a historical project with no runner runtime.
+              if (!existsSync(runtimeDir)) continue;
+              try {
+                if (scope === 'session-delete') {
+                  const deleted = await requestRunnerSupervisor(
+                    join(runtimeDir, 'supervisor.sock'),
+                    { kind: 'delete-session-home', sessionId },
+                    30_000,
+                  );
+                  if (deleted.ok !== true) throw new Error('Session home deletion failed');
+                }
+                const purge = await purgeSessionArtifactFiles({
+                  runtimeDir,
+                  sandboxCwd,
+                  bindings,
+                  sessionId,
+                  scope,
+                });
+                removed.push(...purge.removed);
+                absent.push(...purge.absent);
+                absentBound.push(...purge.absentBound);
+                failed.push(...purge.failed);
+                outsideRuntime.push(...purge.outsideRuntime);
+                if (!purge.runtimeMissing) runtimeSeen = true;
+                if (purge.unresolved) unresolved.push(runtimeDir);
+                for (const backend of purge.unknownBackends) unknownBackends.add(backend);
+              } catch (error) {
+                unresolved.push(runtimeDir);
+                app.log.warn(
+                  { err: error, sessionId, runnerProjectId },
+                  'verity: runner session cleanup remains pending',
+                );
+              }
             }
+            if (
+              scope === 'session-delete' &&
+              failed.length === 0 &&
+              outsideRuntime.length === 0 &&
+              unresolved.length === 0 &&
+              unknownBackends.size === 0
+            )
+              await finishSessionCleanup(cleanupRoot, sessionId);
             // A path that resolved OUT of the runtime means something planted a symlink in
             // a directory the Sandbox can write. Nothing was deleted — but this is not a
             // cleanup problem, so it gets its own message rather than being read as one.
@@ -5119,6 +5173,49 @@ export async function buildEmbeddedServer(
         ]);
       } finally {
         storeReadsDone();
+      }
+      const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+      for (const pending of await pendingSessionCleanups(cleanupRoot)) {
+        if (sweepAbort.signal.aborted) break;
+        try {
+          let clean = true;
+          for (const projectId of pending.runnerProjectIds) {
+            const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
+            if (!existsSync(runtimeDir)) continue;
+            try {
+              const response = await requestRunnerSupervisor(
+                join(runtimeDir, 'supervisor.sock'),
+                { kind: 'delete-session-home', sessionId: pending.sessionId },
+                10_000,
+              );
+              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
+              const result = await purgeSessionArtifactFiles({
+                runtimeDir,
+                sandboxCwd: pending.sandboxCwd,
+                sessionId: pending.sessionId,
+                bindings: pending.bindings,
+                scope: 'session-delete',
+              });
+              clean &&=
+                result.failed.length === 0 &&
+                result.outsideRuntime.length === 0 &&
+                result.unknownBackends.length === 0 &&
+                !result.unresolved;
+            } catch (error) {
+              clean = false;
+              app.log.warn(
+                { err: error, sessionId: pending.sessionId, projectId },
+                'verity: runner session cleanup remains pending',
+              );
+            }
+          }
+          if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
+        } catch (error) {
+          app.log.warn(
+            { err: error, sessionId: pending.sessionId },
+            'verity: session cleanup remains pending',
+          );
+        }
       }
       const result = await sweepOrphanArtifacts({
         runnersRoot,
