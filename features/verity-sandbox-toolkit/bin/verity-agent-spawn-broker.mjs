@@ -1229,8 +1229,9 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
       await chown(home, uid, gid);
     } else {
       for (const directory of directories.slice(3)) {
-        await chown(directory, uid, gid);
+        // Without CAP_FOWNER, chmod must precede the ownership handoff.
         await chmod(directory, 0o700);
+        await chown(directory, uid, gid);
       }
     }
     return home;
