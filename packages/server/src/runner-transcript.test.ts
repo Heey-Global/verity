@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { TranscriptStore, type RunnerFrameIngest } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import {
@@ -379,6 +379,127 @@ describe('ServerCodexTranscript', () => {
     await expect(server.restoreForResume(CLAUDE_SESSION, CWD, CLAUDE_SESSION)).resolves.toBe(
       `${meta}\nnewest\n`.length,
     );
+  });
+
+  // Codex 0.162+ resumes a paginated rollout only under its canonical name and
+  // otherwise refuses with "does not have a canonical rollout filename" — every
+  // Codex session whose Sandbox was recreated failed that way on its next turn.
+  // The shape below is the one Codex itself writes (`2026/10/19/rollout-…`).
+  const THREAD = '01a1562e-3323-7db2-8b2f-b3aecaa7530f';
+  const CANONICAL = new RegExp(
+    String.raw`^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-${THREAD}\.jsonl$`,
+    'u',
+  );
+
+  it('restores a Codex thread under the rollout name Codex resumes', async () => {
+    const prior = JSON.stringify({ type: 'session_meta', payload: { id: THREAD } });
+    const resumed = JSON.stringify({ type: 'event_msg', payload: { type: 'turn_complete' } });
+    await ctx.store.createSession({ sessionId: 'v-thread', worktree: '/wt-v-thread', model: 'm' });
+    await transcript.appendLines('v-thread', [prior]);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+
+    const offset = await server.restoreForResume(THREAD, CWD, 'v-thread');
+    const restoredDir = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME, 'verity-restored');
+    const [name, ...others] = await readdir(restoredDir);
+    expect(others).toEqual([]);
+    expect(name).toMatch(CANONICAL);
+    // A v7 thread id carries its creation time; the name uses it.
+    expect(name).toBe(`rollout-2026-10-19T22-00-30-${THREAD}.jsonl`);
+
+    const file = join(restoredDir, name!);
+    const abort = new AbortController();
+    const done = server.tail(THREAD, CWD, 'v-thread', offset, abort.signal);
+    await writeFile(file, `${prior}\n${resumed}\n`, { mode: 0o600 });
+    await until(async () => (await transcript.getLines('v-thread')).length === 2);
+    abort.abort();
+    await done;
+    expect(await transcript.getLines('v-thread')).toEqual([prior, resumed]);
+  });
+
+  it('renames a copy an earlier restore left under the refused name', async () => {
+    const prior = JSON.stringify({ type: 'session_meta', payload: { id: THREAD } });
+    await ctx.store.createSession({ sessionId: 'v-legacy', worktree: '/wt-v-legacy', model: 'm' });
+    await transcript.appendLines('v-legacy', [prior]);
+    const restoredDir = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME, 'verity-restored');
+    await mkdir(restoredDir, { recursive: true });
+    // The runtime copy can be ahead of the durable transcript; it is kept, not
+    // overwritten from the store, and the tail resumes after its last byte.
+    const local = `${prior}\n{"type":"event_msg","payload":{"type":"turn_complete"}}\n`;
+    await writeFile(join(restoredDir, `rollout-${THREAD}.jsonl`), local);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+
+    const offset = await server.restoreForResume(THREAD, CWD, 'v-legacy');
+
+    const names = await readdir(restoredDir);
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(CANONICAL);
+    expect(await readFile(join(restoredDir, names[0]!), 'utf8')).toBe(local);
+    expect(offset).toBe(local.length);
+  });
+
+  it('drops the refused copy when the canonical one already exists', async () => {
+    const meta = JSON.stringify({ type: 'session_meta', payload: { id: THREAD } });
+    const restoredDir = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME, 'verity-restored');
+    await mkdir(restoredDir, { recursive: true });
+    const canonical = join(restoredDir, `rollout-2026-10-19T22-00-30-${THREAD}.jsonl`);
+    await writeFile(canonical, `${meta}\ncanonical\n`);
+    await writeFile(join(restoredDir, `rollout-${THREAD}.jsonl`), `${meta}\nlegacy\n`);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+
+    await expect(server.restoreForResume(THREAD, CWD, THREAD)).resolves.toBe(
+      `${meta}\ncanonical\n`.length,
+    );
+    expect(await readdir(restoredDir)).toEqual([basename(canonical)]);
+  });
+
+  it('keeps the longer copy and drops a legacy copy that names no thread', async () => {
+    const meta = JSON.stringify({ type: 'session_meta', payload: { id: THREAD } });
+    const restoredDir = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME, 'verity-restored');
+    await mkdir(restoredDir, { recursive: true });
+    const canonical = join(restoredDir, `rollout-2026-10-19T22-00-30-${THREAD}.jsonl`);
+    const legacy = join(restoredDir, `rollout-${THREAD}.jsonl`);
+    await writeFile(canonical, `${meta}\n`);
+    await writeFile(legacy, `${meta}\nwritten after the canonical copy\n`);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+    await server.restoreForResume(THREAD, CWD, THREAD);
+    expect(await readdir(restoredDir)).toEqual([basename(canonical)]);
+    expect(await readFile(canonical, 'utf8')).toBe(`${meta}\nwritten after the canonical copy\n`);
+
+    // Empty, truncated before its first line: Codex would still find it by its
+    // id suffix and refuse it.
+    await writeFile(legacy, '');
+    await server.restoreForResume(THREAD, CWD, THREAD);
+    expect(await readdir(restoredDir)).toEqual([basename(canonical)]);
+  });
+
+  it('drops a legacy copy instead of duplicating a native dated rollout', async () => {
+    const meta = JSON.stringify({ type: 'session_meta', payload: { id: THREAD } });
+    const sessions = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME);
+    const native = join(
+      sessions,
+      '2026',
+      '10',
+      '19',
+      `rollout-2026-10-19T22-00-30-${THREAD}.jsonl`,
+    );
+    await mkdir(dirname(native), { recursive: true });
+    await mkdir(join(sessions, 'verity-restored'), { recursive: true });
+    await writeFile(native, `${meta}\n`);
+    await writeFile(join(sessions, 'verity-restored', `rollout-${THREAD}.jsonl`), `${meta}\nold\n`);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+    await expect(server.restoreForResume(THREAD, CWD, THREAD)).resolves.toBe(`${meta}\n`.length);
+    expect(await readdir(join(sessions, 'verity-restored'))).toEqual([]);
+  });
+
+  it('names a non-v7 thread id canonically too', async () => {
+    const v4 = '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b';
+    const prior = JSON.stringify({ type: 'session_meta', payload: { id: v4 } });
+    await ctx.store.createSession({ sessionId: 'v-v4', worktree: '/wt-v-v4', model: 'm' });
+    await transcript.appendLines('v-v4', [prior]);
+    const server = new ServerCodexTranscript({ runtimeDir, transcript, pollMs: 5 });
+    await server.restoreForResume(v4, CWD, 'v-v4');
+    const restoredDir = join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME, 'verity-restored');
+    expect(await readdir(restoredDir)).toEqual([`rollout-1970-01-01T00-00-00-${v4}.jsonl`]);
   });
 
   it('encodes a hostile session id inside the restored directory', async () => {
