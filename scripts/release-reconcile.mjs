@@ -339,6 +339,104 @@ function reconcileNativePlanning() {
   dispatched.push(`${releaseWorkflow} (mobile-replan=true)`);
   notes.push(`Mobile planning: native changes since ${tag} had no Staging release PR: ${changes}`);
 }
+function reconcileBackendPlanning() {
+  const tag = manifestTag('backend');
+  const boundary = published.find((entry) => entry.tag_name === tag);
+  if (!boundary || boundary.draft || stranded.some((entry) => entry.train === 'backend')) {
+    notes.push('Server planning: Server publication must finish before planning another release.');
+    return;
+  }
+  const openServerPrs = () =>
+    gh(
+      'api',
+      '--paginate',
+      `repos/${repository}/pulls?state=open&base=main&per_page=100`,
+      '--jq',
+      '.[] | select(.head.ref == "release-please--branches--main--components--server") | .number',
+    );
+  if (openServerPrs()) {
+    notes.push('Server planning: a Server Staging release PR already exists.');
+    return;
+  }
+  const head = git('rev-parse', 'HEAD');
+  const currentMain = () => {
+    const value = /** @type {unknown} */ (
+      JSON.parse(gh('api', `repos/${repository}/git/ref/heads/main`))
+    );
+    const ref = /** @type {{object: {sha: string}}} */ (value);
+    if (!/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new Error('Invalid Main revision');
+    return ref.object.sha;
+  };
+  if (currentMain() !== head) {
+    notes.push('Server planning: Main advanced; a later sweep will evaluate it.');
+    return;
+  }
+  const headTime = Date.parse(git('log', '-1', '--format=%cI'));
+  if (!Number.isFinite(headTime)) throw new Error('Invalid Main commit time');
+  if (headTime > now - graceMs) {
+    notes.push('Server planning: Main is younger than the push run lag.');
+    return;
+  }
+  git('merge-base', '--is-ancestor', tag, head);
+  const baselineTime = Date.parse(git('log', '-1', '--format=%cI', tag));
+  if (!Number.isFinite(baselineTime)) throw new Error('Invalid Server boundary time');
+  const runs = workflowRuns(releaseWorkflow, baselineTime);
+  const active = runs.find((run) => run.status !== 'completed');
+  if (active) {
+    notes.push(`Server planning: dispatcher ${active.html_url} is still ${active.status}.`);
+    return;
+  }
+  // Use Release Please's exclusions so mobile-only changes cannot create Server plans.
+  const config = /** @type {unknown} */ (
+    JSON.parse(readFileSync('release-please-config.backend.json', 'utf8'))
+  );
+  if (!config || typeof config !== 'object' || !('packages' in config))
+    throw new Error('Invalid backend release config');
+  const packages = config.packages;
+  if (!packages || typeof packages !== 'object' || !('.' in packages))
+    throw new Error('Invalid backend release packages');
+  const server = packages['.'];
+  if (!server || typeof server !== 'object' || !('exclude-paths' in server))
+    throw new Error('Invalid backend release package');
+  const excludes = server['exclude-paths'];
+  if (!Array.isArray(excludes) || excludes.some((path) => typeof path !== 'string'))
+    throw new Error('Invalid backend release exclusions');
+  const commits = git(
+    'log',
+    '--format=%s',
+    `${tag}..${head}`,
+    '--',
+    '.',
+    ...excludes.map((path) => `:(exclude)${path}`),
+  );
+  if (
+    !commits
+      .split('\n')
+      .some((subject) =>
+        /^(?:feat|fix|perf)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(subject),
+      )
+  ) {
+    notes.push('Server planning: no releasable Server commits since the published boundary.');
+    return;
+  }
+  const title = `Replan server ${head}`;
+  const previous = runs.find((run) => run.display_title === title);
+  if (previous) {
+    problems.push(
+      `Server planning: ${previous.html_url} ended with ${previous.conclusion ?? 'no conclusion'} but no Server Staging PR exists; inspect and retry that planning run.`,
+    );
+    return;
+  }
+  if (currentMain() !== head || openServerPrs()) {
+    notes.push('Server planning: Main or its release PR changed during classification.');
+    return;
+  }
+  gh('workflow', 'run', releaseWorkflow, '--ref', 'main', '-f', 'backend-replan=true');
+  dispatched.push(`${releaseWorkflow} (backend-replan=true)`);
+  notes.push(`Server planning: releasable commits since ${tag} had no Staging release PR: ${head}`);
+}
+reconcileBackendPlanning();
+
 reconcileNativePlanning();
 
 if (existsSync(otaManifest)) {
