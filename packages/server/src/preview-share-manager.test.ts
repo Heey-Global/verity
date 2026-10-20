@@ -19,6 +19,7 @@ import {
   PreviewShareInputError,
   PreviewShareManager,
   PreviewShareNotFoundError,
+  PreviewShareRemovalQueuedError,
   type PreviewShareManagerOptions,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
@@ -1243,6 +1244,36 @@ describe('PreviewShareManager', () => {
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).rejects.toThrow(/mounted credentials/);
     expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('completes a stop whose Uplink removal is queued for later', async () => {
+    // The removal is persisted and retried when the Uplink connects. Failing the
+    // stop instead left the share revoking for the whole outage: stopping it
+    // answered 500, and every Repair of its project aborted on it.
+    const { manager, edge, store, log } = fixture();
+    edge.remove.mockRejectedValueOnce(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await expect(manager.stop('share-id')).resolves.toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ uplinkRemoveMs: null, uplinkRemoveQueued: true }),
+      'public preview share stop incomplete',
+    );
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      'share-id',
+      ['revoking'],
+      'revoked',
+      expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  it('keeps the stop failing when the connector cannot be removed, even if the Uplink queued', async () => {
+    const { manager, docker, edge } = fixture();
+    docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+    edge.remove.mockRejectedValueOnce(new PreviewShareRemovalQueuedError('queued'));
+
+    await expect(manager.stop('share-id')).rejects.toThrow(/revocation did not complete/);
   });
 
   it('keeps a failed revocation nonterminal so reconciliation retries it', async () => {

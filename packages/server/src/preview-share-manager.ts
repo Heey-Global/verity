@@ -988,6 +988,13 @@ export class PreviewShareManager {
       timed(() => this.options.edge.remove(id)),
     ]);
     const [connectorRemove, uplinkRemove] = cleanup;
+    // A queued Uplink removal is durable: it is persisted before this error is
+    // raised and retried whenever the Uplink connects. Treating it as a failure
+    // left the share in `revoking` for as long as the Uplink was unreachable,
+    // so stopping it answered 500 and every Repair of its project aborted.
+    const uplinkQueued =
+      uplinkRemove?.status === 'rejected' &&
+      uplinkRemove.reason instanceof PreviewShareRemovalQueuedError;
     const complete = cleanup.every((result) => result.status === 'fulfilled');
     this.options.log?.[complete ? 'info' : 'warn'](
       {
@@ -995,13 +1002,15 @@ export class PreviewShareManager {
         waitedForCreationMs,
         connectorRemoveMs: connectorRemove?.status === 'fulfilled' ? connectorRemove.value : null,
         uplinkRemoveMs: uplinkRemove?.status === 'fulfilled' ? uplinkRemove.value : null,
+        ...(uplinkQueued ? { uplinkRemoveQueued: true } : {}),
         totalMs: Math.round(performance.now() - startedAt),
       },
       complete ? 'public preview share stopped' : 'public preview share stop incomplete',
     );
     const failures: unknown[] = [];
     for (const result of cleanup) {
-      if (result.status === 'rejected') failures.push(result.reason);
+      if (result.status === 'rejected' && !(result === uplinkRemove && uplinkQueued))
+        failures.push(result.reason);
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, 'public preview revocation did not complete');
