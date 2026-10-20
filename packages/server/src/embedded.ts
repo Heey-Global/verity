@@ -4166,29 +4166,39 @@ export async function buildEmbeddedServer(
             let runtimeSeen = false;
             for (const runnerProjectId of runnerProjectIds) {
               const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              if (scope === 'session-delete') {
-                const deleted = await requestRunnerSupervisor(
-                  join(runtimeDir, 'supervisor.sock'),
-                  { kind: 'delete-session-home', sessionId },
-                  30_000,
+              // Control sessions may name a historical project with no runner runtime.
+              if (!existsSync(runtimeDir)) continue;
+              try {
+                if (scope === 'session-delete') {
+                  const deleted = await requestRunnerSupervisor(
+                    join(runtimeDir, 'supervisor.sock'),
+                    { kind: 'delete-session-home', sessionId },
+                    30_000,
+                  );
+                  if (deleted.ok !== true) throw new Error('Session home deletion failed');
+                }
+                const purge = await purgeSessionArtifactFiles({
+                  runtimeDir,
+                  sandboxCwd,
+                  bindings,
+                  sessionId,
+                  scope,
+                });
+                removed.push(...purge.removed);
+                absent.push(...purge.absent);
+                absentBound.push(...purge.absentBound);
+                failed.push(...purge.failed);
+                outsideRuntime.push(...purge.outsideRuntime);
+                if (!purge.runtimeMissing) runtimeSeen = true;
+                if (purge.unresolved) unresolved.push(runtimeDir);
+                for (const backend of purge.unknownBackends) unknownBackends.add(backend);
+              } catch (error) {
+                unresolved.push(runtimeDir);
+                app.log.warn(
+                  { err: error, sessionId, runnerProjectId },
+                  'verity: runner session cleanup remains pending',
                 );
-                if (deleted.ok !== true) throw new Error('Session home deletion failed');
               }
-              const purge = await purgeSessionArtifactFiles({
-                runtimeDir,
-                sandboxCwd,
-                bindings,
-                sessionId,
-                scope,
-              });
-              removed.push(...purge.removed);
-              absent.push(...purge.absent);
-              absentBound.push(...purge.absentBound);
-              failed.push(...purge.failed);
-              outsideRuntime.push(...purge.outsideRuntime);
-              if (!purge.runtimeMissing) runtimeSeen = true;
-              if (purge.unresolved) unresolved.push(runtimeDir);
-              for (const backend of purge.unknownBackends) unknownBackends.add(backend);
             }
             if (
               scope === 'session-delete' &&
@@ -5171,24 +5181,33 @@ export async function buildEmbeddedServer(
           let clean = true;
           for (const projectId of pending.runnerProjectIds) {
             const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
-            const response = await requestRunnerSupervisor(
-              join(runtimeDir, 'supervisor.sock'),
-              { kind: 'delete-session-home', sessionId: pending.sessionId },
-              10_000,
-            );
-            if (response.ok !== true) throw new Error('Pending session home cleanup failed');
-            const result = await purgeSessionArtifactFiles({
-              runtimeDir,
-              sandboxCwd: pending.sandboxCwd,
-              sessionId: pending.sessionId,
-              bindings: pending.bindings,
-              scope: 'session-delete',
-            });
-            clean &&=
-              result.failed.length === 0 &&
-              result.outsideRuntime.length === 0 &&
-              result.unknownBackends.length === 0 &&
-              !result.unresolved;
+            if (!existsSync(runtimeDir)) continue;
+            try {
+              const response = await requestRunnerSupervisor(
+                join(runtimeDir, 'supervisor.sock'),
+                { kind: 'delete-session-home', sessionId: pending.sessionId },
+                10_000,
+              );
+              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
+              const result = await purgeSessionArtifactFiles({
+                runtimeDir,
+                sandboxCwd: pending.sandboxCwd,
+                sessionId: pending.sessionId,
+                bindings: pending.bindings,
+                scope: 'session-delete',
+              });
+              clean &&=
+                result.failed.length === 0 &&
+                result.outsideRuntime.length === 0 &&
+                result.unknownBackends.length === 0 &&
+                !result.unresolved;
+            } catch (error) {
+              clean = false;
+              app.log.warn(
+                { err: error, sessionId: pending.sessionId, projectId },
+                'verity: runner session cleanup remains pending',
+              );
+            }
           }
           if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
         } catch (error) {

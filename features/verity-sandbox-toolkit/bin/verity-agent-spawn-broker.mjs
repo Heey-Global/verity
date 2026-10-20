@@ -1587,8 +1587,17 @@ function normalSessionRoots(options) {
     'VERITY_SIGNING_TOKEN_FILE',
     'VERITY_GH_BROKER_CAPABILITY_FILE',
   ]) {
-    const path = options.env?.[key];
-    if (path !== undefined) roots.push('--secret', path);
+    const path =
+      options.env?.[key] ??
+      {
+        VERITY_SIGNING_TOKEN_FILE: '/run/verity/ssh/signing_broker_token',
+        VERITY_GH_BROKER_CAPABILITY_FILE: '/run/verity/gh-token-capability',
+      }[key];
+    if (
+      path !== undefined &&
+      (options.env?.[key] !== undefined || lstatSync(path, { throwIfNoEntry: false }))
+    )
+      roots.push('--secret', path);
   }
   return roots;
 }

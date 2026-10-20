@@ -190,6 +190,18 @@ it.each(commands)(
     expect(normal.args).toContain('--write-isolated');
     expect(normal.args).toContain(request.managedHome);
     expect(normal.args).toContain('/run/verity-gh/capability');
+    for (const path of [
+      '/run/verity/ssh/signing_broker_token',
+      '/run/verity/gh-token-capability',
+    ]) {
+      const defaults = agentLaunchSpec(request, { ...options, env: {} });
+      if (existsSync(path)) {
+        const index = defaults.args.indexOf(path);
+        expect(index).toBeGreaterThan(0);
+        expect(defaults.args[index - 1]).toBe('--secret');
+      }
+    }
+
     expect(normal.args).not.toContain('--read-only-root');
     const control = agentLaunchSpec(request, { ...options, dockerGid: '999' });
     expect(control.args).toContain('--groups=999');

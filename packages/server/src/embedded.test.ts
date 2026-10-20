@@ -2417,99 +2417,116 @@ describe('buildEmbeddedServer', () => {
     }
   }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
 
-  it('deletes a session’s backend transcripts off the runner runtime', async () => {
-    // The glue between the DELETE route and `purgeSessionArtifacts`: which runner runtime
-    // to look in (the session's project), and which sandbox path claude encoded into its
-    // directory name (the worktree, mapped through `hostCloneRoot`). Both are derived in
-    // `embedded.ts` from the session row, so neither the route tests nor the resolver
-    // tests can catch a wrong derivation — only a delete against a real layout can.
-    const root = mkdtempSync(join(tmpdir(), 'verity-purge-wiring-'));
-    let supervisor: Server | undefined;
-    const deletionRequests: unknown[] = [];
-    try {
-      const dataDir = join(root, 'db');
-      const dataVolumeRoot = join(root, 'data');
-      const hostCloneRoot = join(root, 'clones');
-      const worktree = join(hostCloneRoot, 'heey-global-verity', '.verity-sessions', 'agent-p1');
-      mkdirSync(worktree, { recursive: true });
+  it.each(['project', 'control-missing', 'control-unreachable'])(
+    'deletes backend transcripts with runner layout: %s',
+    async (layout) => {
+      const controlPlaneRunner = layout !== 'project';
+      // The glue between the DELETE route and `purgeSessionArtifacts`: which runner runtime
+      // to look in (the session's project), and which sandbox path claude encoded into its
+      // directory name (the worktree, mapped through `hostCloneRoot`). Both are derived in
+      // `embedded.ts` from the session row, so neither the route tests nor the resolver
+      // tests can catch a wrong derivation — only a delete against a real layout can.
+      const root = mkdtempSync(join(tmpdir(), 'verity-purge-wiring-'));
+      let supervisor: Server | undefined;
+      const deletionRequests: unknown[] = [];
+      try {
+        const dataDir = join(root, 'db');
+        const dataVolumeRoot = join(root, 'data');
+        const hostCloneRoot = join(root, 'clones');
+        const worktree = join(hostCloneRoot, 'heey-global-verity', '.verity-sessions', 'agent-p1');
+        mkdirSync(worktree, { recursive: true });
 
-      const db = createEmbeddedDb(dataDir);
-      await migrateToLatest(db);
-      const store = new EventStore(db);
-      await store.upsertProject({
-        id: 'p-purge',
-        owner: 'Heey-Global',
-        repo: 'Verity',
-        containerName: 'dev-heey-global--verity',
-        state: 'active',
-      });
-      await store.createSession({
-        sessionId: 's-purge',
-        worktree,
-        model: 'codex/default',
-        projectId: 'p-purge',
-      });
-      await store.upsertSessionBackendState({
-        sessionId: 's-purge',
-        backend: 'codex',
-        backendSessionId: 'thread-purge',
-        contextSeq: 0,
-      });
-      await db.destroy();
-
-      const runtime = join(dataVolumeRoot, 'runners', 'p-purge');
-      const day = join(runtime, 'codex-sessions', '2026', '08', '18');
-      await mkdir(day, { recursive: true });
-      const rollout = join(day, 'rollout-2026-08-18T10-00-00-thread-purge.jsonl');
-      const strangerRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-other.jsonl');
-      await writeFile(rollout, '{"payload":{"id":"thread-purge"}}\n', 'utf8');
-      await writeFile(strangerRollout, '{"payload":{"id":"thread-other"}}\n', 'utf8');
-
-      // `/work/.verity-sessions/agent-p1` is what the sandbox sees, and claude encodes
-      // exactly that into its directory name. A delete also resolves the VERITY session
-      // id, which is what a cold-started thread writes before any binding row lands.
-      const claudeDir = join(runtime, 'claude', 'projects', '-work--verity-sessions-agent-p1');
-      await mkdir(join(claudeDir, 's-purge', 'subagents'), { recursive: true });
-      const transcript = join(claudeDir, 's-purge.jsonl');
-      const subagent = join(claudeDir, 's-purge', 'subagents', 'agent-1.jsonl');
-      await writeFile(transcript, '{}\n', 'utf8');
-      await writeFile(subagent, '{}\n', 'utf8');
-
-      // Deletion must fence launches through the runner even before a home exists.
-      supervisor = createServer((peer) => {
-        peer.once('data', (data) => {
-          deletionRequests.push(JSON.parse(data.toString('utf8').trim()));
-          peer.end(`${JSON.stringify({ ok: true })}\n`);
+        const db = createEmbeddedDb(dataDir);
+        await migrateToLatest(db);
+        const store = new EventStore(db);
+        await store.upsertProject({
+          id: 'p-purge',
+          kind: controlPlaneRunner ? 'control_plane' : 'github',
+          owner: 'Heey-Global',
+          repo: 'Verity',
+          containerName: 'dev-heey-global--verity',
+          state: 'active',
         });
-      });
-      await new Promise<void>((resolve) =>
-        supervisor!.listen(join(runtime, 'supervisor.sock'), resolve),
-      );
-      server = await buildTestEmbeddedServer({ dataDir, dataVolumeRoot, hostCloneRoot });
-      const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
-      expect(res.statusCode).toBe(200);
+        await store.createSession({
+          sessionId: 's-purge',
+          worktree,
+          model: 'codex/default',
+          projectId: 'p-purge',
+        });
+        await store.upsertSessionBackendState({
+          sessionId: 's-purge',
+          backend: 'codex',
+          backendSessionId: 'thread-purge',
+          contextSeq: 0,
+        });
+        await db.destroy();
 
-      expect(deletionRequests).toContainEqual(
-        expect.objectContaining({ kind: 'delete-session-home', sessionId: 's-purge' }),
-      );
-      expect(existsSync(rollout)).toBe(false);
-      expect(existsSync(transcript)).toBe(false);
-      // The subagent tree goes with the session directory it sits in — it is the only
-      // copy Verity ever has of that conversation.
-      expect(existsSync(subagent)).toBe(false);
-      // Scoped to this session's own ids: another session's rollout in the same archive
-      // is untouched.
-      expect(existsSync(strangerRollout)).toBe(true);
-    } finally {
-      await server?.close();
-      server = undefined;
-      if (supervisor)
-        await new Promise<void>((resolve, reject) =>
-          supervisor!.close((error) => (error ? reject(error) : resolve())),
+        const runtime = join(
+          dataVolumeRoot,
+          'runners',
+          controlPlaneRunner ? 'verity-control' : 'p-purge',
         );
-      rmSync(root, { recursive: true, force: true });
-    }
-  }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
+        if (layout === 'control-unreachable')
+          await mkdir(join(dataVolumeRoot, 'runners', 'p-purge'), { recursive: true });
+        const day = join(runtime, 'codex-sessions', '2026', '08', '18');
+        await mkdir(day, { recursive: true });
+        const rollout = join(day, 'rollout-2026-08-18T10-00-00-thread-purge.jsonl');
+        const strangerRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-other.jsonl');
+        await writeFile(rollout, '{"payload":{"id":"thread-purge"}}\n', 'utf8');
+        await writeFile(strangerRollout, '{"payload":{"id":"thread-other"}}\n', 'utf8');
+
+        // `/work/.verity-sessions/agent-p1` is what the sandbox sees, and claude encodes
+        // exactly that into its directory name. A delete also resolves the VERITY session
+        // id, which is what a cold-started thread writes before any binding row lands.
+        const claudeDir = join(runtime, 'claude', 'projects', '-work--verity-sessions-agent-p1');
+        await mkdir(join(claudeDir, 's-purge', 'subagents'), { recursive: true });
+        const transcript = join(claudeDir, 's-purge.jsonl');
+        const subagent = join(claudeDir, 's-purge', 'subagents', 'agent-1.jsonl');
+        await writeFile(transcript, '{}\n', 'utf8');
+        await writeFile(subagent, '{}\n', 'utf8');
+
+        // Deletion must fence launches through the runner even before a home exists.
+        supervisor = createServer((peer) => {
+          peer.once('data', (data) => {
+            deletionRequests.push(JSON.parse(data.toString('utf8').trim()));
+            peer.end(`${JSON.stringify({ ok: true })}\n`);
+          });
+        });
+        await new Promise<void>((resolve) =>
+          supervisor!.listen(join(runtime, 'supervisor.sock'), resolve),
+        );
+        server = await buildTestEmbeddedServer({
+          dataDir,
+          dataVolumeRoot,
+          hostCloneRoot,
+          controlPlaneRunner,
+        });
+        const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
+        expect(res.statusCode).toBe(200);
+
+        expect(deletionRequests).toContainEqual(
+          expect.objectContaining({ kind: 'delete-session-home', sessionId: 's-purge' }),
+        );
+        expect(existsSync(rollout)).toBe(false);
+        expect(existsSync(transcript)).toBe(false);
+        // The subagent tree goes with the session directory it sits in — it is the only
+        // copy Verity ever has of that conversation.
+        expect(existsSync(subagent)).toBe(false);
+        // Scoped to this session's own ids: another session's rollout in the same archive
+        // is untouched.
+        expect(existsSync(strangerRollout)).toBe(true);
+      } finally {
+        await server?.close();
+        server = undefined;
+        if (supervisor)
+          await new Promise<void>((resolve, reject) =>
+            supervisor!.close((error) => (error ? reject(error) : resolve())),
+          );
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  ); // A full embedded DB migration can exceed the shared CI timeout.
 
   it('returns PR status for a project worktree when the global repoDir is disabled', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-project-pr-'));
