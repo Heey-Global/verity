@@ -1,6 +1,6 @@
 /* global URL, document, window, history */
 const HOME = 'https://verity.build';
-const PERMISSIONS = /* manifest-permissions */ {"actions":"write","checks":"read","contents":"write","issues":"write","metadata":"read","packages":"read","pull_requests":"write","workflows":"write"};
+const PERMISSIONS = /* manifest-permissions */ {"actions":"write","checks":"read","contents":"write","issues":"write","metadata":"read","packages":"read","pull_requests":"write","statuses":"read","workflows":"write"};
 
 function hasExactKeys(value, keys) {
   return Object.keys(value).sort().join(',') === [...keys].sort().join(',');

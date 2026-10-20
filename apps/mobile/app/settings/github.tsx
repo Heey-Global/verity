@@ -1,3 +1,4 @@
+import { GithubPermissionNotice } from '../../components/GithubPermissionNotice';
 // GitHub: the three things that have to be true before Verity can work on a
 // repository on the operator's behalf — access to it, an author to commit as,
 // and a signing key GitHub recognises.
@@ -93,6 +94,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
       }}
     >
       <SettingsGroup title="Repository">
+        {connected ? <GithubPermissionNotice client={client} /> : null}
         <SettingsDisclosure
           title="GitHub connection"
           icon="github"

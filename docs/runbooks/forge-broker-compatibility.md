@@ -122,3 +122,29 @@ fallback to broader credentials. If GitHub denies issuance, verify the App and
 installation grants from a trusted administrative context before requesting approval.
 All routes remain bound to the project repository. Protection/ruleset mutations
 remain denied. Installation grants and deployed behavior require live verification.
+
+### Commit-status access for existing installations
+
+New web and mobile onboarding manifests request `statuses: read` (GitHub's
+**Commit statuses: Read-only** repository permission). This grant is used only
+by the separate diagnostic token; ordinary project tokens and credential
+validation do not require it.
+
+Updating Verity does not change an existing GitHub App or installation grant.
+To enable commit-status diagnostics for an existing installation:
+
+1. As an App owner or manager, open the GitHub App's **Permissions & events**
+   settings, set **Repository permissions → Commit statuses** to **Read-only**,
+   and save the change.
+2. As the installation owner, review and approve the updated permissions in
+   the installed App's settings. Keep the existing repository selection.
+3. From a trusted administrative context, verify the installation's
+   `permissions.statuses` is `read` (or `write`) using GitHub's installation API,
+   then retry `gh api repos/OWNER/REPO/commits/REF/status` from the session.
+
+A generic `forge broker request rejected` response does not prove which grant
+is missing. Installation metadata is not exposed through the session's
+repository-bound broker; inspect it using administrator credentials outside the
+session. A successful check-run query does not verify commit-status access.
+
+See GitHub's [updated permission approval guide](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app).
