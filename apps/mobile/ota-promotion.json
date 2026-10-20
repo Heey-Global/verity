@@ -1,15 +1,19 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.74.3",
+  "runtime": "1.74.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "357d2e9cee225faf5317dab96b4b55fff765b1a8",
+  "tag": "mobile-v1.74.3",
+  "branch": "staging-mobile-v1.74.3-357d2e9cee225faf5317dab96b4b55fff765b1a8",
+  "baseline": "mobile-v1.74.0",
+  "group": "d5ca726e-ab92-43c9-9117-0abe03c79dc5",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "explain and recover missing commit-status permissions (#1737)",
+    "remove the load earlier history button (#1735)",
+    "remove session settings header menu (#1714)",
+    "bound session history loading and expose recovery (#1713)",
+    "keep the web app alive on plain-http origins without randomUUID (#1705)",
+    "open the homepage with the three promises behind the headline (#1694)"
   ]
 }
