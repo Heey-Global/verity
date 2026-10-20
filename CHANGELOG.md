@@ -6,6 +6,13 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.51.6](https://github.com/Heey-Global/verity/compare/v4.51.5...v4.51.6) (2026-10-20)
+
+
+### Bug Fixes
+
+* **server:** restore Codex rollouts under the name Codex resumes ([#1728](https://github.com/Heey-Global/verity/issues/1728)) ([3f0f259](https://github.com/Heey-Global/verity/commit/3f0f259404b9a3d9b958b3f1b38e186b6f1c9ff1))
+
 ## [4.51.5](https://github.com/Heey-Global/verity/compare/v4.51.4...v4.51.5) (2026-10-19)
 
 
