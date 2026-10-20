@@ -1,6 +1,8 @@
 import type { Dirent } from 'node:fs';
 import { open, readdir, rename, rm, stat } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { basename, join, sep } from 'node:path';
+import { sessionHomePath } from './session-home.js';
+import { migrateSessionArtifact } from './session-home-migration.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   restoreIfMissing,
@@ -37,6 +39,7 @@ export interface ServerTranscriptOptions {
   /** Server-side host path of the runner-runtime dir: `<dataVolumeRoot>/runners/<projectId>`.
    * The worker sees the same storage at `/run/verity-runner`. */
   runtimeDir: string;
+  veritySessionId?: string;
   /** The durable verbatim transcript store (the same one the in-process path uses). */
   transcript: TranscriptStore;
   /** Tail poll interval (ms); defaults to the transport's own default. */
@@ -56,7 +59,12 @@ export class ServerTranscript implements RunnerTranscriptSink {
     return transcriptPath({
       cwd,
       sessionId,
-      claudeHome: join(this.options.runtimeDir, RUNNER_CLAUDE_HOME_DIRNAME),
+      claudeHome: join(
+        this.options.veritySessionId
+          ? sessionHomePath(this.options.runtimeDir, this.options.veritySessionId)
+          : this.options.runtimeDir,
+        RUNNER_CLAUDE_HOME_DIRNAME,
+      ),
     });
   }
 
@@ -66,6 +74,19 @@ export class ServerTranscript implements RunnerTranscriptSink {
     storeSessionId: string,
   ): Promise<number> {
     const file = this.transcriptFile(backendSessionId, cwd);
+    if (this.options.veritySessionId) {
+      const legacy = transcriptPath({
+        cwd,
+        sessionId: backendSessionId,
+        claudeHome: join(this.options.runtimeDir, RUNNER_CLAUDE_HOME_DIRNAME),
+      });
+      await migrateSessionArtifact(legacy, file, this.options.runtimeDir);
+      await migrateSessionArtifact(
+        legacy.replace(/\.jsonl$/u, ''),
+        file.replace(/\.jsonl$/u, ''),
+        this.options.runtimeDir,
+      );
+    }
     await restoreIfMissing(this.options.transcript, storeSessionId, file, {
       rootDir: this.options.runtimeDir,
     });
@@ -261,7 +282,13 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
   constructor(private readonly options: ServerTranscriptOptions) {}
 
   private sessionsDir(): string {
-    return join(this.options.runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME);
+    return this.options.veritySessionId
+      ? join(
+          sessionHomePath(this.options.runtimeDir, this.options.veritySessionId),
+          'codex',
+          'sessions',
+        )
+      : join(this.options.runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME);
   }
 
   private restoredFile(sessionId: string): string {
@@ -274,6 +301,14 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
     storeSessionId: string,
   ): Promise<number> {
     void _cwd;
+    if (this.options.veritySessionId) {
+      for (const legacy of await codexRolloutFiles(this.options.runtimeDir, backendSessionId))
+        await migrateSessionArtifact(
+          legacy,
+          join(this.sessionsDir(), 'legacy', basename(legacy)),
+          this.options.runtimeDir,
+        );
+    }
     await migrateLegacyRestoredCodexFile(this.sessionsDir(), backendSessionId);
     const existing = await findCodexRollout(this.sessionsDir(), backendSessionId);
     const file = existing ?? this.restoredFile(backendSessionId);

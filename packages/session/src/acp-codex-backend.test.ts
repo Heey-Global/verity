@@ -100,6 +100,7 @@ function acpSpawner(
     loadError?: { code: number; message: string; data?: unknown };
     /** Answer `session/prompt` with this JSON-RPC error instead. */
     promptError?: { code: number; message: string; data?: unknown };
+    updatesBeforePromptError?: Record<string, unknown>[];
     /** Answer `session/new` without the `model` config option, as an adapter
      *  build that does not expose it would. */
     withoutModelOption?: boolean;
@@ -256,6 +257,13 @@ function acpSpawner(
                   : {},
             });
           } else if (method === 'session/prompt' && behavior.promptError !== undefined) {
+            for (const update of behavior.updatesBeforePromptError ?? []) {
+              push({
+                jsonrpc: '2.0',
+                method: 'session/update',
+                params: { sessionId: 'codex-session-existing', update },
+              });
+            }
             push({ jsonrpc: '2.0', id, error: behavior.promptError });
           } else if (method === 'session/prompt' && behavior.cancel !== undefined) {
             push({
@@ -1522,11 +1530,45 @@ describe('AcpCodexBackend', () => {
       worktree: '/work/project',
       cwd: '/work/project',
       prompt: 'Continue',
+      env: {},
       spawner: fake.spawner,
     });
-    expect(result.stderr.split('\n')).toContain(
-      'Internal error: thread not found: codex-session-existing',
-    );
+    expect(result.stderr).toBe('\nInternal error: thread not found: codex-session-existing');
+  });
+
+  it('retains replay protection after tool execution followed by a capacity fragment and missing-thread error', async () => {
+    const fake = acpSpawner({
+      updatesBeforePromptError: [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'side-effect',
+          title: 'Write file',
+          kind: 'execute',
+          status: 'completed',
+        },
+        {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Selected model is at capacity.' },
+        },
+      ],
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      env: {},
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.executionObserved).toBe(true);
+    expect(result.staleResume).not.toBe(true);
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {

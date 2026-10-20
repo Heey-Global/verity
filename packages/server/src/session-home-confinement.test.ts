@@ -1,0 +1,130 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterAll, beforeAll, expect, it } from 'vitest';
+
+let root: string;
+let binary: string;
+beforeAll(async () => {
+  root = await realpath(await mkdtemp(join(tmpdir(), 'verity-confinement-')));
+  binary = join(root, 'sandbox');
+  const compile = spawnSync(
+    'cc',
+    [
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-O2',
+      resolve('features/verity-sandbox-toolkit/bin/verity-script-sandbox.c'),
+      '-o',
+      binary,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(compile.status, compile.stderr).toBe(0);
+  for (const name of ['work', 'home', 'sibling', 'knowledge/insights'])
+    await mkdir(join(root, name), { recursive: true });
+  await writeFile(join(root, 'sibling/private'), 'foreign');
+  await writeFile(join(root, 'knowledge/source'), 'reference');
+});
+afterAll(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+function run(extra: string[], script: string, forceMount = false, planning = false) {
+  return spawnSync(
+    binary,
+    [
+      '--root',
+      join(root, 'work'),
+      '--cwd',
+      join(root, 'work'),
+      '--loading',
+      'dynamic',
+      '--dynamic-root',
+      join(root, 'home'),
+      planning ? '--read-only-root' : '--write-isolated',
+      ...extra,
+      '--',
+      '/bin/sh',
+      '-c',
+      script,
+    ],
+    {
+      env: { ...process.env, VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: forceMount ? '1' : '0' },
+      encoding: 'utf8',
+      timeout: 10000,
+    },
+  );
+}
+
+for (const forceMount of [false, true]) {
+  it(`confines native processes and descendants (forced mounts: ${String(forceMount)})`, (context) => {
+    const probe = run([], 'exit 0', forceMount);
+    if (probe.status !== 0) {
+      // Unsupported kernels/container policies are environmental limitations, not passing isolation tests.
+      expect(probe.stderr).toMatch(
+        /verity-script-sandbox: (unshare user namespace|unshare mount namespace|landlock_create_ruleset|landlock_restrict_self|Wiki isolation requires Landlock ABI 3).*?(Operation not permitted|Function not implemented|Operation not supported)/s,
+      );
+      console.warn(
+        `Confinement unavailable (${forceMount ? 'mount namespaces' : 'Landlock/default'}): ${probe.stderr.trim()}`,
+      );
+      context.skip();
+      return;
+    }
+    const script = `set -eu
+printf own > '${root}/home/state'
+printf changed > '${root}/work/result'
+test "$(cat '${root}/knowledge/source')" = reference
+ls '${root}/knowledge' >/dev/null
+printf insight > '${root}/knowledge/insights/note'
+if cat '${root}/sibling/private' 2>/dev/null; then exit 21; fi
+if /bin/sh -c "cat '${root}/sibling/private'" 2>/dev/null; then exit 22; fi
+if printf bad > '${root}/knowledge/source' 2>/dev/null; then exit 23; fi
+if printf bad > '${root}/sibling/new' 2>/dev/null; then exit 24; fi
+`;
+    const result = run(
+      ['--read-root', join(root, 'knowledge'), '--write-root', join(root, 'knowledge/insights')],
+      script,
+      forceMount,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    // Guard: the same workflow needs the new roots; an unextended helper/policy fails.
+    expect(run([], script, forceMount).status).not.toBe(0);
+  });
+}
+
+it('keeps planning worktree read-only while allowing scoped runtime and insights writes', (context) => {
+  const extra = [
+    '--read-root',
+    join(root, 'knowledge'),
+    '--write-root',
+    join(root, 'knowledge/insights'),
+  ];
+  const probe = run([], 'exit 0', true, true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  const result = run(
+    extra,
+    `set -eu
+printf planning > '${root}/home/planning'
+printf planning > '${root}/knowledge/insights/planning'
+if printf bad > '${root}/work/new' 2>/dev/null; then exit 25; fi
+`,
+    true,
+    true,
+  );
+  expect(result.status, result.stderr).toBe(0);
+});
+
+it('rejects relative roots and symbolic links before launching', async () => {
+  await symlink(join(root, 'knowledge'), join(root, 'link'));
+  for (const path of ['relative', join(root, 'link'), join(root, 'link/insights')]) {
+    const result = run(['--read-root', path], 'exit 0');
+    expect(result.status).toBe(126);
+    expect(result.stderr).toMatch(/invalid secret path|invalid runtime root|symbolic links/);
+  }
+});

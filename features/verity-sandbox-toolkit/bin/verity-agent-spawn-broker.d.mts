@@ -104,7 +104,11 @@ export function agentLaunchSpec(
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
 
 export function materializeManagedAgentHome(
-  request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp'; planning?: boolean },
+  request: {
+    command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
+    planning?: boolean;
+    sessionEnv?: Record<string, string>;
+  },
   options: AgentSpawnBrokerOptions,
   connectorUrl: string,
 ): Promise<{ home: string; cleanup(): Promise<void> }>;
@@ -238,3 +242,9 @@ export function runAgentSpawnBroker(options: AgentSpawnBrokerOptions): Promise<{
 }>;
 
 export function probeAgentSpawnBroker(controlDir?: string, timeoutMs?: number): Promise<boolean>;
+
+export function sessionHomePath(runtimeDir: string, sessionId: string): string;
+export function prepareSessionHome(
+  sessionId: string,
+  options: AgentSpawnBrokerOptions,
+): Promise<string>;

@@ -363,10 +363,11 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
     fail("mount proc");
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
 
-  bind_into(sandbox, root, !isolate_writes);
-  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, isolate_writes == 2 || !isolate_writes);
+  bind_into(sandbox, root, isolate_writes != 2);
+  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, 1);
   for (int i = 0; i < secret_count; i++)
-    bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root"));
+    bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root") ||
+               !strcmp(secret_paths[i * 2 - 1], "--write-root"));
   if (chroot(sandbox) < 0) fail("chroot");
   if (chdir("/") < 0) fail("chdir sandbox root");
   if (write(cleanup[1], "x", 1) != 1) fail("clean sandbox root");
@@ -418,7 +419,9 @@ static void isolate_reads(const char *root, const char *dynamic_root, char **sec
   if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights | (isolate_writes ? write_rights : 0));
   for (int i = 0; i < secret_count; i++)
     allow_path(ruleset, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root")
-      ? rights | write_rights : LANDLOCK_ACCESS_FS_READ_FILE);
+      ? rights | write_rights :
+      !strcmp(secret_paths[i * 2 - 1], "--write-root") ? rights | write_rights :
+      !strcmp(secret_paths[i * 2 - 1], "--read-root") ? rights : LANDLOCK_ACCESS_FS_READ_FILE);
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
   if (syscall(SYS_landlock_restrict_self, ruleset, 0) < 0) fail("landlock_restrict_self");
   close(ruleset);
@@ -435,7 +438,7 @@ int main(int argc, char **argv) {
   }
   if (argc < 9 || strcmp(argv[1], "--root") || strcmp(argv[3], "--cwd") ||
       strcmp(argv[5], "--loading")) {
-    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH|--runtime-root PATH] -- COMMAND\n",
+    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH|--runtime-root PATH|--read-root PATH|--write-root PATH] -- COMMAND\n",
           stderr);
     return 126;
   }
@@ -472,14 +475,24 @@ int main(int argc, char **argv) {
   }
   int secret_start = command;
   while (command + 1 < argc && (!strcmp(argv[command], "--secret") ||
+      !strcmp(argv[command], "--read-root") ||
+      (isolate_writes && !strcmp(argv[command], "--write-root")) ||
       (isolate_writes == 2 && !strcmp(argv[command], "--runtime-root")))) {
     if (argv[command + 1][0] != '/') { errno = EINVAL; fail("invalid secret path"); }
     /* Validate private runtime storage after dropping to its owning identity;
        the broker cannot traverse agent-owned 0700 transcript parents. */
-    if (!strcmp(argv[command], "--runtime-root")) {
+    if (strcmp(argv[command], "--secret")) {
       struct stat metadata;
       if (lstat(argv[command + 1], &metadata) < 0) fail("stat runtime root");
       if (!S_ISDIR(metadata.st_mode)) { errno = EINVAL; fail("invalid runtime root"); }
+      char resolved[PATH_MAX];
+      if (strcmp(argv[command], "--runtime-root")) {
+        if (realpath(argv[command + 1], resolved) == NULL) fail("resolve runtime root");
+        if (strcmp(resolved, argv[command + 1])) {
+          errno = EINVAL;
+          fail("runtime root must be canonical and contain no symbolic links");
+        }
+      }
     }
     command += 2;
   }

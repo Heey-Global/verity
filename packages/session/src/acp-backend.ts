@@ -672,6 +672,8 @@ export async function runAcpTurn(
   // between accepting a prompt and the agent's first token gets it answered a
   // turn later instead of killing the session.
   let turnHasAgentContent = false;
+  // Replay safety is monotonic, unlike the steering/capacity classifier.
+  let executionObserved = false;
   opts.onSteer?.((message) => {
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === undefined) return false;
     sendSteering(message);
@@ -882,6 +884,7 @@ export async function runAcpTurn(
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
           if (loadingSession || stopped) return Promise.resolve();
+          if (isAgentContent(params.update)) executionObserved = true;
           if (profile.telemetryBackend === 'codex-acp') {
             // A provider refusal is not assistant content safe for steering.
             // Keep the channel closed until the ordered classifier accepts prose.
@@ -1456,7 +1459,8 @@ export async function runAcpTurn(
       stderr,
       aborted,
       ...(failedBeforeExecution ? { failedBeforeExecution: true as const } : {}),
-      ...(loadRefused && !aborted ? { staleResume: true as const } : {}),
+      ...(executionObserved ? { executionObserved: true as const } : {}),
+      ...(loadRefused && !aborted && !executionObserved ? { staleResume: true as const } : {}),
     };
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
