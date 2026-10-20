@@ -1063,18 +1063,18 @@ async function nativeStateRequest(request, options) {
 export async function prepareSessionHome(sessionId, options, migration) {
   const home = sessionHomePath(options.runtimeDir, sessionId);
   const marker = `${home}.deleted`;
-  if (
-    await lstat(marker).then(
-      () => true,
-      (error) => {
-        if (error.code === 'ENOENT') return false;
-        throw error;
-      },
-    )
-  )
-    throw new Error('session home has been deleted');
   const lease = sessionHomeLocks.has(home) ? undefined : await lockSessionHome(home, options);
   try {
+    if (
+      await lstat(marker).then(
+        () => true,
+        (error) => {
+          if (error.code === 'ENOENT') return false;
+          throw error;
+        },
+      )
+    )
+      throw new Error('session home has been deleted');
     const { uid, gid } = validateIdentity(options);
     await managedDirectory(
       join(options.runtimeDir, 'session-homes'),

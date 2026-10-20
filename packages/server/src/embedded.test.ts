@@ -1683,7 +1683,9 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       peer.on('data', (data) => {
         const frame = JSON.parse(data.toString('utf8').trim()) as Record<string, unknown>;
         if (frame['kind'] === 'status') {
-          peer.end(`${JSON.stringify({ ok: true, managedAgentConfig: true })}\n`);
+          peer.end(
+            `${JSON.stringify({ ok: true, managedAgentConfig: true, persistentSessionHomes: true })}\n`,
+          );
           return;
         }
         request = frame;
@@ -2057,7 +2059,9 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       peer.once('data', (data) => {
         const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
         if (frame['kind'] === 'status') {
-          peer.end(`${JSON.stringify({ ok: true, managedAgentConfig: true })}\n`);
+          peer.end(
+            `${JSON.stringify({ ok: true, managedAgentConfig: true, persistentSessionHomes: true })}\n`,
+          );
           return;
         }
         request = frame;
@@ -2420,6 +2424,8 @@ describe('buildEmbeddedServer', () => {
     // `embedded.ts` from the session row, so neither the route tests nor the resolver
     // tests can catch a wrong derivation — only a delete against a real layout can.
     const root = mkdtempSync(join(tmpdir(), 'verity-purge-wiring-'));
+    let supervisor: Server | undefined;
+    const deletionRequests: unknown[] = [];
     try {
       const dataDir = join(root, 'db');
       const dataVolumeRoot = join(root, 'data');
@@ -2469,10 +2475,23 @@ describe('buildEmbeddedServer', () => {
       await writeFile(transcript, '{}\n', 'utf8');
       await writeFile(subagent, '{}\n', 'utf8');
 
+      // Deletion must fence launches through the runner even before a home exists.
+      supervisor = createServer((peer) => {
+        peer.once('data', (data) => {
+          deletionRequests.push(JSON.parse(data.toString('utf8').trim()));
+          peer.end(`${JSON.stringify({ ok: true })}\n`);
+        });
+      });
+      await new Promise<void>((resolve) =>
+        supervisor!.listen(join(runtime, 'supervisor.sock'), resolve),
+      );
       server = await buildTestEmbeddedServer({ dataDir, dataVolumeRoot, hostCloneRoot });
       const res = await server.app.inject({ method: 'DELETE', url: '/sessions/s-purge' });
       expect(res.statusCode).toBe(200);
 
+      expect(deletionRequests).toContainEqual(
+        expect.objectContaining({ kind: 'delete-session-home', sessionId: 's-purge' }),
+      );
       expect(existsSync(rollout)).toBe(false);
       expect(existsSync(transcript)).toBe(false);
       // The subagent tree goes with the session directory it sits in — it is the only
@@ -2484,6 +2503,10 @@ describe('buildEmbeddedServer', () => {
     } finally {
       await server?.close();
       server = undefined;
+      if (supervisor)
+        await new Promise<void>((resolve, reject) =>
+          supervisor!.close((error) => (error ? reject(error) : resolve())),
+        );
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000); // A full embedded DB migration can exceed the shared CI timeout.
