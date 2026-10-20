@@ -2308,11 +2308,26 @@ export const SessionChat = memo(function SessionChat({
   loadOlderNearStartRef.current = requestOlderHistory;
   // With nothing visible there is no list to scroll, so older pages are fetched
   // until a message appears, the history ends, or a page fails (which shows its
-  // own retry). Each fetch is bounded, so this is a short, finite walk.
+  // own retry). A fetch that did not move the history cursor ends the walk, so a
+  // page that adds nothing cannot repeat for good; a bookmark jump in progress
+  // owns paging and is left alone.
   const showsNoMessages = loaded && messages.length === 0;
+  const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
   useEffect(() => {
-    if (showsNoMessages && hasOlder && !loadingOlder && !olderLoadStalled) void loadOlder();
-  }, [showsNoMessages, hasOlder, loadingOlder, olderLoadStalled, loadOlder]);
+    if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
+    if (pendingUserJump !== null) return;
+    if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
+    emptyPagingCursorRef.current = oldestHistorySeq ?? null;
+    void loadOlder();
+  }, [
+    showsNoMessages,
+    hasOlder,
+    loadingOlder,
+    olderLoadStalled,
+    pendingUserJump,
+    oldestHistorySeq,
+    loadOlder,
+  ]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
@@ -4495,7 +4510,9 @@ export const SessionChat = memo(function SessionChat({
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.emptyTitle}>
-            {hasOlder ? 'Loading earlier history…' : 'What should this session do?'}
+            {hasOlder && !olderLoadStalled
+              ? 'Loading earlier history…'
+              : 'What should this session do?'}
           </Text>
           <View style={styles.starterList}>
             <SessionStarterCard

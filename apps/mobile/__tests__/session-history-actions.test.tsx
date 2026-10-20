@@ -71,8 +71,12 @@ it('offers no manual control for loading earlier history', () => {
   expect(source).not.toContain('Load earlier history');
   expect(source).not.toMatch(/olderLoadNeedsContinuation/u);
   // With no visible message there is nothing to scroll, so paging must continue
-  // by itself; otherwise the history behind an empty tail is unreachable.
-  expect(source).toMatch(
-    /if \(showsNoMessages && hasOlder && !loadingOlder && !olderLoadStalled\) void loadOlder\(\);/u,
-  );
+  // by itself; otherwise the history behind an empty tail is unreachable. It
+  // must also stop when a fetch did not move the cursor, or it never ends.
+  const walk = source.slice(source.indexOf('const showsNoMessages'));
+  expect(walk).toMatch(/void loadOlder\(\)/u);
+  expect(
+    walk.indexOf('emptyPagingCursorRef.current === (oldestHistorySeq ?? null)'),
+  ).toBeGreaterThan(-1);
+  expect(walk.indexOf('pendingUserJump !== null')).toBeLessThan(walk.indexOf('void loadOlder()'));
 });
