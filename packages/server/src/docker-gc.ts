@@ -654,9 +654,14 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
   // --- Build cache ---------------------------------------------------------
   if (docker.pruneBuildCache !== undefined && policy.buildCacheMaxAgeMs !== undefined) {
     try {
-      report.buildCacheBytes = await docker.pruneBuildCache({
-        untilHours: Math.max(1, Math.round(policy.buildCacheMaxAgeMs / 3_600_000)),
-      });
+      // Under disk pressure the age cutoff would spare exactly the cache that
+      // filled the disk: a busy day of builds is all younger than three days.
+      // Unused cache only costs a slower next build, so drop all of it then.
+      report.buildCacheBytes = await docker.pruneBuildCache(
+        lowDisk
+          ? {}
+          : { untilHours: Math.max(1, Math.round(policy.buildCacheMaxAgeMs / 3_600_000)) },
+      );
     } catch (err) {
       errors.push({ resource: 'build cache', message: errorMessage(err) });
     }
@@ -698,6 +703,12 @@ const DAY_MS = 24 * 60 * 60_000;
  *  finish coming up (migrations, provisioner reconcile) before doing disk work. */
 const DOCKER_GC_BOOT_DELAY_MS = 5 * 60_000;
 
+/** How often free space is probed between the scheduled passes. */
+const DOCKER_GC_PRESSURE_CHECK_MS = 10 * 60_000;
+
+/** Minimum time between two passes started by low free space. */
+const DOCKER_GC_PRESSURE_MIN_SPACING_MS = 30 * 60_000;
+
 export interface DockerGcScheduler {
   stop(): void;
   /** Run one pass now (test seam; does not touch the timer). */
@@ -705,40 +716,71 @@ export interface DockerGcScheduler {
 }
 
 export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
+  const policy: DockerGcPolicy = { ...DEFAULT_DOCKER_GC_POLICY, ...deps.policy };
+  const now = deps.now ?? Date.now;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let pressureTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
   let running = false;
+  let lastPassAt: number | undefined;
 
-  const run = async (): Promise<void> => {
+  const pass = async (): Promise<void> => {
     if (running || stopped) return;
     running = true;
+    lastPassAt = now();
     try {
       await runDockerGc(deps);
     } catch (err) {
       deps.log.warn({ err }, 'docker gc pass failed');
     } finally {
       running = false;
-      scheduleDaily();
     }
+  };
+
+  const run = async (): Promise<void> => {
+    await pass();
+    scheduleDaily();
   };
 
   const scheduleDaily = (): void => {
     if (stopped) return;
-    const now = new Date(deps.now?.() ?? Date.now());
-    const next = new Date(now);
+    const current = new Date(now());
+    const next = new Date(current);
     next.setHours(DOCKER_GC_HOUR, 0, 0, 0);
-    if (next.getTime() <= now.getTime()) next.setTime(next.getTime() + DAY_MS);
-    timer = setTimeout(() => void run(), next.getTime() - now.getTime());
+    if (next.getTime() <= current.getTime()) next.setTime(next.getTime() + DAY_MS);
+    timer = setTimeout(() => void run(), next.getTime() - current.getTime());
     timer.unref?.();
+  };
+
+  // The daily pass alone let a day of builds fill the disk between two runs:
+  // nothing looked at free space until 04:00. Probe it on a short interval and
+  // run an extra pass once it drops below the low-disk threshold, spaced so a
+  // disk the pass cannot relieve does not keep the daemon busy.
+  const checkPressure = async (): Promise<void> => {
+    if (running || stopped || policy.lowDiskFreeBytes === undefined) return;
+    if (lastPassAt !== undefined && now() - lastPassAt < DOCKER_GC_PRESSURE_MIN_SPACING_MS) return;
+    const freeBytes =
+      deps.freeBytes !== undefined
+        ? await deps.freeBytes()
+        : deps.dataRoot !== undefined
+          ? await probeFreeBytes(deps.dataRoot)
+          : undefined;
+    if (freeBytes === undefined || freeBytes >= policy.lowDiskFreeBytes) return;
+    deps.log.warn({ freeBytes }, 'docker gc running early: free disk space is low');
+    await pass();
   };
 
   timer = setTimeout(() => void run(), DOCKER_GC_BOOT_DELAY_MS);
   timer.unref?.();
+  pressureTimer = setInterval(() => void checkPressure(), DOCKER_GC_PRESSURE_CHECK_MS);
+  pressureTimer.unref?.();
 
   return {
     stop: () => {
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
+      if (pressureTimer !== undefined) clearInterval(pressureTimer);
+      pressureTimer = undefined;
     },
     runOnce: () => runDockerGc(deps),
   };
