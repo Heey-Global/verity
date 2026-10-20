@@ -44,6 +44,14 @@ const CREATING_LEASE_MS = 2 * 60_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
+
+/** A replacement connector could not be brought up; the share has none. */
+class PreviewConnectorUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'PreviewConnectorUnavailableError';
+  }
+}
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
 export interface PreviewEdgeCreate {
@@ -795,8 +803,24 @@ export class PreviewShareManager {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
         if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.state === 'active') await this.replaceConnector(share, true);
-        else await this.stop(share.id);
+        if (share.state !== 'active') {
+          await this.stop(share.id);
+          continue;
+        }
+        try {
+          await this.replaceConnector(share, true);
+        } catch (error) {
+          if (!(error instanceof PreviewConnectorUnavailableError)) throw error;
+          // The offline page is a courtesy to visitors, not a precondition of the
+          // mutation. A connector the edge refuses (an unknown share answers 404)
+          // failed every Repair of the project before its container was created.
+          // replaceConnector has already removed both connectors, so the link is
+          // simply unreachable until reconcile() brings one up again.
+          this.options.log?.warn(
+            { shareId: share.id, projectId, err: error.cause },
+            'public preview stays unreachable during the project change: its offline connector did not start',
+          );
+        }
       }
       return mutation();
     });
@@ -1232,14 +1256,19 @@ export class PreviewShareManager {
     if (current?.state !== 'active') return;
     const project = await this.options.store.getProject(share.projectId);
     if (!project) return;
-    const id = await this.createConnector(
-      share,
-      project.containerName,
-      await this.resolveConnectorImage(),
-      staticMount,
-      undefined,
-      offline,
-    );
+    let id: string;
+    try {
+      id = await this.createConnector(
+        share,
+        project.containerName,
+        await this.resolveConnectorImage(),
+        staticMount,
+        undefined,
+        offline,
+      );
+    } catch (error) {
+      throw new PreviewConnectorUnavailableError(error);
+    }
     try {
       const updated = await this.options.store.transitionPublicPreviewShare(
         share.id,

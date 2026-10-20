@@ -1843,6 +1843,25 @@ describe('PreviewShareManager', () => {
     expect(mutation).toHaveBeenCalledOnce();
   });
 
+  it('still runs a project change when the edge refuses the offline connector', async () => {
+    // An edge that no longer knows the share rejects the tunnel upgrade, so the
+    // offline connector never logs readiness. That used to abort every Repair of
+    // the project before its sandbox was created.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue(
+      '{"event":"connect.failed","cause":"upgrade_rejected","statusCode":404}\n',
+    );
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+
+    expect(mutation).toHaveBeenCalledOnce();
+    // Neither the old nor the unready connector is left running.
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('old-connector');
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+  });
+
   it('takes a static share offline without starting an unmounted static server', async () => {
     const f = fixture();
     retainShare(f, {
