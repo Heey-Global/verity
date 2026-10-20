@@ -6,6 +6,16 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.51.7](https://github.com/Heey-Global/verity/compare/v4.51.6...v4.51.7) (2026-10-20)
+
+
+### Bug Fixes
+
+* **release:** recover missing server release planning ([#1730](https://github.com/Heey-Global/verity/issues/1730)) ([0a84f56](https://github.com/Heey-Global/verity/commit/0a84f56d151dfbea476494018798d1e940f78b35))
+* **server:** keep project repairs running when a preview share cannot be served or stopped ([#1734](https://github.com/Heey-Global/verity/issues/1734)) ([9c6f63b](https://github.com/Heey-Global/verity/commit/9c6f63bb4505b0f110eb259387f655234710ea11))
+* **server:** replace sandboxes whose stale gVisor filestore blocks start ([#1733](https://github.com/Heey-Global/verity/issues/1733)) ([e6b1576](https://github.com/Heey-Global/verity/commit/e6b157612d7fc14a94ecb5746ecd5925ff0c86c3))
+* **session:** recover Codex sessions whose thread Codex no longer finds ([#1732](https://github.com/Heey-Global/verity/issues/1732)) ([16ca3fa](https://github.com/Heey-Global/verity/commit/16ca3faaf26dfcfbd0278ad344de31531c08040f))
+
 ## [4.51.6](https://github.com/Heey-Global/verity/compare/v4.51.5...v4.51.6) (2026-10-20)
 
 
