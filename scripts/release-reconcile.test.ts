@@ -477,6 +477,15 @@ describe('missing Server Staging planning', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([replan]);
   });
+  it('recovers a release triggered by a server revert', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'revert(server): restore previous behavior',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
   it('recovers a release triggered only by a breaking footer', () => {
     const result = sweep({
       ...base,

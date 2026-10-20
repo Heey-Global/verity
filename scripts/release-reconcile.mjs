@@ -414,8 +414,9 @@ function reconcileBackendPlanning() {
       .split('\0')
       .some(
         (subject) =>
-          /^(?:feat|fix|perf)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(subject.trimStart()) ||
-          /^BREAKING[ -]CHANGE: /m.test(subject),
+          /^(?:feat|fix|perf|revert)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(
+            subject.trimStart(),
+          ) || /^BREAKING[ -]CHANGE: /m.test(subject),
       )
   ) {
     notes.push('Server planning: no releasable Server commits since the published boundary.');
