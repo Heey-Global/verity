@@ -2894,6 +2894,16 @@ describe('VerityClient.secret store', () => {
 });
 
 describe('VerityClient.validateGithubApp (#320)', () => {
+  it('preserves the permission diagnosis and GitHub action URL', async () => {
+    const commitStatusPermission = {
+      state: 'approval_required',
+      url: 'https://github.com/settings/installations/123',
+    };
+    const { fetch } = fakeFetch(json({ ok: true, commitStatusPermission }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.validateGithubApp()).toEqual({ ok: true, commitStatusPermission });
+  });
+
   it('POSTs to /github/app/validate and parses a success result', async () => {
     const { fetch, calls } = fakeFetch(json({ ok: true, accountLogin: 'acme-org' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

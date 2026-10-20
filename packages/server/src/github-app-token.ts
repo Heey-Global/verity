@@ -1,3 +1,7 @@
+import {
+  checkCommitStatusPermission,
+  type CommitStatusPermission,
+} from './github-permission-check.js';
 import { createSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
@@ -11,6 +15,7 @@ import type { HttpFetch } from './github.js';
  *  message, never a GitHub response body (those can echo the signed JWT). */
 export interface GitHubAppValidateResult {
   ok: boolean;
+  commitStatusPermission?: CommitStatusPermission;
   /** SAFE confirmation on success: the installation account login (e.g. an org or
    *  user handle). Absent when GitHub omits it. Never a token/PEM. */
   accountLogin?: string;
@@ -446,6 +451,13 @@ export async function validateGitHubAppCreds(
   const login = body.account?.login;
   return {
     ok: true,
+    commitStatusPermission: await checkCommitStatusPermission(
+      doFetch,
+      apiBaseUrl,
+      jwt,
+      creds.installationId,
+      timeoutMs,
+    ),
     ...(typeof login === 'string' && login.length > 0 ? { accountLogin: login } : {}),
   };
 }

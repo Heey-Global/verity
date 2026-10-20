@@ -1268,6 +1268,12 @@ export type WelcomeSession = z.infer<typeof welcomeSessionSchema>;
  *  redacted failure message (`'locked'` when the store is sealed, `'not configured'`
  *  when creds are missing). The server NEVER returns the token or PEM here. */
 export const githubAppValidateSchema = z.object({
+  commitStatusPermission: z
+    .object({
+      state: z.enum(['ready', 'app_update_required', 'approval_required', 'unknown']),
+      url: z.string().url().optional(),
+    })
+    .optional(),
   ok: z.boolean(),
   accountLogin: z.string().optional(),
   error: z.string().optional(),

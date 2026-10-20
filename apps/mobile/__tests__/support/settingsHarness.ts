@@ -246,6 +246,9 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     throw new Error(`unexpected client.${name} call`);
   };
   const client: Record<string, unknown> = {
+    validateGithubApp: jest
+      .fn()
+      .mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),

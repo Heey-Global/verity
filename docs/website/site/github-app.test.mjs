@@ -17,7 +17,7 @@ const manifest = {
   public: false,
   default_permissions: {
     contents: 'write', pull_requests: 'write', checks: 'read', actions: 'write', workflows: 'write',
-    issues: 'write', metadata: 'read', packages: 'read',
+    issues: 'write', metadata: 'read', packages: 'read', statuses: 'read',
   },
   default_events: [],
 };
@@ -60,6 +60,16 @@ test('rejects a manifest with broader permissions or a web callback', () => {
   assert.throws(() => parseLaunchFragment(fragment({ manifest: {
     ...manifest, callback_urls: ['https://example.com/collect'],
   } })));
+});
+
+test('requires read-only commit-status access in the launch manifest', () => {
+  for (const statuses of [undefined, 'write']) {
+    const permissions = { ...manifest.default_permissions, statuses };
+    if (statuses === undefined) delete permissions.statuses;
+    assert.throws(() => parseLaunchFragment(fragment({ manifest: {
+      ...manifest, default_permissions: permissions,
+    } })));
+  }
 });
 
 test('bridge CSP sends forms only to GitHub and never sends a referrer', () => {
