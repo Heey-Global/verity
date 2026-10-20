@@ -486,6 +486,15 @@ describe('missing Server Staging planning', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([replan]);
   });
+  it('recovers a release triggered by a squash body entry', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'chore: maintenance\n\nfix(server): correct storage',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
   it('recovers a release triggered only by a breaking footer', () => {
     const result = sweep({
       ...base,

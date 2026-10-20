@@ -414,7 +414,7 @@ function reconcileBackendPlanning() {
       .split('\0')
       .some(
         (subject) =>
-          /^(?:feat|fix|perf|revert)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(
+          /^(?:feat|fix|perf|revert)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/m.test(
             subject.trimStart(),
           ) || /^BREAKING[ -]CHANGE: /m.test(subject),
       )
