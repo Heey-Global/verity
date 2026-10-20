@@ -2314,6 +2314,10 @@ export const SessionChat = memo(function SessionChat({
   const showsNoMessages = loaded && messages.length === 0;
   const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
   useEffect(() => {
+    // A reload starts a fresh walk.
+    if (!loaded) emptyPagingCursorRef.current = undefined;
+  }, [loaded]);
+  useEffect(() => {
     if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
     if (pendingUserJump !== null) return;
     if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
@@ -4510,9 +4514,7 @@ export const SessionChat = memo(function SessionChat({
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.emptyTitle}>
-            {hasOlder && !olderLoadStalled
-              ? 'Loading earlier history…'
-              : 'What should this session do?'}
+            {loadingOlder ? 'Loading earlier history…' : 'What should this session do?'}
           </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
