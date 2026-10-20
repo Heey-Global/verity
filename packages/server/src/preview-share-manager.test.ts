@@ -19,6 +19,7 @@ import {
   PreviewShareInputError,
   PreviewShareManager,
   PreviewShareNotFoundError,
+  PreviewShareRemovalQueuedError,
   type PreviewShareManagerOptions,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
@@ -1245,6 +1246,61 @@ describe('PreviewShareManager', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
+  it('completes a stop whose Uplink removal is queued for later', async () => {
+    // The removal is persisted and retried when the Uplink connects. Failing the
+    // stop instead left the share revoking for the whole outage: stopping it
+    // answered 500, and every Repair of its project aborted on it.
+    const { manager, edge, store, log } = fixture();
+    edge.remove.mockRejectedValueOnce(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await expect(manager.stop('share-id')).resolves.toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ uplinkRemoveMs: null, uplinkRemoveQueued: true }),
+      'public preview share stop incomplete',
+    );
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      'share-id',
+      ['revoking'],
+      'revoked',
+      expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  it('finishes a share left revoking during an Uplink outage without anyone stepping in', async () => {
+    // Shares stopped while the Uplink was unreachable stayed `revoking`, and
+    // the periodic reconcile retried them every pass without ever finishing.
+    // Their project then refused every Repair until an operator edited the row.
+    const f = fixture();
+    const current = retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await f.manager.reconcile();
+
+    expect(current().state).not.toBe('revoking');
+    expect(['revoked', 'expired']).toContain(current().state);
+  });
+
+  it('runs a project change past a share left revoking during an Uplink outage', async () => {
+    const f = fixture();
+    retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(new PreviewShareRemovalQueuedError('queued'));
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+  });
+
+  it('keeps the stop failing when the connector cannot be removed, even if the Uplink queued', async () => {
+    const { manager, docker, edge } = fixture();
+    docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+    edge.remove.mockRejectedValueOnce(new PreviewShareRemovalQueuedError('queued'));
+
+    await expect(manager.stop('share-id')).rejects.toThrow(/revocation did not complete/);
+  });
+
   it('keeps a failed revocation nonterminal so reconciliation retries it', async () => {
     const { manager, docker, edge, store } = fixture();
     docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
@@ -1841,6 +1897,41 @@ describe('PreviewShareManager', () => {
     expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
     await f.manager.withProjectMutation('p1', mutation);
     expect(mutation).toHaveBeenCalledOnce();
+  });
+
+  it('still runs a project change when the edge refuses the offline connector', async () => {
+    // An edge that no longer knows the share rejects the tunnel upgrade, so the
+    // offline connector never logs readiness. That used to abort every Repair of
+    // the project before its sandbox was created.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue(
+      '{"event":"connect.failed","cause":"upgrade_rejected","statusCode":404}\n',
+    );
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+
+    expect(mutation).toHaveBeenCalledOnce();
+    // Neither the old nor the unready connector is left running.
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('old-connector');
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+  });
+
+  it('aborts a project change when an unready offline connector cannot be removed', async () => {
+    // Skipping past it would leave a connector that collides by name with every
+    // connector reconcile tries to create for the share afterwards.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue('');
+    // The old connector goes first; removing the unready replacement fails.
+    f.docker.removeContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('removal failed'));
+    const mutation = vi.fn(async () => undefined);
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).rejects.toThrow('removal failed');
+    expect(mutation).not.toHaveBeenCalled();
   });
 
   it('takes a static share offline without starting an unmounted static server', async () => {
