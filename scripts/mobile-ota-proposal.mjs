@@ -54,7 +54,7 @@ const repository = () => {
 /** @template T @param {string[]} args @returns {T} */
 const api = (...args) => /** @type {T} */ (captureJson('gh', ['api', ...args]));
 /** @typedef {{tag_name: string, draft: boolean, prerelease: boolean, target_commitish?: string}} Release */
-/** @typedef {{number: number, merged_at: string | null, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+/** @typedef {{number: number, merged_at: string | null, merge_commit_sha?: string, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
 
 /**
  * @param {string} runtime
@@ -241,6 +241,18 @@ function mergedVersion(runtime) {
     throw new Error('OTA manifest and version marker differ');
   const commit = run('git', ['log', '-1', '--format=%H', '--', otaVersionPath]);
   const prs = /** @type {Pull[]} */ (api(`repos/${repository()}/commits/${commit}/pulls`));
+  // GitHub can omit commit associations even for a merged release PR.
+  if (prs.length === 0) {
+    const owner = repository().split('/')[0];
+    const pages = /** @type {Pull[][]} */ (
+      api(
+        '--paginate',
+        '--slurp',
+        `repos/${repository()}/pulls?state=closed&base=main&head=${owner}:release-please--branches--main--components--mobile-ota&per_page=100`,
+      )
+    );
+    prs.push(...pages.flat().filter((candidate) => candidate.merge_commit_sha === commit));
+  }
   const pr = prs.find(
     (pr) =>
       pr.merged_at &&
