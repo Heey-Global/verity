@@ -403,7 +403,7 @@ function reconcileBackendPlanning() {
     throw new Error('Invalid backend release exclusions');
   const commits = git(
     'log',
-    '--format=%s',
+    '--format=%B%x00',
     `${tag}..${head}`,
     '--',
     '.',
@@ -411,9 +411,11 @@ function reconcileBackendPlanning() {
   );
   if (
     !commits
-      .split('\n')
-      .some((subject) =>
-        /^(?:feat|fix|perf)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(subject),
+      .split('\0')
+      .some(
+        (subject) =>
+          /^(?:feat|fix|perf)(?:\([^)]*\))?!?:|^[a-z]+(?:\([^)]*\))?!:/.test(subject.trimStart()) ||
+          /^BREAKING[ -]CHANGE: /m.test(subject),
       )
   ) {
     notes.push('Server planning: no releasable Server commits since the published boundary.');

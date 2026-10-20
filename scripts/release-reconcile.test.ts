@@ -23,6 +23,7 @@ type Fixture = {
   promoteRuns?: Run[];
   ota?: boolean;
   backend?: boolean;
+  message?: string;
   native?: {
     path?: string;
     compatible?: boolean;
@@ -41,7 +42,7 @@ function sweep(fixture: Fixture) {
   git('config', 'user.email', 'test@example.invalid');
   git('config', 'user.name', 'Test');
   git('config', 'commit.gpgSign', 'false');
-  git('config', 'core.hooksPath', '/dev/null');
+  git('config', 'tag.gpgSign', 'false');
   // Assembled so the changed-area guard in ci-workflow.test.ts does not read
   // this fixture as a script consuming a release-managed file.
   const manifest = (train: string) =>
@@ -82,7 +83,7 @@ function sweep(fixture: Fixture) {
     else writeFileSync(join(cwd, nativePath), 'native change');
     git('add', '.');
     const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
-    execFileSync('git', ['commit', '-qm', 'feat(tasks): capture tasks'], {
+    execFileSync('git', ['commit', '-qm', fixture.message ?? 'feat(tasks): capture tasks'], {
       cwd,
       env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
@@ -473,6 +474,15 @@ describe('missing Server Staging planning', () => {
   const base = { backend: true, ota: false, releases };
   it('recovers a missing push plan', () => {
     const result = sweep({ ...base, native: { path: 'packages/server/src/example.ts' } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered only by a breaking footer', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'refactor(server): revise storage\n\nBREAKING CHANGE: storage format changed',
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([replan]);
   });
