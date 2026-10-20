@@ -1599,6 +1599,10 @@ function normalSessionRoots(options, agentPath) {
     }
   }
   for (const path of moduleRoots) roots.push('--read-root', path);
+  // Node reads this configuration before starting the ACP adapter.
+  // Keep the sibling TLS private-key directory outside the policy.
+  if (lstatSync('/etc/ssl/openssl.cnf', { throwIfNoEntry: false }))
+    roots.push('--secret', '/etc/ssl/openssl.cnf');
   // These files are selected by trusted container configuration, never turn input.
   for (const key of [
     'VERITY_FORGE_PROXY_CA_FILE',

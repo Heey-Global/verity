@@ -67,7 +67,7 @@ for (const forceMount of [false, true]) {
     if (probe.status !== 0) {
       // Unsupported kernels/container policies are environmental limitations, not passing isolation tests.
       expect(probe.stderr).toMatch(
-        /verity-script-sandbox: (unshare user namespace|unshare mount namespace|landlock_create_ruleset|landlock_restrict_self|Wiki isolation requires Landlock ABI 3).*?(Operation not permitted|Function not implemented|Operation not supported)/s,
+        /verity-script-sandbox: (unshare user namespace|unshare mount namespace|\/proc\/self\/(?:uid_map|gid_map)|disable setgroups|landlock_create_ruleset|landlock_restrict_self|Wiki isolation requires Landlock ABI 3).*?(Operation not permitted|Function not implemented|Operation not supported)/s,
       );
       console.warn(
         `Confinement unavailable (${forceMount ? 'mount namespaces' : 'Landlock/default'}): ${probe.stderr.trim()}`,
@@ -202,5 +202,32 @@ if touch '${packageRoot}/unexpected-write' 2>/dev/null; then exit 42; fi
   const result = run(extra, script, true);
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain('fixture-agent-output');
+  expect(run([], script, true).status).not.toBe(0);
+});
+
+it('starts Node with the system OpenSSL configuration under the normal policy', (context) => {
+  if (!existsSync('/etc/ssl/openssl.cnf')) {
+    context.skip('System OpenSSL configuration unavailable');
+    return;
+  }
+  const spec = agentLaunchSpec(
+    { command: 'codex-acp', args: [], cwd: join(root, 'work'), managedHome: join(root, 'home') },
+    { agentUid: process.getuid!(), agentGid: process.getgid!(), worktreeRoot: root, env: {} },
+  );
+  const index = spec.args.indexOf('/etc/ssl/openssl.cnf');
+  expect(index).toBeGreaterThan(0);
+  const extra = spec.args.slice(index - 1, index + 1);
+  expect(extra[0]).toBe('--secret');
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  const script = `set -e
+cat /etc/ssl/openssl.cnf >/dev/null
+OPENSSL_CONF=/etc/ssl/openssl.cnf ${process.execPath} -e 'console.log("node-started")'`;
+  const result = run(extra, script, true);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('node-started');
   expect(run([], script, true).status).not.toBe(0);
 });
