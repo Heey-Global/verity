@@ -22,6 +22,8 @@ type Fixture = {
   releaseRuns?: Run[];
   promoteRuns?: Run[];
   ota?: boolean;
+  backend?: boolean;
+  message?: string;
   native?: {
     path?: string;
     compatible?: boolean;
@@ -40,6 +42,7 @@ function sweep(fixture: Fixture) {
   git('config', 'user.email', 'test@example.invalid');
   git('config', 'user.name', 'Test');
   git('config', 'commit.gpgSign', 'false');
+  git('config', 'tag.gpgSign', 'false');
   // Assembled so the changed-area guard in ci-workflow.test.ts does not read
   // this fixture as a script consuming a release-managed file.
   const manifest = (train: string) =>
@@ -58,6 +61,12 @@ function sweep(fixture: Fixture) {
     mkdirSync(join(cwd, 'apps/mobile/plugins'), { recursive: true });
     writeFileSync(join(cwd, 'apps/mobile/plugins/capture.js'), 'native change');
   }
+  if (fixture.backend) {
+    writeFileSync(
+      join(cwd, 'release-please-config.backend.json'),
+      readFileSync(resolve('release-please-config.backend.json')),
+    );
+  }
   git('add', '.');
   const commitDate = fixture.approvedAt ?? approvedAt;
   execFileSync('git', ['commit', '-qm', 'chore(mobile): promote OTA 1.33.1'], {
@@ -65,7 +74,7 @@ function sweep(fixture: Fixture) {
     env: { ...process.env, GIT_AUTHOR_DATE: commitDate, GIT_COMMITTER_DATE: commitDate },
   });
   if (fixture.native) {
-    git('tag', 'mobile-v1.33.0');
+    git('tag', fixture.backend ? 'v1.2.3' : 'mobile-v1.33.0');
     const nativePath = fixture.native.rename
       ? 'capture.js'
       : (fixture.native.path ?? 'apps/mobile/plugins/capture.js');
@@ -74,7 +83,7 @@ function sweep(fixture: Fixture) {
     else writeFileSync(join(cwd, nativePath), 'native change');
     git('add', '.');
     const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
-    execFileSync('git', ['commit', '-qm', 'feat(tasks): capture tasks'], {
+    execFileSync('git', ['commit', '-qm', fixture.message ?? 'feat(tasks): capture tasks'], {
       cwd,
       env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
@@ -125,7 +134,7 @@ if (joined.includes('/git/ref/heads/main')) {
   rows.push({ ...pr('server', 900), labels: ['autorelease: tagged'] }, { ...pr('server', 901), merged_at: null });
   process.stdout.write(rows.map((row) => JSON.stringify(row)).join('\\n') + '\\n');
 } else if (joined.includes('/actions/workflows/release-dispatch.yml/runs?')) {
-  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, display_title: run.display_title === 'replan' ? 'Replan native mobile ' + process.env.RECONCILE_HEAD : run.display_title, html_url: 'https://runs.invalid/release/' + index }));
+  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, display_title: run.display_title === 'replan' ? (fixture.backend ? 'Replan server ' : 'Replan native mobile ') + process.env.RECONCILE_HEAD : run.display_title, html_url: 'https://runs.invalid/release/' + index }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-ota-promote.yml/runs?')) {
   const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/promote/' + index }));
@@ -456,5 +465,72 @@ describe('missing native Staging planning', () => {
     });
     expect(result.status).toBe(0);
     expect(result.dispatches).toEqual([replan]);
+  });
+});
+
+describe('missing Server Staging planning', () => {
+  const releases = [{ tag_name: 'v1.2.3' }];
+  const replan = 'workflow run release-dispatch.yml --ref main -f backend-replan=true';
+  const base = { backend: true, ota: false, releases };
+  it('recovers a missing push plan', () => {
+    const result = sweep({ ...base, native: { path: 'packages/server/src/example.ts' } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered by a server revert', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'revert(server): restore previous behavior',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered by a squash body entry', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'chore: maintenance\n\nfix(server): correct storage',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered only by a breaking footer', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'refactor(server): revise storage\n\nBREAKING CHANGE: storage format changed',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it.each([
+    { path: 'apps/mobile/app/example.tsx' },
+    { path: 'docs/website/example.md' },
+    { path: 'packages/server/src/example.ts', open: true },
+    { path: 'packages/server/src/example.ts', oldHead: true },
+    { path: 'packages/server/src/example.ts', mainMoved: true },
+    { path: 'packages/server/src/example.ts', recent: true },
+  ])('does not dispatch for excluded or changing state %j', (native) => {
+    const result = sweep({ ...base, native });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('waits for an active dispatcher', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      releaseRuns: [run({ status: 'queued' })],
+    });
+    expect(result.dispatches).toEqual([]);
+  });
+  it.each(['success', 'failure'])('does not loop after a %s plan', (conclusion) => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      releaseRuns: [run({ display_title: 'replan', conclusion })],
+    });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
   });
 });
