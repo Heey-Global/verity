@@ -197,7 +197,8 @@ services:
       # tagged, not dangling, and prune skips volumes altogether), which is why a
       # host can be full despite regular prunes. The GC runs daily at 04:00 (just
       # after the 03:00 sandbox auto-update, so it retires the tag that update
-      # superseded) plus once shortly after boot. It deletes superseded
+      # superseded), once shortly after boot, and early whenever free space
+      # falls below VERITY_DOCKER_GC_LOW_DISK_GB. It deletes superseded
       # `verity-devc-` images, old unused official Verity releases (keeping two
       # per repository), and old untagged images whose OCI source label proves
       # they came from Verity. Volumes must be dangling AND carry the
@@ -213,9 +214,11 @@ services:
       # covering the window between container create and start.
       # VERITY_DOCKER_GC_VOLUME_MIN_AGE_HOURS: '1'
       # Build-cache entries older than this are pruned (default 72h = 3 days).
+      # Under disk pressure all unused build cache is pruned regardless of age.
       # VERITY_DOCKER_GC_BUILD_CACHE_MAX_AGE_HOURS: '72'
-      # Free space on VERITY_ROOT below which the pass escalates: keep 1 image
-      # generation per repo and drop the volume grace period (default 40 GB).
+      # Free space on VERITY_ROOT below which an extra pass runs and escalates:
+      # keep 1 image generation per repo and prune all unused build cache
+      # (default 40 GB).
       # VERITY_DOCKER_GC_LOW_DISK_GB: '40'
 
       # Claude is ACP-only. The guarded installer and verity-compose always include

@@ -671,6 +671,20 @@ describe('runDockerGc', () => {
     expect(docker.pruneCalls).toEqual([{ untilHours: 168 }]);
   });
 
+  it('drops all unused build cache under disk pressure, not just cache past the max age', async () => {
+    // A day of builds is all younger than the max age, so the age cutoff spared
+    // exactly the cache that filled the disk.
+    const docker = fakeDocker({});
+    const report = await runDockerGc(
+      deps(docker, {
+        freeBytes: () => Promise.resolve(1 * 1024 ** 3),
+        policy: { lowDiskFreeBytes: 40 * 1024 ** 3 },
+      }),
+    );
+    expect(report.lowDisk).toBe(true);
+    expect(docker.pruneCalls).toEqual([{}]);
+  });
+
   it('skips the build-cache step when no max age is configured', async () => {
     const docker = fakeDocker({});
     await runDockerGc(deps(docker, { policy: { buildCacheMaxAgeMs: undefined } }));
@@ -824,6 +838,45 @@ describe('startDockerGcScheduler', () => {
       // A full day later the cancelled timer must not fire another pass.
       await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
       expect(docker.removedVolumes).toEqual([anonName('a')]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs an extra pass when free space drops below the threshold between daily passes', async () => {
+    // Only the 04:00 and boot passes used to run, so a busy day filled the disk
+    // with nothing looking at free space in between.
+    vi.useFakeTimers();
+    try {
+      let free = 500 * 1024 ** 3;
+      const docker = fakeDocker({});
+      const scheduler = startDockerGcScheduler(
+        deps(docker, {
+          now: () => Date.now(),
+          freeBytes: () => Promise.resolve(free),
+          policy: { lowDiskFreeBytes: 40 * 1024 ** 3 },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(1); // boot pass
+
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(1); // plenty of space: nothing extra
+
+      free = 5 * 1024 ** 3;
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(2);
+      expect(docker.pruneCalls.at(-1)).toEqual({}); // and it drops all unused cache
+
+      // A disk the pass cannot relieve must not keep the daemon busy.
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(3);
+
+      scheduler.stop();
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
+      expect(docker.pruneCalls).toHaveLength(3);
     } finally {
       vi.useRealTimers();
     }
