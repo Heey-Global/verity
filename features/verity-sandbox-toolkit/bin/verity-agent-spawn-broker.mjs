@@ -934,6 +934,51 @@ export function resolveDockerGid(env, statSocketGid) {
   return String(declared);
 }
 
+/** Stable Codex homes in use by a running turn of this broker. */
+const activeStableCodexHomes = new Set();
+
+/**
+ * Codex records a thread's rollout in its state database under the path it
+ * wrote it through — `$CODEX_HOME/sessions/…`, never resolving the `sessions`
+ * symlink into the persistent runtime. With a fresh `job-XXXX` home per turn
+ * that path is gone by the next turn, and Codex refuses to resume the thread
+ * ("thread not found"), so every turn lost the conversation it continued.
+ *
+ * A Codex thread is only ever resumed by the Verity session that started it, so
+ * one fixed path per session keeps the recorded path valid across turns and
+ * Sandbox recreation. The tree is still rebuilt from scratch for every turn;
+ * only its location is stable. The parent is root-owned 0711, so the agent can
+ * neither pre-create nor list this name. A second concurrent turn of the same
+ * session (or anything without a session id) keeps a one-off home.
+ */
+async function claimStableCodexHome(request, parent, uid, gid, options) {
+  const sessionId = request.sessionEnv?.VERITY_SESSION_ID;
+  if (
+    request.command !== 'codex-acp' ||
+    request.knowledgeIsolation ||
+    typeof sessionId !== 'string'
+  )
+    return undefined;
+  const home = join(
+    parent,
+    `codex-${createHash('sha256').update(sessionId).digest('hex').slice(0, 32)}`,
+  );
+  if (activeStableCodexHomes.has(home)) return undefined;
+  activeStableCodexHomes.add(home);
+  try {
+    // A turn that ended without its cleanup (a broker restart) left this behind.
+    await removeKnowledgeIsolation(home, uid, gid, options.setprivPath).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await mkdir(home, { mode: 0o700 });
+    return home;
+  } catch (error) {
+    activeStableCodexHomes.delete(home);
+    if (error.code === 'EEXIST') return undefined;
+    throw error;
+  }
+}
+
 /** Create only transport configuration; no transcript, user instructions or project config crosses this boundary. */
 async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   if (!isLocalConnectorUrl(connectorUrl))
@@ -949,7 +994,9 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   // left at 0700 still lets the broker create a correctly owned job home, but
   // the dropped agent uid cannot traverse the parent to reach it.
   await chmod(parent, 0o711);
-  const home = await mkdtemp(join(parent, 'job-'));
+  const home =
+    (await claimStableCodexHome(request, parent, uid, gid, options)) ??
+    (await mkdtemp(join(parent, 'job-')));
   try {
     // Build the complete tree while the broker still owns its root. In
     // rootless/user-namespace deployments, changing ownership of this 0700
@@ -1016,7 +1063,9 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
     await chown(home, uid, gid);
     return home;
   } catch (error) {
-    await removeKnowledgeIsolation(home, uid, gid, options.setprivPath);
+    await removeKnowledgeIsolation(home, uid, gid, options.setprivPath).finally(() =>
+      activeStableCodexHomes.delete(home),
+    );
     throw error;
   }
 }
@@ -1076,7 +1125,10 @@ export async function materializeKnowledgeIsolation(request, options, connectorU
   const home = await prepareKnowledgeIsolation(request, options, connectorUrl);
   return {
     home,
-    cleanup: () => removeKnowledgeIsolation(home, uid, gid, options.setprivPath),
+    cleanup: () =>
+      removeKnowledgeIsolation(home, uid, gid, options.setprivPath).finally(() =>
+        activeStableCodexHomes.delete(home),
+      ),
   };
 }
 

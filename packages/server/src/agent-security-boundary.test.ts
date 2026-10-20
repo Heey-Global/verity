@@ -268,6 +268,69 @@ it('retains Codex rollout and SQLite storage across normal and planning homes', 
   expect(await readFile(join(root, 'codex-sessions/rollout.jsonl'), 'utf8')).toBe('planning\n');
 });
 
+it('keeps recorded Codex rollout paths valid across normal and planning home rebuilds', async () => {
+  const options = {
+    enforceRoot: false,
+    agentUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    runtimeDir: root,
+  };
+  await mkdir(join(root, 'codex-sessions'), { recursive: true });
+  let recordedPath: string | undefined;
+  let previousHome: string | undefined;
+  for (const planning of [false, true, false]) {
+    const isolated = await materializeManagedAgentHome(
+      { command: 'codex-acp', planning, sessionEnv: { VERITY_SESSION_ID: 'resume-fixture' } },
+      options,
+      'http://127.0.0.1:1',
+    );
+    try {
+      if (previousHome) expect(isolated.home).toBe(previousHome);
+      if (recordedPath) {
+        // Codex stores this lexical path in SQLite, rather than the symlink target.
+        expect(await readFile(recordedPath, 'utf8')).toBe('existing conversation');
+        await expect(stat(join(isolated.home, 'state', 'old-turn'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } else {
+        recordedPath = join(isolated.home, 'codex', 'sessions', 'rollout.jsonl');
+        await writeFile(recordedPath, 'existing conversation');
+      }
+      await writeFile(join(isolated.home, 'state', 'old-turn'), 'discard on cleanup');
+      previousHome = isolated.home;
+    } finally {
+      await isolated.cleanup();
+    }
+    await expect(stat(isolated.home)).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+});
+
+it('does not rebuild a Codex home while its turn is active or reuse another session home', async () => {
+  const options = {
+    enforceRoot: false,
+    agentUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    runtimeDir: root,
+  };
+  const homes: Awaited<ReturnType<typeof materializeManagedAgentHome>>[] = [];
+  try {
+    for (const sessionId of ['first', 'first', 'second']) {
+      homes.push(
+        await materializeManagedAgentHome(
+          { command: 'codex-acp', sessionEnv: { VERITY_SESSION_ID: sessionId } },
+          options,
+          'http://127.0.0.1:1',
+        ),
+      );
+      await writeFile(join(homes.at(-1)!.home, 'state', 'marker'), sessionId);
+    }
+    expect(new Set(homes.map(({ home }) => home)).size).toBe(3);
+    expect(await readFile(join(homes[0]!.home, 'state', 'marker'), 'utf8')).toBe('first');
+  } finally {
+    for (const isolated of homes) await isolated.cleanup();
+  }
+});
+
 it('rejects a symlink supplied as persistent planning runtime storage', async () => {
   const target = join(root, 'target');
   const link = join(root, 'runtime-link');
