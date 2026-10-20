@@ -18,8 +18,7 @@ const build = new Function(
   'Button',
   'props',
   `
-  const { historyError, loadingHistory, loadingOlder, loaded, loadOlder, retryHistory,
-    hasOlder, olderLoadNeedsContinuation } = props;
+  const { historyError, loadingHistory, loadingOlder, loaded, loadOlder, retryHistory } = props;
   ${compiled}
   return element;
 `,
@@ -64,10 +63,9 @@ it.each([false, true])(
     expect(loaded ? input.retryHistory : input.loadOlder).not.toHaveBeenCalled();
   },
 );
-it('offers explicit continuation after a bounded metadata-only scan', () => {
-  const input = { ...props(), loaded: true, hasOlder: true, olderLoadNeedsContinuation: true };
-  const view = renderActions(input);
-  expect(input.loadOlder).not.toHaveBeenCalled();
-  fireEvent.press(view.getByRole('button', { name: 'Load earlier history' }));
-  expect(input.loadOlder).toHaveBeenCalledTimes(1);
+// Older pages load as the user scrolls up. A manual button for it crowded the
+// transcript and, while shown, also switched scroll paging off.
+it('offers no manual control for loading earlier history', () => {
+  expect(source).not.toContain('Load earlier history');
+  expect(source).not.toMatch(/olderLoadNeedsContinuation/u);
 });

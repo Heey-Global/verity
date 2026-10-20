@@ -749,7 +749,6 @@ export const SessionChat = memo(function SessionChat({
     oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
-    olderLoadNeedsContinuation,
     olderLoadGeneration,
     loadOlder,
     loadOlderUntil,
@@ -2251,7 +2250,7 @@ export const SessionChat = memo(function SessionChat({
   // single flick from queueing page after page.
   const requestOlderHistory = useCallback(
     (allowStalledRetry = false) => {
-      if (pendingUserJump !== null || olderLoadNeedsContinuation) return;
+      if (pendingUserJump !== null) return;
       if (
         !shouldRequestOlderHistory(
           hasOlder,
@@ -2301,7 +2300,6 @@ export const SessionChat = memo(function SessionChat({
       loadingOlder,
       loadOlder,
       olderLoadStalled,
-      olderLoadNeedsContinuation,
       pendingUserJump,
       reportScrollDebug,
       initialListLoaded,
@@ -4433,15 +4431,6 @@ export const SessionChat = memo(function SessionChat({
           />
         </>
       ) : null}
-      {hasOlder && olderLoadNeedsContinuation ? (
-        <Button
-          label="Load earlier history"
-          variant="secondary"
-          size="compact"
-          loading={loadingOlder}
-          onPress={loadOlder}
-        />
-      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4498,9 +4487,7 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>
-            {hasOlder ? 'Earlier history is available' : 'What should this session do?'}
-          </Text>
+          <Text style={styles.emptyTitle}>What should this session do?</Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"
