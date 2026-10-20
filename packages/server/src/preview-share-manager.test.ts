@@ -1268,6 +1268,31 @@ describe('PreviewShareManager', () => {
     );
   });
 
+  it('finishes a share left revoking during an Uplink outage without anyone stepping in', async () => {
+    // Shares stopped while the Uplink was unreachable stayed `revoking`, and
+    // the periodic reconcile retried them every pass without ever finishing.
+    // Their project then refused every Repair until an operator edited the row.
+    const f = fixture();
+    const current = retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await f.manager.reconcile();
+
+    expect(current().state).not.toBe('revoking');
+    expect(['revoked', 'expired']).toContain(current().state);
+  });
+
+  it('runs a project change past a share left revoking during an Uplink outage', async () => {
+    const f = fixture();
+    retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(new PreviewShareRemovalQueuedError('queued'));
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+  });
+
   it('keeps the stop failing when the connector cannot be removed, even if the Uplink queued', async () => {
     const { manager, docker, edge } = fixture();
     docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
