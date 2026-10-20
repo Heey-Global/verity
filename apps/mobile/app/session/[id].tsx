@@ -749,7 +749,6 @@ export const SessionChat = memo(function SessionChat({
     oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
-    olderLoadNeedsContinuation,
     olderLoadGeneration,
     loadOlder,
     loadOlderUntil,
@@ -2251,7 +2250,7 @@ export const SessionChat = memo(function SessionChat({
   // single flick from queueing page after page.
   const requestOlderHistory = useCallback(
     (allowStalledRetry = false) => {
-      if (pendingUserJump !== null || olderLoadNeedsContinuation) return;
+      if (pendingUserJump !== null) return;
       if (
         !shouldRequestOlderHistory(
           hasOlder,
@@ -2301,13 +2300,38 @@ export const SessionChat = memo(function SessionChat({
       loadingOlder,
       loadOlder,
       olderLoadStalled,
-      olderLoadNeedsContinuation,
       pendingUserJump,
       reportScrollDebug,
       initialListLoaded,
     ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  // With nothing visible there is no list to scroll, so older pages are fetched
+  // until a message appears, the history ends, or a page fails (which shows its
+  // own retry). A fetch that did not move the history cursor ends the walk, so a
+  // page that adds nothing cannot repeat for good; a bookmark jump in progress
+  // owns paging and is left alone.
+  const showsNoMessages = loaded && messages.length === 0;
+  const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    // A reload starts a fresh walk.
+    if (!loaded) emptyPagingCursorRef.current = undefined;
+  }, [loaded]);
+  useEffect(() => {
+    if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
+    if (pendingUserJump !== null) return;
+    if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
+    emptyPagingCursorRef.current = oldestHistorySeq ?? null;
+    void loadOlder();
+  }, [
+    showsNoMessages,
+    hasOlder,
+    loadingOlder,
+    olderLoadStalled,
+    pendingUserJump,
+    oldestHistorySeq,
+    loadOlder,
+  ]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
@@ -4433,15 +4457,6 @@ export const SessionChat = memo(function SessionChat({
           />
         </>
       ) : null}
-      {hasOlder && olderLoadNeedsContinuation ? (
-        <Button
-          label="Load earlier history"
-          variant="secondary"
-          size="compact"
-          loading={loadingOlder}
-          onPress={loadOlder}
-        />
-      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4499,7 +4514,7 @@ export const SessionChat = memo(function SessionChat({
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.emptyTitle}>
-            {hasOlder ? 'Earlier history is available' : 'What should this session do?'}
+            {loadingOlder ? 'Loading earlier history…' : 'What should this session do?'}
           </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
