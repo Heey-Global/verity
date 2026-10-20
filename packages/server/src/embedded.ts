@@ -193,7 +193,6 @@ import {
   finishSessionCleanup,
   pendingSessionCleanups,
 } from './pending-session-cleanup.js';
-import { sessionHomePath } from './session-home.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
@@ -4167,10 +4166,7 @@ export async function buildEmbeddedServer(
             let runtimeSeen = false;
             for (const runnerProjectId of runnerProjectIds) {
               const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              if (
-                scope === 'session-delete' &&
-                existsSync(sessionHomePath(runtimeDir, sessionId))
-              ) {
+              if (scope === 'session-delete') {
                 const deleted = await requestRunnerSupervisor(
                   join(runtimeDir, 'supervisor.sock'),
                   { kind: 'delete-session-home', sessionId },
@@ -5175,14 +5171,12 @@ export async function buildEmbeddedServer(
           let clean = true;
           for (const projectId of pending.runnerProjectIds) {
             const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
-            if (existsSync(sessionHomePath(runtimeDir, pending.sessionId))) {
-              const response = await requestRunnerSupervisor(
-                join(runtimeDir, 'supervisor.sock'),
-                { kind: 'delete-session-home', sessionId: pending.sessionId },
-                10_000,
-              );
-              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
-            }
+            const response = await requestRunnerSupervisor(
+              join(runtimeDir, 'supervisor.sock'),
+              { kind: 'delete-session-home', sessionId: pending.sessionId },
+              10_000,
+            );
+            if (response.ok !== true) throw new Error('Pending session home cleanup failed');
             const result = await purgeSessionArtifactFiles({
               runtimeDir,
               sandboxCwd: pending.sandboxCwd,
