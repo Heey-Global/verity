@@ -1451,6 +1451,11 @@ describe('AcpCodexBackend', () => {
       'invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `v` at 1',
       { staleResume: true },
     ],
+    // Codex's state database still lists the thread, but its rollout is not where
+    // the database recorded it — after a restart, or a restore to another path.
+    ['thread not found: codex-session-existing', { staleResume: true }],
+    // The same answer about a different thread says nothing about this one.
+    ['thread not found: codex-session-other', { staleResume: undefined }],
     // Any other internal failure is a condition of the moment, not proof that the
     // conversation is gone; dropping the binding on it would discard one for good.
     ['state db unavailable', { staleResume: undefined }],
@@ -1499,6 +1504,29 @@ describe('AcpCodexBackend', () => {
     expect(result.stderr).toContain('Internal error: example reason with');
     // The same redaction the agent's own stderr gets before it is stored.
     expect(result.stderr).not.toContain('secret-token-123');
+  });
+
+  // The conductor recognizes a prompt Codex rejected for the resumed thread by
+  // this exact line; pin it here, where the backend writes it.
+  it('appends a prompt rejected for a missing thread in the shape the conductor reads', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      spawner: fake.spawner,
+    });
+    expect(result.stderr.split('\n')).toContain(
+      'Internal error: thread not found: codex-session-existing',
+    );
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {

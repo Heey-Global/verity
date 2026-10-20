@@ -7352,14 +7352,16 @@ describe('Conductor — backend session state', () => {
   // codex-acp can accept the load of a thread it never materialized and only fail
   // when the prompt starts the turn. That rejection names the bound thread, so no
   // turn ran in it; the same message about another thread is a different failure.
-  it.each([
-    ['the bound thread', 'dead_thread', ['dead_thread', 's1', undefined], 'thread_fresh'],
-    ['another thread', 'other_thread', ['dead_thread'], 'dead_thread'],
-    // A longer id that merely starts with the bound one is still another thread.
-    ['a thread named after it', 'dead_thread_2', ['dead_thread'], 'dead_thread'],
-  ])(
-    'treats a Codex prompt rejected for %s accordingly',
-    async (_label, missing, expectedResumeIds, expectedBinding) => {
+  it.each(
+    (['adapter log', 'ACP error'] as const).flatMap((shape) => [
+      [shape, 'the bound thread', 'dead_thread', ['dead_thread', 's1', undefined], 'thread_fresh'],
+      [shape, 'another thread', 'other_thread', ['dead_thread'], 'dead_thread'],
+      // A longer id that merely starts with the bound one is still another thread.
+      [shape, 'a thread named after it', 'dead_thread_2', ['dead_thread'], 'dead_thread'],
+    ]) as Array<['adapter log' | 'ACP error', string, string, Array<string | undefined>, string]>,
+  )(
+    'treats a Codex prompt rejected (%s) for %s accordingly',
+    async (shape, _label, missing, expectedResumeIds, expectedBinding) => {
       await ctx.store.createSession({
         sessionId: 's1',
         worktree: '/wt/s1',
@@ -7380,13 +7382,19 @@ describe('Conductor — backend session state', () => {
             return {
               sessionId: 'dead_thread',
               exitCode: 1,
-              stderr: [
-                `[SYSTEM_ERROR] Prompt for session dead_thread failed: Error: thread not found: ${missing}`,
-                `Error: thread not found: ${missing}`,
-                '    at handleResponse (file:///codex-acp/dist/index.js:2409:40)',
-                '',
-                'Internal error',
-              ].join('\n'),
+              stderr:
+                shape === 'adapter log'
+                  ? [
+                      `[SYSTEM_ERROR] Prompt for session dead_thread failed: Error: thread not found: ${missing}`,
+                      `Error: thread not found: ${missing}`,
+                      '    at handleResponse (file:///codex-acp/dist/index.js:2409:40)',
+                      '',
+                      'Internal error',
+                    ].join('\n')
+                  : // The adapter answered the prompt, and the backend appended the
+                    // ACP error with its details, as it does since codex-acp put the
+                    // reason in `data.details` only.
+                    `\nInternal error: thread not found: ${missing}`,
               aborted: false,
             };
           }
