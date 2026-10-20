@@ -2306,6 +2306,13 @@ export const SessionChat = memo(function SessionChat({
     ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  // With nothing visible there is no list to scroll, so older pages are fetched
+  // until a message appears, the history ends, or a page fails (which shows its
+  // own retry). Each fetch is bounded, so this is a short, finite walk.
+  const showsNoMessages = loaded && messages.length === 0;
+  useEffect(() => {
+    if (showsNoMessages && hasOlder && !loadingOlder && !olderLoadStalled) void loadOlder();
+  }, [showsNoMessages, hasOlder, loadingOlder, olderLoadStalled, loadOlder]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
@@ -4487,7 +4494,9 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {hasOlder ? 'Loading earlier history…' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"

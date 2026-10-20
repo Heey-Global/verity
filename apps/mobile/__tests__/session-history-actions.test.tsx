@@ -66,6 +66,13 @@ it.each([false, true])(
 // Older pages load as the user scrolls up. A manual button for it crowded the
 // transcript and, while shown, also switched scroll paging off.
 it('offers no manual control for loading earlier history', () => {
+  // `source` is the whole session screen, not the extracted actions snippet.
+  expect(source).toContain('function SessionScreen');
   expect(source).not.toContain('Load earlier history');
   expect(source).not.toMatch(/olderLoadNeedsContinuation/u);
+  // With no visible message there is nothing to scroll, so paging must continue
+  // by itself; otherwise the history behind an empty tail is unreachable.
+  expect(source).toMatch(
+    /if \(showsNoMessages && hasOlder && !loadingOlder && !olderLoadStalled\) void loadOlder\(\);/u,
+  );
 });
