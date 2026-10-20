@@ -45,13 +45,12 @@ const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
 
-/** A replacement connector could not be brought up; the share has none. */
-class PreviewConnectorUnavailableError extends Error {
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
-    this.name = 'PreviewConnectorUnavailableError';
-  }
-}
+/**
+ * Failures of connectors that were created but never became ready, raised only
+ * after the connector was removed again. Kept beside the original error rather
+ * than wrapping it, so share creation still reports what actually failed.
+ */
+const removedUnreadyConnectorFailures = new WeakSet<object>();
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
 export interface PreviewEdgeCreate {
@@ -810,14 +809,19 @@ export class PreviewShareManager {
         try {
           await this.replaceConnector(share, true);
         } catch (error) {
-          if (!(error instanceof PreviewConnectorUnavailableError)) throw error;
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !removedUnreadyConnectorFailures.has(error)
+          )
+            throw error;
           // The offline page is a courtesy to visitors, not a precondition of the
           // mutation. A connector the edge refuses (an unknown share answers 404)
           // failed every Repair of the project before its container was created.
           // replaceConnector has already removed both connectors, so the link is
           // simply unreachable until reconcile() brings one up again.
           this.options.log?.warn(
-            { shareId: share.id, projectId, err: error.cause },
+            { shareId: share.id, projectId, err: error },
             'public preview stays unreachable during the project change: its offline connector did not start',
           );
         }
@@ -1256,19 +1260,14 @@ export class PreviewShareManager {
     if (current?.state !== 'active') return;
     const project = await this.options.store.getProject(share.projectId);
     if (!project) return;
-    let id: string;
-    try {
-      id = await this.createConnector(
-        share,
-        project.containerName,
-        await this.resolveConnectorImage(),
-        staticMount,
-        undefined,
-        offline,
-      );
-    } catch (error) {
-      throw new PreviewConnectorUnavailableError(error);
-    }
+    const id = await this.createConnector(
+      share,
+      project.containerName,
+      await this.resolveConnectorImage(),
+      staticMount,
+      undefined,
+      offline,
+    );
     try {
       const updated = await this.options.store.transitionPublicPreviewShare(
         share.id,
@@ -1350,7 +1349,10 @@ export class PreviewShareManager {
       timer?.mark('connectorReady');
       return created.id;
     } catch (error) {
+      // A failed removal propagates as itself: the connector it leaves behind
+      // would collide with the next one by name, so nothing may skip past it.
       await removeContainer(this.options.docker, created.id);
+      if (typeof error === 'object' && error !== null) removedUnreadyConnectorFailures.add(error);
       throw error;
     }
   }

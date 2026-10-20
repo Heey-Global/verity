@@ -1862,6 +1862,22 @@ describe('PreviewShareManager', () => {
     expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
   });
 
+  it('aborts a project change when an unready offline connector cannot be removed', async () => {
+    // Skipping past it would leave a connector that collides by name with every
+    // connector reconcile tries to create for the share afterwards.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue('');
+    // The old connector goes first; removing the unready replacement fails.
+    f.docker.removeContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('removal failed'));
+    const mutation = vi.fn(async () => undefined);
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).rejects.toThrow('removal failed');
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
   it('takes a static share offline without starting an unmounted static server', async () => {
     const f = fixture();
     retainShare(f, {
