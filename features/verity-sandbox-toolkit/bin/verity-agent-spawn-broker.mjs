@@ -1566,13 +1566,16 @@ export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
 function normalSessionRoots(options) {
   const roots = [];
   for (const [flag, path] of [
+    // Image-owned hooks and wrapper targets must remain executable under confinement.
+    ['--read-root', '/opt/agent-seed'],
+    ['--read-root', '/opt/verity/package-managers'],
     ['--read-root', '/knowledge'],
     ['--write-root', '/knowledge/insights'],
   ]) {
     try {
       const metadata = lstatSync(path);
       if (!metadata.isDirectory() || metadata.isSymbolicLink())
-        throw new Error('Invalid knowledge root');
+        throw new Error('Invalid session access root');
       roots.push(flag, path);
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;

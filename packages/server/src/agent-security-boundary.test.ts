@@ -1,5 +1,6 @@
 import { nodeSpawner } from '@verity/session';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import {
   chmod,
   type FileHandle,
@@ -179,6 +180,13 @@ it.each(commands)(
       env: { VERITY_GH_BROKER_CAPABILITY_FILE: '/run/verity-gh/capability' },
     };
     const normal = agentLaunchSpec(request, options);
+    for (const path of ['/opt/agent-seed', '/opt/verity/package-managers']) {
+      if (existsSync(path)) {
+        const index = normal.args.indexOf(path);
+        expect(index).toBeGreaterThan(0);
+        expect(normal.args[index - 1]).toBe('--read-root');
+      }
+    }
     expect(normal.args).toContain('--write-isolated');
     expect(normal.args).toContain(request.managedHome);
     expect(normal.args).toContain('/run/verity-gh/capability');

@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { agentLaunchSpec } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -127,4 +129,36 @@ it('rejects relative roots and symbolic links before launching', async () => {
     expect(result.status).toBe(126);
     expect(result.stderr).toMatch(/invalid secret path|invalid runtime root|symbolic links/);
   }
+});
+
+it('executes installed review and package wrappers with the normal launch policy', (context) => {
+  const paths = ['/opt/agent-seed', '/opt/verity/package-managers'];
+  if (!paths.every((path) => existsSync(path))) {
+    context.skip('Toolkit installation directories are unavailable');
+    return;
+  }
+  const spec = agentLaunchSpec(
+    { command: 'codex-acp', args: [], cwd: join(root, 'work'), managedHome: join(root, 'home') },
+    { agentUid: process.getuid!(), agentGid: process.getgid!(), worktreeRoot: root, env: {} },
+  );
+  const extra = paths.flatMap((path) => {
+    const index = spec.args.indexOf(path);
+    expect(index).toBeGreaterThan(0);
+    return spec.args.slice(index - 1, index + 1);
+  });
+  const script = `set -eu
+/opt/agent-seed/bin/verity-code-review --help
+/opt/verity/package-managers/npm --version
+if touch /opt/agent-seed/confinement-write-probe 2>/dev/null; then exit 31; fi
+if touch /opt/verity/package-managers/confinement-write-probe 2>/dev/null; then exit 32; fi
+`;
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  const result = run(extra, script, true);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('usage: verity-code-review');
+  expect(run([], script, true).status).not.toBe(0);
 });
