@@ -93,7 +93,7 @@ async function fixture(
     managed?: boolean;
     onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
     onMatrixConfigured?: () => Promise<void>;
-    onRetryRequested?: ((journal: UpdateJournal) => void) | null;
+    onRetryRequested?: ((journal: UpdateJournal) => boolean) | null;
     now?: () => number;
   } = {},
 ) {
@@ -131,6 +131,7 @@ async function fixture(
             options.onRetryRequested ??
             ((journal) => {
               retried.push(journal);
+              return true;
             }),
         }),
     ...(options.now === undefined ? {} : { now: options.now }),
@@ -1748,6 +1749,26 @@ describe('managed Updater stuck-operation recovery', () => {
       requestUpdaterRetry({ socketPath, token, updateId: original.updateId }),
     ).rejects.toMatchObject({ status: 409, code: 'not-retryable' });
     expect(retried).toHaveLength(1);
+  });
+
+  // The runner paces explicit retries; a paced-out request must say so rather
+  // than answer 202 for a resume that never happens.
+  it('reports a paced-out retry as still in progress', async () => {
+    const { socketPath, token, managedRoot } = await fixture({
+      managed: true,
+      now: stalledClock,
+      onRetryRequested: () => false,
+    });
+    const original = await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'k1',
+      targetDigest: image('b'),
+    });
+    await driveTo(managedRoot, 'reconciling-companions');
+    await expect(
+      requestUpdaterRetry({ socketPath, token, updateId: original.updateId }),
+    ).rejects.toMatchObject({ status: 409, code: 'operation-in-progress' });
   });
 
   it('refuses a retry when nothing can carry it out', async () => {

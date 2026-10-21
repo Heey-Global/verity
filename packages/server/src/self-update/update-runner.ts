@@ -171,8 +171,9 @@ export interface UpdateRunner {
   start(): void;
   /** Whatever run is currently queued; excludes deferred retry timers. */
   idle(): Promise<void>;
-  /** Operator-requested resume: drop the deferred backoff and run now. */
-  retryNow(): void;
+  /** Operator-requested resume: drop the deferred backoff and run now. False
+   *  when paced out — a run started less than a minute ago already tried. */
+  retryNow(): boolean;
   /** Serialize another Docker mutation with managed updates. */
   enqueueExclusive(task: () => Promise<void>): Promise<void>;
 }
@@ -381,10 +382,13 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     },
     idle: () => chain,
     retryNow: () => {
-      if (pending > 0 || Date.now() - retriedAt < RETRY_NOW_INTERVAL_MS) return;
+      // Joining a run that is already queued or executing is what was asked for.
+      if (pending > 0) return true;
+      if (Date.now() - retriedAt < RETRY_NOW_INTERVAL_MS) return false;
       retriedAt = Date.now();
       deferredDelay = 8_000;
       void enqueue();
+      return true;
     },
     enqueueExclusive: (task) => {
       const result = chain.then(task);

@@ -75,6 +75,12 @@ export type UpdateAttemptCause = (typeof UPDATE_ATTEMPT_CAUSES)[number];
  * there stopped mid-transition, and the sealed spec may not name its target
  * yet. Before commit the live Server, the candidate and the Gateway are
  * mid-switch, and abandoning that would leave a topology no step owns.
+ *
+ * The trade-off: if the successor then fails or rolls back, nothing retries the
+ * abandoned companion step on its own any more. The deployment is left where
+ * the stuck operation already had it — Server on the committed image,
+ * companions partly behind — and the next successful update moves them. That
+ * is no worse than the stall it replaces, which was not moving them either.
  */
 export const SUPERSEDABLE_PHASES: readonly UpdatePhase[] = ['reconciling-companions'];
 

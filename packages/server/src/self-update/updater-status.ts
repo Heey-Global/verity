@@ -247,7 +247,7 @@ export interface UpdaterStatusServerOptions {
    * The Updater process drops its deferred backoff and re-enters the same run
    * an Updater restart would; absent, `POST /v1/update/retry` answers 503.
    */
-  readonly onRetryRequested?: (journal: UpdateJournal) => void | Promise<void>;
+  readonly onRetryRequested?: (journal: UpdateJournal) => boolean | Promise<boolean>;
   /** Clock for the stall rule; defaults to `Date.now`. */
   readonly now?: () => number;
   /** Persist Matrix activation and reconcile its worker after account setup. */
@@ -519,17 +519,18 @@ async function acceptUpdateRequest(
     const expected = body.channel ?? releaseChannelFromEnv(process.env);
     if (selected !== expected) throw new UpdaterRequestError(409, 'channel-changed');
     const current = await readUpdateJournal(journalRoot);
+    if (
+      current !== null &&
+      current.idempotencyKey === body.idempotencyKey &&
+      current.targetDigest === body.targetDigest &&
+      current.deploymentId === state.marker.deploymentId
+    )
+      return current;
     // Re-read under the lease: the spec read above predates it, and a cutover
     // advances the sealed image while holding this same lease.
     const sealed = await readManagedDeployment(options.managedRoot);
     if (!sealed.managed) throw new UpdaterRequestError(503, 'unmanaged');
     if (current !== null) {
-      if (
-        current.idempotencyKey === body.idempotencyKey &&
-        current.targetDigest === body.targetDigest &&
-        current.deploymentId === state.marker.deploymentId
-      )
-        return current;
       if (
         !isTerminalOperationState(projectUpdateOperation(current).state) &&
         !isSupersedable(current, sealed.spec.image, (options.now ?? Date.now)())
@@ -1120,11 +1121,20 @@ async function serveRetryRequest(
     res.writeHead(409).end(JSON.stringify({ error: 'operation-in-progress' }));
     return;
   }
+  let started: boolean;
+  try {
+    started = await options.onRetryRequested(journal);
+  } catch {
+    res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+    return;
+  }
+  // Paced out: a run started moments ago already tried. Saying so lets the
+  // device show the unchanged status instead of a resume that never happens.
+  if (!started) {
+    res.writeHead(409).end(JSON.stringify({ error: 'operation-in-progress' }));
+    return;
+  }
   res.writeHead(202).end(JSON.stringify({ operation: projectUpdateOperation(journal) }));
-  const accepted = journal;
-  void Promise.resolve()
-    .then(() => options.onRetryRequested?.(accepted))
-    .catch(() => undefined);
 }
 
 function closeServer(server: Server): Promise<void> {

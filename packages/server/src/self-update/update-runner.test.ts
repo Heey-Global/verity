@@ -381,10 +381,11 @@ describe('update runner', () => {
     available = true;
     const before = attempts;
     // A double tap joins the run it started instead of queueing another.
-    update.retryNow();
-    update.retryNow();
+    expect(update.retryNow()).toBe(true);
     await update.idle();
     expect(attempts).toBe(before + 1);
+    // Right after a run, a further request is paced out rather than run again.
+    expect(update.retryNow()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
     // A finished operation has nothing left to explain.
