@@ -74,7 +74,11 @@ func checkStallObservation(proxy: ProxyConfiguration, origin: URL, pin: String,
     // bless a diagnostic that cannot attribute the failing request.
     precondition(writer["mapping"] as? String == "matched", "missing native request/stream mapping")
     precondition((writer["completed"] as? Int ?? 0) > 0)
-    precondition(writer["queued"] as? Int == 0 && writer["sending"] as? Int == 0)
+    // HTTP completion can race TLS close/HTTP2 cancellation writes. The frozen
+    // snapshot must report their state, rather than require the writer to drain.
+    let queued = writer["queued"] as! Int
+    let sending = writer["sending"] as! Int
+    precondition(queued >= 0 && sending >= 0 && queued + sending <= StallDiagnostics.sendLimit)
     precondition((snapshot["headersMs"] as? Int == -1) == (path == "slow"))
     precondition((snapshot["firstByteMs"] as? Int == -1) == (path == "slow"))
     // A duplicate completion or late data callback must not rewrite evidence.
