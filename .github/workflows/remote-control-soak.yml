@@ -94,8 +94,9 @@ jobs:
             sudo killall -HUP mDNSResponder
           fi
 
-      # Only this runner resolves the Uplink host to the test entry. Hostname, SNI and
-      # certificate validation stay unchanged; the paired Core keeps its own resolution.
+      # Only this runner machine resolves the Uplink host to the test entry; the concurrency
+      # group keeps soaks serial. Hostname, SNI and certificate validation stay unchanged,
+      # and the paired Core keeps its own resolution.
       - name: Route the Uplink host to the test entry
         if: inputs.uplink_test_ip != ''
         env:
@@ -105,8 +106,9 @@ jobs:
           set -euo pipefail
           host="${UPLINK_ORIGIN#https://}"
           host="${host%/}"
-          # A leading newline keeps the entry off a hosts file that lacks a final newline.
-          printf '\n%s %s # verity-soak-test-entry\n' "$UPLINK_TEST_IP" "$host" |
+          # Keep the entry off the last line of a hosts file that lacks a final newline.
+          [[ -z "$(tail -c1 /etc/hosts)" ]] || echo | sudo tee -a /etc/hosts >/dev/null
+          printf '%s %s # verity-soak-test-entry\n' "$UPLINK_TEST_IP" "$host" |
             sudo tee -a /etc/hosts >/dev/null
           sudo dscacheutil -flushcache
           sudo killall -HUP mDNSResponder
