@@ -7,6 +7,7 @@ import { useTaskPreferences } from '../../lib/taskPreferences';
 // the fold to find the thing that needs attention: the checklist names what is
 // unfinished, and each row below it is a destination, not a control.
 import {
+  githubRepositoryAccessReady,
   settingsChecklist,
   settingsChecklistHeadline,
   type SettingsChecklistItemId,
@@ -29,6 +30,7 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
+import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
@@ -74,6 +76,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
+  const githubConnected = githubRepositoryAccessReady(settings);
+  // Surfaced on the Connections row so a grant still owed in GitHub is visible
+  // without first opening the connection that needs it.
+  const githubPermission = useGithubPermission(client, githubConnected);
+  const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
@@ -181,6 +188,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             icon="link"
             title="Connections"
             subtitle="AI, code, documents and other services"
+            status={
+              githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
+            }
             onPress={() => router.push('/settings/services')}
           />
         </SettingsListPanel>

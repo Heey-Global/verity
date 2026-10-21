@@ -13,6 +13,7 @@
 // over.
 import type { ProjectRecord, SecretStatus, VerityClient, VeritySettings } from '@verity/mobile';
 
+import { resetGithubPermissionForTests } from '../../lib/githubPermission';
 import { resetVeritySettingsStore } from '../../lib/settingsStore';
 
 /** The address `lib/client` is mocked to report. Assertions that render it
@@ -127,6 +128,7 @@ export function resetSettingsHarness(): void {
   searchParams = {};
   focusCallbacks.clear();
   resetVeritySettingsStore();
+  resetGithubPermissionForTests();
 }
 
 /**
@@ -203,6 +205,7 @@ export function makeProject(
 }
 
 export type ClientOverrides = {
+  validateGithubApp?: jest.Mock;
   getReturnPathStatus?: VerityClient['getReturnPathStatus'];
   startReturnPathDiagnostics?: VerityClient['startReturnPathDiagnostics'];
   stopReturnPathDiagnostics?: VerityClient['stopReturnPathDiagnostics'];
@@ -246,9 +249,9 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     throw new Error(`unexpected client.${name} call`);
   };
   const client: Record<string, unknown> = {
-    validateGithubApp: jest
-      .fn()
-      .mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
+    validateGithubApp:
+      opts.validateGithubApp ??
+      jest.fn().mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),

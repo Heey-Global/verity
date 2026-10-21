@@ -26,6 +26,10 @@ const edge = new PreviewEdge({
   ...(trustedProxyHops === undefined ? {} : { trustedProxyHops }),
   ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
   ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+  onDiagnostic: (diagnostic) =>
+    process.stderr.write(
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...diagnostic })}\n`,
+    ),
 });
 
 const port = optionalPositiveInteger('PORT') ?? 8080;
