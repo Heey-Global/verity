@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.52.1](https://github.com/Heey-Global/verity/compare/v4.52.0...v4.52.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **deps:** bump hono from 4.13.7 to 4.13.13 ([#1758](https://github.com/Heey-Global/verity/issues/1758)) ([27d0064](https://github.com/Heey-Global/verity/commit/27d0064dad64dab50f0492bca9c852463187387f))
+* **deps:** bump vite from 8.3.0 to 8.3.4 ([#1744](https://github.com/Heey-Global/verity/issues/1744)) ([74e8b17](https://github.com/Heey-Global/verity/commit/74e8b17fcc76dc5823386ef591b5cdf9eb310af4))
+* **deps:** update agent clis ([#1751](https://github.com/Heey-Global/verity/issues/1751)) ([528c32d](https://github.com/Heey-Global/verity/commit/528c32d9a8cafd75f9f7a2fe47fc3c3785e411ec))
+* **deps:** update dependency @agentclientprotocol/sdk to v1.9.0 ([#1752](https://github.com/Heey-Global/verity/issues/1752)) ([428c09a](https://github.com/Heey-Global/verity/commit/428c09a9831a5333251f6edfc37a26a0285c348c))
+* **deps:** update dependency kysely to v0.29.7 ([#1749](https://github.com/Heey-Global/verity/issues/1749)) ([8856d92](https://github.com/Heey-Global/verity/commit/8856d92dec7d00d1ec11c5994f6bc495995cc5ec))
+* **release:** use pushed manifest digests in self-update smoke ([#1760](https://github.com/Heey-Global/verity/issues/1760)) ([216ef17](https://github.com/Heey-Global/verity/commit/216ef1770bce1d55d4b7424cc29b0d9b562a41af))
+
 ## [4.52.0](https://github.com/Heey-Global/verity/compare/v4.51.8...v4.52.0) (2026-10-21)
 
 
