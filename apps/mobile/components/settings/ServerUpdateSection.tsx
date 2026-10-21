@@ -236,11 +236,15 @@ export function ServerUpdateSection({
         .then(
           () => undefined,
           (caught: unknown) => {
-            // A 409 means the operation moved on — finished, rolled back,
-            // replaced, or moving again — and the fresh status below says which.
-            // Anything else is a retry that may not have reached the Updater.
-            if (!(caught instanceof VerityApiError && caught.status === 409))
-              setActionError('Could not retry the update.');
+            const refused = caught instanceof VerityApiError && caught.status === 409;
+            // `operation-in-progress`: a retry ran moments ago, or the update is
+            // moving again. The card would look unchanged, so say why.
+            if (refused && caught.message === 'operation-in-progress')
+              setActionError('A retry is already running. Check back in a minute.');
+            // Any other refusal means the operation moved on — finished, rolled
+            // back or replaced — and the fresh status below shows how. Anything
+            // else is a retry that may not have reached the Updater.
+            else if (!refused) setActionError('Could not retry the update.');
           },
         )
         // Either way, show what the Updater is doing now rather than guessing.

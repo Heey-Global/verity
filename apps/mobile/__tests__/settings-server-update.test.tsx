@@ -1014,6 +1014,24 @@ describe('stuck server update', () => {
     expect(screen.queryByText('Could not retry the update.')).toBeNull();
   });
 
+  // Retries are paced; a refused one must not look like a tap that did nothing.
+  it('explains a retry refused because one is already running', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest.fn().mockResolvedValue(stuck),
+        retryServerUpdate: jest
+          .fn()
+          .mockRejectedValue(new VerityApiError(409, 'operation-in-progress')),
+      }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+    expect(
+      await screen.findByText('A retry is already running. Check back in a minute.'),
+    ).toBeOnTheScreen();
+  });
+
   it('installs the newer release as a new request', async () => {
     const requestServerUpdate = jest.fn().mockResolvedValue({
       ...stuck.operation,
