@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.75.1](https://github.com/Heey-Global/verity/compare/mobile-v1.75.0...mobile-v1.75.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **mobile:** build the new-meeting screen from the design system ([#1763](https://github.com/Heey-Global/verity/issues/1763)) ([3b79f18](https://github.com/Heey-Global/verity/commit/3b79f185c793a68436733dffb80568ec9eb6079c))
+
 ## [1.74.3](https://github.com/Heey-Global/verity/compare/mobile-v1.74.2...mobile-v1.74.3) (2026-10-20)
 
 
