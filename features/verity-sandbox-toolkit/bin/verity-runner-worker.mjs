@@ -25357,17 +25357,7 @@ var AGENT_METHODS = {
   session_fork: "session/fork",
   session_resume: "session/resume",
   session_close: "session/close",
-  logout: "logout",
-  nes_start: "nes/start",
-  nes_suggest: "nes/suggest",
-  nes_accept: "nes/accept",
-  nes_reject: "nes/reject",
-  nes_close: "nes/close",
-  document_did_open: "document/didOpen",
-  document_did_change: "document/didChange",
-  document_did_close: "document/didClose",
-  document_did_save: "document/didSave",
-  document_did_focus: "document/didFocus"
+  logout: "logout"
 };
 var CLIENT_METHODS = {
   session_request_permission: "session/request_permission",
@@ -25861,6 +25851,17 @@ var zSessionDeleteCapabilities = z14.object({
 var zSessionAdditionalDirectoriesCapabilities = z14.object({
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
+var zSessionSystemPromptOverrideCapabilities = z14.object({
+  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
+});
+var zSessionSystemPromptModeCapabilities = z14.object({
+  override: defaultOnError(zSessionSystemPromptOverrideCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
+});
+var zSessionSystemPromptCapabilities = z14.object({
+  mode: defaultOnError(zSessionSystemPromptModeCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
+});
 var zSessionForkCapabilities = z14.object({
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
@@ -25874,6 +25875,7 @@ var zSessionCapabilities = z14.object({
   list: defaultOnError(zSessionListCapabilities.nullish(), () => void 0),
   delete: defaultOnError(zSessionDeleteCapabilities.nullish(), () => void 0),
   additionalDirectories: defaultOnError(zSessionAdditionalDirectoriesCapabilities.nullish(), () => void 0),
+  systemPrompt: defaultOnError(zSessionSystemPromptCapabilities.nullish(), () => void 0),
   fork: defaultOnError(zSessionForkCapabilities.nullish(), () => void 0),
   resume: defaultOnError(zSessionResumeCapabilities.nullish(), () => void 0),
   close: defaultOnError(zSessionCloseCapabilities.nullish(), () => void 0),
@@ -25889,84 +25891,6 @@ var zAgentAuthCapabilities = z14.object({
 var zProvidersCapabilities = z14.object({
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidOpenCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zTextDocumentSyncKind = z14.union([
-  z14.literal("full"),
-  z14.literal("incremental")
-]);
-var zNesDocumentDidChangeCapabilities = z14.object({
-  syncKind: zTextDocumentSyncKind,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDocumentDidCloseCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDocumentDidSaveCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDocumentDidFocusCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDocumentEventCapabilities = z14.object({
-  didOpen: defaultOnError(zNesDocumentDidOpenCapabilities.nullish(), () => void 0),
-  didChange: defaultOnError(zNesDocumentDidChangeCapabilities.nullish(), () => void 0),
-  didClose: defaultOnError(zNesDocumentDidCloseCapabilities.nullish(), () => void 0),
-  didSave: defaultOnError(zNesDocumentDidSaveCapabilities.nullish(), () => void 0),
-  didFocus: defaultOnError(zNesDocumentDidFocusCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesEventCapabilities = z14.object({
-  document: defaultOnError(zNesDocumentEventCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRecentFilesCapabilities = z14.object({
-  maxCount: defaultOnError(z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }).nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRelatedSnippetsCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesEditHistoryCapabilities = z14.object({
-  maxCount: defaultOnError(z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }).nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesUserActionsCapabilities = z14.object({
-  maxCount: defaultOnError(z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }).nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesOpenFilesCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDiagnosticsCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesContextCapabilities = z14.object({
-  recentFiles: defaultOnError(zNesRecentFilesCapabilities.nullish(), () => void 0),
-  relatedSnippets: defaultOnError(zNesRelatedSnippetsCapabilities.nullish(), () => void 0),
-  editHistory: defaultOnError(zNesEditHistoryCapabilities.nullish(), () => void 0),
-  userActions: defaultOnError(zNesUserActionsCapabilities.nullish(), () => void 0),
-  openFiles: defaultOnError(zNesOpenFilesCapabilities.nullish(), () => void 0),
-  diagnostics: defaultOnError(zNesDiagnosticsCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesCapabilities = z14.object({
-  events: defaultOnError(zNesEventCapabilities.nullish(), () => void 0),
-  context: defaultOnError(zNesContextCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zPositionEncodingKind = z14.union([
-  z14.literal("utf-16"),
-  z14.literal("utf-32"),
-  z14.literal("utf-8")
-]);
 var zAgentCapabilities = z14.object({
   loadSession: defaultOnError(z14.boolean().optional().default(false), () => false),
   promptCapabilities: defaultOnError(zPromptCapabilities.optional().default({
@@ -25990,8 +25914,6 @@ var zAgentCapabilities = z14.object({
   sessionCapabilities: defaultOnError(zSessionCapabilities.optional().default({}), () => ({})),
   auth: defaultOnError(zAgentAuthCapabilities.optional().default({}), () => ({})),
   providers: defaultOnError(zProvidersCapabilities.nullish(), () => void 0),
-  nes: defaultOnError(zNesCapabilities.nullish(), () => void 0),
-  positionEncoding: defaultOnError(zPositionEncodingKind.nullish(), () => void 0),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zAuthMethodId = z14.string();
@@ -26221,79 +26143,6 @@ var zPromptResponse = z14.object({
   usage: defaultOnError(zUsage.nullish(), () => void 0),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
-var zStartNesResponse = z14.object({
-  sessionId: zSessionId,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesSuggestionId = z14.string();
-var zPosition = z14.object({
-  line: z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }),
-  character: z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zRange = z14.object({
-  start: zPosition,
-  end: zPosition,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesTextEdit = z14.object({
-  range: zRange,
-  newText: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesEditSuggestion = z14.object({
-  id: zNesSuggestionId,
-  uri: z14.string(),
-  edits: z14.array(zNesTextEdit),
-  cursorPosition: defaultOnError(zPosition.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesJumpSuggestion = z14.object({
-  id: zNesSuggestionId,
-  uri: z14.string(),
-  position: zPosition,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRenameSuggestion = z14.object({
-  id: zNesSuggestionId,
-  uri: z14.string(),
-  position: zPosition,
-  newName: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesSearchAndReplaceSuggestion = z14.object({
-  id: zNesSuggestionId,
-  uri: z14.string(),
-  search: z14.string(),
-  replace: z14.string(),
-  isRegex: z14.boolean().nullish(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesSuggestion = z14.union([
-  zNesEditSuggestion.and(z14.object({
-    kind: z14.literal("edit")
-  })),
-  zNesJumpSuggestion.and(z14.object({
-    kind: z14.literal("jump")
-  })),
-  zNesRenameSuggestion.and(z14.object({
-    kind: z14.literal("rename")
-  })),
-  zNesSearchAndReplaceSuggestion.and(z14.object({
-    kind: z14.literal("searchAndReplace")
-  }))
-]);
-var zSuggestNesResponse = z14.object({
-  suggestions: z14.array(zNesSuggestion),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zCloseNesResponse = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
 var zExtResponse = z14.unknown();
 var zErrorCode = z14.union([
   z14.literal(-32700),
@@ -26335,9 +26184,6 @@ var zAgentResponse = z14.union([
       zSetSessionModeResponse,
       zSetSessionConfigOptionResponse,
       zPromptResponse,
-      zStartNesResponse,
-      zSuggestNesResponse,
-      zCloseNesResponse,
       zExtResponse
     ])
   }),
@@ -26710,21 +26556,6 @@ var zElicitationCapabilities = z14.object({
   url: defaultOnError(zElicitationUrlCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
-var zNesJumpCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRenameCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesSearchAndReplaceCapabilities = z14.object({
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zClientNesCapabilities = z14.object({
-  jump: defaultOnError(zNesJumpCapabilities.nullish(), () => void 0),
-  rename: defaultOnError(zNesRenameCapabilities.nullish(), () => void 0),
-  searchAndReplace: defaultOnError(zNesSearchAndReplaceCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
 var zClientCapabilities = z14.object({
   fs: defaultOnError(zFileSystemCapabilities.optional().default({ readTextFile: false, writeTextFile: false }), () => ({ readTextFile: false, writeTextFile: false })),
   terminal: defaultOnError(z14.boolean().optional().default(false), () => false),
@@ -26733,8 +26564,6 @@ var zClientCapabilities = z14.object({
   plan: defaultOnError(zPlanCapabilities.nullish(), () => void 0),
   auth: defaultOnError(zAuthCapabilities.optional().default({ terminal: false }), () => ({ terminal: false })),
   elicitation: defaultOnError(zElicitationCapabilities.nullish(), () => void 0),
-  nes: defaultOnError(zClientNesCapabilities.nullish(), () => void 0),
-  positionEncodings: defaultOnError(vecSkipError(zPositionEncodingKind).optional(), () => []),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zInitializeRequest = z14.object({
@@ -26813,10 +26642,21 @@ var zMcpServer = z14.union([
   })),
   zMcpServerStdio
 ]);
+var zSystemPromptMode = z14.union([
+  z14.literal("append"),
+  z14.literal("override"),
+  z14.string()
+]);
+var zSystemPrompt = z14.object({
+  mode: zSystemPromptMode,
+  content: z14.array(zContentBlock),
+  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
+});
 var zNewSessionRequest = z14.object({
   cwd: z14.string(),
   additionalDirectories: z14.array(z14.string()).optional(),
   mcpServers: z14.array(zMcpServer),
+  systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zLoadSessionRequest = z14.object({
@@ -26824,6 +26664,7 @@ var zLoadSessionRequest = z14.object({
   cwd: z14.string(),
   additionalDirectories: z14.array(z14.string()).optional(),
   sessionId: zSessionId,
+  systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zListSessionsRequest = z14.object({
@@ -26840,6 +26681,7 @@ var zForkSessionRequest = z14.object({
   cwd: z14.string(),
   additionalDirectories: z14.array(z14.string()).optional(),
   mcpServers: z14.array(zMcpServer).optional(),
+  systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zResumeSessionRequest = z14.object({
@@ -26847,6 +26689,7 @@ var zResumeSessionRequest = z14.object({
   cwd: z14.string(),
   additionalDirectories: z14.array(z14.string()).optional(),
   mcpServers: z14.array(zMcpServer).optional(),
+  systemPrompt: zSystemPrompt.nullish(),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 var zCloseSessionRequest = z14.object({
@@ -26876,104 +26719,6 @@ var zPromptRequest = z14.object({
   prompt: z14.array(zContentBlock),
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
-var zWorkspaceFolder = z14.object({
-  uri: z14.string(),
-  name: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRepository = z14.object({
-  name: z14.string(),
-  owner: z14.string(),
-  remoteUrl: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zStartNesRequest = z14.object({
-  workspaceUri: defaultOnError(z14.string().nullish(), () => void 0),
-  workspaceFolders: z14.array(zWorkspaceFolder).nullish(),
-  repository: defaultOnError(zNesRepository.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesTriggerKind = z14.union([
-  z14.literal("automatic"),
-  z14.literal("diagnostic"),
-  z14.literal("manual")
-]);
-var zNesRecentFile = z14.object({
-  uri: z14.string(),
-  languageId: z14.string(),
-  text: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesExcerpt = z14.object({
-  startLine: z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }),
-  endLine: z14.int().gte(0).max(4294967295, {
-    error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }),
-  text: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRelatedSnippet = z14.object({
-  uri: z14.string(),
-  excerpts: z14.array(zNesExcerpt),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesEditHistoryEntry = z14.object({
-  uri: z14.string(),
-  diff: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesUserAction = z14.object({
-  action: z14.string(),
-  uri: z14.string(),
-  position: zPosition,
-  timestampMs: z14.number(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesOpenFile = z14.object({
-  uri: z14.string(),
-  languageId: z14.string(),
-  visibleRange: defaultOnError(zRange.nullish(), () => void 0),
-  lastFocusedMs: defaultOnError(z14.number().nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesDiagnosticSeverity = z14.union([
-  z14.literal("error"),
-  z14.literal("warning"),
-  z14.literal("information"),
-  z14.literal("hint")
-]);
-var zNesDiagnostic = z14.object({
-  uri: z14.string(),
-  range: zRange,
-  severity: zNesDiagnosticSeverity,
-  message: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesSuggestContext = z14.object({
-  recentFiles: z14.array(zNesRecentFile).nullish(),
-  relatedSnippets: z14.array(zNesRelatedSnippet).nullish(),
-  editHistory: z14.array(zNesEditHistoryEntry).nullish(),
-  userActions: z14.array(zNesUserAction).nullish(),
-  openFiles: z14.array(zNesOpenFile).nullish(),
-  diagnostics: z14.array(zNesDiagnostic).nullish(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zSuggestNesRequest = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  version: z14.number(),
-  position: zPosition,
-  selection: zRange.nullish(),
-  triggerKind: zNesTriggerKind,
-  context: zNesSuggestContext.nullish(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zCloseNesRequest = z14.object({
-  sessionId: zSessionId,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
 var zClientRequest = z14.object({
   id: zRequestId,
   method: z14.string(),
@@ -26994,9 +26739,6 @@ var zClientRequest = z14.object({
     zSetSessionModeRequest,
     zSetSessionConfigOptionRequest,
     zPromptRequest,
-    zStartNesRequest,
-    zSuggestNesRequest,
-    zCloseNesRequest,
     zExtRequest
   ]).nullish()
 });
@@ -27124,61 +26866,6 @@ var zCancelNotification = z14.object({
   sessionId: zSessionId,
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
-var zDidOpenDocumentNotification = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  languageId: z14.string(),
-  version: z14.number(),
-  text: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zTextDocumentContentChangeEvent = z14.object({
-  range: zRange.nullish(),
-  text: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zDidChangeDocumentNotification = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  version: z14.number(),
-  contentChanges: z14.array(zTextDocumentContentChangeEvent),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zDidCloseDocumentNotification = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zDidSaveDocumentNotification = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zDidFocusDocumentNotification = z14.object({
-  sessionId: zSessionId,
-  uri: z14.string(),
-  version: z14.number(),
-  position: zPosition,
-  visibleRange: zRange,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zAcceptNesNotification = z14.object({
-  sessionId: zSessionId,
-  id: zNesSuggestionId,
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
-var zNesRejectReason = z14.union([
-  z14.literal("rejected"),
-  z14.literal("ignored"),
-  z14.literal("replaced"),
-  z14.literal("cancelled")
-]);
-var zRejectNesNotification = z14.object({
-  sessionId: zSessionId,
-  id: zNesSuggestionId,
-  reason: defaultOnError(zNesRejectReason.nullish(), () => void 0),
-  _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
-});
 var zMessageMcpNotification = z14.object({
   serverId: zMcpServerAcpId,
   requestId: zMcpRequestId,
@@ -27188,18 +26875,7 @@ var zMessageMcpNotification = z14.object({
 });
 var zClientNotification = z14.object({
   method: z14.string(),
-  params: z14.union([
-    zCancelNotification,
-    zDidOpenDocumentNotification,
-    zDidChangeDocumentNotification,
-    zDidCloseDocumentNotification,
-    zDidSaveDocumentNotification,
-    zDidFocusDocumentNotification,
-    zAcceptNesNotification,
-    zRejectNesNotification,
-    zMessageMcpNotification,
-    zExtNotification
-  ]).nullish()
+  params: z14.union([zCancelNotification, zMessageMcpNotification, zExtNotification]).nullish()
 });
 var zCancelRequestNotification = z14.object({
   requestId: zRequestId,
@@ -28097,6 +27773,12 @@ var RequestError = class _RequestError extends Error {
   static resourceNotFound(uri) {
     return new _RequestError(-32002, `Resource not found${uri ? `: ${uri}` : ""}`, uri && { uri });
   }
+  static unsupportedProtocolVersion(requested, supported) {
+    return new _RequestError(-32022, "Unsupported protocol version", {
+      requested,
+      supported: [...supported]
+    });
+  }
   /**
    * Converts this error to a JSON-RPC result object.
    */
@@ -28439,20 +28121,6 @@ var methods = {
       setConfigOption: AGENT_METHODS.session_set_config_option,
       prompt: AGENT_METHODS.session_prompt,
       cancel: AGENT_METHODS.session_cancel
-    },
-    nes: {
-      start: AGENT_METHODS.nes_start,
-      suggest: AGENT_METHODS.nes_suggest,
-      accept: AGENT_METHODS.nes_accept,
-      reject: AGENT_METHODS.nes_reject,
-      close: AGENT_METHODS.nes_close
-    },
-    document: {
-      didOpen: AGENT_METHODS.document_did_open,
-      didChange: AGENT_METHODS.document_did_change,
-      didClose: AGENT_METHODS.document_did_close,
-      didSave: AGENT_METHODS.document_did_save,
-      didFocus: AGENT_METHODS.document_did_focus
     }
   },
   client: {
@@ -28899,7 +28567,12 @@ function parseParams(parser, params) {
   return parser.parse(params);
 }
 function requestSpec(method, params, mapResponse) {
-  return { method, params, mapResponse };
+  return {
+    method,
+    // Match Rust's empty-payload handling without bypassing required fields.
+    params: (value) => parseParams(params, value ?? {}),
+    mapResponse
+  };
 }
 function notificationSpec(method, params) {
   return { method, params };
@@ -28936,20 +28609,10 @@ var agentRequestSpecs = {
   unstable_setProvider: requestSpec(AGENT_METHODS.providers_set, zSetProviderRequest, emptyObjectResponse),
   unstable_disableProvider: requestSpec(AGENT_METHODS.providers_disable, zDisableProviderRequest, emptyObjectResponse),
   logout: requestSpec(AGENT_METHODS.logout, zLogoutRequest, emptyObjectResponse),
-  prompt: requestSpec(AGENT_METHODS.session_prompt, zPromptRequest),
-  unstable_startNes: requestSpec(AGENT_METHODS.nes_start, zStartNesRequest),
-  unstable_suggestNes: requestSpec(AGENT_METHODS.nes_suggest, zSuggestNesRequest),
-  unstable_closeNes: requestSpec(AGENT_METHODS.nes_close, zCloseNesRequest, emptyObjectResponse)
+  prompt: requestSpec(AGENT_METHODS.session_prompt, zPromptRequest)
 };
 var agentNotificationSpecs = {
-  cancel: notificationSpec(AGENT_METHODS.session_cancel, zCancelNotification),
-  unstable_didOpenDocument: notificationSpec(AGENT_METHODS.document_did_open, zDidOpenDocumentNotification),
-  unstable_didChangeDocument: notificationSpec(AGENT_METHODS.document_did_change, zDidChangeDocumentNotification),
-  unstable_didCloseDocument: notificationSpec(AGENT_METHODS.document_did_close, zDidCloseDocumentNotification),
-  unstable_didSaveDocument: notificationSpec(AGENT_METHODS.document_did_save, zDidSaveDocumentNotification),
-  unstable_didFocusDocument: notificationSpec(AGENT_METHODS.document_did_focus, zDidFocusDocumentNotification),
-  unstable_acceptNes: notificationSpec(AGENT_METHODS.nes_accept, zAcceptNesNotification),
-  unstable_rejectNes: notificationSpec(AGENT_METHODS.nes_reject, zRejectNesNotification)
+  cancel: notificationSpec(AGENT_METHODS.session_cancel, zCancelNotification)
 };
 var clientRequestSpecs = {
   requestPermission: requestSpec(CLIENT_METHODS.session_request_permission, zRequestPermissionRequest),
@@ -29280,20 +28943,10 @@ var legacyAgentRequestMethods = /* @__PURE__ */ new Set([
   AGENT_METHODS.session_fork,
   AGENT_METHODS.session_resume,
   AGENT_METHODS.session_close,
-  AGENT_METHODS.logout,
-  AGENT_METHODS.nes_start,
-  AGENT_METHODS.nes_suggest,
-  AGENT_METHODS.nes_close
+  AGENT_METHODS.logout
 ]);
 var legacyAgentNotificationMethods = /* @__PURE__ */ new Set([
-  AGENT_METHODS.session_cancel,
-  AGENT_METHODS.nes_accept,
-  AGENT_METHODS.nes_reject,
-  AGENT_METHODS.document_did_open,
-  AGENT_METHODS.document_did_change,
-  AGENT_METHODS.document_did_close,
-  AGENT_METHODS.document_did_save,
-  AGENT_METHODS.document_did_focus
+  AGENT_METHODS.session_cancel
 ]);
 var legacyClientRequestMethods = /* @__PURE__ */ new Set([
   CLIENT_METHODS.session_request_permission,
