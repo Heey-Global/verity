@@ -244,20 +244,27 @@ for tag in target successor final drained forced resumed; do
     docker build --quiet --tag "$repo:$tag" - >/dev/null
 done
 docker tag "$previous_image" "$repo:previous"
-for tag in previous target successor final drained forced resumed; do
-  docker push --quiet "$repo:$tag" >/dev/null
-done
-
-digest_of() {
-  docker inspect --format '{{index .RepoDigests 0}}' "$1" | sed "s|^[^@]*|$repo|"
+# A loaded predecessor can retain an unrelated RepoDigests entry. Only the
+# manifest digest acknowledged by this registry's push is safe to pull back.
+push_generation() {
+  local tag="$1" output digest
+  output="$(docker push "$repo:$tag")" || return 1
+  printf '%s\n' "$output" >&2
+  digest="$(printf '%s\n' "$output" |
+    sed -nE "s/^${tag}: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\\1/p")"
+  if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "missing or ambiguous manifest digest for $repo:$tag" >&2
+    return 1
+  fi
+  printf '%s@%s\n' "$repo" "$digest"
 }
-previous_digest="$(digest_of "$repo:previous")"
-target_digest="$(digest_of "$repo:target")"
-successor_digest="$(digest_of "$repo:successor")"
-final_digest="$(digest_of "$repo:final")"
-drained_digest="$(digest_of "$repo:drained")"
-forced_digest="$(digest_of "$repo:forced")"
-resumed_digest="$(digest_of "$repo:resumed")"
+previous_digest="$(push_generation previous)"
+target_digest="$(push_generation target)"
+successor_digest="$(push_generation successor)"
+final_digest="$(push_generation final)"
+drained_digest="$(push_generation drained)"
+forced_digest="$(push_generation forced)"
+resumed_digest="$(push_generation resumed)"
 digests=("$previous_digest" "$target_digest" "$successor_digest" "$final_digest"
   "$drained_digest" "$forced_digest" "$resumed_digest")
 for digest in "${digests[@]}"; do
