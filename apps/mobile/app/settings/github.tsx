@@ -26,6 +26,7 @@ import {
 import { SigningKeyDisplay } from '../../components/settings/SigningKeyDisplay';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { createVerityClient } from '../../lib/client';
+import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import {
   patchVeritySettingsLocally,
   retryFailedVeritySettings,
@@ -78,6 +79,8 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
   const identityReady =
     author.values.gitUserName.trim() !== '' && author.values.gitUserEmail.trim() !== '';
   const signingReady = verifiedCommitsReady(settings);
+  const permission = useGithubPermission(client, connected);
+  const actionNeeded = connected && githubActionNeeded(permission);
 
   return (
     <SettingsScaffold
@@ -94,11 +97,16 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
       }}
     >
       <SettingsGroup title="Repository">
-        {connected ? <GithubPermissionNotice client={client} /> : null}
         <SettingsDisclosure
           title="GitHub connection"
           icon="github"
-          summary={connected ? 'Connected' : 'Not connected'}
+          summary={
+            connected
+              ? actionNeeded
+                ? 'Connected · 1 action needed'
+                : 'Connected'
+              : 'Not connected'
+          }
         >
           <Text style={styles.reproSubtitle}>
             GitHub lets Verity clone repositories, push branches, and open pull requests.
@@ -197,6 +205,14 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           />
         </SettingsDisclosure>
       </SettingsGroup>
+
+      {/* Last, below the settings it does not change: a step the operator takes
+          in GitHub, not a field on this screen. */}
+      {actionNeeded ? (
+        <SettingsGroup title="Action needed">
+          <GithubPermissionNotice client={client} permission={permission} />
+        </SettingsGroup>
+      ) : null}
 
       <SettingsSaveState dirty={author.dirty} />
     </SettingsScaffold>

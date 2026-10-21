@@ -18,6 +18,7 @@ import { type IconName } from '../../../components/Icon';
 import { type StatusIntent } from '../../../components/ui/Status';
 import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../lib/client';
+import { githubActionNeeded, useGithubPermission } from '../../../lib/githubPermission';
 import { useLoadVeritySettings, useVeritySettings } from '../../../lib/settingsStore';
 
 type Usage = Awaited<ReturnType<VerityClient['getConnectionUsage']>>;
@@ -50,6 +51,8 @@ export default function ConnectionsScreen() {
 function ConnectionsView({ client }: { client: VerityClient }) {
   const reload = useLoadVeritySettings(client);
   const { settings } = useVeritySettings();
+  const githubConnected = githubRepositoryAccessReady(settings);
+  const githubPermission = useGithubPermission(client, githubConnected);
   const [matrix, setMatrix] = useState<{ connected: boolean; status?: string }>({
     connected: false,
   });
@@ -102,7 +105,10 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       icon: 'github',
       subtitle: 'Repository access, commit author, signing key',
       route: '/settings/github',
-      connected: githubRepositoryAccessReady(settings),
+      connected: githubConnected,
+      ...(githubConnected && githubActionNeeded(githubPermission)
+        ? { status: 'Action needed', statusIntent: 'needsSetup' as const }
+        : {}),
     },
     {
       title: 'Claude',
