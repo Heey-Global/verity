@@ -359,9 +359,11 @@ describe('update runner', () => {
     const { root, daemon } = await adoptedDeployment('update-runner-retry-now');
     const journal = await journalled(root);
     let available = false;
+    let attempts = 0;
     const update = createUpdateRunner({
       ...options(root, daemon),
       reconcileCompanions: async () => {
+        attempts += 1;
         if (!available)
           throw new Error('pull failed', {
             cause: new Error('dial tcp 140.82.0.1:443: i/o timeout'),
@@ -377,8 +379,12 @@ describe('update runner', () => {
     expect(vi.getTimerCount()).toBe(1);
 
     available = true;
+    const before = attempts;
+    // A double tap joins the run it started instead of queueing another.
+    update.retryNow();
     update.retryNow();
     await update.idle();
+    expect(attempts).toBe(before + 1);
     expect(vi.getTimerCount()).toBe(0);
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
     // A finished operation has nothing left to explain.

@@ -233,14 +233,18 @@ export function ServerUpdateSection({
       setActionError(undefined);
       void client
         .retryServerUpdate(updateId)
+        .then(
+          () => undefined,
+          (caught: unknown) => {
+            // A 409 means the operation moved on — finished, rolled back,
+            // replaced, or moving again — and the fresh status below says which.
+            // Anything else is a retry that may not have reached the Updater.
+            if (!(caught instanceof VerityApiError && caught.status === 409))
+              setActionError('Could not retry the update.');
+          },
+        )
+        // Either way, show what the Updater is doing now rather than guessing.
         .then(() => refresh(true))
-        .catch(async (caught) => {
-          // A refusal means the operation moved on (finished, rolled back or was
-          // replaced); the fresh status says how, so only a failed read is news.
-          await refresh(true);
-          if (!(caught instanceof VerityApiError && caught.status === 409))
-            setActionError('Could not retry the update.');
-        })
         .finally(() => setRetrying(undefined));
     },
     [client, refresh, retrying],

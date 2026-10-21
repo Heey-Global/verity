@@ -63,9 +63,24 @@ export const UPDATE_ATTEMPT_CAUSES = [
 
 export type UpdateAttemptCause = (typeof UPDATE_ATTEMPT_CAUSES)[number];
 
+/**
+ * Phases a stalled operation may be abandoned in by a newer request — the
+ * Updater's rule, which the Server mirrors when it decides what to offer.
+ *
+ * Only after commit: the Server is already running the stuck operation's
+ * target, and the one thing left undone is moving the companions onto that
+ * image — which the successor's own companion step does for its newer image
+ * anyway. Before commit the live Server, the candidate and the Gateway are
+ * mid-switch, and abandoning that would leave a topology no step owns.
+ */
+export const SUPERSEDABLE_PHASES: readonly UpdatePhase[] = ['committed', 'reconciling-companions'];
+
+/** The update ids journals carry; shared by every hop that accepts one. */
+export const UPDATE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/;
+
 export interface UpdateAttempt {
   readonly updateId: string;
-  /** Failed attempts at this operation since it last made progress or was retried. */
+  /** Failed attempts at this operation since it began; reset only by a new one. */
   readonly failures: number;
   readonly lastAttemptAt: string;
   readonly lastError: { readonly phase: UpdatePhase; readonly cause: UpdateAttemptCause } | null;
@@ -109,8 +124,6 @@ export function classifyUpdateError(error: unknown): UpdateAttemptCause {
   if (error instanceof DockerError) return error.kind === 'network' ? 'network' : 'docker';
   return 'unknown';
 }
-
-const UPDATE_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/;
 
 const PHASES: readonly UpdatePhase[] = [
   'requested',
@@ -157,7 +170,7 @@ export function parseUpdateAttempt(value: unknown): UpdateAttempt | null {
     return null;
   if (
     typeof value.updateId !== 'string' ||
-    !UPDATE_ID.test(value.updateId) ||
+    !UPDATE_ID_PATTERN.test(value.updateId) ||
     !Number.isSafeInteger(value.failures) ||
     (value.failures as number) < 0 ||
     !timestamp(value.lastAttemptAt)

@@ -142,7 +142,7 @@ async function fixture(
 /** Carry the accepted request through cutover to a stopped companion step. */
 async function driveTo(
   managedRoot: string,
-  last: 'observing-candidate' | 'reconciling-companions',
+  last: 'observing-candidate' | 'committed' | 'committed-sealed' | 'reconciling-companions',
 ): Promise<void> {
   const preparation = [
     'requested',
@@ -180,6 +180,7 @@ async function driveTo(
     fromImage: image('a'),
     toImage: image('b'),
   });
+  if (last === 'committed-sealed') return;
   await advanceCompanionReconciliation(managedRoot, 'committed', 'reconciling-companions');
 }
 
@@ -1648,8 +1649,70 @@ describe('managed Updater stuck-operation recovery', () => {
     expect((await readUpdateJournal(managedRoot))?.phase).toBe('observing-candidate');
   });
 
-  it('resumes the named unfinished operation on request', async () => {
+  it('supersedes a stalled commit once the sealed spec names its target', async () => {
+    const { socketPath, token, managedRoot } = await fixture({ managed: true, now: stalledClock });
+    await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'k1',
+      targetDigest: image('b'),
+    });
+    await driveTo(managedRoot, 'committed-sealed');
+    await expect(
+      requestUpdaterOperation({
+        socketPath,
+        token,
+        idempotencyKey: 'k2',
+        targetDigest: image('c'),
+      }),
+    ).resolves.toMatchObject({ generation: 2, previousDigest: image('b') });
+  });
+
+  // Inside `committed` the Server may run the target while the sealed spec
+  // still names the old image. A successor started there would take that stale
+  // image as the one its rollback returns to.
+  it('refuses to supersede a commit whose sealed spec still names the old image', async () => {
+    const { socketPath, token, managedRoot } = await fixture({ managed: true, now: stalledClock });
+    await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'k1',
+      targetDigest: image('b'),
+    });
+    await driveTo(managedRoot, 'committed');
+    await expect(
+      requestUpdaterOperation({
+        socketPath,
+        token,
+        idempotencyKey: 'k2',
+        targetDigest: image('c'),
+      }),
+    ).rejects.toMatchObject({ status: 409, code: 'operation-in-progress' });
+    expect((await readUpdateJournal(managedRoot))?.phase).toBe('committed');
+  });
+
+  // A moving operation has its own retries and backoff; a device must not be
+  // able to turn them into a tight loop.
+  it('refuses to retry an operation that is still moving', async () => {
     const { socketPath, token, managedRoot, retried } = await fixture({ managed: true });
+    const original = await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'k1',
+      targetDigest: image('b'),
+    });
+    await driveTo(managedRoot, 'reconciling-companions');
+    await expect(
+      requestUpdaterRetry({ socketPath, token, updateId: original.updateId }),
+    ).rejects.toMatchObject({ status: 409, code: 'operation-in-progress' });
+    expect(retried).toHaveLength(0);
+  });
+
+  it('resumes the named unfinished operation on request', async () => {
+    const { socketPath, token, managedRoot, retried } = await fixture({
+      managed: true,
+      now: stalledClock,
+    });
     const original = await requestUpdaterOperation({
       socketPath,
       token,

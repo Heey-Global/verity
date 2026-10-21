@@ -7,7 +7,12 @@ import type {
   ReleaseChannelResolver,
   ServerUpdateAvailability,
 } from './self-update/release-channel.js';
-import { isStalledOperation, type UpdateAttempt } from './self-update/update-attempt.js';
+import {
+  SUPERSEDABLE_PHASES,
+  UPDATE_ID_PATTERN,
+  isStalledOperation,
+  type UpdateAttempt,
+} from './self-update/update-attempt.js';
 import { isTerminalOperationState, type UpdateOperation } from './self-update/update-operation.js';
 import { UpdaterRequestError } from './self-update/updater-status.js';
 
@@ -41,10 +46,6 @@ export interface ServerUpdateRouteDeps {
   /** Clock for the stall rule; defaults to `Date.now`. */
   now?: (() => number) | undefined;
 }
-
-/** Phases from which a stalled operation may be replaced by a newer release.
- *  Mirrors the Updater's own rule, which is the one that actually decides. */
-const SUPERSEDABLE_PHASES: readonly string[] = ['committed', 'reconciling-companions'];
 
 /** Phases in which the running Server is the operation's target generation. */
 const PROMOTED_PHASES: readonly string[] = ['committed', 'reconciling-companions', 'completed'];
@@ -92,9 +93,7 @@ function describeRecovery(
 
 // Mirrors the Updater's own request contract so a malformed body is refused
 // here instead of costing a round trip over the privileged control socket.
-const serverUpdateRetryBody = z
-  .object({ updateId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/) })
-  .strict();
+const serverUpdateRetryBody = z.object({ updateId: z.string().regex(UPDATE_ID_PATTERN) }).strict();
 
 const serverUpdateRequestBody = z.object({
   idempotencyKey: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/),

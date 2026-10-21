@@ -24,9 +24,10 @@ import {
   readUpdateJournal,
   withUpdateJournalLease,
   type UpdateJournal,
-  type UpdatePhase,
 } from './update-journal.js';
 import {
+  SUPERSEDABLE_PHASES,
+  UPDATE_ID_PATTERN,
   clearUpdateAttempt,
   isStalledOperation,
   parseUpdateAttempt,
@@ -450,27 +451,24 @@ function parseUpdateRequest(raw: string | null): UpdateRequestBody | null {
 }
 
 /**
- * Phases a stalled operation may be abandoned in by a newer request.
+ * A non-terminal operation a new request may replace: post-commit, not moving,
+ * and already sealed onto its own target.
  *
- * Only after commit: the Server is already running the stuck operation's target
- * and the sealed spec names it, so the one thing left undone is moving the
- * companions onto that image — which the successor's own companion step does
- * for its newer image anyway. Before commit the live Server, the candidate and
- * the Gateway are mid-switch, and abandoning that would leave a topology no
- * step owns; those operations must be resumed (or rolled back) first.
+ * "Not moving" is the shared stall rule, not the lease alone — a free lease only
+ * means no attempt is running this instant, while the runner's backoff may be
+ * about to start the next one that would have succeeded. A running attempt
+ * still holds the lease, so it refuses the request anyway.
+ *
+ * "Sealed onto its target" closes the window inside `committed` where the
+ * Server runs the target but the sealed spec may still name the previous
+ * image: the successor takes its `previousDigest` — the image any rollback
+ * returns to — from that spec, and must not inherit a stale one.
  */
-const SUPERSEDABLE: readonly UpdatePhase[] = ['committed', 'reconciling-companions'];
-
-/**
- * A non-terminal operation a new request may replace: post-commit and not
- * moving. "Not moving" is the shared stall rule, not the lease alone — a free
- * lease only means no attempt is running this instant, while the runner's
- * backoff may be about to start the next one that would have succeeded.
- * A running attempt still holds the lease, so it refuses the request anyway.
- */
-export function isSupersedable(journal: UpdateJournal, now: number): boolean {
+export function isSupersedable(journal: UpdateJournal, sealedImage: string, now: number): boolean {
   return (
-    SUPERSEDABLE.includes(journal.phase) && isStalledOperation(projectUpdateOperation(journal), now)
+    SUPERSEDABLE_PHASES.includes(journal.phase) &&
+    sealedImage === journal.targetDigest &&
+    isStalledOperation(projectUpdateOperation(journal), now)
   );
 }
 
@@ -521,6 +519,10 @@ async function acceptUpdateRequest(
     const expected = body.channel ?? releaseChannelFromEnv(process.env);
     if (selected !== expected) throw new UpdaterRequestError(409, 'channel-changed');
     const current = await readUpdateJournal(journalRoot);
+    // Re-read under the lease: the spec read above predates it, and a cutover
+    // advances the sealed image while holding this same lease.
+    const sealed = await readManagedDeployment(options.managedRoot);
+    if (!sealed.managed) throw new UpdaterRequestError(503, 'unmanaged');
     if (current !== null) {
       if (
         current.idempotencyKey === body.idempotencyKey &&
@@ -530,7 +532,7 @@ async function acceptUpdateRequest(
         return current;
       if (
         !isTerminalOperationState(projectUpdateOperation(current).state) &&
-        !isSupersedable(current, (options.now ?? Date.now)())
+        !isSupersedable(current, sealed.spec.image, (options.now ?? Date.now)())
       )
         throw new UpdaterRequestError(409, 'operation-in-progress');
     }
@@ -538,14 +540,15 @@ async function acceptUpdateRequest(
     // Archiving and beginning cannot be one atomic step, so the successor is
     // numbered from the highest generation on record — live or archived —
     // rather than from the journal that happens to be present right now.
-    if (current !== null) await archiveUpdateJournal(journalRoot, { supersede: SUPERSEDABLE });
+    if (current !== null)
+      await archiveUpdateJournal(journalRoot, { supersede: SUPERSEDABLE_PHASES });
     await clearUpdateAttempt(journalRoot).catch(() => undefined);
     return beginUpdate({
       root: journalRoot,
       deploymentId: state.marker.deploymentId,
       idempotencyKey: body.idempotencyKey,
       currentGeneration: await readHighestGeneration(journalRoot),
-      previousDigest: state.spec.image,
+      previousDigest: sealed.spec.image,
       targetDigest: body.targetDigest,
     });
   };
@@ -1083,7 +1086,7 @@ async function serveRetryRequest(
   } catch {
     updateId = undefined;
   }
-  if (typeof updateId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/.test(updateId)) {
+  if (typeof updateId !== 'string' || !UPDATE_ID_PATTERN.test(updateId)) {
     res.writeHead(400).end(JSON.stringify({ error: 'invalid-request' }));
     return;
   }
@@ -1104,6 +1107,12 @@ async function serveRetryRequest(
     isTerminalOperationState(projectUpdateOperation(journal).state)
   ) {
     res.writeHead(409).end(JSON.stringify({ error: 'not-retryable' }));
+    return;
+  }
+  // An operation that is still moving has its own retries and backoff; a
+  // device tapping "Retry" must not turn that into a tight loop on the registry.
+  if (!isStalledOperation(projectUpdateOperation(journal), (options.now ?? Date.now)())) {
+    res.writeHead(409).end(JSON.stringify({ error: 'operation-in-progress' }));
     return;
   }
   res.writeHead(202).end(JSON.stringify({ operation: projectUpdateOperation(journal) }));

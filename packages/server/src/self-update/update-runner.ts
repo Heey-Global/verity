@@ -303,6 +303,9 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
 
   let deferredRetry: ReturnType<typeof setTimeout> | undefined;
   let deferredDelay = 8_000;
+  // Runs queued or executing. An explicit retry joins them instead of adding
+  // another, so repeated taps cannot outpace the work they ask for.
+  let pending = 0;
 
   const run = async (): Promise<void> => {
     clearTimeout(deferredRetry);
@@ -361,7 +364,10 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
 
   let chain: Promise<void> = Promise.resolve();
   const enqueue = (): Promise<void> => {
-    chain = chain.then(run);
+    pending += 1;
+    chain = chain.then(run).finally(() => {
+      pending -= 1;
+    });
     return chain;
   };
   return {
@@ -371,6 +377,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     },
     idle: () => chain,
     retryNow: () => {
+      if (pending > 0) return;
       deferredDelay = 8_000;
       void enqueue();
     },
