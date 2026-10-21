@@ -1631,6 +1631,7 @@ export default function MeetingScreen() {
             accessibilityLabel="Meeting title"
             value={meetingTitle}
             onChangeText={setMeetingTitle}
+            maxLength={200}
             placeholder="Optional"
           />
           <View style={styles.setupSection}>
@@ -1709,7 +1710,7 @@ export default function MeetingScreen() {
               <View style={styles.setupSection}>
                 <SectionHeader title="Speech recognition" />
                 <Group>
-                  {showEngines ? (
+                  {showEngines && engines.length > 0 ? (
                     engines.map((item) => (
                       <Row
                         key={item.id}
