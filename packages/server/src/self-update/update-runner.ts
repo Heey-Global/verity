@@ -290,14 +290,15 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
    * alone deliberately: there the operation is genuinely resumable. The runner
    * retries it in the background, including after the quick retries run out.
    */
-  const recordStuckFailure = async (): Promise<void> => {
+  const recordStuckFailure = async (updateId: string | undefined): Promise<void> => {
     try {
       const current = await readUpdateJournal(options.managedRoot);
-      if (current === null || !isFailablePhase(current.phase)) return;
+      if (current === null || current.updateId !== updateId || !isFailablePhase(current.phase))
+        return;
       const phase = current.phase;
       await withUpdateJournalLease(options.managedRoot, async () => {
         const pinned = await readUpdateJournal(options.managedRoot);
-        if (pinned?.phase !== phase) return;
+        if (pinned?.updateId !== updateId || pinned.phase !== phase) return;
         await failUpdate(options.managedRoot, phase, `${phase}-failed`);
       });
     } catch (error) {
@@ -316,6 +317,10 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     clearTimeout(deferredRetry);
     deferredRetry = undefined;
     for (let attempt = 0; ; attempt += 1) {
+      // The operation this attempt works on. Its lease is released by the time
+      // a failure is handled, so a supersede may already have replaced it; the
+      // failure belongs to this one and must not be pinned on its successor.
+      const attempted = (await readUpdateJournal(options.managedRoot).catch(() => null))?.updateId;
       try {
         await execute();
         deferredDelay = 8_000;
@@ -332,9 +337,9 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         const failing = await readUpdateJournal(options.managedRoot).catch(() => null);
         // A journal already at `failed` no longer says which step broke; the
         // closed failure code on the journal explains it instead.
-        if (failing !== null && failing.phase !== 'failed')
+        if (failing !== null && failing.updateId === attempted && failing.phase !== 'failed')
           await recordAttempt(failing.phase, failing.updateId, error);
-        await recordStuckFailure();
+        await recordStuckFailure(attempted);
       }
       // Read durable intent again after the failed attempt releases its lease.
       // Backoff stays inside the queue so other Docker work cannot interleave.

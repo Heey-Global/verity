@@ -12,7 +12,7 @@ import {
 } from './managed-deployment.js';
 import { MANAGED_SERVER_NAME, reconcileManagedServer } from './managed-server-owner.js';
 import { createUpdateJournalCutoverStore } from './update-cutover.js';
-import { beginUpdate, readUpdateJournal } from './update-journal.js';
+import { archiveUpdateJournal, beginUpdate, readUpdateJournal } from './update-journal.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
 import {
   createOfficialImageVerifier,
@@ -380,7 +380,6 @@ describe('update runner', () => {
 
     available = true;
     const before = attempts;
-    // A double tap joins the run it started instead of queueing another.
     expect(update.retryNow()).toBe(true);
     await update.idle();
     expect(attempts).toBe(before + 1);
@@ -591,6 +590,33 @@ describe('update runner', () => {
    * else records it — and an operation stuck at `requested` would occupy the
    * single slot forever, answering every later request with a conflict.
    */
+  it('leaves an operation that superseded a failing attempt untouched', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-superseded');
+    const stalled = await journalled(root);
+    let successor: string | undefined;
+    const update = createUpdateRunner({
+      ...options(root, daemon),
+      reconcileCompanions: async () => {
+        if (successor === undefined) {
+          // An install accepted while this attempt still runs: the lease does
+          // not cover the window between the step failing and its record.
+          await archiveUpdateJournal(root, { supersede: ['reconciling-companions'] });
+          successor = (await journalled(root, 'request-2')).updateId;
+        }
+        throw new Error('pull failed');
+      },
+    });
+    await update.run();
+    expect(successor).not.toBe(stalled.updateId);
+    // Pinning the old failure on the successor would fail it at `requested`
+    // and show the old step's error against an install that never ran it.
+    expect(await readUpdateJournal(root)).not.toMatchObject({ phase: 'failed' });
+    expect(await readUpdateAttempt(root)).not.toMatchObject({
+      updateId: successor,
+      lastError: { phase: 'reconciling-companions' },
+    });
+  });
+
   it('records a failure that happens outside the journalled steps', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner');
     await journalled(root);
