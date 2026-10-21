@@ -335,7 +335,7 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   if (setresgid(0, 0, 0) < 0 || setresuid(0, 0, 0) < 0) fail("enter user namespace");
   if (unshare(CLONE_NEWNS) < 0) fail("unshare mount namespace");
   /* pivot_root rejects shared propagation, and none of these mounts may leak out. */
-  if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) < 0) fail("make mounts private");
+  if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) < 0) fail("make mounts slave");
   enter_pid_namespace();
   if (mount("tmpfs", sandbox, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700,size=16m") < 0)
     fail("mount sandbox root");
@@ -383,7 +383,7 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
      user namespace from a chrooted process, which broke every nested sandbox
      an agent starts, such as Codex's read-only reviewer. Detaching the old
      root keeps it as unreachable as chroot did. */
-  if (chdir(sandbox) < 0) fail("chdir sandbox root");
+  if (chdir(sandbox) < 0) fail("enter sandbox root");
   if (syscall(SYS_pivot_root, ".", ".") < 0) fail("pivot_root");
   if (umount2(".", MNT_DETACH) < 0) fail("detach previous root");
   if (chdir("/") < 0) fail("chdir sandbox root");
