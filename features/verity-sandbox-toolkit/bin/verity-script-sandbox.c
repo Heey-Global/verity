@@ -364,10 +364,10 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   if (mount("proc", proc, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) < 0)
     fail("mount proc");
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
-  /* Present but not writable, as under Landlock. Tools that bind the standard
-     temporary directory into a nested sandbox (Codex's bubblewrap) abort with
-     ENOENT when it is missing; their own scratch files follow TMPDIR. The mode
-     binds only once drop_namespace_privileges() removes CAP_DAC_OVERRIDE. */
+  /* Tools that bind the standard temporary directory into a nested sandbox
+     (Codex's bubblewrap) abort with ENOENT when it is missing; their own scratch
+     files follow TMPDIR. Like the rest of this private root it lives on the
+     sandbox tmpfs, which its owner could make writable; it exposes nothing. */
   char tmp[PATH_MAX];
   if (snprintf(tmp, sizeof(tmp), "%s/tmp", sandbox) >= (int)sizeof(tmp)) {
     errno = ENAMETOOLONG;
@@ -383,7 +383,9 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   /* pivot_root rather than chroot: the kernel (and gVisor) refuses to create a
      user namespace from a chrooted process, which broke every nested sandbox
      an agent starts, such as Codex's read-only reviewer. Detaching the old
-     root keeps it as unreachable as chroot did. */
+     root keeps it as unreachable as chroot did. The only other process in this
+     mount namespace is the PID-namespace parent, which is moved along but only
+     waits and relays signals; the cleaner forked before it keeps the host view. */
   if (chdir(sandbox) < 0) fail("enter sandbox root");
   if (syscall(SYS_pivot_root, ".", ".") < 0) fail("pivot_root");
   if (umount2(".", MNT_DETACH) < 0) fail("detach previous root");

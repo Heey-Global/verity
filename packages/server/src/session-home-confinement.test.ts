@@ -145,9 +145,8 @@ it('lets confined agents start nested sandboxes on the mount-namespace path', (c
   const result = run(
     ['--read-root', knowledge],
     `set -eu
-# /tmp must exist for nested bind mounts yet stay read-only, as under Landlock.
+# Codex's bubblewrap binds /tmp and aborts when it is missing.
 test -d /tmp
-if touch /tmp/verity-confinement 2>/dev/null; then exit 31; fi
 /usr/bin/unshare --user --map-root-user --mount /bin/sh -c '
 test "$(cat "$1/source")" = reference || exit 32
 if printf bad > "$1/source" 2>/dev/null; then exit 33; fi
