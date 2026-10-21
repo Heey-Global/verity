@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { isIP } from 'node:net';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
 import { connectorBackpressure } from './connector-backpressure.js';
@@ -49,6 +50,10 @@ const COOKIE_NAME = '__Host-verity-preview';
 const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
+const EDGE_LOOP_PROBE_MS = 500;
+const EDGE_LOOP_LAG_REPORT_MS = 1_000;
+const EDGE_LOOP_SUMMARY_MS = 10_000;
+const CGROUP_CPU_STAT = '/sys/fs/cgroup/cpu.stat';
 
 export function validWebhookPath(value: string): boolean {
   return (
@@ -89,7 +94,52 @@ export interface PreviewEdgeOptions {
   trustedProxyHops?: number;
   /** Absolute expiry enforced inside the edge even when Verity is unavailable. */
   expiresAt?: string;
+  /** Bounded transport metadata only; excludes URLs, credentials and payloads. */
+  onDiagnostic?: (diagnostic: PreviewEdgeDiagnostic) => void;
 }
+
+/**
+ * The edge's half of the connector heartbeat. The connector can only see that a
+ * pong never came back; these records say whether its ping reached the edge,
+ * when the edge's reply actually left the process, and whether the edge itself
+ * was stalled — the three places a reply can be lost. `tunnel` numbers the
+ * connector connections this process accepted, so records of one tunnel can be
+ * told from the next.
+ */
+export type PreviewEdgeDiagnostic =
+  | { event: 'connector.attached'; tunnel: number }
+  | {
+      event: 'connector.ping';
+      tunnel: number;
+      sinceAttachMs: number;
+      /** Bytes already queued on the connector socket ahead of the reply. */
+      bufferedAmount: number;
+    }
+  | { event: 'connector.pong'; tunnel: number; writeMs: number }
+  | {
+      event: 'connector.closed';
+      tunnel: number;
+      code: number;
+      elapsedMs: number;
+      pings: number;
+      pongs: number;
+    }
+  | { event: 'loop.lag'; lagMs: number }
+  /**
+   * Event-loop delay and CPU over the last window, so a quiet log still shows
+   * the edge was responsive. `cpuMs` is this process's user plus system time;
+   * the throttling counts come from the container's cgroup and are omitted
+   * where it is not readable.
+   */
+  | {
+      event: 'loop.delay';
+      windowMs: number;
+      p99Ms: number;
+      maxMs: number;
+      cpuMs: number;
+      throttledPeriods?: number;
+      throttledMs?: number;
+    };
 
 export type PreviewConnectorDiagnostic =
   | { event: 'connect.started' }
@@ -235,9 +285,27 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
   return `scrypt:${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 }
 
+/**
+ * Cumulative CFS throttling of this container (cgroup v2). A CPU limit that is
+ * hit stalls the edge in slices too short for the loop probe to see one by one,
+ * so the count is the only record of it from inside the process.
+ */
+function cgroupThrottling(): { periods: number; usec: number } | undefined {
+  let stat: string;
+  try {
+    stat = readFileSync(CGROUP_CPU_STAT, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const periods = /^nr_throttled (\d+)$/m.exec(stat)?.[1];
+  const usec = /^throttled_usec (\d+)$/m.exec(stat)?.[1];
+  if (periods === undefined || usec === undefined) return undefined;
+  return { periods: Number(periods), usec: Number(usec) };
+}
+
 export class PreviewEdge {
   private readonly options: Required<
-    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>
+    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath' | 'onDiagnostic'>
   > &
     Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>;
   private readonly server: Server;
@@ -256,6 +324,12 @@ export class PreviewEdge {
   private loginVerifications = 0;
   private readonly expiresAtMs: number;
   private expiryTimer: NodeJS.Timeout | undefined;
+  private readonly diagnose: (diagnostic: PreviewEdgeDiagnostic) => void;
+  private readonly observed: boolean;
+  private tunnels = 0;
+  private loopMonitor: NodeJS.Timeout | undefined;
+  private loopSummary: NodeJS.Timeout | undefined;
+  private loopDelay: ReturnType<typeof monitorEventLoopDelay> | undefined;
 
   constructor(options: PreviewEdgeOptions) {
     if (
@@ -287,6 +361,17 @@ export class PreviewEdge {
     ) {
       throw new Error('publicOrigin must use https');
     }
+    const onDiagnostic = options.onDiagnostic;
+    this.observed = onDiagnostic !== undefined;
+    // An observer must never break the transport it observes: these records are
+    // emitted from inside the ping handler and the loop timers.
+    this.diagnose = (diagnostic) => {
+      try {
+        onDiagnostic?.(diagnostic);
+      } catch {
+        // Dropped; the next record still goes out.
+      }
+    };
     this.options = {
       accessMode: 'pin',
       ...options,
@@ -311,6 +396,9 @@ export class PreviewEdge {
     this.websocketServer = new WebSocketServer({
       noServer: true,
       maxPayload: encodedPayloadLimit(this.options.maxBodyBytes),
+      // Answered in `attachConnector` instead, so the reply's write completion
+      // can be observed; the answer itself is the same.
+      autoPong: false,
     });
     // Application sockets carry the message itself rather than a base64 frame
     // around one, so their ceiling is the body bound with no envelope allowance.
@@ -478,13 +566,72 @@ export class PreviewEdge {
         const address = this.server.address();
         if (!address || typeof address === 'string')
           return reject(new Error('edge has no TCP address'));
+        // Nobody reads the loop records without an observer, so an unobserved
+        // edge keeps no probe timers or histogram running.
+        if (this.observed) this.monitorLoop();
         resolve(address.port);
       });
     });
   }
 
+  /**
+   * Reports event-loop stalls long enough to matter to the connector heartbeat.
+   * A stalled edge answers nothing, and from the connector that is
+   * indistinguishable from a reply lost on the way, so the stall has to be
+   * recorded here, where it happens. Only lag beyond a second is reported.
+   */
+  private monitorLoop(): void {
+    if (this.loopMonitor) return;
+    let expected = performance.now() + EDGE_LOOP_PROBE_MS;
+    this.loopMonitor = setInterval(() => {
+      const now = performance.now();
+      const lagMs = Math.round(now - expected);
+      expected = now + EDGE_LOOP_PROBE_MS;
+      if (lagMs >= EDGE_LOOP_LAG_REPORT_MS) this.diagnose({ event: 'loop.lag', lagMs });
+    }, EDGE_LOOP_PROBE_MS);
+    this.loopMonitor.unref();
+    const delay = monitorEventLoopDelay({ resolution: 20 });
+    delay.enable();
+    this.loopDelay = delay;
+    let cpu = process.cpuUsage();
+    let throttling = cgroupThrottling();
+    let windowStart = performance.now();
+    this.loopSummary = setInterval(() => {
+      // Measured rather than assumed: a stalled edge fires this late, and the
+      // CPU and throttling deltas then cover the longer span.
+      const now = performance.now();
+      const windowMs = Math.round(now - windowStart);
+      windowStart = now;
+      const used = process.cpuUsage(cpu);
+      cpu = process.cpuUsage();
+      const current = cgroupThrottling();
+      this.diagnose({
+        event: 'loop.delay',
+        windowMs,
+        p99Ms: Math.round(delay.percentile(99) / 1e6),
+        maxMs: Math.round(delay.max / 1e6),
+        cpuMs: Math.round((used.user + used.system) / 1e3),
+        ...(current && throttling
+          ? {
+              throttledPeriods: current.periods - throttling.periods,
+              throttledMs: Math.round((current.usec - throttling.usec) / 1e3),
+            }
+          : {}),
+      });
+      throttling = current;
+      delay.reset();
+    }, EDGE_LOOP_SUMMARY_MS);
+    this.loopSummary.unref();
+  }
+
   async close(): Promise<void> {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    if (this.loopMonitor) clearInterval(this.loopMonitor);
+    if (this.loopSummary) clearInterval(this.loopSummary);
+    this.loopDelay?.disable();
+    this.loopMonitor = undefined;
+    this.loopSummary = undefined;
+    this.loopDelay = undefined;
     this.connector?.close(1001, 'edge shutdown');
     this.resetAll(new Error('preview edge stopped'));
     await new Promise<void>((resolve, reject) =>
@@ -500,6 +647,34 @@ export class PreviewEdge {
       this.connector.close(4001, 'replaced by current connector');
     }
     this.connector = client;
+    const tunnel = ++this.tunnels;
+    const attachedAt = performance.now();
+    let pings = 0;
+    let pongs = 0;
+    this.diagnose({ event: 'connector.attached', tunnel });
+    client.on('ping', (payload: Buffer) => {
+      pings += 1;
+      const received = performance.now();
+      this.diagnose({
+        event: 'connector.ping',
+        tunnel,
+        sinceAttachMs: Math.round(received - attachedAt),
+        bufferedAmount: client.bufferedAmount,
+      });
+      try {
+        client.pong(payload, false, (error?: Error) => {
+          if (error) return;
+          pongs += 1;
+          this.diagnose({
+            event: 'connector.pong',
+            tunnel,
+            writeMs: Math.round(performance.now() - received),
+          });
+        });
+      } catch {
+        // Closing already; the close record carries the final counts.
+      }
+    });
     client.on('message', (data, binary) => {
       if (binary) return client.close(1003, 'binary frames are unsupported');
       let frame: unknown;
@@ -513,7 +688,15 @@ export class PreviewEdge {
       }
       this.applyFrame(client, frame);
     });
-    client.once('close', () => {
+    client.once('close', (code: number) => {
+      this.diagnose({
+        event: 'connector.closed',
+        tunnel,
+        code,
+        elapsedMs: Math.round(performance.now() - attachedAt),
+        pings,
+        pongs,
+      });
       if (this.connector === client) {
         this.connector = undefined;
         this.resetAll(new Error('preview connector disconnected'));
