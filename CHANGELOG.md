@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.52.0](https://github.com/Heey-Global/verity/compare/v4.51.8...v4.52.0) (2026-10-21)
+
+
+### Features
+
+* **preview:** record the edge side of the connector heartbeat ([#1756](https://github.com/Heey-Global/verity/issues/1756)) ([f937fe4](https://github.com/Heey-Global/verity/commit/f937fe46af2eb2d536f4e1f28c82f8c7634c76f3))
+
+
+### Bug Fixes
+
+* **preview:** tolerate brief public share tunnel gaps ([#1757](https://github.com/Heey-Global/verity/issues/1757)) ([d6e9aa7](https://github.com/Heey-Global/verity/commit/d6e9aa71b05af2a84ecfee20a63ea7b871a19226))
+* **release:** recover missing OTA merge PR associations ([#1742](https://github.com/Heey-Global/verity/issues/1742)) ([59d6948](https://github.com/Heey-Global/verity/commit/59d6948e0fd13b55f3a1569d1bf8d8353e7b7422))
+* **updater:** resume companion reconciliation after quick retries ([#1754](https://github.com/Heey-Global/verity/issues/1754)) ([17f9842](https://github.com/Heey-Global/verity/commit/17f9842a7e28eac880be417ec4408feeb58248d7))
+
 ## [4.51.8](https://github.com/Heey-Global/verity/compare/v4.51.7...v4.51.8) (2026-10-20)
 
 
