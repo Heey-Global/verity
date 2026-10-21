@@ -105,9 +105,9 @@ beforeEach(() => {
 
 it('passes the selected expected group size when starting a meeting', async () => {
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByLabelText('Up to 4 people'));
-  expect(screen.getByLabelText('Up to 4 people').props.accessibilityState).toEqual(
-    expect.objectContaining({ selected: true }),
+  fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
+  expect(screen.getByRole('radio', { name: /^Up to 4 people/ }).props.accessibilityState).toEqual(
+    expect.objectContaining({ checked: true }),
   );
   fireEvent.press(screen.getByLabelText('Start meeting'));
   await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4));
@@ -115,7 +115,7 @@ it('passes the selected expected group size when starting a meeting', async () =
 
 it('offers larger groups and passes their size to the recorder', async () => {
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByLabelText('Larger group'));
+  fireEvent.press(await screen.findByRole('radio', { name: /^Larger group/ }));
   fireEvent.press(screen.getByLabelText('Start meeting'));
   await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 10));
 });

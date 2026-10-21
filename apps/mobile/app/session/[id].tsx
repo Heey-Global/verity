@@ -8035,14 +8035,13 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
         </View>
       ) : null}
       {descriptor.action === 'claude-login' ? (
-        <Pressable
-          style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
-          accessibilityRole="button"
-          accessibilityLabel="Sign in to Claude"
-        >
-          <Text style={styles.eventActionLabel}>Sign in to Claude</Text>
-        </Pressable>
+        <View style={styles.eventActionRow}>
+          <Button
+            label="Sign in to Claude"
+            size="compact"
+            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -11822,18 +11821,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
   },
-  eventAction: {
-    alignSelf: 'flex-start',
-    marginTop: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.signature,
-  },
-  eventActionLabel: {
-    color: theme.colors.background,
-    fontFamily: theme.fonts.bold,
-  },
+  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
   eventActionPressed: {
     opacity: 0.72,
   },

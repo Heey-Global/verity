@@ -439,7 +439,7 @@ export function QuickCaptureBubble() {
                 );
             }}
           >
-            <Text style={{ color: theme.colors.signature }}>Undo</Text>
+            <Text style={{ color: theme.colors.action }}>Undo</Text>
           </Pressable>
         </View>
       ) : null}

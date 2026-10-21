@@ -66,7 +66,7 @@ export default function UnlockDevice() {
   if (checkingBiometrics) {
     return (
       <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
-        <ActivityIndicator color={theme.colors.signature} />
+        <ActivityIndicator color={theme.colors.textMuted} />
       </View>
     );
   }
