@@ -51,7 +51,7 @@ export function isStalledOperation(
   return now - updatedAt > UPDATER_STALL_MS;
 }
 
-export const UPDATE_ATTEMPT_CAUSES = [
+const UPDATE_ATTEMPT_CAUSES = [
   'network-timeout',
   'network',
   'registry',

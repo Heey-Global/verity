@@ -464,7 +464,7 @@ function parseUpdateRequest(raw: string | null): UpdateRequestBody | null {
  * image: the successor takes its `previousDigest` — the image any rollback
  * returns to — from that spec, and must not inherit a stale one.
  */
-export function isSupersedable(journal: UpdateJournal, sealedImage: string, now: number): boolean {
+function isSupersedable(journal: UpdateJournal, sealedImage: string, now: number): boolean {
   return (
     SUPERSEDABLE_PHASES.includes(journal.phase) &&
     sealedImage === journal.targetDigest &&
