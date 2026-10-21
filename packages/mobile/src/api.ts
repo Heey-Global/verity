@@ -854,9 +854,38 @@ export const serverUpdateStatusSchema = z.discriminatedUnion('state', [
   }),
   z.object({ state: z.literal('unreachable'), reason: z.string() }),
 ]);
+// What the server adds for recovering a stuck update. Every field is optional:
+// a server that predates them simply offers no recovery, and a malformed value
+// degrades to "not reported" instead of failing the whole update panel.
+const serverUpdateAttemptSchema = z.object({
+  updateId: z.string().min(1),
+  failures: z.number().int().nonnegative(),
+  lastAttemptAt: z.string().min(1),
+  lastError: z.object({ phase: z.string().min(1), cause: z.string().min(1) }).nullable(),
+});
+export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
+
+const serverUpdateRecoverySchema = z.object({
+  installed: z
+    .object({
+      version: z.string().min(1),
+      generation: z.number().int().positive().nullable(),
+    })
+    .optional()
+    .catch(undefined),
+  attempt: serverUpdateAttemptSchema.nullable().optional().catch(undefined),
+  stalled: z.boolean().optional().catch(undefined),
+  recovery: z.object({ retry: z.boolean(), supersede: z.boolean() }).optional().catch(undefined),
+});
+
 export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
   operation: ServerUpdateOperation | null;
-};
+} & Partial<{
+    installed: { version: string; generation: number | null };
+    attempt: ServerUpdateAttempt | null;
+    stalled: boolean;
+    recovery: { retry: boolean; supersede: boolean };
+  }>;
 
 const serverUpdateEnvelopeSchema = z.object({
   operation: serverUpdateOperationSchema.nullable(),
@@ -2961,10 +2990,29 @@ export class VerityClient {
   async getServerUpdates(): Promise<ServerUpdateStatus> {
     const res = await this.request('/server/updates', { method: 'GET' });
     const body: unknown = await res.json();
+    const recovery = serverUpdateRecoverySchema.parse(body);
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
+      ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
+      ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),
+      ...(recovery.recovery === undefined ? {} : { recovery: recovery.recovery }),
     };
+  }
+
+  /**
+   * Resume the stuck operation `updateId` now — what restarting the Updater on
+   * the host used to be the only way to do. Named by id so a stale screen cannot
+   * re-run an operation that has since finished or been replaced.
+   */
+  async retryServerUpdate(updateId: string): Promise<ServerUpdateOperation> {
+    const res = await this.request('/server/updates/retry', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ updateId }),
+    });
+    return serverUpdateAcceptedSchema.parse(await res.json()).operation;
   }
 
   /**

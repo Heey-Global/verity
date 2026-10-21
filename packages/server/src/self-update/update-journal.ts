@@ -622,18 +622,23 @@ const TERMINAL_PHASES: readonly UpdatePhase[] = ['completed', 'rolled-back', 'fa
  * record under a generation-derived name.
  *
  * Only a terminal operation may be archived — an in-flight one would lose the
- * intent that crash recovery depends on. The archive name is derived from the
+ * intent that crash recovery depends on. `supersede` names the non-terminal
+ * phases a caller has established are safe to abandon; the archived record
+ * keeps the phase it stopped in, so the history shows it never completed. The archive name is derived from the
  * monotone generation rather than from any journal-supplied text, so nothing in
  * the file can influence the path it is renamed to. Callers must hold the
  * journal lease.
  */
-export async function archiveUpdateJournal(rootPath: string): Promise<UpdateJournal | null> {
+export async function archiveUpdateJournal(
+  rootPath: string,
+  options: { readonly supersede?: readonly UpdatePhase[] } = {},
+): Promise<UpdateJournal | null> {
   const directory = await openRoot(rootPath);
   try {
     const root = `/proc/self/fd/${directory.fd}`;
     const current = await readPinned(root);
     if (current === null) return null;
-    if (!TERMINAL_PHASES.includes(current.phase))
+    if (!TERMINAL_PHASES.includes(current.phase) && !options.supersede?.includes(current.phase))
       throw new Error(`update operation is still in progress: ${current.phase}`);
     await rename(
       join(root, UPDATE_JOURNAL_FILE),

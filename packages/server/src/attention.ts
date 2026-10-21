@@ -23,7 +23,8 @@
  */
 
 import type { CodexUsageHealth } from './codexUsage.js';
-import { isTerminalOperationState, type UpdateOperation } from './self-update/update-operation.js';
+import { isStalledOperation } from './self-update/update-attempt.js';
+import type { UpdateOperation } from './self-update/update-operation.js';
 
 /**
  * Codes are grouped by WHERE the signal rides, because that is the difference
@@ -79,17 +80,9 @@ export type UpdaterProbe =
   | { readonly kind: 'reachable'; readonly operation: UpdateOperation | null }
   | { readonly kind: 'unreachable' };
 
-/**
- * How long an update may sit in one non-terminal state before it is stuck.
- *
- * Every non-terminal state advances on its own — `prepared` is not an operator
- * gate; the Updater's runner goes straight from `standby` into the cutover
- * ("prepared …; starting cutover", `self-update/update-runner.ts`). So any
- * non-terminal state that stops moving is a stall, and the only question is how
- * long is too long. 30 minutes is far above the slowest legitimate step (an
- * image pull on a slow link) and far below the hours the incident ran unseen.
- */
-export const UPDATER_STALL_MS = 30 * 60 * 1000;
+// The stall threshold is shared with the Updater's supersede rule and the update
+// screen's recovery offer, so the banner and the screen agree on "stuck".
+export { UPDATER_STALL_MS } from './self-update/update-attempt.js';
 
 /**
  * How long the Codex quota probe may keep failing before it is worth a banner.
@@ -363,10 +356,6 @@ export function sessionAttentionSignals(inputs: SessionAttentionInputs): Attenti
 function stalledUpdate(inputs: AttentionInputs): UpdateOperation | null {
   if (inputs.updater.kind !== 'reachable') return null;
   const operation = inputs.updater.operation;
-  if (operation === null || isTerminalOperationState(operation.state)) return null;
-  const updatedAt = Date.parse(operation.updatedAt);
-  // An unparsable timestamp is not evidence of a stall; the journal is the
-  // Updater's own record and a malformed value is a different bug.
-  if (Number.isNaN(updatedAt)) return null;
-  return inputs.now - updatedAt > UPDATER_STALL_MS ? operation : null;
+  if (operation === null) return null;
+  return isStalledOperation(operation, inputs.now) ? operation : null;
 }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readUpdateAttempt } from './update-attempt.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -350,6 +351,38 @@ describe('update runner', () => {
     expect(attempts).toBe(5);
     expect(vi.getTimerCount()).toBe(0);
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+  });
+
+  // The device's "Retry" lands here: it must not wait out a backoff that has
+  // grown to minutes, and its outcome must be readable on the update screen.
+  it('records why an attempt failed and resumes at once on an explicit retry', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-retry-now');
+    const journal = await journalled(root);
+    let available = false;
+    const update = createUpdateRunner({
+      ...options(root, daemon),
+      reconcileCompanions: async () => {
+        if (!available)
+          throw new Error('pull failed', {
+            cause: new Error('dial tcp 140.82.0.1:443: i/o timeout'),
+          });
+      },
+    });
+    await update.run();
+    expect(await readUpdateAttempt(root)).toMatchObject({
+      updateId: journal.updateId,
+      failures: 4,
+      lastError: { phase: 'reconciling-companions', cause: 'network-timeout' },
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    available = true;
+    update.retryNow();
+    await update.idle();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+    // A finished operation has nothing left to explain.
+    expect(await readUpdateAttempt(root)).toBeNull();
   });
 
   it('serializes a deferred retry behind startup reconciliation', async () => {

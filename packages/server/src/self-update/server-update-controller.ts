@@ -10,9 +10,11 @@ import {
   publishUpdaterHandoff,
   readUpdaterHandoff,
   readUpdaterAgentSeed,
+  readUpdaterAttempt,
   readUpdaterOperation,
   readUpdaterStandby,
   requestUpdaterOperation,
+  requestUpdaterRetry,
   requestManagedMatrixConnector,
   updaterControlTokenPath,
   UPDATER_CONTROL_SOCKET,
@@ -82,6 +84,19 @@ export async function createServerUpdateController(
     },
     async readOperation() {
       return readUpdaterOperation(await channel());
+    },
+    async readAttempt() {
+      try {
+        return await readUpdaterAttempt(await channel());
+      } catch (error) {
+        // An Updater from before the attempt record has no route for it — nor
+        // for retry, which ships with it. `undefined` says "cannot", not "none".
+        if (error instanceof UpdaterRequestError && error.status === 404) return undefined;
+        throw error;
+      }
+    },
+    async retryUpdate(updateId) {
+      return requestUpdaterRetry({ ...(await channel()), updateId });
     },
     async requestUpdate(input) {
       await verifyImage(input.targetDigest);

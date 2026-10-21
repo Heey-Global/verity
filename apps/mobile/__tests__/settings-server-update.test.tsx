@@ -945,3 +945,100 @@ describe('server update channel selection', () => {
     },
   );
 });
+
+// The incident this screen was rebuilt for: 4.52.0 committed, its companion step
+// stuck on an image pull, 4.52.1 published meanwhile — and the old panel showed
+// an endless "Activating" spinner with no way out but a host restart.
+describe('stuck server update', () => {
+  const NEWER = {
+    version: '4.52.1',
+    serverImage: `ghcr.io/heey-global/verity/verity-server@sha256:${'c'.repeat(64)}`,
+    publishedAt: '2026-10-21T00:00:00.000Z',
+  };
+  const stuck = {
+    state: 'available',
+    release: NEWER,
+    operation: {
+      updateId: 'update-155',
+      state: 'activating',
+      phase: 'reconciling-companions',
+      step: 15,
+      totalSteps: 16,
+      generation: 155,
+      previousDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+      targetDigest: SERVER_IMAGE,
+      failureCode: null,
+      startedAt: '2026-10-20T21:31:00.000Z',
+      updatedAt: '2026-10-20T21:42:00.000Z',
+    },
+    installed: { version: '4.52.0', generation: 155 },
+    stalled: true,
+    recovery: { retry: true, supersede: true },
+    attempt: {
+      updateId: 'update-155',
+      failures: 12,
+      lastAttemptAt: '2026-10-21T11:55:00.000Z',
+      lastError: { phase: 'reconciling-companions', cause: 'network-timeout' },
+    },
+  };
+
+  it('shows the installed version, the stuck update and the newer release separately', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getServerUpdates: jest.fn().mockResolvedValue(stuck) }),
+    );
+    render(<ServerUpdateScreen />);
+
+    expect(await screen.findByText('Update to 4.52.0 did not finish')).toBeOnTheScreen();
+    expect(screen.getByText('Generation 155 · running')).toBeOnTheScreen();
+    expect(screen.getByText('Updating companions · step 15 of 16')).toBeOnTheScreen();
+    expect(screen.getByText('Updating companions failed: network timeout')).toBeOnTheScreen();
+    expect(screen.getByText('Version 4.52.1 available')).toBeOnTheScreen();
+    // No spinner pretending the stuck operation is still switching over.
+    expect(screen.queryByText(/Switching over/)).toBeNull();
+    expect(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/)).toBeEnabled();
+    expect(screen.getByLabelText(/^Install 4\.52\.1(,|$)/)).toBeEnabled();
+  });
+
+  it('resumes the stuck operation by its id', async () => {
+    const retryServerUpdate = jest.fn().mockResolvedValue(stuck.operation);
+    const getServerUpdates = jest.fn().mockResolvedValue(stuck);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getServerUpdates, retryServerUpdate }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+    await waitFor(() => expect(retryServerUpdate).toHaveBeenCalledWith('update-155'));
+    // The screen re-reads what the Updater is doing instead of assuming.
+    await waitFor(() => expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByText('Could not retry the update.')).toBeNull();
+  });
+
+  it('installs the newer release as a new request', async () => {
+    const requestServerUpdate = jest.fn().mockResolvedValue({
+      ...stuck.operation,
+      updateId: 'update-156',
+      state: 'preparing',
+      phase: 'requested',
+      step: 1,
+      generation: 156,
+      targetDigest: NEWER.serverImage,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest.fn().mockResolvedValue(stuck),
+        requestServerUpdate,
+      }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Install 4\.52\.1(,|$)/));
+    await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
+    const sent = requestServerUpdate.mock.calls[0]?.[0] as {
+      targetDigest: string;
+      idempotencyKey: string;
+    };
+    expect(sent.targetDigest).toBe(NEWER.serverImage);
+    expect(sent.idempotencyKey).toContain('g155');
+  });
+});

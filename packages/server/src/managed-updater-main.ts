@@ -137,6 +137,9 @@ export async function startManagedUpdaterMain(): Promise<void> {
     onOperationAccepted: () => {
       runner.start();
     },
+    onRetryRequested: () => {
+      runner.retryNow();
+    },
     onMatrixConfigured: async () => {
       await enableManagedMatrixConnector(MANAGED_DEPLOYMENT_ROOT);
       if (matrixRetry !== undefined) {

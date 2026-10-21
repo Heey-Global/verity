@@ -225,6 +225,7 @@ export type ClientOverrides = {
   getServerUpdateChannel?: jest.Mock;
   setServerUpdateChannel?: jest.Mock;
   requestServerUpdate?: jest.Mock;
+  retryServerUpdate?: jest.Mock;
   listProjects?: jest.Mock;
   recreateProjectContainer?: jest.Mock;
   listModels?: jest.Mock;
@@ -287,6 +288,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.getServerUpdates ??
       jest.fn().mockResolvedValue({ state: 'unsupported', reason: 'not managed', operation: null }),
     requestServerUpdate: opts.requestServerUpdate ?? jest.fn(notImplemented('requestServerUpdate')),
+    retryServerUpdate: opts.retryServerUpdate ?? jest.fn(notImplemented('retryServerUpdate')),
     createHttpMcpConnection:
       opts.createHttpMcpConnection ?? jest.fn(notImplemented('createHttpMcpConnection')),
     deleteHttpMcpConnection:

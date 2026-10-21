@@ -123,7 +123,19 @@ function describeOperation(operation: ServerUpdateOperation): ServerUpdateView {
  */
 export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateView {
   const operation = status.operation;
-  if (operation !== null && isBusy(operation.state)) return describeOperation(operation);
+  if (operation !== null && isBusy(operation.state)) {
+    const outcome = describeOperation(operation);
+    // The one exception to "in flight wins": the server reports the operation
+    // stuck after commit and has said it will let a newer release replace it.
+    if (status.recovery?.supersede !== true || status.state !== 'available') return outcome;
+    const digest = status.release.serverImage;
+    return {
+      ...outcome,
+      action: `Install ${status.release.version}`,
+      targetDigest: digest,
+      idempotencyKey: attemptKey(digest, operation),
+    };
+  }
   if (operation !== null && isFailure(operation.state)) {
     const outcome = describeOperation(operation);
     if (status.state !== 'available') return outcome;
@@ -217,5 +229,343 @@ export function serverUpdatePollMs(operation: ServerUpdateOperation | null): num
 export function serverUpdateAwaitsAttention(status: ServerUpdateStatus | undefined): boolean {
   if (status === undefined) return false;
   if (status.state !== 'available') return false;
-  return status.operation === null || !isBusy(status.operation.state);
+  // A stuck operation a newer release may replace is exactly when the operator
+  // has something to do, even though the operation is technically in flight.
+  return (
+    status.operation === null ||
+    !isBusy(status.operation.state) ||
+    status.recovery?.supersede === true
+  );
+}
+
+// ── Panel model ──────────────────────────────────────────────────────────────
+
+/** A card's action. Install forwards the server's own digest; retry names the
+ *  operation, so a stale screen cannot act on a different one. */
+export type ServerUpdateCardAction =
+  | {
+      readonly kind: 'install';
+      readonly label: string;
+      readonly targetDigest: string;
+      readonly idempotencyKey: string;
+      readonly primary: boolean;
+    }
+  | {
+      readonly kind: 'retry';
+      readonly label: string;
+      readonly updateId: string;
+      readonly primary: boolean;
+    };
+
+export interface ServerUpdateCard {
+  readonly key: string;
+  /** Section label above the card. */
+  readonly section: string;
+  readonly status: {
+    readonly label: string;
+    readonly tone: 'active' | 'problem' | 'done' | 'idle';
+  };
+  readonly title: string;
+  /** Release the card is about, for the "Stable · released …" line; null when unknown. */
+  readonly release: { readonly version: string; readonly publishedAt: string } | null;
+  readonly detail: string;
+  /** Running operation: where it is in its plan. */
+  readonly progress: {
+    readonly step: number;
+    readonly total: number;
+    readonly phase: string;
+  } | null;
+  /** Stuck operation: the phase it stopped in and since when (ISO). */
+  readonly stalled: {
+    readonly phase: string;
+    readonly step: number;
+    readonly total: number;
+    readonly since: string;
+  } | null;
+  /** Closed-code explanation of the last failed attempt. */
+  readonly error: string | null;
+  readonly action: ServerUpdateCardAction | null;
+  /** Release whose notes belong inside this card — only the version on offer. */
+  readonly notesVersion: string | null;
+}
+
+export interface ServerUpdatePanel {
+  /** What is running now; null only for a server that reports neither. */
+  readonly installed: { readonly version: string; readonly generation: number | null } | null;
+  readonly cards: readonly ServerUpdateCard[];
+}
+
+const PHASE_LABEL: Record<string, string> = {
+  requested: 'Starting',
+  pulling: 'Downloading',
+  'verifying-image': 'Verifying',
+  preflight: 'Readiness check',
+  'creating-standby': 'Preparing',
+  standby: 'Ready to switch',
+  'quiescing-old': 'Switching over',
+  'handing-off-key': 'Switching over',
+  'activating-candidate': 'Switching over',
+  'checking-candidate': 'Switching over',
+  'draining-gateway': 'Switching over',
+  'switching-gateway': 'Switching over',
+  'observing-candidate': 'Switching over',
+  committed: 'Updating companions',
+  'reconciling-companions': 'Updating companions',
+  'rollback-quiescing-candidate': 'Rolling back',
+  'rollback-activating-old': 'Rolling back',
+  'rollback-switching-gateway': 'Rolling back',
+};
+
+const CAUSE_LABEL: Record<string, string> = {
+  'network-timeout': 'network timeout',
+  network: 'network unreachable',
+  registry: 'the registry refused the download',
+  'disk-full': 'the disk is full',
+  unhealthy: 'a service did not start',
+  docker: 'Docker reported an error',
+  unknown: 'unknown error',
+};
+
+/** Phases after which the stuck operation's target is already serving. */
+const PROMOTED = ['committed', 'reconciling-companions'];
+
+function phaseLabel(phase: string): string {
+  return PHASE_LABEL[phase] ?? 'Updating';
+}
+
+function attemptError(status: ServerUpdateStatus, operation: ServerUpdateOperation): string | null {
+  const error = status.attempt?.updateId === operation.updateId ? status.attempt.lastError : null;
+  if (error === null || error === undefined) return null;
+  return `${phaseLabel(error.phase)} failed: ${CAUSE_LABEL[error.cause] ?? CAUSE_LABEL.unknown}`;
+}
+
+/** The version an operation is installing, when the payload lets us know it. */
+function operationVersion(
+  status: ServerUpdateStatus,
+  operation: ServerUpdateOperation,
+): { version: string; publishedAt: string } | null {
+  if ('release' in status && status.release.serverImage === operation.targetDigest)
+    return { version: status.release.version, publishedAt: status.release.publishedAt };
+  // After commit the server runs the target, so its own version names it.
+  if (PROMOTED.includes(operation.phase) && status.installed !== undefined)
+    return { version: status.installed.version, publishedAt: '' };
+  return null;
+}
+
+function availabilityCard(status: ServerUpdateStatus, key: string | null): ServerUpdateCard {
+  const view = describeServerUpdate(status);
+  const base = {
+    key: 'availability',
+    section: 'Update',
+    release:
+      'release' in status
+        ? { version: status.release.version, publishedAt: status.release.publishedAt }
+        : null,
+    progress: null,
+    stalled: null,
+    error: null,
+    notesVersion: null,
+  };
+  switch (status.state) {
+    case 'available':
+      return {
+        ...base,
+        status: { label: 'Available', tone: 'active' },
+        title: view.title,
+        detail: view.detail,
+        action:
+          view.targetDigest === null || key === null
+            ? null
+            : {
+                kind: 'install',
+                label: `Install ${status.release.version}`,
+                targetDigest: view.targetDigest,
+                idempotencyKey: key,
+                primary: true,
+              },
+        notesVersion: status.release.version,
+      };
+    case 'current':
+      return {
+        ...base,
+        status: { label: 'Up to date', tone: 'done' },
+        title: view.title,
+        detail: view.detail,
+        action: null,
+      };
+    case 'incompatible':
+      return {
+        ...base,
+        status: { label: 'Not installable', tone: 'problem' },
+        title: view.title,
+        detail: view.detail,
+        action: null,
+      };
+    case 'unreachable':
+    case 'unsupported':
+      return {
+        ...base,
+        status: { label: 'Unknown', tone: 'idle' },
+        title: view.title,
+        detail: view.detail,
+        action: null,
+      };
+  }
+}
+
+/**
+ * The whole update screen: what is installed, then one card per thing the
+ * operator can look at or act on, in order — the operation first, then a
+ * release on offer. Release notes sit inside the card of the version on offer,
+ * never beside an operation for another version.
+ */
+export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpdatePanel {
+  const operation = status.operation;
+  const installed =
+    status.installed ??
+    (status.state === 'current' ? { version: status.release.version, generation: null } : null);
+  const view = describeServerUpdate(status);
+  const offer =
+    status.state === 'available' && view.targetDigest !== null && view.idempotencyKey !== null
+      ? view.idempotencyKey
+      : null;
+
+  if (operation === null || operation.state === 'completed')
+    return { installed, cards: [availabilityCard(status, offer ?? attemptKeyFor(status))] };
+
+  const target = operationVersion(status, operation);
+  const named = target?.version ?? 'the new version';
+  const error = attemptError(status, operation);
+
+  if (isBusy(operation.state) && status.stalled !== true) {
+    return {
+      installed,
+      cards: [
+        {
+          key: operation.updateId,
+          section: 'Update',
+          status: {
+            label: operation.state === 'rolling-back' ? 'Rolling back' : 'In progress',
+            tone: 'active',
+          },
+          title:
+            operation.state === 'rolling-back'
+              ? 'Restoring the previous version'
+              : `Installing ${named}`,
+          release: target?.publishedAt ? target : null,
+          detail: OPERATION_DETAIL[operation.state],
+          progress: {
+            step: operation.step,
+            total: operation.totalSteps,
+            phase: phaseLabel(operation.phase),
+          },
+          stalled: null,
+          error,
+          action: null,
+          notesVersion: target?.publishedAt ? target.version : null,
+        },
+      ],
+    };
+  }
+
+  if (isBusy(operation.state)) {
+    const supersede = status.recovery?.supersede === true && offer !== null;
+    const promoted = PROMOTED.includes(operation.phase);
+    const stuck: ServerUpdateCard = {
+      key: operation.updateId,
+      section: 'Unfinished update',
+      status: { label: 'Stuck', tone: 'problem' },
+      title: `Update to ${named} did not finish`,
+      release: null,
+      detail: promoted
+        ? `${named === 'the new version' ? 'The new version' : named} is already running. Only the companion services were not updated.`
+        : status.recovery?.retry === true
+          ? 'Retrying resumes the update where it stopped, or rolls it back. A newer version can be installed once it has finished.'
+          : 'This server cannot resume the update from the app. Restarting the Updater on the host resumes it.',
+      progress: null,
+      stalled: {
+        phase: phaseLabel(operation.phase),
+        step: operation.step,
+        total: operation.totalSteps,
+        since: operation.updatedAt,
+      },
+      error,
+      action:
+        status.recovery?.retry === true
+          ? {
+              kind: 'retry',
+              label: target === null ? 'Retry' : `Retry ${target.version}`,
+              updateId: operation.updateId,
+              primary: !supersede,
+            }
+          : null,
+      notesVersion: null,
+    };
+    if (!supersede || status.state !== 'available') return { installed, cards: [stuck] };
+    return {
+      installed,
+      cards: [
+        stuck,
+        {
+          ...availabilityCard(status, offer),
+          key: 'supersede',
+          section: 'Available',
+          status: { label: 'New version', tone: 'active' },
+          title: `Version ${status.release.version} available`,
+          detail: `Replaces the unfinished update. Verity finishes or skips the stuck step, then installs ${status.release.version}.`,
+        },
+      ],
+    };
+  }
+
+  // Failed or rolled back: the outcome stays visible, and a way forward is
+  // offered on the same card when it is the same release, else on its own.
+  const outcome = describeOperation(operation);
+  const failure: ServerUpdateCard = {
+    key: operation.updateId,
+    section: 'Update',
+    status: {
+      label: operation.state === 'rolled-back' ? 'Rolled back' : 'Failed',
+      tone: 'problem',
+    },
+    title:
+      target === null
+        ? outcome.title
+        : `Update to ${target.version} ${operation.state === 'rolled-back' ? 'was rolled back' : 'failed'}`,
+    release: target?.publishedAt ? target : null,
+    detail: outcome.detail,
+    progress: null,
+    stalled: null,
+    error,
+    action: null,
+    notesVersion: null,
+  };
+  if (status.state !== 'available' || offer === null) return { installed, cards: [failure] };
+  if (status.release.serverImage === operation.targetDigest)
+    return {
+      installed,
+      cards: [
+        {
+          ...failure,
+          action: {
+            kind: 'install',
+            label: 'Try again',
+            targetDigest: status.release.serverImage,
+            idempotencyKey: offer,
+            primary: true,
+          },
+          notesVersion: status.release.version,
+        },
+      ],
+    };
+  return {
+    installed,
+    cards: [failure, { ...availabilityCard(status, offer), section: 'Available' }],
+  };
+}
+
+function attemptKeyFor(status: ServerUpdateStatus): string | null {
+  return status.state === 'available'
+    ? attemptKey(status.release.serverImage, status.operation)
+    : null;
 }

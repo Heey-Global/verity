@@ -24,7 +24,15 @@ import {
   readUpdateJournal,
   withUpdateJournalLease,
   type UpdateJournal,
+  type UpdatePhase,
 } from './update-journal.js';
+import {
+  clearUpdateAttempt,
+  isStalledOperation,
+  parseUpdateAttempt,
+  readUpdateAttempt,
+  type UpdateAttempt,
+} from './update-attempt.js';
 import {
   isTerminalOperationState,
   parseUpdateOperation,
@@ -84,6 +92,7 @@ const UPDATER_ERROR_CODES = [
   'already-current',
   'operation-in-progress',
   'channel-changed',
+  'not-retryable',
   'unavailable',
 ] as const;
 
@@ -232,6 +241,14 @@ export interface UpdaterStatusServerOptions {
    * control boundary itself never touches Docker.
    */
   readonly onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
+  /**
+   * Invoked when a device asks to resume the current, unfinished operation now.
+   * The Updater process drops its deferred backoff and re-enters the same run
+   * an Updater restart would; absent, `POST /v1/update/retry` answers 503.
+   */
+  readonly onRetryRequested?: (journal: UpdateJournal) => void | Promise<void>;
+  /** Clock for the stall rule; defaults to `Date.now`. */
+  readonly now?: () => number;
   /** Persist Matrix activation and reconcile its worker after account setup. */
   readonly onMatrixConfigured?: () => Promise<void>;
   /**
@@ -433,6 +450,31 @@ function parseUpdateRequest(raw: string | null): UpdateRequestBody | null {
 }
 
 /**
+ * Phases a stalled operation may be abandoned in by a newer request.
+ *
+ * Only after commit: the Server is already running the stuck operation's target
+ * and the sealed spec names it, so the one thing left undone is moving the
+ * companions onto that image — which the successor's own companion step does
+ * for its newer image anyway. Before commit the live Server, the candidate and
+ * the Gateway are mid-switch, and abandoning that would leave a topology no
+ * step owns; those operations must be resumed (or rolled back) first.
+ */
+const SUPERSEDABLE: readonly UpdatePhase[] = ['committed', 'reconciling-companions'];
+
+/**
+ * A non-terminal operation a new request may replace: post-commit and not
+ * moving. "Not moving" is the shared stall rule, not the lease alone — a free
+ * lease only means no attempt is running this instant, while the runner's
+ * backoff may be about to start the next one that would have succeeded.
+ * A running attempt still holds the lease, so it refuses the request anyway.
+ */
+export function isSupersedable(journal: UpdateJournal, now: number): boolean {
+  return (
+    SUPERSEDABLE.includes(journal.phase) && isStalledOperation(projectUpdateOperation(journal), now)
+  );
+}
+
+/**
  * Accept an update request against the sealed authority.
  *
  * A matching in-flight key is answered from the durable journal without taking
@@ -486,14 +528,18 @@ async function acceptUpdateRequest(
         current.deploymentId === state.marker.deploymentId
       )
         return current;
-      if (!isTerminalOperationState(projectUpdateOperation(current).state))
+      if (
+        !isTerminalOperationState(projectUpdateOperation(current).state) &&
+        !isSupersedable(current, (options.now ?? Date.now)())
+      )
         throw new UpdaterRequestError(409, 'operation-in-progress');
     }
     // Generations must stay monotone across operations regardless of outcome.
     // Archiving and beginning cannot be one atomic step, so the successor is
     // numbered from the highest generation on record — live or archived —
     // rather than from the journal that happens to be present right now.
-    if (current !== null) await archiveUpdateJournal(journalRoot);
+    if (current !== null) await archiveUpdateJournal(journalRoot, { supersede: SUPERSEDABLE });
+    await clearUpdateAttempt(journalRoot).catch(() => undefined);
     return beginUpdate({
       root: journalRoot,
       deploymentId: state.marker.deploymentId,
@@ -797,6 +843,8 @@ export const UPDATER_CONTROL_ROUTES = [
   'GET /v1/update-channel',
   'POST /v1/update-channel',
   'POST /v1/update',
+  'GET /v1/update/attempt',
+  'POST /v1/update/retry',
   'POST /v1/matrix-connector/configured',
   'GET /v1/handoff',
   'POST /v1/handoff',
@@ -950,6 +998,25 @@ async function serveUpdaterRequest(
     );
     return;
   }
+  if (path === '/v1/update/attempt') {
+    // A separate route rather than a field on `GET /v1/update`: that envelope is
+    // parsed with an exact key set by every Server generation still running.
+    try {
+      const root = options.journalRoot ?? options.managedRoot;
+      const journal = await readUpdateJournal(root);
+      const attempt = await readUpdateAttempt(root);
+      // A record left behind by an earlier operation says nothing about this one.
+      const current = journal !== null && attempt?.updateId === journal.updateId ? attempt : null;
+      res.writeHead(200).end(JSON.stringify({ attempt: current }));
+    } catch {
+      res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+    }
+    return;
+  }
+  if (path === '/v1/update/retry') {
+    await serveRetryRequest(req, res, options);
+    return;
+  }
   if (req.method === 'GET') {
     try {
       const journal = await readUpdateJournal(options.journalRoot ?? options.managedRoot);
@@ -986,6 +1053,64 @@ async function serveUpdaterRequest(
     }
     res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
   }
+}
+
+/**
+ * Resume the current operation now, on a device's request.
+ *
+ * Bound to the operation by id so a stale screen cannot re-run something else:
+ * a request naming an operation that has since finished or been replaced is
+ * refused, and the device re-reads the status. Nothing is journalled here — the
+ * operation's intent is already durable, and the runner re-reads it under the
+ * lease before touching Docker, exactly as after an Updater restart.
+ */
+async function serveRetryRequest(
+  req: import('node:http').IncomingMessage,
+  res: import('node:http').ServerResponse,
+  options: UpdaterStatusServerOptions,
+): Promise<void> {
+  let updateId: unknown;
+  try {
+    const body = await readBody(req);
+    const value: unknown = body === null ? null : JSON.parse(body);
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 1
+    )
+      updateId = (value as { updateId?: unknown }).updateId;
+  } catch {
+    updateId = undefined;
+  }
+  if (typeof updateId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/.test(updateId)) {
+    res.writeHead(400).end(JSON.stringify({ error: 'invalid-request' }));
+    return;
+  }
+  if (options.onRetryRequested === undefined) {
+    res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+    return;
+  }
+  let journal: UpdateJournal | null;
+  try {
+    journal = await readUpdateJournal(options.journalRoot ?? options.managedRoot);
+  } catch {
+    res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+    return;
+  }
+  if (
+    journal === null ||
+    journal.updateId !== updateId ||
+    isTerminalOperationState(projectUpdateOperation(journal).state)
+  ) {
+    res.writeHead(409).end(JSON.stringify({ error: 'not-retryable' }));
+    return;
+  }
+  res.writeHead(202).end(JSON.stringify({ operation: projectUpdateOperation(journal) }));
+  const accepted = journal;
+  void Promise.resolve()
+    .then(() => options.onRetryRequested?.(accepted))
+    .catch(() => undefined);
 }
 
 function closeServer(server: Server): Promise<void> {
@@ -1243,6 +1368,46 @@ export async function requestUpdaterOperation(
       },
     },
   );
+  if (status !== 202) throw new UpdaterRequestError(status, errorCode(value));
+  const operation = parseOperationEnvelope(value);
+  if (operation === undefined || operation === null)
+    throw new Error('updater operation response is invalid');
+  return operation;
+}
+
+/**
+ * Why the current operation's last attempt failed, or `null` when nothing is
+ * recorded. An Updater that predates the route answers 404, which the caller
+ * reads as "this Updater cannot say" rather than as an error.
+ */
+export async function readUpdaterAttempt(
+  options: UpdaterCallOptions,
+): Promise<UpdateAttempt | null> {
+  const { status, value } = await call(options, { method: 'GET', path: '/v1/update/attempt' });
+  if (status !== 200) throw new UpdaterRequestError(status, errorCode(value));
+  const record = value as Record<string, unknown> | null;
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    Object.keys(record).length !== 1 ||
+    !Object.hasOwn(record, 'attempt')
+  )
+    throw new Error('updater attempt response is invalid');
+  if (record.attempt === null) return null;
+  const attempt = parseUpdateAttempt(record.attempt);
+  if (attempt === null) throw new Error('updater attempt response is invalid');
+  return attempt;
+}
+
+/** Ask the Updater to resume the named, unfinished operation now. */
+export async function requestUpdaterRetry(
+  options: UpdaterCallOptions & { readonly updateId: string },
+): Promise<UpdateOperation> {
+  const { status, value } = await call(options, {
+    method: 'POST',
+    path: '/v1/update/retry',
+    body: { updateId: options.updateId },
+  });
   if (status !== 202) throw new UpdaterRequestError(status, errorCode(value));
   const operation = parseOperationEnvelope(value);
   if (operation === undefined || operation === null)

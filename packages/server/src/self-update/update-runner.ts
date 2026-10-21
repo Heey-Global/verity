@@ -29,6 +29,12 @@ import {
 } from './update-journal.js';
 import { isTerminalOperationState, projectUpdateOperation } from './update-operation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
+import {
+  classifyUpdateError,
+  clearUpdateAttempt,
+  readUpdateAttempt,
+  writeUpdateAttempt,
+} from './update-attempt.js';
 import { openActivationGate } from './activation-gate.js';
 import {
   MANAGED_GATEWAY_CONTROL_SOCKET,
@@ -162,6 +168,8 @@ export interface UpdateRunner {
   start(): void;
   /** Whatever run is currently queued; excludes deferred retry timers. */
   idle(): Promise<void>;
+  /** Operator-requested resume: drop the deferred backoff and run now. */
+  retryNow(): void;
   /** Serialize another Docker mutation with managed updates. */
   enqueueExclusive(task: () => Promise<void>): Promise<void>;
 }
@@ -253,6 +261,24 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   };
 
   /**
+   * Remember why an attempt failed, for the device deciding whether to retry or
+   * supersede. Best effort: the journal is the authority, this only explains it.
+   */
+  const recordAttempt = async (phase: UpdatePhase, updateId: string, error: unknown) => {
+    try {
+      const previous = await readUpdateAttempt(options.managedRoot);
+      await writeUpdateAttempt(options.managedRoot, {
+        updateId,
+        failures: previous?.updateId === updateId ? previous.failures + 1 : 1,
+        lastAttemptAt: new Date().toISOString(),
+        lastError: { phase, cause: classifyUpdateError(error) },
+      });
+    } catch (recordError) {
+      log(`could not record the failed attempt: ${describe(recordError)}`);
+    }
+  };
+
+  /**
    * Record a failure that happened OUTSIDE the journalled steps — building the
    * Docker actions, reading the sealed authority — so the single slot does not
    * stay occupied by an operation that will never move and refuse every later
@@ -285,11 +311,18 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
       try {
         await execute();
         deferredDelay = 8_000;
+        const finished = await readUpdateJournal(options.managedRoot).catch(() => null);
+        if (finished?.phase === 'completed' || finished?.phase === 'rolled-back')
+          await clearUpdateAttempt(options.managedRoot).catch(() => undefined);
         return;
       } catch (error) {
         log(`update operation failed: ${describe(error)}`);
         if (error instanceof Error && error.stack !== undefined)
           log(`update operation failure stack: ${error.stack}`);
+        // Read the phase before a failable one is overwritten with `failed`, so
+        // the record names the step that broke rather than the outcome.
+        const failing = await readUpdateJournal(options.managedRoot).catch(() => null);
+        if (failing !== null) await recordAttempt(failing.phase, failing.updateId, error);
         await recordStuckFailure();
       }
       // Read durable intent again after the failed attempt releases its lease.
@@ -337,6 +370,10 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
       void enqueue();
     },
     idle: () => chain,
+    retryNow: () => {
+      deferredDelay = 8_000;
+      void enqueue();
+    },
     enqueueExclusive: (task) => {
       const result = chain.then(task);
       chain = result.catch(() => undefined);

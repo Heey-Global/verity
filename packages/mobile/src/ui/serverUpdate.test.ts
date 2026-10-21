@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerUpdateOperation, ServerUpdateStatus } from '../api.js';
 import {
   describeServerUpdate,
+  describeServerUpdatePanel,
   serverUpdatePollMs,
   serverUpdateAwaitsAttention,
   showsServerUpdatePanel,
@@ -228,5 +229,191 @@ describe('serverUpdateAwaitsAttention', () => {
 
   it('stays dark before the first answer arrives', () => {
     expect(serverUpdateAwaitsAttention(undefined)).toBe(false);
+  });
+});
+
+describe('server update screen', () => {
+  // Production case: 4.52.0 committed, companion step stopped since yesterday,
+  // 4.52.1 published meanwhile. The screen must show both the stuck operation
+  // and the newer release, each with its own way out.
+  const newer = {
+    version: '4.52.1',
+    serverImage: `ghcr.io/heey-global/verity/verity-server@sha256:${'c'.repeat(64)}`,
+    publishedAt: '2026-10-21T00:00:00.000Z',
+  };
+  const stuckOperation = operation({
+    updateId: 'update-155',
+    state: 'activating',
+    phase: 'reconciling-companions',
+    step: 15,
+    totalSteps: 16,
+    generation: 155,
+    targetDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`,
+    updatedAt: '2026-10-20T21:42:00.000Z',
+  });
+  const stuck = (over: Partial<ServerUpdateStatus> = {}) =>
+    status({
+      release: newer,
+      operation: stuckOperation,
+      installed: { version: '4.52.0', generation: 155 },
+      stalled: true,
+      recovery: { retry: true, supersede: true },
+      attempt: {
+        updateId: 'update-155',
+        failures: 12,
+        lastAttemptAt: '2026-10-21T11:55:00.000Z',
+        lastError: { phase: 'reconciling-companions', cause: 'network-timeout' },
+      },
+      ...over,
+    });
+
+  it('shows the installed version above an available release with its notes', () => {
+    const panel = describeServerUpdatePanel(
+      status({ installed: { version: '1.3.0', generation: 2 } }),
+    );
+    expect(panel.installed).toEqual({ version: '1.3.0', generation: 2 });
+    expect(panel.cards).toHaveLength(1);
+    expect(panel.cards[0]).toMatchObject({
+      status: { label: 'Available', tone: 'active' },
+      action: { kind: 'install', label: 'Install 1.4.0', targetDigest: release.serverImage },
+      notesVersion: '1.4.0',
+    });
+  });
+
+  it('shows progress for a moving operation and offers nothing', () => {
+    const panel = describeServerUpdatePanel(
+      status({
+        operation: operation({
+          state: 'activating',
+          phase: 'switching-gateway',
+          step: 12,
+          totalSteps: 16,
+        }),
+      }),
+    );
+    expect(panel.cards).toEqual([
+      expect.objectContaining({
+        title: 'Installing 1.4.0',
+        progress: { step: 12, total: 16, phase: 'Switching over' },
+        action: null,
+        notesVersion: '1.4.0',
+      }),
+    ]);
+  });
+
+  it('splits a stuck operation and a newer release into two actionable cards', () => {
+    const [stuckCard, offer, ...rest] = describeServerUpdatePanel(stuck()).cards;
+    expect(rest).toEqual([]);
+    expect(stuckCard).toMatchObject({
+      section: 'Unfinished update',
+      status: { label: 'Stuck', tone: 'problem' },
+      title: 'Update to 4.52.0 did not finish',
+      stalled: {
+        phase: 'Updating companions',
+        step: 15,
+        total: 16,
+        since: '2026-10-20T21:42:00.000Z',
+      },
+      error: 'Updating companions failed: network timeout',
+      action: { kind: 'retry', label: 'Retry 4.52.0', updateId: 'update-155', primary: false },
+      // The stuck operation's notes would describe a version that is already running.
+      notesVersion: null,
+    });
+    expect(offer).toMatchObject({
+      section: 'Available',
+      status: { label: 'New version' },
+      title: 'Version 4.52.1 available',
+      action: {
+        kind: 'install',
+        label: 'Install 4.52.1',
+        targetDigest: newer.serverImage,
+        primary: true,
+      },
+      notesVersion: '4.52.1',
+    });
+    // The install key must change with the operation so it is a new request.
+    expect(offer?.action).toMatchObject({ idempotencyKey: expect.stringContaining('-g155') });
+  });
+
+  it('makes retry the primary action when nothing newer can replace the stuck update', () => {
+    const cards = describeServerUpdatePanel(
+      stuck({
+        recovery: { retry: true, supersede: false },
+        state: 'current',
+      }),
+    ).cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.action).toMatchObject({ kind: 'retry', primary: true });
+  });
+
+  // Before commit the server says only retry is safe; the app must not invent
+  // an install the Updater would refuse.
+  it('offers only retry for an operation stuck before commit', () => {
+    const cards = describeServerUpdatePanel(
+      stuck({
+        operation: { ...stuckOperation, phase: 'observing-candidate', step: 13 },
+        recovery: { retry: true, supersede: false },
+      }),
+    ).cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      stalled: { phase: 'Switching over' },
+      action: { kind: 'retry' },
+    });
+  });
+
+  // An older server sends none of the recovery fields: show what is known and
+  // offer nothing it cannot do.
+  it('offers no recovery through a server that reports none', () => {
+    const cards = describeServerUpdatePanel(
+      status({ release: newer, operation: stuckOperation }),
+    ).cards;
+    expect(cards).toHaveLength(1);
+    // Without the server's verdict the app cannot call it stuck, and must not
+    // offer an install the Updater would refuse with `operation-in-progress`.
+    expect(cards[0]).toMatchObject({ progress: { phase: 'Updating companions' }, action: null });
+  });
+
+  it('keeps a failure on screen with the last error and a retry of the same release', () => {
+    const failed = operation({ state: 'failed', phase: 'failed', failureCode: 'pulling-failed' });
+    const panel = describeServerUpdatePanel(
+      status({
+        operation: failed,
+        attempt: {
+          updateId: failed.updateId,
+          failures: 1,
+          lastAttemptAt: '2026-08-10T00:00:05.000Z',
+          lastError: { phase: 'pulling', cause: 'network-timeout' },
+        },
+      }),
+    );
+    expect(panel.cards).toEqual([
+      expect.objectContaining({
+        status: { label: 'Failed', tone: 'problem' },
+        title: 'Update to 1.4.0 failed',
+        error: 'Downloading failed: network timeout',
+        action: expect.objectContaining({ kind: 'install', label: 'Try again' }),
+        notesVersion: '1.4.0',
+      }),
+    ]);
+  });
+
+  it('separates a failure from a newer release published after it', () => {
+    const failed = operation({
+      state: 'failed',
+      phase: 'failed',
+      failureCode: 'pulling-failed',
+      targetDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'9'.repeat(64)}`,
+    });
+    const cards = describeServerUpdatePanel(status({ operation: failed })).cards;
+    expect(cards.map((card) => card.action?.kind ?? null)).toEqual([null, 'install']);
+    expect(cards[1]).toMatchObject({ section: 'Available', notesVersion: '1.4.0' });
+  });
+
+  it('lights the badge for a stuck operation a newer release may replace', () => {
+    expect(serverUpdateAwaitsAttention(stuck())).toBe(true);
+    expect(
+      serverUpdateAwaitsAttention(stuck({ recovery: { retry: true, supersede: false } })),
+    ).toBe(false);
   });
 });
