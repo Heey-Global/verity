@@ -847,6 +847,8 @@ describe('startDockerGcScheduler', () => {
     // Only the 04:00 and boot passes used to run, so a busy day filled the disk
     // with nothing looking at free space in between.
     vi.useFakeTimers();
+    // Keep this interval-only scenario away from the daily 04:00 pass.
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
     try {
       let free = 500 * 1024 ** 3;
       const docker = fakeDocker({});
