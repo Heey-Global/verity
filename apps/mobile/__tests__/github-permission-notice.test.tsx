@@ -56,6 +56,7 @@ describe('GitHub settings — action needed', () => {
     expect(screen.getByText(/Read-only/)).toBeOnTheScreen();
     // Below the Commits group: it is a step taken in GitHub, not a field here.
     const tree = JSON.stringify(screen.toJSON());
+    expect(tree.indexOf('Signing')).toBeGreaterThanOrEqual(0);
     expect(tree.indexOf('Allow reading CI statuses')).toBeGreaterThan(tree.indexOf('Signing'));
 
     expect(screen.queryByText(/Commit statuses to Read-only/)).toBeNull();
@@ -69,6 +70,14 @@ describe('GitHub settings — action needed', () => {
     await waitFor(() => expect(screen.queryByText('Allow reading CI statuses')).toBeNull());
     expect(screen.getByText('Connected')).toBeOnTheScreen();
     expect(validateGithubApp).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a confirmed gap when a recheck fails, and says the check failed', async () => {
+    useClient(jest.fn().mockResolvedValueOnce(missing).mockRejectedValue(new Error('network')));
+    render(<GitHubSettingsScreen />);
+    fireEvent.press(await screen.findByText('Check again'));
+    expect(await screen.findByText('Could not check GitHub. Try again.')).toBeOnTheScreen();
+    expect(screen.getByText('Allow reading CI statuses')).toBeOnTheScreen();
   });
 
   it('explains installation approval when the App already requests the permission', async () => {

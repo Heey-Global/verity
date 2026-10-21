@@ -70,6 +70,9 @@ export function GithubPermissionNotice({
         />
       </View>
       {openFailed ? <Text style={styles.footnote}>Could not open GitHub. Try again.</Text> : null}
+      {permission.failed && !permission.checking ? (
+        <Text style={styles.footnote}>Could not check GitHub. Try again.</Text>
+      ) : null}
     </HintBox>
   );
 }

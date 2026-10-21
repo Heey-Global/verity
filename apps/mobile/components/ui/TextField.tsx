@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { Children, useState, type ReactNode } from 'react';
 import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -158,7 +158,7 @@ export function HintBox({
   children?: ReactNode;
 }) {
   const { theme } = useUnistyles();
-  const actionable = children !== undefined && children !== null;
+  const actionable = Children.toArray(children).length > 0;
   return (
     <View
       style={styles.hint}

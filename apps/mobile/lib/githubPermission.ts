@@ -41,18 +41,26 @@ export function checkGithubPermission(client: VerityClient, force = false): Prom
     return Promise.resolve();
   }
   update(server, { ...current, checking: true });
-  return client.validateGithubApp().then(
-    (result) => {
-      checkedAt.set(server, Date.now());
-      update(server, { result, checking: false, failed: false });
-    },
-    () => {
-      // A failed check proves nothing about the grant, so no earlier result
-      // survives it: the indicator must not claim a missing permission it
-      // could not confirm.
-      update(server, { checking: false, failed: true });
-    },
-  );
+  // Through a promise so a synchronous throw lands in the failure branch too,
+  // rather than leaving the server stuck in `checking`.
+  return Promise.resolve()
+    .then(() => client.validateGithubApp())
+    .then(
+      (result) => {
+        checkedAt.set(server, Date.now());
+        update(server, { result, checking: false, failed: false });
+      },
+      () => {
+        // A failed check proves nothing either way. A gap GitHub confirmed
+        // earlier stays shown — dropping it would read as a granted permission —
+        // and without one, nothing is claimed.
+        update(server, {
+          ...(current.result ? { result: current.result } : {}),
+          checking: false,
+          failed: true,
+        });
+      },
+    );
 }
 
 /**

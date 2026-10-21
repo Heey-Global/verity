@@ -1,6 +1,5 @@
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
-import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -31,6 +30,7 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
+import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
