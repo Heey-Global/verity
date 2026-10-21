@@ -135,7 +135,7 @@ export default function RootLayout() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
         >
-          <ActivityIndicator color={theme.colors.signature} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -189,7 +189,7 @@ function HydratedRoot() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
         >
-          <ActivityIndicator color={theme.colors.signature} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );

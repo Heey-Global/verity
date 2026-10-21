@@ -30,6 +30,7 @@ export function TextField({
   keyboardType,
   literal: literalInput = false,
   autoFocus,
+  maxLength,
   accessibilityLabel,
   labelAccessory,
 }: {
@@ -49,6 +50,7 @@ export function TextField({
    *  and `email-address`. */
   literal?: boolean;
   autoFocus?: boolean;
+  maxLength?: number;
   /** When the visible label alone would be ambiguous to VoiceOver. */
   accessibilityLabel?: string;
   /** A status beside the label, e.g. whether a write-only secret is stored. */
@@ -99,6 +101,7 @@ export function TextField({
             secret && revealed && Platform.OS === 'android' ? 'visible-password' : keyboardType
           }
           autoFocus={autoFocus}
+          maxLength={maxLength}
           // Keys, addresses and emails must arrive exactly as typed; prose keeps
           // the platform's capitalization, correction and spell check.
           {...(literal

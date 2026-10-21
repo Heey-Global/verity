@@ -73,7 +73,7 @@ export default function GithubManifestCallback() {
       <Stack.Screen options={{ title: 'GitHub' }} />
       {error === null ? (
         <>
-          <ActivityIndicator color={theme.colors.action} />
+          <ActivityIndicator color={theme.colors.textMuted} />
           <Text style={styles.title}>Finishing GitHub authorization…</Text>
         </>
       ) : (
