@@ -58,6 +58,12 @@ const PROMOTED_PHASES: readonly string[] = ['committed', 'reconciling-companions
  * parsing the payload, and an app talking to an older Server sees them absent
  * and offers nothing it cannot do. `recovery` is decided here rather than in the
  * app so both actions follow the same stall rule as the attention banner.
+ *
+ * The Updater additionally requires the sealed spec to name the stuck target
+ * before it supersedes. The Server cannot read the spec and does not need to:
+ * the cutover seals the target in `activating-candidate`, before commit, and
+ * only a rollback moves it back — so in `reconciling-companions` it always
+ * does, and the Updater's check is a guard against a state no step produces.
  */
 function describeRecovery(
   availability: ServerUpdateAvailability,
@@ -185,8 +191,9 @@ export function registerServerUpdateRoutes(
   // Resume the current operation now — what an Updater restart would do, without
   // host access. 202 means the resume is queued or already running: the Updater
   // joins a run in progress and paces repeated requests, and the operation's
-  // own status says what came of it. Bound to the operation's id so a stale screen cannot retry a
-  // different one, and limited to paired devices like installing itself.
+  // own status says what came of it. Bound to the operation's id so a stale
+  // screen cannot retry a different one, and limited to paired devices like
+  // installing itself.
   app.post('/server/updates/retry', async (request, reply) => {
     const controller = deps.serverUpdateController;
     if (controller?.retryUpdate === undefined)
