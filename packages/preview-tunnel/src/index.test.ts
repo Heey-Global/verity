@@ -1067,12 +1067,66 @@ describe('preview tunnel', () => {
     await ping;
     expect(diagnostics).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(15_000);
+    expect((connector as unknown as { socket: WebSocket }).socket.readyState).toBe(WebSocket.OPEN);
+    await vi.advanceTimersByTimeAsync(15_000);
     await connector.waitForDisconnect();
     expect(diagnostics.mock.calls).toEqual([
-      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number) }],
+      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 1 }],
+      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 2 }],
       [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
     ]);
     expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
+  });
+
+  it('resets consecutive heartbeat misses after a matching pong and on reconnect', async () => {
+    const server = createServer();
+    const peers = new WebSocketServer({ server, autoPong: false });
+    const port = await listen(server);
+    const diagnostics = vi.fn<(entry: PreviewConnectorDiagnostic) => void>();
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'token',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      vi.useRealTimers();
+      connector.close();
+      for (const peer of peers.clients) peer.terminate();
+      peers.close();
+      await closeServer(server);
+    });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    await connector.connect();
+    const supervise = async () => {
+      const socket = (connector as unknown as { socket: WebSocket }).socket;
+      const ping = vi.spyOn(socket, 'ping').mockImplementation((_data, _mask, callback) => {
+        (callback as (error?: Error) => void)();
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      expect(diagnostics).toHaveBeenLastCalledWith({
+        event: 'heartbeat.timeout',
+        phase: 'pong',
+        lateMs: expect.any(Number),
+        missedPongs: 1,
+      });
+      return { socket, ping };
+    };
+    const { socket, ping } = await supervise();
+    socket.emit('pong', ping.mock.calls.at(-1)![0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    expect(diagnostics).toHaveBeenLastCalledWith({
+      event: 'heartbeat.timeout',
+      phase: 'pong',
+      lateMs: expect.any(Number),
+      missedPongs: 1,
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await connector.waitForDisconnect();
+    await connector.connect();
+    await supervise();
   });
 
   it('does not let a stalled event loop turn a received pong into a heartbeat timeout', async () => {
@@ -1256,6 +1310,7 @@ describe('preview tunnel', () => {
           event: 'heartbeat.timeout',
           phase: 'write',
           lateMs: expect.any(Number),
+          missedPongs: 0,
         });
         return;
       }
@@ -1284,8 +1339,12 @@ describe('preview tunnel', () => {
       expect(ping).toHaveBeenCalledTimes(1);
       socket.emit('pong', scenario === 'wrong-pong' ? Buffer.from('stale') : payload);
       await vi.advanceTimersByTimeAsync(9_999);
-      if (scenario === 'wrong-pong') await connector.waitForDisconnect();
-      else expect(socket.readyState).toBe(WebSocket.OPEN);
+      if (scenario === 'wrong-pong') {
+        expect(socket.readyState).toBe(WebSocket.OPEN);
+        flushed?.();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await connector.waitForDisconnect();
+      } else expect(socket.readyState).toBe(WebSocket.OPEN);
     },
   );
 

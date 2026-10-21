@@ -1322,6 +1322,7 @@ export class PreviewShareManager {
         ...(share.devServerId ? { [DEV_SERVER_LABEL]: share.devServerId } : {}),
       },
       env: [
+        `VERITY_PREVIEW_SHARE_ID=${share.id}`,
         `VERITY_PREVIEW_EDGE_URL=${share.edgeUrl}`,
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
         ...(offline ? ['VERITY_PREVIEW_OFFLINE=1'] : []),

@@ -416,7 +416,10 @@ describe('PreviewShareManager', () => {
         readOnlyRootfs: true,
         capDrop: ['ALL'],
         securityOpt: ['no-new-privileges:true'],
-        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000']),
+        env: expect.arrayContaining([
+          'VERITY_PREVIEW_SHARE_ID=share-id',
+          'VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000',
+        ]),
       }),
     );
     expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
