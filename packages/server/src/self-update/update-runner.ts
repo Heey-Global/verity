@@ -64,6 +64,9 @@ const FAILABLE: readonly UpdatePhase[] = ['requested', 'pulling', 'verifying-ima
 
 const PREPARING: readonly UpdatePhase[] = [...FAILABLE, 'creating-standby'];
 const RESUME_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+/** At most one operator-requested run per this interval; each run already
+ *  makes several attempts, so a faster cadence only adds registry load. */
+const RETRY_NOW_INTERVAL_MS = 60_000;
 const MAX_DEFERRED_RETRY_MS = 5 * 60_000;
 
 function isFailablePhase(
@@ -306,6 +309,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   // Runs queued or executing. An explicit retry joins them instead of adding
   // another, so repeated taps cannot outpace the work they ask for.
   let pending = 0;
+  let retriedAt = -Infinity;
 
   const run = async (): Promise<void> => {
     clearTimeout(deferredRetry);
@@ -377,7 +381,8 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     },
     idle: () => chain,
     retryNow: () => {
-      if (pending > 0) return;
+      if (pending > 0 || Date.now() - retriedAt < RETRY_NOW_INTERVAL_MS) return;
+      retriedAt = Date.now();
       deferredDelay = 8_000;
       void enqueue();
     },

@@ -125,6 +125,18 @@ describe('GET /server/updates recovery fields', () => {
     });
   });
 
+  // The Updater refuses to supersede `committed`; offering it would light the
+  // badge and an Install button that can only answer 409.
+  it('offers only a retry for an operation stalled in committed', async () => {
+    const committed = { ...stuck, phase: 'committed', step: 14 } as const;
+    const app = routes({
+      readOperation: async () => committed,
+      readAttempt: async () => null,
+      retryUpdate: async () => committed,
+    });
+    expect(await status(app)).toMatchObject({ recovery: { retry: true, supersede: false } });
+  });
+
   it('offers no supersede when the stuck target is still the newest release', async () => {
     const app = routes(
       {

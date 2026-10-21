@@ -142,7 +142,12 @@ async function fixture(
 /** Carry the accepted request through cutover to a stopped companion step. */
 async function driveTo(
   managedRoot: string,
-  last: 'observing-candidate' | 'committed' | 'committed-sealed' | 'reconciling-companions',
+  last:
+    | 'observing-candidate'
+    | 'committed'
+    | 'committed-sealed'
+    | 'reconciling-unsealed'
+    | 'reconciling-companions',
 ): Promise<void> {
   const preparation = [
     'requested',
@@ -173,6 +178,10 @@ async function driveTo(
       previousContainerId: 'a'.repeat(64),
     });
     if (cutover[i + 1] === last) return;
+  }
+  if (last === 'reconciling-unsealed') {
+    await advanceCompanionReconciliation(managedRoot, 'committed', 'reconciling-companions');
+    return;
   }
   await advanceManagedDeploymentImage({
     root: managedRoot,
@@ -1649,7 +1658,9 @@ describe('managed Updater stuck-operation recovery', () => {
     expect((await readUpdateJournal(managedRoot))?.phase).toBe('observing-candidate');
   });
 
-  it('supersedes a stalled commit once the sealed spec names its target', async () => {
+  // The runner leaves `committed` for the companion step under one lease, so an
+  // operation still there stopped mid-transition; only resuming may finish it.
+  it('never supersedes an operation stalled in committed', async () => {
     const { socketPath, token, managedRoot } = await fixture({ managed: true, now: stalledClock });
     await requestUpdaterOperation({
       socketPath,
@@ -1665,13 +1676,14 @@ describe('managed Updater stuck-operation recovery', () => {
         idempotencyKey: 'k2',
         targetDigest: image('c'),
       }),
-    ).resolves.toMatchObject({ generation: 2, previousDigest: image('b') });
+    ).rejects.toMatchObject({ status: 409, code: 'operation-in-progress' });
+    expect((await readUpdateJournal(managedRoot))?.phase).toBe('committed');
   });
 
-  // Inside `committed` the Server may run the target while the sealed spec
-  // still names the old image. A successor started there would take that stale
-  // image as the one its rollback returns to.
-  it('refuses to supersede a commit whose sealed spec still names the old image', async () => {
+  // The successor takes its `previousDigest` — the image its rollback returns
+  // to — from the sealed spec. A spec still naming the old image would hand it
+  // a rollback target the Server no longer runs.
+  it('refuses to supersede while the sealed spec still names the old image', async () => {
     const { socketPath, token, managedRoot } = await fixture({ managed: true, now: stalledClock });
     await requestUpdaterOperation({
       socketPath,
@@ -1679,7 +1691,7 @@ describe('managed Updater stuck-operation recovery', () => {
       idempotencyKey: 'k1',
       targetDigest: image('b'),
     });
-    await driveTo(managedRoot, 'committed');
+    await driveTo(managedRoot, 'reconciling-unsealed');
     await expect(
       requestUpdaterOperation({
         socketPath,
@@ -1688,7 +1700,7 @@ describe('managed Updater stuck-operation recovery', () => {
         targetDigest: image('c'),
       }),
     ).rejects.toMatchObject({ status: 409, code: 'operation-in-progress' });
-    expect((await readUpdateJournal(managedRoot))?.phase).toBe('committed');
+    expect((await readUpdateJournal(managedRoot))?.phase).toBe('reconciling-companions');
   });
 
   // A moving operation has its own retries and backoff; a device must not be

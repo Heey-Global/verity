@@ -67,13 +67,16 @@ export type UpdateAttemptCause = (typeof UPDATE_ATTEMPT_CAUSES)[number];
  * Phases a stalled operation may be abandoned in by a newer request — the
  * Updater's rule, which the Server mirrors when it decides what to offer.
  *
- * Only after commit: the Server is already running the stuck operation's
+ * Only the companion step: the Server already runs the stuck operation's
  * target, and the one thing left undone is moving the companions onto that
  * image — which the successor's own companion step does for its newer image
- * anyway. Before commit the live Server, the candidate and the Gateway are
+ * anyway. `committed` is excluded although it is post-commit too: the runner
+ * leaves it for the companion step under the same lease, so an operation still
+ * there stopped mid-transition, and the sealed spec may not name its target
+ * yet. Before commit the live Server, the candidate and the Gateway are
  * mid-switch, and abandoning that would leave a topology no step owns.
  */
-export const SUPERSEDABLE_PHASES: readonly UpdatePhase[] = ['committed', 'reconciling-companions'];
+export const SUPERSEDABLE_PHASES: readonly UpdatePhase[] = ['reconciling-companions'];
 
 /** The update ids journals carry; shared by every hop that accepts one. */
 export const UPDATE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/;
