@@ -110,7 +110,8 @@ jobs:
             sudo tee -a /etc/hosts >/dev/null
           sudo dscacheutil -flushcache
           sudo killall -HUP mDNSResponder
-          resolved="$(node -e 'require("node:dns").lookup(process.argv[1], { family: 4 }, (e, a) => { if (e) throw e; console.log(a); })' "$host")"
+          # Every family must reach the test entry: a public AAAA record would bypass it.
+          resolved="$(node -e 'require("node:dns").lookup(process.argv[1], { all: true }, (e, a) => { if (e) throw e; console.log([...new Set(a.map((r) => r.address))].join(" ")); })' "$host")"
           [[ "$resolved" == "$UPLINK_TEST_IP" ]] ||
             { echo "Uplink host still resolves to $resolved" >&2; exit 1; }
           echo "Soak route: test entry $UPLINK_TEST_IP"
@@ -130,6 +131,7 @@ jobs:
       - name: Remove the test entry route
         if: always() && inputs.uplink_test_ip != ''
         run: |
+          set -euo pipefail
           sudo sed -i '' '/# verity-soak-test-entry$/d' /etc/hosts
           sudo dscacheutil -flushcache
           sudo killall -HUP mDNSResponder
