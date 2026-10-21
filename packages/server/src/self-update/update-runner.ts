@@ -58,6 +58,7 @@ const FAILABLE: readonly UpdatePhase[] = ['requested', 'pulling', 'verifying-ima
 
 const PREPARING: readonly UpdatePhase[] = [...FAILABLE, 'creating-standby'];
 const RESUME_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+const MAX_DEFERRED_RETRY_MS = 5 * 60_000;
 
 function isFailablePhase(
   phase: UpdatePhase,
@@ -159,7 +160,7 @@ export interface UpdateRunner {
   run(): Promise<void>;
   /** Fire-and-forget entry point for the control boundary's accept callback. */
   start(): void;
-  /** Whatever run is currently queued — for shutdown and for tests. */
+  /** Whatever run is currently queued; excludes deferred retry timers. */
   idle(): Promise<void>;
   /** Serialize another Docker mutation with managed updates. */
   enqueueExclusive(task: () => Promise<void>): Promise<void>;
@@ -257,7 +258,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
    * stay occupied by an operation that will never move and refuse every later
    * request with `operation-in-progress`. Phases from `standby` on are left
    * alone deliberately: there the operation is genuinely resumable. The runner
-   * retries it, and a later request or Updater restart can resume it again.
+   * retries it in the background, including after the quick retries run out.
    */
   const recordStuckFailure = async (): Promise<void> => {
     try {
@@ -274,10 +275,16 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     }
   };
 
+  let deferredRetry: ReturnType<typeof setTimeout> | undefined;
+  let deferredDelay = 8_000;
+
   const run = async (): Promise<void> => {
+    clearTimeout(deferredRetry);
+    deferredRetry = undefined;
     for (let attempt = 0; ; attempt += 1) {
       try {
         await execute();
+        deferredDelay = 8_000;
         return;
       } catch (error) {
         log(`update operation failed: ${describe(error)}`);
@@ -291,12 +298,25 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         const current = await readUpdateJournal(options.managedRoot);
         const delay = RESUME_RETRY_DELAYS_MS[attempt];
         if (
-          delay === undefined ||
           current === null ||
           isPreparingPhase(current.phase) ||
           isTerminalOperationState(projectUpdateOperation(current).state)
         )
           return;
+        if (delay === undefined) {
+          log(
+            `operation ${current.updateId} quick retries exhausted at ${current.phase}; deferred retry scheduled in ${String(deferredDelay)}ms`,
+          );
+          // Only the timer waits outside the queue. Every attempt re-enters the
+          // same queue and acquires the journal lease before mutating Docker.
+          deferredRetry = setTimeout(() => {
+            deferredRetry = undefined;
+            void enqueue();
+          }, deferredDelay);
+          deferredRetry.unref();
+          deferredDelay = Math.min(deferredDelay * 2, MAX_DEFERRED_RETRY_MS);
+          return;
+        }
         log(`operation ${current.updateId} retrying ${current.phase} in ${String(delay)}ms`);
         await (options.retrySleep ?? sleep)(delay);
       } catch (error) {
@@ -348,8 +368,8 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
  * cannot do its one job and exiting lets the restart policy retry. With an
  * unfinished operation, exiting would take the boundary down with it and hide
  * the stalled operation from the device that has to decide about it; there the
- * failure is logged, the Updater comes up, and a retry of the same request
- * re-arms execution.
+ * failure is logged, the Updater comes up, and deferred retries keep the
+ * operation progressing without another request.
  */
 export async function recoverManagedUpdater(
   options: UpdateRunnerOptions,
@@ -388,77 +408,81 @@ export async function recoverManagedUpdater(
     ...(options.environment === undefined ? {} : { environment: options.environment }),
   };
   await runner.run();
-  const journal = await readUpdateJournal(options.managedRoot);
-  const pending =
-    journal !== null && !isTerminalOperationState(projectUpdateOperation(journal).state)
-      ? journal
-      : null;
-  try {
-    // A terminal promoted/rolled-back operation already owns a concrete routed
-    // container identity. Falling back to the historical unsuffixed bootstrap
-    // name here would create a second Server beside that generation.
-    if (
-      journal?.phase === 'committed' ||
-      journal?.phase === 'reconciling-companions' ||
-      journal?.phase === 'completed' ||
-      journal?.phase === 'rolled-back'
-    ) {
-      const status =
-        options.cutover?.gateway === undefined
-          ? await waitForManagedGatewayStatus(
-              // Recovery reaches this before any ensureRunning() settle window,
-              // so it alone can meet a Gateway Compose started milliseconds ago.
-              options.cutover?.gatewayControlSocket ?? MANAGED_GATEWAY_CONTROL_SOCKET,
-            )
-          : await options.cutover.gateway.status();
-      const host = status.backend.host;
-      const match = /^verity-managed-server-g([1-9][0-9]{0,9})$/.exec(host);
-      if (host !== MANAGED_SERVER_NAME && match === null)
-        throw new Error('Gateway selected an invalid managed Server identity');
-      const identity =
-        match === null
-          ? undefined
-          : {
-              name: host,
-              operationId: generationOperationId(Number(match[1])),
-              generation: Number(match[1]),
-            };
-      if (identity !== undefined) {
-        const deployment = await readManagedDeployment(options.managedRoot);
-        if (!deployment.managed)
-          throw new Error(`managed Server authority unavailable: ${deployment.reason}`);
-        await (options.cutover?.activate ?? openActivationGate)(
-          identity.operationId,
-          deployment.spec.user.gid,
-        );
+  // A deferred resume may become due during startup reconciliation. Keep both
+  // paths in the same Docker mutation queue.
+  await runner.enqueueExclusive(async () => {
+    const journal = await readUpdateJournal(options.managedRoot);
+    const pending =
+      journal !== null && !isTerminalOperationState(projectUpdateOperation(journal).state)
+        ? journal
+        : null;
+    try {
+      // A terminal promoted/rolled-back operation already owns a concrete routed
+      // container identity. Falling back to the historical unsuffixed bootstrap
+      // name here would create a second Server beside that generation.
+      if (
+        journal?.phase === 'committed' ||
+        journal?.phase === 'reconciling-companions' ||
+        journal?.phase === 'completed' ||
+        journal?.phase === 'rolled-back'
+      ) {
+        const status =
+          options.cutover?.gateway === undefined
+            ? await waitForManagedGatewayStatus(
+                // Recovery reaches this before any ensureRunning() settle window,
+                // so it alone can meet a Gateway Compose started milliseconds ago.
+                options.cutover?.gatewayControlSocket ?? MANAGED_GATEWAY_CONTROL_SOCKET,
+              )
+            : await options.cutover.gateway.status();
+        const host = status.backend.host;
+        const match = /^verity-managed-server-g([1-9][0-9]{0,9})$/.exec(host);
+        if (host !== MANAGED_SERVER_NAME && match === null)
+          throw new Error('Gateway selected an invalid managed Server identity');
+        const identity =
+          match === null
+            ? undefined
+            : {
+                name: host,
+                operationId: generationOperationId(Number(match[1])),
+                generation: Number(match[1]),
+              };
+        if (identity !== undefined) {
+          const deployment = await readManagedDeployment(options.managedRoot);
+          if (!deployment.managed)
+            throw new Error(`managed Server authority unavailable: ${deployment.reason}`);
+          await (options.cutover?.activate ?? openActivationGate)(
+            identity.operationId,
+            deployment.spec.user.gid,
+          );
+        }
+        const reconciled = await reconcileManagedServer({
+          managedRoot: options.managedRoot,
+          allowDiagnosticMountMigration: pending === null,
+          docker: options.docker,
+          ...(options.environment === undefined ? {} : { environment: options.environment }),
+          ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
+          ...(identity === undefined ? {} : { identity }),
+        });
+        reconcile = verdict(reconciled);
+        reportDrift(reconcile);
+        await reconcileManagedControlPlaneRunner(companion);
+        return;
       }
       const reconciled = await reconcileManagedServer({
         managedRoot: options.managedRoot,
-        allowDiagnosticMountMigration: pending === null,
         docker: options.docker,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
         ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
-        ...(identity === undefined ? {} : { identity }),
       });
       reconcile = verdict(reconciled);
       reportDrift(reconcile);
       await reconcileManagedControlPlaneRunner(companion);
-      return { ...runner, reconcile };
+    } catch (error) {
+      if (pending === null) throw error;
+      (options.log ?? defaultLog)(
+        `operation ${pending.updateId} is unfinished at ${pending.phase}; the Server is left as it stands: ${describe(error)}`,
+      );
     }
-    const reconciled = await reconcileManagedServer({
-      managedRoot: options.managedRoot,
-      docker: options.docker,
-      ...(options.environment === undefined ? {} : { environment: options.environment }),
-      ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
-    });
-    reconcile = verdict(reconciled);
-    reportDrift(reconcile);
-    await reconcileManagedControlPlaneRunner(companion);
-  } catch (error) {
-    if (pending === null) throw error;
-    (options.log ?? defaultLog)(
-      `operation ${pending.updateId} is unfinished at ${pending.phase}; the Server is left as it stands: ${describe(error)}`,
-    );
-  }
+  });
   return { ...runner, reconcile };
 }

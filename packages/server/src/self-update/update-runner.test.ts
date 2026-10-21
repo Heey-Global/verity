@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,14 @@ import {
   oldImage,
   type FakeDaemon,
 } from './managed-daemon.test-helper.js';
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+});
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
 
 const journalled = (root: string, idempotencyKey = 'request-1') =>
   beginUpdate({
@@ -260,19 +268,21 @@ describe('update runner', () => {
     expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
   });
 
-  it('bounds retries and leaves a persistent companion failure available for re-arming', async () => {
+  it('schedules capped deferred retries and completes when companion reconciliation recovers', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner-retry-limit');
     await journalled(root);
     const delays: number[] = [];
+    const log: string[] = [];
     let attempts = 0;
+    let available = false;
     const update = createUpdateRunner({
-      ...options(root, daemon),
+      ...options(root, daemon, log),
       retrySleep: async (delay) => {
         delays.push(delay);
       },
       reconcileCompanions: async () => {
         attempts += 1;
-        throw new Error('daemon unavailable');
+        if (!available) throw new Error('daemon unavailable');
       },
     });
     await update.run();
@@ -282,8 +292,107 @@ describe('update runner', () => {
       phase: 'reconciling-companions',
       failure: null,
     });
+    expect(
+      log.some((entry) =>
+        entry.includes(
+          'quick retries exhausted at reconciling-companions; deferred retry scheduled in 8000ms',
+        ),
+      ),
+    ).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    // The control boundary can start while deferred work waits.
+    for (const delay of [8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 300_000, 300_000]) {
+      const before = attempts;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      await update.idle();
+      expect(attempts).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      await update.idle();
+      expect(attempts).toBe(before + 4);
+      expect(vi.getTimerCount()).toBe(1);
+    }
+    available = true;
+    let release!: () => void;
+    const exclusive = update.enqueueExclusive(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(300_000);
+    const before = attempts;
+    expect(vi.getTimerCount()).toBe(0);
+    release();
+    await exclusive;
+    await update.idle();
+    expect(attempts).toBe(before + 1);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed', failure: null });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a deferred retry when an explicit run completes the operation', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-rearm');
+    await journalled(root);
+    let available = false;
+    let attempts = 0;
+    const update = createUpdateRunner({
+      ...options(root, daemon),
+      reconcileCompanions: async () => {
+        attempts += 1;
+        if (!available) throw new Error('registry unavailable');
+      },
+    });
     await update.run();
-    expect(attempts).toBe(8);
+    expect(vi.getTimerCount()).toBe(1);
+    available = true;
+    await update.run();
+    expect(attempts).toBe(5);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+  });
+
+  it('serializes a deferred retry behind startup reconciliation', async () => {
+    const { root, daemon } = await adoptedDeployment('update-runner-startup-retry');
+    await journalled(root);
+    const configured = options(root, daemon);
+    let attempts = 0;
+    let release!: () => void;
+    let entered!: () => void;
+    const inRecovery = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const status = configured.cutover.gateway.status;
+    const recovering = recoverManagedUpdater({
+      ...configured,
+      reconcileCompanions: async () => {
+        attempts += 1;
+        if (attempts <= 4) throw new Error('registry unavailable');
+      },
+      cutover: {
+        ...configured.cutover,
+        gateway: {
+          ...configured.cutover.gateway,
+          status: async () => {
+            if (attempts === 4) {
+              entered();
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+            }
+            return status();
+          },
+        },
+      },
+    });
+    await inRecovery;
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(attempts).toBe(4);
+    release();
+    const update = await recovering;
+    await update.idle();
+    expect(attempts).toBe(5);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
   });
 
   it('keeps the migrated Server recoverable and applies its mount through guarded cutover', async () => {
