@@ -149,9 +149,10 @@ describe('GET /server/updates recovery fields', () => {
     expect(await status(app)).toMatchObject({ recovery: { retry: true, supersede: false } });
   });
 
-  // An Updater from before this change answers 404 to both new routes. Offering
-  // "Retry" there would be a button that can only fail.
-  it('offers no retry through an Updater that predates it', async () => {
+  // An Updater from before this change answers 404 to both new routes and
+  // refuses any stuck journal with `operation-in-progress`. Offering either
+  // action — or lighting the badge for one — would be a button that can only fail.
+  it('offers no recovery through an Updater that predates it', async () => {
     const app = routes({
       readOperation: async () => stuck,
       readAttempt: async () => undefined,
@@ -159,7 +160,8 @@ describe('GET /server/updates recovery fields', () => {
     });
     expect(await status(app)).toMatchObject({
       attempt: null,
-      recovery: { retry: false, supersede: true },
+      stalled: true,
+      recovery: { retry: false, supersede: false },
     });
   });
 

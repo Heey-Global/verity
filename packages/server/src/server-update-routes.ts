@@ -63,7 +63,7 @@ function describeRecovery(
   availability: ServerUpdateAvailability,
   operation: UpdateOperation | null,
   attempt: UpdateAttempt | null,
-  options: { serverVersion: string; now: number; canRetry: boolean },
+  options: { serverVersion: string; now: number; recoverable: boolean },
 ) {
   const stalled = operation !== null && isStalledOperation(operation, options.now);
   const pending = operation !== null && !isTerminalOperationState(operation.state);
@@ -80,8 +80,9 @@ function describeRecovery(
     attempt: operation !== null && attempt?.updateId === operation.updateId ? attempt : null,
     stalled,
     recovery: {
-      retry: pending && stalled && options.canRetry,
+      retry: pending && stalled && options.recoverable,
       supersede:
+        options.recoverable &&
         operation !== null &&
         stalled &&
         SUPERSEDABLE_PHASES.includes(operation.phase) &&
@@ -173,15 +174,18 @@ export function registerServerUpdateRoutes(
       ...describeRecovery(availability, operation, attempt ?? null, {
         serverVersion,
         now: now(),
-        // The retry route ships with the attempt route; an Updater without one
-        // would refuse the action this would offer.
-        canRetry: controller.retryUpdate !== undefined && attempt !== undefined,
+        // Retry and supersede ship with the attempt route. An Updater without
+        // it refuses both — it answers any stuck journal with
+        // `operation-in-progress` — so offering either would be a dead button.
+        recoverable: controller.retryUpdate !== undefined && attempt !== undefined,
       }),
     };
   });
 
   // Resume the current operation now — what an Updater restart would do, without
-  // host access. Bound to the operation's id so a stale screen cannot retry a
+  // host access. 202 means the resume is queued or already running: the Updater
+  // joins a run in progress and paces repeated requests, and the operation's
+  // own status says what came of it. Bound to the operation's id so a stale screen cannot retry a
   // different one, and limited to paired devices like installing itself.
   app.post('/server/updates/retry', async (request, reply) => {
     const controller = deps.serverUpdateController;

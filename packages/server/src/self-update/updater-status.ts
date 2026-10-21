@@ -1061,6 +1061,11 @@ async function serveUpdaterRequest(
 /**
  * Resume the current operation now, on a device's request.
  *
+ * 202 means the resume is queued or already running, not that a new run
+ * started: the runner joins one in progress and paces repeated requests, so
+ * taps cannot multiply registry traffic. The operation's status says what came
+ * of it.
+ *
  * Bound to the operation by id so a stale screen cannot re-run something else:
  * a request naming an operation that has since finished or been replaced is
  * refused, and the device re-reads the status. Nothing is journalled here — the
