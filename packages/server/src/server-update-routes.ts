@@ -173,7 +173,9 @@ export function registerServerUpdateRoutes(
     const attempt =
       operation === null || controller.readAttempt === undefined
         ? undefined
-        : await controller.readAttempt().catch(() => null);
+        : // A failed read cannot vouch that this Updater supports recovery, and
+          // offering an action it may refuse is a dead button: report neither.
+          await controller.readAttempt().catch(() => undefined);
     return {
       ...availability,
       operation,

@@ -165,7 +165,9 @@ describe('GET /server/updates recovery fields', () => {
     });
   });
 
-  it('keeps reporting the operation when the attempt cannot be read', async () => {
+  // A failed read cannot tell a capable Updater from one that would refuse, so
+  // it must not light buttons that may only answer 409.
+  it('keeps reporting the operation but offers nothing when the attempt cannot be read', async () => {
     const app = routes({
       readOperation: async () => stuck,
       readAttempt: async () => {
@@ -176,6 +178,7 @@ describe('GET /server/updates recovery fields', () => {
     expect(await status(app)).toMatchObject({
       operation: { updateId: 'update-155' },
       attempt: null,
+      recovery: { retry: false, supersede: false },
     });
   });
 

@@ -330,7 +330,10 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         // Read the phase before a failable one is overwritten with `failed`, so
         // the record names the step that broke rather than the outcome.
         const failing = await readUpdateJournal(options.managedRoot).catch(() => null);
-        if (failing !== null) await recordAttempt(failing.phase, failing.updateId, error);
+        // A journal already at `failed` no longer says which step broke; the
+        // closed failure code on the journal explains it instead.
+        if (failing !== null && failing.phase !== 'failed')
+          await recordAttempt(failing.phase, failing.updateId, error);
         await recordStuckFailure();
       }
       // Read durable intent again after the failed attempt releases its lease.
