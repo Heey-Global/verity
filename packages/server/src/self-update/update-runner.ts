@@ -337,9 +337,13 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         const failing = await readUpdateJournal(options.managedRoot).catch(() => null);
         // A journal already at `failed` no longer says which step broke; the
         // closed failure code on the journal explains it instead.
-        if (failing !== null && failing.updateId === attempted && failing.phase !== 'failed')
+        // Without a pre-read, the journal now in place is the best evidence of
+        // what ran; refusing to record would leave a stuck `requested` holding
+        // the slot and refusing every later request.
+        const owner = attempted ?? failing?.updateId;
+        if (failing !== null && failing.updateId === owner && failing.phase !== 'failed')
           await recordAttempt(failing.phase, failing.updateId, error);
-        await recordStuckFailure(attempted);
+        await recordStuckFailure(owner);
       }
       // Read durable intent again after the failed attempt releases its lease.
       // Backoff stays inside the queue so other Docker work cannot interleave.
