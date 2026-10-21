@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   analysis:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The analyser is API-bound against GitHub, not compute-bound. A run that has
     # not finished by here is rate-limited or hung, and waiting out the default
     # six hours on a weekly job only delays noticing that.

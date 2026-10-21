@@ -75,7 +75,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       required: ${{ steps.native.outputs.required }}
       compile: ${{ steps.native.outputs.compile }}

@@ -54,7 +54,7 @@ jobs:
   release-tag-barrier:
     # Require this check with strict up-to-date branches on main. A green check
     # against an older base cannot authorize a merge past a new release commit.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -86,7 +86,7 @@ jobs:
           fi
 
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # `actions: read` is for the base commit's own CI verdict, which the
     # release-please skip below refuses to take on faith. A job-level block
     # replaces the workflow-level one rather than adding to it, so `contents`
@@ -608,7 +608,7 @@ jobs:
   # Security classification and secret scanning cover the whole publishable tree,
   # including prose-only changes for which the expensive code jobs stay inert.
   public-snapshot:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -647,7 +647,7 @@ jobs:
   lint:
     needs: changes
     if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -762,7 +762,7 @@ jobs:
   knip:
     needs: changes
     if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -781,7 +781,7 @@ jobs:
   typecheck:
     needs: changes
     if: needs.changes.outputs.typecheck == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -814,7 +814,7 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       # Every shard reports, so one red shard never hides another's verdict.
       fail-fast: false
@@ -919,7 +919,7 @@ jobs:
   contract-test:
     needs: changes
     if: needs.changes.outputs.contract_test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -957,7 +957,7 @@ jobs:
   installer:
     needs: changes
     if: needs.changes.outputs.installer == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
@@ -1019,7 +1019,7 @@ jobs:
   runner-postgres-race:
     needs: changes
     if: needs.changes.outputs.test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       VERITY_RUNNER_RACE_POSTGRES: verity-runner-race-postgres-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -1083,7 +1083,7 @@ jobs:
     # uninstrumented tests; repeating the whole repository after every merge was
     # the slowest job in the pipeline and did not improve path-specific feedback.
     if: needs.changes.outputs.coverage == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1146,7 +1146,7 @@ jobs:
   mobile:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1177,7 +1177,7 @@ jobs:
   mobile-app:
     needs: changes
     if: needs.changes.outputs.mobile_app == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1223,7 +1223,7 @@ jobs:
   # changes reach main. A host cargo check does not invoke the final linker and
   # cannot detect a missing system library in the image builder.
   matrix-connector-image:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1274,7 +1274,7 @@ jobs:
   server-image-build:
     needs: changes
     if: needs.changes.outputs.server_image == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     # Failed installer reruns reuse the successful producer from the same run.
     env:
@@ -1441,7 +1441,7 @@ jobs:
   server-image:
     needs: [changes, server-image-build]
     if: needs.changes.outputs.server_image == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
     # cache-janitor.yml). The janitor only deletes entries nothing has read for
     # that long, and that is the whole reason it cannot pull a cache out from
@@ -1769,7 +1769,7 @@ jobs:
   agent-seed-drift:
     needs: changes
     if: needs.changes.outputs.agent_seed_drift == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -1820,7 +1820,7 @@ jobs:
     # cancellation into a stale red aggregate check; the newer run publishes the
     # required verdict for the same PR head.
     if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Verify all required jobs succeeded
         run: |
