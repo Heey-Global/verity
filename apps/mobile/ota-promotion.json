@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.75.1",
+  "runtime": "1.75.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "dc81928d8acb5305181b7e7f04a2e22449d3ce4f",
+  "tag": "mobile-v1.75.1",
+  "branch": "staging-mobile-v1.75.1-dc81928d8acb5305181b7e7f04a2e22449d3ce4f",
+  "baseline": "mobile-v1.75.0",
+  "group": "f223b1ca-652e-4826-8222-cf4f2233f90f",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "build the new-meeting screen from the design system (#1763)"
   ]
 }
