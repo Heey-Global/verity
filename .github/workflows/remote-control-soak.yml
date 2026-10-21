@@ -83,6 +83,17 @@ jobs:
       - name: Verify admission regression tests
         run: node --test scripts/remote-control-staging/probe.test.mjs scripts/remote-control-staging/workflow.test.mjs
 
+      # A run that died before its cleanup must not route a later public-DNS soak.
+      - name: Remove a leftover test entry route
+        run: |
+          set -euo pipefail
+          if grep -q '# verity-soak-test-entry$' /etc/hosts; then
+            echo '::warning::Removing a leftover Uplink test entry route'
+            sudo sed -i '' '/# verity-soak-test-entry$/d' /etc/hosts
+            sudo dscacheutil -flushcache
+            sudo killall -HUP mDNSResponder
+          fi
+
       # Only this runner resolves the Uplink host to the test entry. Hostname, SNI and
       # certificate validation stay unchanged; the paired Core keeps its own resolution.
       - name: Route the Uplink host to the test entry
@@ -94,7 +105,9 @@ jobs:
           set -euo pipefail
           host="${UPLINK_ORIGIN#https://}"
           host="${host%/}"
-          echo "$UPLINK_TEST_IP $host # verity-soak-test-entry" | sudo tee -a /etc/hosts >/dev/null
+          # A leading newline keeps the entry off a hosts file that lacks a final newline.
+          printf '\n%s %s # verity-soak-test-entry\n' "$UPLINK_TEST_IP" "$host" |
+            sudo tee -a /etc/hosts >/dev/null
           sudo dscacheutil -flushcache
           sudo killall -HUP mDNSResponder
           resolved="$(node -e 'require("node:dns").lookup(process.argv[1], { family: 4 }, (e, a) => { if (e) throw e; console.log(a); })' "$host")"

@@ -62,4 +62,8 @@ test('the test entry route is opt-in and always removed', () => {
   assert.equal(cleanup.if, "always() && inputs.uplink_test_ip != ''");
   assert(steps.indexOf(route) < steps.findIndex((step) => step.run?.includes('run.sh')));
   assert.equal(steps.at(-1), cleanup);
+  // A leftover route from a killed run is cleared before every soak, routed or not.
+  const leftover = steps.find((step) => step.name === 'Remove a leftover test entry route');
+  assert.equal(leftover.if, undefined);
+  assert(steps.indexOf(leftover) < steps.indexOf(route));
 });
