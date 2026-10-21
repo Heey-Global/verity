@@ -122,6 +122,33 @@ if printf bad > '${root}/work/new' 2>/dev/null; then exit 25; fi
   expect(result.status, result.stderr).toBe(0);
 });
 
+// Under gVisor every agent runs on the mount-namespace path. A chrooted process
+// may not create a user namespace, so a helper that chroots silently breaks each
+// nested sandbox an agent starts — Codex's read-only reviewer failed every push
+// gate that way while all filesystem confinement checks stayed green.
+it('lets confined agents start nested sandboxes on the mount-namespace path', (context) => {
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  if (!existsSync('/usr/bin/unshare')) {
+    context.skip('unshare is unavailable');
+    return;
+  }
+  const result = run(
+    [],
+    `set -eu
+# /tmp must exist for nested bind mounts yet stay read-only, as under Landlock.
+test -d /tmp
+if touch /tmp/verity-confinement 2>/dev/null; then exit 31; fi
+/usr/bin/unshare --user --map-root-user --mount /bin/true || exit 32
+`,
+    true,
+  );
+  expect(result.status, result.stderr).toBe(0);
+});
+
 it('rejects relative roots and symbolic links before launching', async () => {
   await symlink(join(root, 'knowledge'), join(root, 'link'));
   for (const path of ['relative', join(root, 'link'), join(root, 'link/insights')]) {

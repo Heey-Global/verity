@@ -1,2 +1,2 @@
-fb8267bf75acae0aa1daac9070236d22aaa0c575261bd69d1bdd4b24eece2dbf  linux-amd64/verity-script-sandbox
-2eb181fc7e788ff111dfa64237135acb2929ab028ea35ab3a35a0096307c55f4  linux-arm64/verity-script-sandbox
+8cbd1f9fa785fc4e8b8bc0550aaaf5f832780e5ac0966c4623a908cd8468ef7f  linux-amd64/verity-script-sandbox
+a83ceb6a7abafe6b6d4ff205b5641566b4ad227f347ca0f570225891e00302de  linux-arm64/verity-script-sandbox
