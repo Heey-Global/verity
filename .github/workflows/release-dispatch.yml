@@ -72,7 +72,7 @@ jobs:
   register-release-tags:
     # Never wait for the train lock: workflow merges must see the immutable
     # release refs even while an earlier native build is still running.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write

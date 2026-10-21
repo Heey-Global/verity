@@ -107,7 +107,7 @@ env:
 
 jobs:
   dependency-changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       relevant: ${{ steps.classify.outputs.relevant }}
     steps:
@@ -132,7 +132,7 @@ jobs:
   native-helper-build:
     needs: dependency-changes
     if: needs.dependency-changes.outputs.relevant == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -741,7 +741,7 @@ jobs:
   smoke-test:
     if: ${{ always() }}
     needs: [dependency-changes, architecture-smoke]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Require every architecture smoke to pass
         env:

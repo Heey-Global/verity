@@ -79,7 +79,7 @@ jobs:
     # skips every job downstream of `release-please` that keeps the implicit
     # `success()` condition, which would silently end the other trains after
     # their metadata step. For the same reason no step may fail the job.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     permissions:
       contents: read
@@ -156,7 +156,7 @@ jobs:
       group: release-metadata
       queue: max
       cancel-in-progress: false
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # Release Please creates releases and PRs; this job also dispatches the
     # checks that GITHUB_TOKEN-created PRs do not trigger automatically.
@@ -874,7 +874,7 @@ jobs:
       needs.release-please.outputs.mobile-already-published != 'true' &&
       (needs.release-please.outputs.mobile-release-created == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       actions: write
     env:
@@ -888,7 +888,7 @@ jobs:
   finalize-mobile-staging:
     needs: [release-please, publish-mobile-native]
     if: needs.publish-mobile-native.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       issues: write
@@ -1026,7 +1026,7 @@ jobs:
     # which is not an oversight — see the note there. That audit asks whether a
     # `vX.Y.Z` BACKEND release got its images; this image is versioned on a
     # different train and would read as missing for every backend release.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     needs: release-please
     if: needs.release-please.outputs.website-release-created == 'true'
@@ -1294,7 +1294,7 @@ jobs:
   publish-toolkit:
     needs: [release-please, self-update-gate, prepare-server-build-context]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -1465,7 +1465,7 @@ jobs:
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.release-please.outputs.backend-sha == github.sha &&
       needs.prepare-server-build-context.outputs.compiler-cache-hit != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     continue-on-error: true
     permissions:
@@ -1492,7 +1492,7 @@ jobs:
     # them during the smoke; build-server still waits for the gate and siblings.
     needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -1570,7 +1570,7 @@ jobs:
     # the `vX.Y.Z` tags stay with the gated publish jobs.
     needs: [release-please, build-project-relay, build-matrix-connector]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     outputs:
       project-relay-image: ${{ steps.stage.outputs.project-relay }}
@@ -1813,7 +1813,7 @@ jobs:
         build-server,
       ]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Bounded below the janitor's cache grace period — see the note on
     # ci.yml's `server-image` job.
     timeout-minutes: 45
@@ -2126,7 +2126,7 @@ jobs:
       needs.publish-preview-images.result == 'success' &&
       (needs.publish-server-release-evidence.result == 'success' ||
       (inputs['backend-republish'] && needs.publish-server-release-evidence.result == 'skipped'))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       actions: read
       contents: read
@@ -2173,7 +2173,7 @@ jobs:
     if: >-
       needs.release-please.outputs.backend-release-created == 'true' &&
       !inputs['backend-republish']
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       actions: read
       contents: write
@@ -2321,7 +2321,7 @@ jobs:
   publish-sandbox:
     needs: [release-please, self-update-gate, build-sandbox]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -2529,7 +2529,7 @@ jobs:
     if: needs.release-please.outputs.backend-release-created == 'true'
     outputs:
       image: ${{ steps.relay-reference.outputs.image }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -2743,7 +2743,7 @@ jobs:
   publish-preview-images:
     needs: [release-please, self-update-gate, publish-server, build-preview-images]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -2892,7 +2892,7 @@ jobs:
   publish-matrix-connector:
     needs: [release-please, self-update-gate, stage-bundled-images]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       image: ${{ steps.connector-reference.outputs.image }}
     permissions:
@@ -2972,7 +2972,7 @@ jobs:
       needs.publish-project-relay.result == 'success' &&
       needs.publish-preview-images.result == 'success' &&
       needs.publish-matrix-connector.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       actions: write
       contents: write

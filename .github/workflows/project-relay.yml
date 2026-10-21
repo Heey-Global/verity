@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   dependency-changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       relevant: ${{ steps.classify.outputs.relevant }}
     steps:
@@ -181,7 +181,7 @@ jobs:
   smoke-test:
     if: ${{ always() }}
     needs: [dependency-changes, architecture-smoke]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Require every architecture smoke to pass
         env:
