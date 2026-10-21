@@ -366,7 +366,8 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
   /* Present but not writable, as under Landlock. Tools that bind the standard
      temporary directory into a nested sandbox (Codex's bubblewrap) abort with
-     ENOENT when it is missing; their own scratch files follow TMPDIR. */
+     ENOENT when it is missing; their own scratch files follow TMPDIR. The mode
+     binds only once drop_namespace_privileges() removes CAP_DAC_OVERRIDE. */
   char tmp[PATH_MAX];
   if (snprintf(tmp, sizeof(tmp), "%s/tmp", sandbox) >= (int)sizeof(tmp)) {
     errno = ENAMETOOLONG;
