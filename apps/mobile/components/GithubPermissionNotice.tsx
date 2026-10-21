@@ -1,86 +1,75 @@
-import { type GithubAppValidateResult, type VerityClient } from '@verity/mobile';
-import { useEffect, useState } from 'react';
+// The "Action needed" card on the GitHub settings screen: a permission the
+// GitHub App still lacks, why Verity wants it, and the GitHub page that grants
+// it. It renders only when GitHub confirmed the gap — a failed check shows
+// nothing, because a guess would send the operator to change settings that
+// may already be right.
+import { type VerityClient } from '@verity/mobile';
+import { useState } from 'react';
 import { Linking, Text, View } from 'react-native';
-import { settingsStyles as styles } from './settings/settingsStyles';
-import { Button } from './ui';
 
-export function GithubPermissionNotice({ client }: { client: VerityClient }) {
-  const [result, setResult] = useState<GithubAppValidateResult>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(false);
-  useEffect(() => {
-    let active = true;
-    void client
-      .validateGithubApp()
-      .then((value) => {
-        if (active) setResult(value);
-      })
-      .catch(() => {
-        if (active) setError(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [client]);
-  const check = async () => {
-    setBusy(true);
-    setError(false);
-    try {
-      setResult(await client.validateGithubApp());
-    } catch {
-      setResult(undefined);
-      setError(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const permission = result?.commitStatusPermission;
-  const missing =
-    permission?.state === 'app_update_required' || permission?.state === 'approval_required';
-  const unknown = error || result?.ok === false || permission?.state === 'unknown';
-  if (!missing && !unknown) return null;
-  const appUpdate = permission?.state === 'app_update_required';
+import {
+  checkGithubPermission,
+  githubActionNeeded,
+  type GithubPermissionState,
+} from '../lib/githubPermission';
+import { settingsStyles as styles } from './settings/settingsStyles';
+import { Button, HintBox } from './ui';
+
+export function GithubPermissionNotice({
+  client,
+  permission,
+}: {
+  client: VerityClient;
+  permission: GithubPermissionState;
+}) {
+  const [stepsShown, setStepsShown] = useState(false);
+  const [openFailed, setOpenFailed] = useState(false);
+  if (!githubActionNeeded(permission)) return null;
+  const { state, url } = permission.result!.commitStatusPermission!;
+  const appUpdate = state === 'app_update_required';
   return (
-    <View>
-      <Text style={styles.reproSubtitle} accessibilityRole="alert">
-        {missing ? 'Complete CI checks' : 'Could not check commit-status access'}
-      </Text>
-      <Text style={styles.reproSubtitle}>
-        {missing
-          ? 'Verity needs Commit statuses: Read-only to read additional build and test results. Without it, CI checks may miss results. This permission does not allow changes to status messages.'
-          : 'Your connection remains available. Retry to check whether GitHub has granted access to additional build and test results.'}
-      </Text>
-      {missing ? (
-        <Text style={styles.reproSubtitle}>
+    <HintBox
+      title="Allow reading CI statuses"
+      message="Some build and test results reach GitHub as commit statuses. Verity can't see them yet, so CI checks may be incomplete."
+    >
+      <Text style={styles.footnote}>Read-only. Verity can't change any status.</Text>
+      {stepsShown ? (
+        <Text style={styles.footnote}>
           {appUpdate
-            ? 'An App owner or manager must set Repository permissions → Commit statuses to Read-only and save. Then the installation owner must approve the new permission in GitHub.'
-            : 'The installation owner must review and approve the new permission in GitHub. If you cannot manage this installation, ask its owner.'}
+            ? '1. In the GitHub App settings, set Repository permissions → Commit statuses to Read-only and save.\n2. Approve the new permission for the installation when GitHub asks.\nOnly an owner or manager of the App can change it.'
+            : 'The App already requests this permission. Approve it in the installation settings on GitHub. Only the installation owner can approve it.'}
         </Text>
       ) : null}
-      <View style={styles.actionRow}>
-        {missing && permission.url ? (
+      <View style={styles.actionRowStart}>
+        <Button
+          label={stepsShown ? 'Hide steps' : 'Show steps'}
+          variant="text"
+          size="compact"
+          onPress={() => setStepsShown(!stepsShown)}
+        />
+      </View>
+      <View style={styles.actionRowStart}>
+        {url ? (
           <Button
-            label={appUpdate ? 'Enable permission in GitHub' : 'Approve new permission in GitHub'}
-            variant="secondary"
+            label="Open GitHub"
+            icon="external-link"
+            role="link"
             size="compact"
             onPress={() => {
-              void Linking.openURL(permission.url!).catch(() => setError(true));
+              setOpenFailed(false);
+              void Linking.openURL(url).catch(() => setOpenFailed(true));
             }}
           />
         ) : null}
         <Button
-          label={busy ? 'Checking…' : 'Check again'}
-          disabled={busy}
+          label="Check again"
           variant="secondary"
           size="compact"
-          onPress={() => {
-            void check();
-          }}
+          loading={permission.checking}
+          onPress={() => void checkGithubPermission(client, true)}
         />
       </View>
-      {missing && error ? (
-        <Text style={styles.reproSubtitle}>Could not open GitHub. Try again.</Text>
-      ) : null}
-    </View>
+      {openFailed ? <Text style={styles.footnote}>Could not open GitHub. Try again.</Text> : null}
+    </HintBox>
   );
 }

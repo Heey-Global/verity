@@ -312,6 +312,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
+  // Buttons inside a hint box follow its text, so they start where it starts.
+  actionRowStart: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
   settingsSaveState: {
     ...theme.typography.footnote,
     color: theme.colors.textMuted,
