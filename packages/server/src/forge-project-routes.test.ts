@@ -118,3 +118,25 @@ it('forwards the selected connection through generic linking and keeps the legac
     'owner/repo',
   );
 });
+
+it('rejects unsupported additional GitHub connections before persisting a project', async () => {
+  await ctx.store.forgeConnections.upsert({
+    id: 'other-github',
+    provider: 'github',
+    baseUrl: 'https://github.com',
+    label: 'other',
+    personalToken: null,
+    githubAppId: null,
+    githubAppInstallationId: null,
+    githubAppPrivateKey: null,
+  });
+  const response = await app.inject({
+    method: 'POST',
+    url: '/projects',
+    payload: { repo: 'owner/unsupported', connectionId: 'other-github' },
+  });
+  expect(response.statusCode).toBe(400);
+  expect(
+    await ctx.store.getProjectByOwnerRepo('owner', 'unsupported', 'other-github'),
+  ).toBeUndefined();
+});

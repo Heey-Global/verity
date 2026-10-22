@@ -124,6 +124,10 @@ export function registerProjectCollectionRoutes(
         return reply.code(403).send({ error: 'administrator required' });
       const connection = await deps.store.forgeConnections.get(connectionId);
       if (!connection) return reply.code(404).send({ error: 'connection not found' });
+      if (connection.provider === 'github' && connection.id !== 'legacy-github')
+        return reply
+          .code(400)
+          .send({ error: 'only the existing GitHub App connection is supported' });
       forgeKind = connection.provider;
       if (connection.provider === 'forgejo' && body.kind !== 'local')
         parsed = parseForgejoRepository(body.repo, connection.baseUrl);

@@ -7707,6 +7707,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return reply.code(403).send({ error: 'administrator required' });
         const connection = await deps.eventStore.forgeConnections.get(connectionId);
         if (!connection) return reply.code(404).send({ error: 'connection not found' });
+        if (connection.provider === 'github' && connection.id !== 'legacy-github')
+          return reply
+            .code(400)
+            .send({ error: 'only the existing GitHub App connection is supported' });
         if (connection.provider === 'forgejo' && !deps.forgejoEnabled)
           return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
         target.forgeConnectionId = connection.id;
