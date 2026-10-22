@@ -298,6 +298,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerProjectRepoRoute, type ProjectRepository } from './project-repo-route.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import {
   appendProjectOverview,
@@ -1518,6 +1519,9 @@ export interface ServerDeps {
    *  together with {@link ServerDeps.ghTokenMint}, the route is registered +
    *  pre-auth-allowlisted; otherwise no token-broker route is exposed. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** The code host behind a repository project, for the sandbox `verity-repo` tool. */
+  projectRepository?:
+    ((project: ProjectRecord) => Promise<ProjectRepository | undefined>) | undefined;
   /** Check live Drive ancestry before granting automatic document URL reads. */
   googleDriveDocumentIsWithinProject?: (input: {
     projectId: string;
@@ -2758,14 +2762,14 @@ function buildPullRequestCiFailureDisplayPrompt(number: number): string {
   return `Fix failing CI for PR #${String(number)}`;
 }
 
-function buildPullRequestCiFailurePrompt(pr: PullRequestStatus): string {
+function buildPullRequestCiFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
   return appendExternalPromptData(
     `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2787,18 +2791,18 @@ function buildPostMergeActionsFailureDisplayPrompt(number: number): string {
  * surprising and may target the wrong branch, so this turn is deliberately
  * diagnostic: collect the concrete failed runs and logs once, then put an actionable
  * decision back in the chat. */
-function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus): string {
+function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
-    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : 'GitHub Actions failed';
+    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : `${host} Actions failed`;
   return appendExternalPromptData(
     `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed ${host} Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
 Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2823,11 +2827,11 @@ function buildPullRequestConflictDisplayPrompt(number: number): string {
  * `pull_request` workflows never start and CI reports nothing to react to. The prompt
  * therefore names the conflict explicitly — the session cannot infer it from a check
  * run, because there is none. */
-function buildPullRequestConflictPrompt(pr: PullRequestStatus): string {
+function buildPullRequestConflictPrompt(pr: PullRequestStatus, host: string): string {
   const base = pr.baseRef ?? 'the base branch';
   return appendExternalPromptData(
-    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so GitHub cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so ${host} cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title, baseRef: base },
   );
 }
@@ -3896,7 +3900,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
      * again against the freshly re-read status before the turn is dispatched. */
     applies(pr: PullRequestStatus): boolean;
     key(sessionId: string, pr: PullRequestStatus): string;
-    prompt(pr: PullRequestStatus): string;
+    /** `host` names the project's code host (`GitHub`, `Forgejo`) in the turn. */
+    prompt(pr: PullRequestStatus, host: string): string;
     displayPrompt(number: number): string;
   }
   const CI_FAILURE_REPAIR: PullRequestRepairKind = {
@@ -3919,6 +3924,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     key: postMergeActionsFailureKey,
     prompt: buildPostMergeActionsFailurePrompt,
     displayPrompt: buildPostMergeActionsFailureDisplayPrompt,
+  };
+  // Repair turns name the code host the agent has to act on; a Forgejo PR
+  // described as a GitHub one sends the agent to the wrong tools.
+  const codeHostName = async (session: SessionRecord): Promise<string> => {
+    if (session.projectId === null) return 'GitHub';
+    const project = await deps.eventStore.getProject(session.projectId).catch(() => undefined);
+    return project?.kind === 'forgejo' ? 'Forgejo' : 'GitHub';
   };
   const scheduledPrRepairTurns = new Set<string>();
   const maybeDispatchPrRepairTurn = async (
@@ -3959,7 +3971,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (!fresh) return;
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
-            repair.prompt(latest),
+            repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
@@ -5609,6 +5621,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  if (deps.ghTokenCapabilities !== undefined && deps.projectRepository !== undefined) {
+    registerProjectRepoRoute(app, {
+      capabilities: deps.ghTokenCapabilities,
+      getProject: (projectId) => deps.eventStore.getProject(projectId),
+      repositoryFor: deps.projectRepository,
+    });
+  }
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
       ? {}

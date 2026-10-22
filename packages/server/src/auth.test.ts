@@ -1003,6 +1003,7 @@ describe('global auth gate (onRequest)', () => {
         for (const [method, url] of [
           ['POST', '/internal/git/sign'],
           ['POST', '/internal/project/memory'],
+          ['POST', '/internal/project/repo'],
           ['POST', '/internal/mcp'],
           ['GET', '/internal/mcp'],
           ['POST', '/internal/control-plane/mcp'],

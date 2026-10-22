@@ -4642,6 +4642,16 @@ export async function buildEmbeddedServer(
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
+    // `verity-repo`: the project's code host executes pull request and issue actions.
+    projectRepository: async (project: ProjectRecord) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider === undefined) return undefined;
+      return {
+        hostName: provider.id === 'forgejo' ? 'Forgejo' : 'GitHub',
+        operations: provider.repositoryOperations(project),
+        listIssues: () => provider.listIssues(project),
+      };
+    },
     ghTokenMint: async (project: {
       owner: string;
       repo: string;

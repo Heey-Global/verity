@@ -69,6 +69,66 @@ export interface ReleaseSummary {
   publishedAt: string | null;
 }
 
+/** A pull request as the agent tool reports it. */
+export interface ForgePullRequestView {
+  number: number;
+  title: string;
+  url: string;
+  state: 'open' | 'closed' | 'merged';
+  /** True while the forge treats it as a draft (GitHub draft, Forgejo `WIP:` title). */
+  draft: boolean;
+  head: string;
+  base: string;
+  body: string;
+}
+
+/** An issue as the agent tool reports it. */
+export interface ForgeIssueView {
+  number: number;
+  title: string;
+  url: string;
+  state: 'open' | 'closed';
+  body: string;
+  labels: string[];
+}
+
+/** The forge declined a repository operation; `message` is safe to show an agent. */
+export class ForgeOperationError extends Error {
+  constructor(
+    message: string,
+    /** HTTP-like status the internal route forwards (404 not found, 422 rejected, 502 forge down). */
+    readonly status: 404 | 409 | 422 | 502 = 502,
+  ) {
+    super(message);
+    this.name = 'ForgeOperationError';
+  }
+}
+
+/**
+ * Pull request and issue operations on ONE project's repository, executed with
+ * server-held credentials. The agent tool (`verity-repo`) reaches these through
+ * the project-bound internal route, so the sandbox never names the repository and
+ * never sees a token; a new forge only adds an implementation here.
+ */
+export interface ForgeRepositoryOperations {
+  defaultBranch: () => Promise<string>;
+  /** Opens a ready-for-review pull request; drafts are never created. */
+  createPullRequest: (input: {
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+  }) => Promise<ForgePullRequestView>;
+  /** By number, or the most relevant pull request whose head is `head` (open first). */
+  findPullRequest: (
+    selector: { number: number } | { head: string },
+  ) => Promise<ForgePullRequestView | null>;
+  /** Clears the draft state; a pull request that is already ready is returned unchanged. */
+  markPullRequestReady: (number: number) => Promise<ForgePullRequestView>;
+  viewIssue: (number: number) => Promise<ForgeIssueView | null>;
+  commentOnIssue: (number: number, body: string) => Promise<{ url: string }>;
+}
+
 export interface ForgeProvider {
   readonly id: ForgeProviderId;
   readonly capabilities: ForgeCapabilities;
@@ -89,6 +149,8 @@ export interface ForgeProvider {
     pr: { head: string; base: string; title: string; body: string },
   ): Promise<OpenedPullRequest>;
   listIssues(project: ProjectRecord): Promise<ForgeIssueList>;
+  /** Agent-facing pull request and issue operations on the project's repository. */
+  repositoryOperations(project: ProjectRecord): ForgeRepositoryOperations;
   /** Repositories the connection grants; degrades to `[]` instead of throwing on forge errors. */
   listRepositories(): Promise<ForgeRepository[]>;
   /** Cached latest release: `undefined` when not known yet, `null` when there is none. */

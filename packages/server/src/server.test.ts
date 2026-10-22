@@ -3789,6 +3789,68 @@ describe('GET /sessions', () => {
     }
   });
 
+  // A Forgejo PR described as a GitHub one sends the agent to `gh` and GitHub
+  // Actions, which cannot see it; the repair turn must name the real host.
+  it('names the Forgejo code host in the CI repair turn of a Forgejo project', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'repair-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'repair-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'repair-forgejo',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'forgejo-team-site',
+      state: 'active',
+    });
+    const branchPrStatus = vi.fn(async () => ({
+      number: 7,
+      title: 'feat: x',
+      url: 'https://git.example.org/team/site/pulls/7',
+      phase: 'open' as const,
+      headSha: 'abc123',
+      pipeline: 'failure' as const,
+      checks: { completed: 2, total: 2, successful: 1, failed: 1, pending: 0 },
+      mergeable: false,
+    }));
+    const prApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: {
+        current: vi.fn(async () => 'feat/x'),
+        switchable: vi.fn(async () => [] as string[]),
+        previewable: vi.fn(async () => [] as string[]),
+        switch: vi.fn(),
+      } as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        projectId: 'repair-forgejo-project',
+      });
+      await prApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalled());
+      const prompt = String(dispatchTurnWhenIdle.mock.calls.at(-1)?.[1]);
+      expect(prompt).toContain('Forgejo pull request #7');
+      expect(prompt).not.toContain('GitHub');
+    } finally {
+      await prApp.close();
+    }
+  });
+
   it('resolves the `pr` marker across a multi-branch session, not just the worktree HEAD', async () => {
     // Repro (k8s "Audit" session): the worktree HEAD (agent/x) has no PR, but a
     // branch the session pushed does. The overview must still mark the session, so the

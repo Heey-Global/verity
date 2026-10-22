@@ -5284,6 +5284,9 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            // `verity-repo`: pull requests and issues through the project's code host,
+            // executed server-side with the same capability (POST /internal/project/repo).
+            `VERITY_PROJECT_REPO_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/repo`,
             // Managed dev servers (concept 2.6): `verity-dev-server` add/start/stop/....
             `VERITY_DEV_SERVER_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/dev-servers`,
           ]

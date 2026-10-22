@@ -15,6 +15,7 @@ import {
   TASKS_RESUME_SYSTEM_PROMPT,
   TASKS_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
+  repoToolPullRequestSystemPrompt,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   TERMINOLOGY_SYSTEM_PROMPT,
@@ -42,9 +43,9 @@ import type { Backend } from './backend.js';
  * entry is there for its own reason. Do not trim it on the strength of this
  * sentence.
  *
- * A project created without a GitHub repository gets {@link
+ * A project created without a code host gets {@link
  * LOCAL_PROJECT_SYSTEM_PROMPT} in place of the pull-request rule rather than
- * alongside it. There the remote-bound directive is not merely inert: paired
+ * alongside it, and a Forgejo project gets the `verity-repo` form of that rule. There the remote-bound directive is not merely inert: paired
  * with the Quick-Action contract's `Push + PR` example it is what makes the
  * agent offer push/PR chips, and those labels are rendered verbatim, so a tap
  * dispatches a turn that cannot succeed against a clone with no `origin`.
@@ -56,7 +57,18 @@ import type { Backend } from './backend.js';
  * its own expiry condition for. Dropping them there would leave the session that
  * outlives the link naming branches the Issue chip cannot parse.
  */
-function assembleTurnSystemPrompt(localProject: boolean): string {
+/** Where a session's project lives, as far as the turn prompt cares. */
+export type TurnCodeHost = 'github' | 'forgejo' | 'local';
+
+/** GitHub keeps its proven `gh` workflow; every other code host goes through
+ *  `verity-repo`, whose instructions only differ in the host's name. */
+function pullRequestPrompt(codeHost: TurnCodeHost): string {
+  if (codeHost === 'local') return LOCAL_PROJECT_SYSTEM_PROMPT;
+  if (codeHost === 'forgejo') return repoToolPullRequestSystemPrompt('Forgejo');
+  return PULL_REQUEST_SYSTEM_PROMPT;
+}
+
+function assembleTurnSystemPrompt(codeHost: TurnCodeHost): string {
   return `${TERMINOLOGY_SYSTEM_PROMPT}
 
 ${AUTONOMY_SYSTEM_PROMPT}
@@ -75,7 +87,7 @@ ${MEMORY_SYSTEM_PROMPT}
 
 ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
-${localProject ? LOCAL_PROJECT_SYSTEM_PROMPT : PULL_REQUEST_SYSTEM_PROMPT}
+${pullRequestPrompt(codeHost)}
 
 ${REPO_CONVENTIONS_SYSTEM_PROMPT}
 
@@ -94,8 +106,11 @@ Every request to start, run, restart, or preview a development HTTP or WebSocket
 ${BREVITY_SYSTEM_PROMPT}`;
 }
 
-const TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(false);
-const LOCAL_PROJECT_TURN_SYSTEM_PROMPT = assembleTurnSystemPrompt(true);
+const TURN_SYSTEM_PROMPTS: Readonly<Record<TurnCodeHost, string>> = {
+  github: assembleTurnSystemPrompt('github'),
+  forgejo: assembleTurnSystemPrompt('forgejo'),
+  local: assembleTurnSystemPrompt('local'),
+};
 
 /**
  * The compact subset resumed turns still receive. {@link
@@ -133,8 +148,8 @@ ${AUTOMATION_SYSTEM_PROMPT}
 
 ${BREVITY_SYSTEM_PROMPT}`;
 
-export function turnSystemPrompt(localProject = false): string {
-  return localProject ? LOCAL_PROJECT_TURN_SYSTEM_PROMPT : TURN_SYSTEM_PROMPT;
+export function turnSystemPrompt(codeHost: TurnCodeHost = 'github'): string {
+  return TURN_SYSTEM_PROMPTS[codeHost];
 }
 
 const MAX_PROMPT_SECRET_ALIASES = 100;

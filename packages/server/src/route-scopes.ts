@@ -210,6 +210,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/project/repo',
+    'container-capability',
+    'per-container capability, presented by the sandbox `verity-repo` command',
+  ),
+  declare(
+    'POST',
     '/internal/dev-servers',
     'container-capability',
     'per-container capability, presented by the sandbox `verity-dev-server` command',

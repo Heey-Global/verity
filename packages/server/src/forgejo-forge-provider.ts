@@ -6,6 +6,7 @@ import type {
   PullRequestStatus,
 } from './forge-provider.js';
 import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
+import { createForgejoRepositoryOperations } from './forgejo-repository-operations.js';
 
 interface ForgejoPull {
   number: number;
@@ -258,6 +259,7 @@ export function createForgejoForgeProvider(options: {
         return { connected: false, viewerLogin: null, issues: [] };
       }
     },
+    repositoryOperations: (project) => createForgejoRepositoryOperations(transport, project),
     latestRelease: () => null,
     refreshLatestRelease: () => Promise.resolve(null),
   };
