@@ -122,6 +122,44 @@ if printf bad > '${root}/work/new' 2>/dev/null; then exit 25; fi
   expect(result.status, result.stderr).toBe(0);
 });
 
+// Under gVisor every agent runs on the mount-namespace path. A chrooted process
+// may not create a user namespace, so a helper that chroots silently breaks each
+// nested sandbox an agent starts — Codex's read-only reviewer failed every push
+// gate that way while all filesystem confinement checks stayed green. Allowing
+// nesting hands the agent CAP_SYS_ADMIN over its own mount table, so the
+// inherited binds must stay locked there: no remount to writable, no unmount
+// revealing what lies beneath.
+it('lets confined agents start nested sandboxes on the mount-namespace path', (context) => {
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  if (
+    !['/usr/bin/unshare', '/usr/bin/mount', '/usr/bin/umount'].every((path) => existsSync(path))
+  ) {
+    context.skip('util-linux namespace tools are unavailable');
+    return;
+  }
+  const knowledge = join(root, 'knowledge');
+  const result = run(
+    ['--read-root', knowledge],
+    `set -eu
+# Codex's bubblewrap binds /tmp and aborts when it is missing.
+test -d /tmp
+/usr/bin/unshare --user --map-root-user --mount /bin/sh -c '
+test "$(cat "$1/source")" = reference || exit 32
+if printf bad > "$1/source" 2>/dev/null; then exit 33; fi
+if /usr/bin/mount -o remount,bind,rw "$1" 2>/dev/null; then exit 34; fi
+if /usr/bin/umount -l "$1" 2>/dev/null; then exit 35; fi
+if printf bad > "$1/source" 2>/dev/null; then exit 36; fi
+' sh '${knowledge}'
+`,
+    true,
+  );
+  expect(result.status, result.stderr).toBe(0);
+});
+
 it('rejects relative roots and symbolic links before launching', async () => {
   await symlink(join(root, 'knowledge'), join(root, 'link'));
   for (const path of ['relative', join(root, 'link'), join(root, 'link/insights')]) {

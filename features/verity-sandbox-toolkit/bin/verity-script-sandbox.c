@@ -301,8 +301,8 @@ static void enter_pid_namespace(void) {
 
 /* gVisor does not implement Landlock, but does implement unprivileged user and
    mount namespaces. Build a new root containing only the paths the Landlock
-   policy allows, then chroot into it. The namespace root maps to the caller's
-   uid outside, so it gains mount/chroot capability without gaining host or
+   policy allows, then pivot into it. The namespace root maps to the caller's
+   uid outside, so it gains mount/pivot capability without gaining host or
    container privilege. */
 static void isolate_with_mounts(const char *root, const char *dynamic_root, char **secret_paths,
                                 int secret_count, int isolate_writes) {
@@ -334,6 +334,8 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   write_mapping("/proc/self/gid_map", 0, (unsigned int)gid);
   if (setresgid(0, 0, 0) < 0 || setresuid(0, 0, 0) < 0) fail("enter user namespace");
   if (unshare(CLONE_NEWNS) < 0) fail("unshare mount namespace");
+  /* pivot_root rejects shared propagation, and none of these mounts may leak out. */
+  if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) < 0) fail("make mounts slave");
   enter_pid_namespace();
   if (mount("tmpfs", sandbox, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700,size=16m") < 0)
     fail("mount sandbox root");
@@ -362,13 +364,31 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   if (mount("proc", proc, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) < 0)
     fail("mount proc");
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
+  /* Tools that bind the standard temporary directory into a nested sandbox
+     (Codex's bubblewrap) abort with ENOENT when it is missing; their own scratch
+     files follow TMPDIR. Like the rest of this private root it lives on the
+     sandbox tmpfs, which its owner could make writable; it exposes nothing. */
+  char tmp[PATH_MAX];
+  if (snprintf(tmp, sizeof(tmp), "%s/tmp", sandbox) >= (int)sizeof(tmp)) {
+    errno = ENAMETOOLONG;
+    fail("tmp path");
+  }
+  if (mkdir(tmp, 0555) < 0 && errno != EEXIST) fail("create tmp");
 
   bind_into(sandbox, root, isolate_writes != 2);
   if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, 1);
   for (int i = 0; i < secret_count; i++)
     bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root") ||
                !strcmp(secret_paths[i * 2 - 1], "--write-root"));
-  if (chroot(sandbox) < 0) fail("chroot");
+  /* pivot_root rather than chroot: the kernel (and gVisor) refuses to create a
+     user namespace from a chrooted process, which broke every nested sandbox
+     an agent starts, such as Codex's read-only reviewer. Detaching the old
+     root keeps it as unreachable as chroot did. The only other process in this
+     mount namespace is the PID-namespace parent, which is moved along but only
+     waits and relays signals; the cleaner forked before it keeps the host view. */
+  if (chdir(sandbox) < 0) fail("enter sandbox root");
+  if (syscall(SYS_pivot_root, ".", ".") < 0) fail("pivot_root");
+  if (umount2(".", MNT_DETACH) < 0) fail("detach previous root");
   if (chdir("/") < 0) fail("chdir sandbox root");
   if (write(cleanup[1], "x", 1) != 1) fail("clean sandbox root");
   close(cleanup[1]);
