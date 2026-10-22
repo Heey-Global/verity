@@ -71,6 +71,7 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
           VERITY_PROJECT_REPO_URL:
             options.url === false ? '' : `http://127.0.0.1:${address.port}/internal/project/repo`,
           VERITY_GH_BROKER_CAPABILITY_FILE: capability,
+          VERITY_REPO_TIMEOUT_SECONDS: '1',
         },
       });
       let stdout = '';
@@ -171,6 +172,17 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
     expect(result.stderr.trim()).toBe(
       'verity-repo: pull request #12 is already open for feat/7-search',
     );
+  });
+
+  // The server may have opened the pull request before the answer was lost, so
+  // "unreachable" would invite the retry that opens a second one.
+  it('reports a timed-out write as possibly completed', async () => {
+    const { calls, run } = await fixture(() => undefined);
+    const result = await run(binRoot, ['pr', 'create', '--title', 'Slow']);
+    expect(calls).toHaveLength(1);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('timed out and may have completed');
+    expect(result.stderr).not.toContain('unreachable');
   });
 
   it('refuses incomplete commands before calling the server', async () => {

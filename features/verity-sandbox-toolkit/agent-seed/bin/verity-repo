@@ -119,10 +119,15 @@ cap_file="${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
 cap="$(tr -d '[:space:]' <"$cap_file")"
 [ -n "$cap" ] || fail "capability file '$cap_file' is empty"
 
-out="$(curl -sS --max-time 60 -w '\n%{http_code}' -X POST "$url" \
+curl_status=0
+out="$(curl -sS --max-time "${VERITY_REPO_TIMEOUT_SECONDS:-60}" -w '\n%{http_code}' -X POST "$url" \
   -H "authorization: Bearer $cap" \
   -H 'content-type: application/json' \
-  --data "$payload" 2>/dev/null)" || fail 'the Verity server is unreachable'
+  --data "$payload" 2>/dev/null)" || curl_status=$?
+# A timed-out write may still have reached the code host; a blind retry would
+# open a second pull request or post the comment twice.
+[ "$curl_status" != 28 ] || fail 'the request timed out and may have completed; check with `verity-repo pr view` or `verity-repo issue view` before retrying'
+[ "$curl_status" = 0 ] || fail 'the Verity server is unreachable'
 status="${out##*$'\n'}"
 response="${out%$'\n'*}"
 

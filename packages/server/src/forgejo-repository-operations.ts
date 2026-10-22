@@ -110,12 +110,21 @@ export function createForgejoRepositoryOperations(
       }
       return forgejo(async () => {
         const rows: ForgejoPullRow[] = [];
+        let complete = false;
         for (let page = 1; page <= 100; page++) {
           const batch = await transport.json<ForgejoPullRow[]>(
             `${repoPath}/pulls?state=all&sort=recentupdate&limit=50&page=${page}`,
           );
-          if (!Array.isArray(batch) || batch.length === 0) break;
+          if (!Array.isArray(batch) || batch.length === 0) {
+            complete = true;
+            break;
+          }
           rows.push(...batch);
+        }
+        // An unfinished scan cannot prove absence, and `pr create` relies on that
+        // answer to avoid opening a second pull request for the same branch.
+        if (!complete) {
+          throw new ForgeOperationError('too many pull requests to search on the code host', 502);
         }
         // A fork's branch of the same name is not this repository's pull request.
         const match = rows

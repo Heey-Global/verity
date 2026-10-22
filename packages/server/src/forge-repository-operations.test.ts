@@ -299,3 +299,28 @@ it('strips every stacked Forgejo WIP prefix', () => {
   expect(withoutWipPrefix('WIP: [WIP] wip:  Add search')).toBe('Add search');
   expect(withoutWipPrefix('Wipe cache')).toBe('Wipe cache');
 });
+
+// Absence is what `pr create` relies on to avoid a duplicate, so a scan that ran
+// out of pages must not report "no pull request for this branch".
+it('refuses to answer when the Forgejo pull request scan is incomplete', async () => {
+  const transport = new ForgejoTransport('https://git.example.org', () => Promise.resolve('t'));
+  vi.spyOn(transport, 'json').mockImplementation((path: string) =>
+    Promise.resolve(
+      path.includes('/pulls?')
+        ? [
+            {
+              number: 1,
+              title: 'Other',
+              state: 'open',
+              head: { ref: 'other' },
+              base: { ref: 'main' },
+            },
+          ]
+        : { default_branch: 'main' },
+    ),
+  );
+  const operations = createForgejoRepositoryOperations(transport, { owner: 'team', repo: 'site' });
+  await expect(operations.findPullRequest({ head: 'feat/7-search' })).rejects.toThrow(
+    'too many pull requests',
+  );
+});
