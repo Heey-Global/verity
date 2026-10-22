@@ -22,6 +22,7 @@ export const APP_LINK_SCHEME = 'verity://';
 export const APP_LINK_SETTINGS_ROUTES = [
   '/settings',
   '/settings/github',
+  '/settings/forgejo/new',
   '/settings/google',
   '/settings/remote-access',
   '/settings/secret-store',
@@ -43,15 +44,24 @@ export const APP_LINK_SETTINGS_ROUTES = [
 ] as const;
 export type AppLinkSettingsRoute = (typeof APP_LINK_SETTINGS_ROUTES)[number];
 
-/** GitHub and Google are listed under Connections but live as top-level settings
- * screens, so the path an agent naturally writes is accepted as an alias. */
+/** GitHub, Forgejo and Google are listed under Connections but live as top-level
+ * settings screens, so the path an agent naturally writes is accepted as an alias.
+ * The Forgejo screen forwards to the existing connection once one is set up. */
 const APP_LINK_ROUTE_ALIASES: Readonly<Record<string, AppLinkSettingsRoute>> = {
   '/settings/services/github': '/settings/github',
+  '/settings/forgejo': '/settings/forgejo/new',
+  '/settings/services/forgejo': '/settings/forgejo/new',
   '/settings/services/google': '/settings/google',
 };
 
 /** Sub-pages of a project's settings; `null` is the settings index. */
-export const APP_LINK_PROJECT_SETTINGS_PAGES = ['github', 'services', 'sandbox', 'model'] as const;
+export const APP_LINK_PROJECT_SETTINGS_PAGES = [
+  'github',
+  'repository',
+  'services',
+  'sandbox',
+  'model',
+] as const;
 export type AppLinkProjectSettingsPage = (typeof APP_LINK_PROJECT_SETTINGS_PAGES)[number];
 
 export type AppLinkTarget =

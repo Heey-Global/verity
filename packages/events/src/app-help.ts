@@ -117,10 +117,20 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'GitHub',
     summary: 'Work on your repositories, open pull requests, sign commits.',
     details:
-      'Connect GitHub to let agents work on existing repositories and open pull requests; you choose which repositories Verity may access. The same screen sets the commit author and the signing key for verified commits. Afterwards New project offers GitHub repository, and sessions show pull request and CI status.',
+      'Connect GitHub to let agents work on existing repositories and open pull requests; you choose which repositories Verity may access. The same screen sets the commit author and the signing key for verified commits. Afterwards New project offers GitHub next to Local project, and sessions show pull request and CI status.',
     appLink: 'verity://settings/github',
     docsPath: 'docs/getting-started.md',
     keywords: ['repository', 'repo', 'pull request', 'pr', 'commit', 'signing', 'git'],
+  },
+  {
+    id: 'forgejo',
+    title: 'Forgejo',
+    summary: 'Work on repositories on your own Forgejo server.',
+    details:
+      'Connect a Forgejo server with its HTTPS address and an access token with read and write access to repositories, issues and user; a custom certificate is optional. Forgejo then sits next to GitHub: New project offers its repositories, local projects can be connected to it in project settings, and sessions link issues and pull requests to that server. The token stays on the Verity server.',
+    appLink: 'verity://settings/forgejo',
+    docsPath: 'docs/connections.md',
+    keywords: ['forgejo', 'gitea', 'self-hosted', 'git server', 'repository', 'pull request'],
   },
   {
     id: 'claude',

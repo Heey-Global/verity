@@ -46,7 +46,10 @@ it('validates before persistence and never returns tokens', async () => {
   expect(validate).toHaveBeenCalledOnce();
   connectionId = response.json<{ id: string }>().id;
   expect(response.body).not.toContain('private-fixture');
-  expect((await app.inject('/connections')).body).not.toContain('private-fixture');
+  const listed = await app.inject('/connections');
+  expect(listed.body).not.toContain('private-fixture');
+  // Without the sandbox relay the app must not offer Forgejo project creation.
+  expect(listed.json<{ forgejoProjectsAvailable: boolean }>().forgejoProjectsAvailable).toBe(false);
   validate.mockRejectedValueOnce(new Error('provider body contains private-fixture'));
   const failed = await app.inject({
     method: 'PATCH',
@@ -85,4 +88,21 @@ it('protects connections referenced by projects', async () => {
   expect(
     (await app.inject({ method: 'DELETE', url: `/connections/${connectionId}` })).statusCode,
   ).toBe(204);
+});
+
+it('reports Forgejo project availability from the sandbox capability', async () => {
+  const enabled = Fastify();
+  enabled.addHook('onRequest', async (request) => {
+    request.localUserId = 'admin';
+  });
+  registerForgeConnectionRoutes(enabled, ctx.store, undefined, true);
+  await enabled.ready();
+  try {
+    const response = await enabled.inject('/connections');
+    expect(response.json<{ forgejoProjectsAvailable: boolean }>().forgejoProjectsAvailable).toBe(
+      true,
+    );
+  } finally {
+    await enabled.close();
+  }
 });

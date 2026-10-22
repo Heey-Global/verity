@@ -428,7 +428,10 @@ export const projectRecordSchema = z.object({
   containerName: z.string().min(1),
   // `local` = created without a GitHub repository; `owner` is the reserved
   // `local` placeholder, so the UI shows `repo` alone as the project name.
-  kind: z.enum(['github', 'control_plane', 'local']).default('github'),
+  kind: z.enum(['github', 'forgejo', 'control_plane', 'local']).default('github'),
+  // The code-host connection behind a repository project. Migrated and legacy
+  // GitHub projects carry `legacy-github`; optional for servers predating it.
+  forgeConnectionId: z.string().nullable().optional(),
   imageRef: z.string().nullable(),
   state: projectStateSchema,
   // Newer servers preserve the legacy `state` projection for older clients and
@@ -466,6 +469,42 @@ export const projectRecordSchema = z.object({
   updatedAt: z.string(),
 });
 export type ProjectRecord = z.infer<typeof projectRecordSchema>;
+
+/** A configured code host from `GET /connections`. Never carries credentials;
+ *  `legacy-github` mirrors the GitHub connection from Settings. */
+const forgeConnectionSchema = z.object({
+  id: z.string().min(1),
+  provider: z.enum(['github', 'forgejo']),
+  baseUrl: z.string().min(1),
+  label: z.string(),
+  customCaPem: z.string().nullable().optional(),
+});
+export type ForgeConnection = z.infer<typeof forgeConnectionSchema>;
+
+/** `GET /connections`. `forgejoProjectsAvailable` is false when the server cannot
+ *  run Forgejo projects (no project relay), so the app must not offer creation. */
+const forgeConnectionListSchema = z.object({
+  connections: z.array(forgeConnectionSchema),
+  forgejoProjectsAvailable: z.boolean().default(false),
+});
+export type ForgeConnectionList = z.infer<typeof forgeConnectionListSchema>;
+
+/** Body for adding a Forgejo instance. The token is validated server-side and
+ *  never returned. */
+export interface ForgejoConnectionRequest {
+  label: string;
+  baseUrl: string;
+  token: string;
+  customCaPem?: string | null;
+}
+
+/** A repository a code-host connection can reach. */
+const connectionRepositorySchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  archived: z.boolean().optional(),
+});
+export type ConnectionRepository = z.infer<typeof connectionRepositorySchema>;
 
 /** The result of linking a local project to GitHub. `pullRequest` is present when the
  *  target repository already had history: the project's history rides in on
@@ -1575,6 +1614,9 @@ export const branchListSchema = z.object({
   // neither), but each is independently optional for forward/back-compat.
   owner: z.string().min(1).optional(),
   repo: z.string().min(1).optional(),
+  // The web host for those chips when it is not GitHub (a Forgejo project).
+  // ABSENT = GitHub, or a server predating Forgejo.
+  codeHost: z.object({ provider: z.literal('forgejo'), baseUrl: z.string().min(1) }).optional(),
   // Present ONLY for a project without a GitHub repository, where there is no pull
   // request to merge: `base` names the branch this session's work can be merged into
   // locally. ABSENT = merging goes through the PR strip (or the server is older).
@@ -1737,6 +1779,7 @@ export interface SpawnRequest {
  * which {@link VerityClient.linkProjectToGitHub} can connect to one later. */
 export type CreateProjectRequest =
   | { repo: string; kind?: 'github'; imageRef?: string | null }
+  | { repo: string; kind: 'forgejo'; connectionId: string; imageRef?: string | null }
   | { kind: 'local'; name: string; imageRef?: string | null };
 
 /** Body for `POST /devices/:id/push-token`: registers this device's Expo push
@@ -2938,6 +2981,54 @@ export class VerityClient {
     }
   }
 
+  /** Configured code hosts. Null when this server predates `/connections` or the
+   *  signed-in user is not an administrator; callers then fall back to the
+   *  GitHub-only behavior. */
+  async listConnections(): Promise<ForgeConnectionList | null> {
+    try {
+      const res = await this.request('/connections', { method: 'GET' });
+      return forgeConnectionListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async createForgejoConnection(body: ForgejoConnectionRequest): Promise<ForgeConnection> {
+    const res = await this.request('/connections', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return forgeConnectionSchema.parse(await res.json());
+  }
+
+  /** Rename a Forgejo connection or replace its token/CA; the server re-validates. */
+  async updateForgejoConnection(
+    id: string,
+    body: Partial<Omit<ForgejoConnectionRequest, 'baseUrl'>>,
+  ): Promise<ForgeConnection> {
+    const res = await this.request(`/connections/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return forgeConnectionSchema.parse(await res.json());
+  }
+
+  /** 409 while a project still uses the connection. */
+  async deleteConnection(id: string): Promise<void> {
+    await this.request(`/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async listConnectionRepositories(id: string): Promise<ConnectionRepository[]> {
+    const res = await this.request(`/connections/${encodeURIComponent(id)}/repositories`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(connectionRepositorySchema) }).parse(await res.json())
+      .repositories;
+  }
+
   async getVeritySettings(): Promise<VeritySettings | null> {
     const res = await this.request('/settings', { method: 'GET' });
     return veritySettingsResponseSchema.parse(await res.json()).settings;
@@ -3102,7 +3193,7 @@ export class VerityClient {
     Record<
       'github' | 'claude' | 'codex' | 'opencode' | 'google' | 'matrix' | 'doppler' | 'mcp',
       number
-    >
+    > & { forgejo: Record<string, number> }
   > {
     const response = await this.request('/connections/usage', { method: 'GET' });
     return z
@@ -3115,6 +3206,8 @@ export class VerityClient {
         matrix: z.number().int().nonnegative(),
         doppler: z.number().int().nonnegative(),
         mcp: z.number().int().nonnegative(),
+        // Per Forgejo connection id; absent on servers predating Forgejo.
+        forgejo: z.record(z.string(), z.number().int().nonnegative()).default({}),
       })
       .parse(await response.json());
   }
@@ -3921,6 +4014,17 @@ export class VerityClient {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ repo }),
+    });
+    return linkedProjectSchema.parse(await res.json());
+  }
+
+  /** Provider-neutral form of {@link linkProjectToGitHub}: link a local project
+   *  to an existing repository on the selected code-host connection. */
+  async linkProject(id: string, repo: string, connectionId: string): Promise<LinkedProject> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo, connectionId }),
     });
     return linkedProjectSchema.parse(await res.json());
   }

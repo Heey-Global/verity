@@ -152,7 +152,20 @@ export {
   type AttentionNotice,
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
-export { parseBranchIssue, githubRefUrl, type RepoIdentity } from './ui/branchRef.js';
+export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
+export {
+  LEGACY_GITHUB_CONNECTION_ID,
+  codeHostForProject,
+  codeHostFromConnection,
+  connectedCodeHosts,
+  forgejoConnection,
+  preferredCodeHost,
+  providerName,
+  repositoryWebUrl,
+  type CodeHost,
+  type CodeHostProvider,
+  type CodeHostState,
+} from './ui/codeHosts.js';
 export { usesDevcontainerImage, DEVCONTAINER_IMAGE_PREFIX } from './ui/devcontainerImage.js';
 export { splitSearchHighlights, type SearchHighlightSegment } from './ui/searchHighlight.js';
 export {
@@ -333,6 +346,10 @@ export {
   type ProjectMcpBinding,
   type MeetingTranscriptionBackendStatus,
   type CreateProjectRequest,
+  type ConnectionRepository,
+  type ForgeConnection,
+  type ForgeConnectionList,
+  type ForgejoConnectionRequest,
   type DevicePushTokenRequest,
   type DevicePushTokenRegistered,
   type MeetingTranscriptCreated,

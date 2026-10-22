@@ -6,7 +6,11 @@
 // connection definitions live in Verity settings.
 import {
   allowedAgentsSummary,
+  codeHostForProject,
+  forgejoConnection,
   githubRepositoryAccessReady,
+  providerName,
+  type ForgeConnection,
   modelDisplayName,
   projectBadge,
   type VerityClient,
@@ -23,6 +27,7 @@ import {
   SettingsNavRow,
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
+import { CodeHostIcon } from '../../../../components/CodeHostIcon';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
@@ -57,8 +62,10 @@ function ProjectSettingsIndexView({
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
   const [connectionRefresh, setConnectionRefresh] = useState(0);
   const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
+  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
   const [available, setAvailable] = useState({
     github: false,
+    forgejo: false,
     doppler: false,
     drive: false,
     google: false,
@@ -79,10 +86,23 @@ function ProjectSettingsIndexView({
         Promise.resolve().then(() => client.listIntegrations()),
         Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
         Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
+        Promise.resolve().then(() => client.listConnections()),
       ]).then((results) => {
         if (!active) return;
-        const [settings, drive, gmail, calendar, contacts, mcp, integrations, bindings, folders] =
-          results;
+        const [
+          settings,
+          drive,
+          gmail,
+          calendar,
+          contacts,
+          mcp,
+          integrations,
+          bindings,
+          folders,
+          forge,
+        ] = results;
+        const forgeList = forge.status === 'fulfilled' ? forge.value : null;
+        setForgeConnections(forgeList?.connections ?? null);
         setDriveFolderNames(
           folders.status === 'fulfilled' ? folders.value.map((folder) => folder.name) : null,
         );
@@ -101,6 +121,9 @@ function ProjectSettingsIndexView({
         });
         setAvailable({
           github: settings.status === 'fulfilled' && githubRepositoryAccessReady(settings.value),
+          forgejo:
+            forgeList?.forgejoProjectsAvailable === true &&
+            forgejoConnection(forgeList) !== undefined,
           doppler:
             settings.status === 'fulfilled' &&
             Boolean(settings.value?.dopplerServiceTokenConfigured),
@@ -154,7 +177,7 @@ function ProjectSettingsIndexView({
         : 'optional';
   const to = (
     pathname:
-      | '/project/[id]/settings/github'
+      | '/project/[id]/settings/repository'
       | '/project/[id]/settings/sandbox'
       | '/project/[id]/settings/model',
   ) => router.push({ pathname, params: { id: projectId } });
@@ -175,22 +198,35 @@ function ProjectSettingsIndexView({
     >
       <SettingsGroup title="Connections">
         <SettingsListPanel>
-          {project.kind === 'local' && available.github ? (
+          {project.kind === 'local' && (available.github || available.forgejo) ? (
             <SettingsNavRow
-              icon="github"
-              title="Connect GitHub"
-              subtitle="Link this local project to a repository"
+              icon="link"
+              title="Connect repository"
+              subtitle={
+                available.github && available.forgejo
+                  ? 'GitHub or Forgejo'
+                  : available.github
+                    ? 'GitHub'
+                    : 'Forgejo'
+              }
               status={{ intent: 'optional', label: 'Not selected' }}
-              onPress={() => to('/project/[id]/settings/github')}
+              onPress={() => to('/project/[id]/settings/repository')}
             />
           ) : null}
-          {project.kind === 'github' ? (
+          {project.kind === 'github' || project.kind === 'forgejo' ? (
             <SettingsNavRow
-              icon="github"
-              title="GitHub repository"
-              subtitle={`${project.owner}/${project.repo}`}
+              icon={{
+                element: <CodeHostIcon provider={project.kind} color={theme.colors.action} />,
+              }}
+              title={`${providerName(project.kind)} repository`}
+              subtitle={[
+                `${project.owner}/${project.repo}`,
+                codeHostForProject(project, forgeConnections)?.host,
+              ]
+                .filter((part) => part !== undefined && part !== 'github.com')
+                .join(' · ')}
               status={{ intent: 'ready', label: 'Connected' }}
-              onPress={() => to('/project/[id]/settings/github')}
+              onPress={() => to('/project/[id]/settings/repository')}
             />
           ) : null}
           {available.doppler ? (

@@ -51,6 +51,9 @@ import {
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,
+  providerName,
+  repositoryWebUrl,
+  type ForgeConnection,
   type RepoIdentity,
   parseBranchIssue,
 } from '@verity/mobile';
@@ -87,6 +90,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
+import { CodeHostIcon } from '../components/CodeHostIcon';
 import { ProjectPortChip } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
@@ -246,6 +250,24 @@ function SessionList({ client }: { client: VerityClient }) {
       sessionsLoadedOnce.current = true;
     }, [refresh]),
   );
+  // Forgejo links need the instance address; GitHub needs nothing. Unavailable
+  // connections (older server, non-admin) leave Forgejo links inert.
+  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (!client) return;
+      let active = true;
+      void Promise.resolve()
+        .then(() => client.listConnections())
+        .then((list) => {
+          if (active) setForgeConnections(list?.connections ?? null);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
   const previousGroups = useRef<SessionProjectGroup[]>([]);
   const groups = useMemo(() => {
     const next = projectGroups(
@@ -255,10 +277,11 @@ function SessionList({ client }: { client: VerityClient }) {
       detectionsByProject,
       baseUrl,
       previousGroups.current,
+      forgeConnections,
     );
     previousGroups.current = next;
     return next;
-  }, [baseUrl, detectionsByProject, devServersByProject, projects, sessions]);
+  }, [baseUrl, detectionsByProject, devServersByProject, forgeConnections, projects, sessions]);
   // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
@@ -791,7 +814,8 @@ function SessionList({ client }: { client: VerityClient }) {
                     {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
                   </Text>
                   <Text style={styles.emptySubtitle}>
-                    Add an existing GitHub repository or create an empty project to get started.
+                    Add a repository from GitHub or Forgejo, or create a local project to get
+                    started.
                   </Text>
                   {!projectsLoading ? (
                     <Pressable
@@ -848,11 +872,7 @@ function SessionList({ client }: { client: VerityClient }) {
                 previewActive={previewUrls.has(floatingSession.sessionId)}
                 previewPublic={publicPreviews.has(floatingSession.sessionId)}
                 previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
-                repo={
-                  floatingSessionGroup?.project?.kind === 'github'
-                    ? floatingSessionGroup.project
-                    : undefined
-                }
+                repo={floatingSessionGroup?.repo}
                 selected={selectedId === floatingSession.sessionId}
                 floating
               />
@@ -1326,18 +1346,25 @@ const ProjectGroup = memo(function ProjectGroup({
                     )}
                   </Pressable>
                 ) : null}
-                {!controlPlane && projectRepoRef(group.project) !== undefined ? (
+                {!controlPlane && group.repo?.owner && group.repo.repo ? (
                   <Pressable
                     style={styles.projectIconButton}
                     accessibilityRole="button"
-                    accessibilityLabel={`Open ${group.title} on GitHub`}
+                    accessibilityLabel={`Open ${group.title} on ${providerName(group.repo.host?.provider ?? 'github')}`}
                     onPress={() =>
                       void Linking.openURL(
-                        `https://github.com/${projectRepoRef(group.project!)!}`,
+                        repositoryWebUrl(
+                          { baseUrl: group.repo?.host?.baseUrl ?? 'https://github.com' },
+                          group.repo!.owner!,
+                          group.repo!.repo!,
+                        ),
                       ).catch(() => undefined)
                     }
                   >
-                    <Icon name="github" size={18} color={theme.colors.textMuted} />
+                    <CodeHostIcon
+                      provider={group.repo.host?.provider ?? 'github'}
+                      color={theme.colors.textMuted}
+                    />
                   </Pressable>
                 ) : null}
                 {onNewSession ? (

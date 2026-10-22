@@ -3625,7 +3625,8 @@ describe('connection catalog and project Google access contracts', () => {
     const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getGoogleConnection()).toEqual(account);
-    expect(await client.getConnectionUsage()).toEqual(usage);
+    // A server predating Forgejo omits per-connection counts; the client defaults them.
+    expect(await client.getConnectionUsage()).toEqual({ ...usage, forgejo: {} });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/google/connection',
       '/connections/usage',

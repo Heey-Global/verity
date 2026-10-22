@@ -37,6 +37,8 @@ export interface UseBranches {
    * is older OR there's no GitHub remote, in which case the chips stay non-tappable. */
   owner: string | undefined;
   repo: string | undefined;
+  /** The web host for those chips when it is not GitHub (a Forgejo project). */
+  codeHost: BranchList['codeHost'];
   /** True while the initial (or a forced) load is in flight. */
   loading: boolean;
   /** True when the transcript exists but the session workspace was cleaned up. */
@@ -83,6 +85,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   );
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
+  const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
   const [localMergeBase, setLocalMergeBase] = useState<string | undefined>(
     cached?.localMerge?.base,
   );
@@ -133,6 +136,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPullRequest(cached?.pullRequest ?? null);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
+    setCodeHost(cached?.codeHost);
     setLocalMergeBase(cached?.localMerge?.base);
     setLocalMergeHasChanges(hasLocalSaveChanges(cached?.localMerge));
     setLoading(cached === undefined);
@@ -180,6 +184,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setPullRequest(res.pullRequest ?? null);
               setOwner(res.owner);
               setRepo(res.repo);
+              setCodeHost(res.codeHost);
               setLocalMergeBase(res.localMerge?.base);
               setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
               setWorkspaceMissing(res.workspaceMissing === true);
@@ -352,6 +357,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     pullRequest,
     owner,
     repo,
+    codeHost,
     loading,
     workspaceMissing,
     error,
