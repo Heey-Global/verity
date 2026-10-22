@@ -5736,10 +5736,13 @@ export async function syncProjectsFromInstallation(
   // Repeated overview polls must not acquire the global knowledge lifecycle
   // lock and rewrite every unchanged repository, starving unrelated reads.
   const existing = new Map(
-    (await eventStore.listProjects({ includeHidden: true })).map((project) => [
-      `${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`,
-      project,
-    ]),
+    (await eventStore.listProjects({ includeHidden: true }))
+      .filter(
+        (project) =>
+          (project.kind === undefined || project.kind === 'github') &&
+          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
+      )
+      .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
   );
 
   // The container_name is the canonical hyphen-slug form derived from the
