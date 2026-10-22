@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.76.0](https://github.com/Heey-Global/verity/compare/mobile-v1.75.0...mobile-v1.76.0) (2026-10-22)
+
+
+### Features
+
+* **updates:** recover stuck updates from the app ([#1768](https://github.com/Heey-Global/verity/issues/1768)) ([699be3a](https://github.com/Heey-Global/verity/commit/699be3ad1a7d2e013989441f574de1b3390752af))
+
+
+### Bug Fixes
+
+* **mobile:** build the new-meeting screen from the design system ([#1763](https://github.com/Heey-Global/verity/issues/1763)) ([3b79f18](https://github.com/Heey-Global/verity/commit/3b79f185c793a68436733dffb80568ec9eb6079c))
+* **runtime:** update Node to security release 26.12.1 ([#1789](https://github.com/Heey-Global/verity/issues/1789)) ([dd20beb](https://github.com/Heey-Global/verity/commit/dd20beb29dfcf295c971e3babccf74b940d39141))
+
 ## [1.75.0](https://github.com/Heey-Global/verity/compare/mobile-v1.74.0...mobile-v1.75.0) (2026-10-21)
 
 
