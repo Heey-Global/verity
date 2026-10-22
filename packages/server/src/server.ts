@@ -6840,7 +6840,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
     // Neither the control-plane workspace nor a project without a GitHub
     // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project)) {
+    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
       return { project, release: null };
     }
     // Trigger the in-memory release refresh + read its freshest SETTLED value.

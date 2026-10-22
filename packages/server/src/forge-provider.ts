@@ -6,11 +6,11 @@ import type { ProjectRecord } from '@verity/store';
  * Routes, the session PR bar, merge handling and project linking talk to a
  * {@link ForgeProvider} instead of to GitHub directly, so a second forge (Forgejo,
  * later GitLab) is one more implementation rather than a fork of every caller.
- * GitHub is the only implementation today; see `github-forge-provider.ts`.
+ * Implementations live in `github-forge-provider.ts` and `forgejo-forge-provider.ts`.
  */
 
 /** Identifies a forge implementation. Widened as further forges are added. */
-type ForgeProviderId = 'github';
+type ForgeProviderId = 'github' | 'forgejo';
 
 /**
  * What a forge supports for its projects. Callers consult these flags to hide a
