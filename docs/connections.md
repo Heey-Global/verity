@@ -84,3 +84,20 @@ lookups match both the branch name and its repository, and merge requests pass
 the expected head commit to Forgejo. Unsupported operations are reflected in
 provider capabilities. Release badges remain disabled for Forgejo. Credentials
 are resolved per operation so token rotation does not retain stale tokens.
+
+Forgejo project creation accepts `{ "repo": "owner/repository", "connectionId":
+"..." }` at `POST /projects`; the selected connection determines the provider.
+`POST /projects/:id/link` accepts the same repository and connection fields to
+publish a local project. The existing `link-github` route remains available.
+Selecting a Forgejo connection requires administrator access and a fully
+configured project relay/provisioner. New Forgejo clone and container names
+include a hash of the connection and repository identity. Existing clones retain
+their paths, including when a local project is linked.
+
+Forgejo sandbox Git uses an opaque project/container capability through the
+HTTPS broker. The broker checks the current project connection and repository,
+uses the upstream connection's port and CA, and substitutes the real personal
+token only on the server. The sandbox trusts a separate public broker CA and
+receives a host-specific broker certificate. Tokens are never returned by the
+retired `/internal/github/token` endpoint. Changing a connection's token or CA
+affects subsequent requests without distributing credentials to sandboxes.

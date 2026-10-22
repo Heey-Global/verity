@@ -12704,6 +12704,72 @@ describe('POST /projects/:id/link-github', () => {
     };
   }
 
+  it('links through the selected Forgejo connection without adopting another connection repository', async () => {
+    await createLocal('p-forge-link');
+    for (const id of ['forge-first', 'forge-second'])
+      await ctx.store.forgeConnections.upsert({
+        id,
+        provider: 'forgejo',
+        baseUrl: 'https://forge.test/prefix',
+        label: id,
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+    await ctx.store.createProject({
+      id: 'other-forge-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'forge-second',
+      owner: 'owner',
+      repo: 'repo',
+      containerName: 'other-forge',
+      state: 'active',
+    });
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('forge-admin');
+    const provisioner = fakeProvisioner();
+    const ghTokenMint = vi.fn(() => Promise.resolve('server-only-fixture'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner,
+      ghTokenMint,
+      authRegistry: registry,
+      forgejoEnabled: true,
+    });
+    try {
+      const response = await a.inject({
+        method: 'POST',
+        url: '/projects/p-forge-link/link',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { repo: 'https://forge.test/prefix/owner/repo.git', connectionId: 'forge-first' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        project: {
+          kind: 'forgejo',
+          forgeConnectionId: 'forge-first',
+          owner: 'owner',
+          repo: 'repo',
+          cloneDir: 'local-my-project',
+        },
+      });
+      expect(ghTokenMint).toHaveBeenCalledWith({
+        owner: 'owner',
+        repo: 'repo',
+        forgeConnectionId: 'forge-first',
+        kind: 'forgejo',
+      });
+      expect((await ctx.store.getProject('other-forge-project'))?.forgeConnectionId).toBe(
+        'forge-second',
+      );
+    } finally {
+      await a.close();
+    }
+  });
+
   it('503s when the provisioner cannot link', async () => {
     const res = await app.inject({
       method: 'POST',

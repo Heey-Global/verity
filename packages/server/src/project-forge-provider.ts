@@ -7,7 +7,7 @@ import { ForgejoTransport } from './forgejo-transport.js';
 export async function projectForgeProvider(
   store: EventStore,
   github: ForgeProvider,
-  project: ProjectRecord,
+  project: Pick<ProjectRecord, 'kind' | 'owner' | 'repo' | 'forgeConnectionId'>,
 ): Promise<ForgeProvider | undefined> {
   if (project.kind !== 'forgejo') return github;
   if (!project.forgeConnectionId) return undefined;

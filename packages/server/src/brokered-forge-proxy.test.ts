@@ -1,3 +1,4 @@
+import { createForgejoForgeAdapter } from './brokered-forge-forgejo.js';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { parse, Kind } from 'graphql';
@@ -104,6 +105,7 @@ async function harness(
     actions?: Set<ForgeAction>;
     enabled?: boolean;
     registry?: boolean;
+    forgejo?: boolean;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -144,10 +146,25 @@ async function harness(
         mint: async () => token,
         transport,
       })
-    : createGitHubForgeAdapter({ mint, transport });
+    : options.forgejo
+      ? createForgejoForgeAdapter({
+          connectionId: 'forge',
+          baseUrl: 'https://forge.test:8443/prefix',
+          credentials: () => Promise.resolve({ token, login: 'acme' }),
+        })
+      : createGitHubForgeAdapter({ mint, transport });
   const proxy = createBrokeredForgeProxy({
     certificate,
-    capabilities,
+    capabilities: options.forgejo
+      ? {
+          ...capabilities,
+          resolve: (value) =>
+            Promise.resolve(value === cap ? { ...binding, forgeConnectionId: 'forge' } : undefined),
+        }
+      : capabilities,
+    ...(options.forgejo
+      ? { certificateFor: () => issueGatewayServerCertificate(ca, { serverName: 'forge.test' }) }
+      : {}),
     adapter,
     transport,
     enabled: () => options.enabled ?? true,
@@ -912,92 +929,105 @@ describe('brokered forge TLS boundary', () => {
     await exec(join(seed, 'gh'), ['pr', 'merge', '2', '--repo', 'acme/app', '--merge'], { env });
     expect(h.received.every((entry) => entry.auth === `Bearer ${token}`)).toBe(true);
   });
-  it('runs real Git clone/fetch/push through Smart HTTP without a sandbox GitHub token', async () => {
-    const root = join(dir, 'git-root');
-    await mkdir(join(root, 'acme'), { recursive: true });
-    const repo = join(root, 'acme', 'app.git');
-    await exec('git', ['init', '--bare', '--initial-branch=main', repo]);
-    await exec('git', ['--git-dir', repo, 'config', 'http.receivepack', 'true']);
-    const h = await harness((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://upstream');
-      const backend = spawn('git', ['http-backend'], {
-        env: {
-          ...process.env,
-          GIT_PROJECT_ROOT: root,
-          GIT_HTTP_EXPORT_ALL: '1',
-          PATH_INFO: url.pathname,
-          QUERY_STRING: url.search.slice(1),
-          REQUEST_METHOD: req.method ?? 'GET',
-          CONTENT_TYPE: req.headers['content-type'] ?? '',
-          REMOTE_USER: 'verity',
+  it.each(['github', 'forgejo'])(
+    'runs real Git clone/fetch/push through %s Smart HTTP without a sandbox token',
+    async (provider) => {
+      const forgejo = provider === 'forgejo';
+      const origin = forgejo ? 'https://forge.test:8443' : 'https://github.com';
+      const prefix = forgejo ? '/prefix' : '';
+      const root = join(dir, `git-root-${provider}`);
+      await mkdir(join(root, 'acme'), { recursive: true });
+      const repo = join(root, 'acme', 'app.git');
+      await exec('git', ['init', '--bare', '--initial-branch=main', repo]);
+      await exec('git', ['--git-dir', repo, 'config', 'http.receivepack', 'true']);
+      const h = await harness(
+        (req, res) => {
+          const url = new URL(req.url ?? '/', 'http://upstream');
+          const backend = spawn('git', ['http-backend'], {
+            env: {
+              ...process.env,
+              GIT_PROJECT_ROOT: root,
+              GIT_HTTP_EXPORT_ALL: '1',
+              PATH_INFO: url.pathname.slice(prefix.length),
+              QUERY_STRING: url.search.slice(1),
+              REQUEST_METHOD: req.method ?? 'GET',
+              CONTENT_TYPE: req.headers['content-type'] ?? '',
+              REMOTE_USER: 'verity',
+            },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          req.pipe(backend.stdin);
+          let headers = Buffer.alloc(0);
+          let started = false;
+          backend.stdout.on('data', (chunk: Buffer) => {
+            if (started) {
+              res.write(chunk);
+              return;
+            }
+            headers = Buffer.concat([headers, chunk]);
+            const end = headers.indexOf('\r\n\r\n');
+            if (end < 0) return;
+            for (const line of headers.subarray(0, end).toString().split('\r\n')) {
+              const index = line.indexOf(':');
+              if (index < 0) continue;
+              const key = line.slice(0, index);
+              const value = line.slice(index + 1).trim();
+              if (key.toLowerCase() === 'status') res.statusCode = Number(value.split(' ')[0]);
+              else res.setHeader(key, value);
+            }
+            started = true;
+            res.write(headers.subarray(end + 4));
+          });
+          backend.on('close', () => res.end());
+          backend.on('error', () => res.destroy());
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        { forgejo },
+      );
+      const env = {
+        ...cliEnv(h.port),
+        ...(forgejo ? { VERITY_FORGE_AUTHORITY: 'forge.test:8443' } : {}),
+      };
+      const config = [
+        '-c',
+        `http.${origin}.proxy=http://127.0.0.1:${h.port}`,
+        '-c',
+        `http.${origin}.sslCAInfo=${join(dir, 'ca.crt')}`,
+        '-c',
+        `credential.helper=${join(seed, 'verity-gh-cred')}`,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+      ];
+      const clone = join(dir, `clone-${provider}`);
+      await exec('git', [...config, 'clone', `${origin}${prefix}/acme/app.git`, clone], { env });
+      await exec('git', ['-C', clone, 'symbolic-ref', 'HEAD', 'refs/heads/main'], { env });
+      await writeFile(join(clone, 'large.bin'), randomBytes(2 * 1024 * 1024));
+      await exec('git', [...config, '-C', clone, 'add', '.'], { env });
+      await exec('git', [...config, '-C', clone, 'commit', '-m', 'test: seed transport fixture'], {
+        env,
       });
-      req.pipe(backend.stdin);
-      let headers = Buffer.alloc(0);
-      let started = false;
-      backend.stdout.on('data', (chunk: Buffer) => {
-        if (started) {
-          res.write(chunk);
-          return;
-        }
-        headers = Buffer.concat([headers, chunk]);
-        const end = headers.indexOf('\r\n\r\n');
-        if (end < 0) return;
-        for (const line of headers.subarray(0, end).toString().split('\r\n')) {
-          const index = line.indexOf(':');
-          if (index < 0) continue;
-          const key = line.slice(0, index);
-          const value = line.slice(index + 1).trim();
-          if (key.toLowerCase() === 'status') res.statusCode = Number(value.split(' ')[0]);
-          else res.setHeader(key, value);
-        }
-        started = true;
-        res.write(headers.subarray(end + 4));
+      await exec('git', [...config, '-C', clone, 'push', 'origin', 'main'], {
+        env,
+        maxBuffer: 4 * 1024 * 1024,
       });
-      backend.on('close', () => res.end());
-      backend.on('error', () => res.destroy());
-    });
-    const env = cliEnv(h.port);
-    const config = [
-      '-c',
-      `http.https://github.com.proxy=http://127.0.0.1:${h.port}`,
-      '-c',
-      `http.https://github.com.sslCAInfo=${join(dir, 'ca.crt')}`,
-      '-c',
-      `credential.helper=${join(seed, 'verity-gh-cred')}`,
-      '-c',
-      'user.name=Test',
-      '-c',
-      'user.email=test@example.com',
-    ];
-    const clone = join(dir, 'clone');
-    await exec('git', [...config, 'clone', 'https://github.com/acme/app.git', clone], { env });
-    await exec('git', ['-C', clone, 'symbolic-ref', 'HEAD', 'refs/heads/main'], { env });
-    await writeFile(join(clone, 'large.bin'), randomBytes(2 * 1024 * 1024));
-    await exec('git', [...config, '-C', clone, 'add', '.'], { env });
-    await exec('git', [...config, '-C', clone, 'commit', '-m', 'test: seed transport fixture'], {
-      env,
-    });
-    await exec('git', [...config, '-C', clone, 'push', 'origin', 'main'], {
-      env,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    await exec('git', [...config, '-C', clone, 'fetch', 'origin'], { env });
-    const second = join(dir, 'second-clone');
-    await exec('git', [...config, 'clone', 'https://github.com/acme/app.git', second], {
-      env,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    expect(await readFile(join(second, 'large.bin'))).toEqual(
-      await readFile(join(clone, 'large.bin')),
-    );
-    expect(
-      h.received.every(
-        (entry) =>
-          entry.auth === `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
-      ),
-    ).toBe(true);
-    expect(await readFile(join(clone, '.git', 'config'), 'utf8')).not.toContain(token);
-  });
+      await exec('git', [...config, '-C', clone, 'fetch', 'origin'], { env });
+      const second = join(dir, `second-clone-${provider}`);
+      await exec('git', [...config, 'clone', `${origin}${prefix}/acme/app.git`, second], {
+        env,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      expect(await readFile(join(second, 'large.bin'))).toEqual(
+        await readFile(join(clone, 'large.bin')),
+      );
+      expect(
+        h.received.every(
+          (entry) =>
+            entry.auth ===
+            `Basic ${Buffer.from(`${forgejo ? 'acme' : 'x-access-token'}:${token}`).toString('base64')}`,
+        ),
+      ).toBe(true);
+      expect(await readFile(join(clone, '.git', 'config'), 'utf8')).not.toContain(token);
+    },
+  );
 });

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * Canonical owner/repo parser (concept §19.0, #174). Single source of truth
  * for the input-validation at every external `POST /sessions { project }`-shape
@@ -54,6 +55,43 @@ export function parseOwnerRepo(input: string): CanonicalProject | undefined {
   const repo = repoRaw.toLowerCase();
   if (!validOwner(owner) || !validRepo(repo)) return undefined;
   return { owner, repo };
+}
+
+/** Parse an HTTPS URL or coordinate only within the selected Forgejo instance. */
+export function parseForgejoRepository(
+  input: string,
+  baseUrl: string,
+): CanonicalProject | undefined {
+  let coordinate = input.trim();
+  if (coordinate.startsWith('https://')) {
+    try {
+      const url = new URL(coordinate);
+      const base = new URL(baseUrl);
+      const prefix = `${base.pathname.replace(/\/$/u, '')}/`;
+      if (
+        url.origin !== base.origin ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        !url.pathname.startsWith(prefix)
+      )
+        return undefined;
+      coordinate = url.pathname.slice(prefix.length);
+    } catch {
+      return undefined;
+    }
+  }
+  coordinate = coordinate.replace(/\.git$/u, '');
+  const parts = coordinate.split('/');
+  if (
+    parts.length !== 2 ||
+    parts.some(
+      (part) => !/^[a-z0-9][a-z0-9._-]{0,99}$/u.test(part) || part === '.' || part === '..',
+    )
+  )
+    return undefined;
+  return { owner: parts[0]!, repo: parts[1]! };
 }
 
 /** GitHub owner rules: `[a-z0-9-]`, 1–39 chars, no leading/trailing `-`.
@@ -114,9 +152,13 @@ export function slugifyProjectName(input: string): string | undefined {
  *  `verity-<owner>--<repo>` — single segment, lowercased, mirrors slice-1's
  *  `upsertProject` implementation. Exported as a small util for the conductor /
  *  route layer to share. */
-export function containerNameFor(c: CanonicalProject): string {
+export function containerNameFor(c: CanonicalProject, connectionId?: string | null): string {
   // Docker names allow `[a-zA-Z0-9_.-]`. Preserve repo `.`/`_` so GitHub repos
   // that differ only by punctuation do not collide; `--` is unambiguous because
   // owners reject consecutive hyphens and repos cannot start with `-`.
-  return `verity-${c.owner}--${c.repo}`;
+  const suffix =
+    connectionId && connectionId !== 'legacy-github'
+      ? `--${createHash('sha256').update(`${connectionId}\0${c.owner}\0${c.repo}`).digest('hex').slice(0, 16)}`
+      : '';
+  return `verity-${c.owner}--${c.repo}${suffix}`;
 }

@@ -365,7 +365,7 @@ import {
   type ProjectRecord,
   type SessionAutomationStatus,
 } from '@verity/store';
-import { parseOwnerRepo } from './canonical.js';
+import { parseOwnerRepo, parseForgejoRepository } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import {
@@ -1401,6 +1401,7 @@ export interface ServerDeps {
    * making the overview look like every repo has been created.
    */
   listAvailableRepositories?: () => Promise<ProjectRecord[]>;
+  forgejoEnabled?: boolean;
   listProjectGitHubIssues?: (project: ProjectRecord) => Promise<ProjectGitHubIssues>;
   /**
    * Provisioning worker (concept §19.3, #174). When `POST /sessions { project }`
@@ -7083,6 +7084,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.invalidateProjectList?.();
       return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
     },
+    forgejoEnabled: deps.forgejoEnabled === true,
     listAvailableRepositories: async () =>
       deps.listAvailableRepositories
         ? deps.listAvailableRepositories()
@@ -7670,7 +7672,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
   registerProjectGitHubLinkRoute(app, {
     isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
-    link: async (request, reply, id, repository) => {
+    link: async (request, reply, id, repository, connectionId) => {
       const provisioner = deps.provisioner!;
       const project = await deps.eventStore.getProject(id);
       if (project === undefined || project.hiddenAt !== null) {
@@ -7681,10 +7683,34 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'this project is already backed by a GitHub repository' };
       }
-      const target = parseOwnerRepo(repository);
-      if (target === undefined || target.owner === LOCAL_PROJECT_OWNER) {
+      let parsedTarget = parseOwnerRepo(repository);
+      if (connectionId) {
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (connection?.provider === 'forgejo')
+          parsedTarget = parseForgejoRepository(repository, connection.baseUrl);
+      }
+      if (parsedTarget === undefined || parsedTarget.owner === LOCAL_PROJECT_OWNER) {
         reply.code(400);
         return { error: 'invalid repository' };
+      }
+      const target: {
+        owner: string;
+        repo: string;
+        forgeConnectionId?: string | null;
+        kind?: 'github' | 'forgejo';
+      } = { ...parsedTarget };
+      if (connectionId) {
+        if (
+          !request.localUserId ||
+          !(await deps.eventStore.isActiveAdministrator(request.localUserId))
+        )
+          return reply.code(403).send({ error: 'administrator required' });
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (!connection) return reply.code(404).send({ error: 'connection not found' });
+        if (connection.provider === 'forgejo' && !deps.forgejoEnabled)
+          return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
+        target.forgeConnectionId = connection.id;
+        target.kind = connection.provider;
       }
       // `(owner, repo)` is UNIQUE, so a taken pair would surface as an opaque DB
       // error AFTER the push already happened. Check first and fail clean.
@@ -7699,6 +7725,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const conflict = (await deps.eventStore.listProjects({ includeHidden: true })).find(
         (candidate) =>
           candidate.id !== project.id &&
+          (candidate.forgeConnectionId ?? 'legacy-github') ===
+            (target.forgeConnectionId ?? 'legacy-github') &&
           candidate.owner === target.owner &&
           candidate.repo === target.repo &&
           !isInstallationPlaceholder(candidate),
@@ -7804,7 +7832,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const reservation = Symbol(localIdentityKey);
       localIdentityLinkReservations.set(localIdentityKey, reservation);
-      const targetKey = `${target.owner}/${target.repo}`;
+      const targetKey = `${target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github' ? `${target.forgeConnectionId}:` : ''}${target.owner}/${target.repo}`;
       if (githubTargetLinkReservations.has(targetKey)) {
         localIdentityLinkReservations.delete(localIdentityKey);
         reply.code(409);

@@ -241,6 +241,7 @@ export interface ControlPlaneDeps {
    * including `state='absent'` rows `listProjects` leaves out. Omit → the repo
    * picker falls back to the project overview. */
   listAvailableRepositories?: (() => Promise<ProjectRecord[]>) | undefined;
+  forgejoEnabled?: boolean;
   /** Reconciles ONE project's cached lifecycle state against its container before
    * the detail route answers, so the screen that owns Repair never offers an action
    * for a container that has already died. Omit → the cached row is served. */
@@ -476,6 +477,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.listProjectGitHubIssues !== undefined
       ? { listProjectGitHubIssues: deps.listProjectGitHubIssues }
       : {}),
+    ...(deps.forgejoEnabled !== undefined ? { forgejoEnabled: deps.forgejoEnabled } : {}),
     ...(deps.listAvailableRepositories !== undefined
       ? { listAvailableRepositories: deps.listAvailableRepositories }
       : {}),
