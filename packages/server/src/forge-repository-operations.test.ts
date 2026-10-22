@@ -19,7 +19,8 @@ interface Pull {
   merged: boolean;
   draft: boolean;
   head: string;
-  headRepo: string;
+  /** `null` once the head repository (a fork) has been deleted. */
+  headRepo: string | null;
   base: string;
   body: string;
   updated: string;
@@ -66,6 +67,18 @@ function emptyForge(): Forge {
         body: '',
         updated: '2026-03-01T00:00:00Z',
       },
+      {
+        number: 4,
+        title: 'Deleted fork change',
+        state: 'open',
+        merged: false,
+        draft: false,
+        head: 'feat/7-search',
+        headRepo: null,
+        base: 'main',
+        body: '',
+        updated: '2026-03-02T00:00:00Z',
+      },
     ],
     issues: [
       { number: 3, title: 'Search is slow', body: 'Details' },
@@ -89,7 +102,7 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
     merged: pull.merged,
     body: pull.body,
     updated_at: pull.updated,
-    head: { ref: pull.head, repo: { full_name: pull.headRepo } },
+    head: { ref: pull.head, repo: pull.headRepo === null ? null : { full_name: pull.headRepo } },
     base: { ref: pull.base },
   });
   vi.spyOn(transport, 'json').mockImplementation((path: string, method = 'GET', body?: unknown) => {
@@ -160,7 +173,7 @@ function githubFake(forge: Forge): ForgeRepositoryOperations {
     draft: pull.draft,
     body: pull.body,
     updated_at: pull.updated,
-    head: { ref: pull.head, repo: { full_name: pull.headRepo } },
+    head: { ref: pull.head, repo: pull.headRepo === null ? null : { full_name: pull.headRepo } },
     base: { ref: pull.base },
   });
   const respond = (status: number, body: unknown) =>
@@ -245,7 +258,7 @@ describe.each([
     expect(forge.pulls.at(-1)?.draft).toBe(false);
   });
 
-  it("finds the branch's own pull request, open first, never a fork's", async () => {
+  it("finds the branch's own pull request, open first, never a fork's or a deleted fork's", async () => {
     const forge = emptyForge();
     const ops = make(forge);
     expect(await ops.findPullRequest({ head: 'feat/7-search' })).toMatchObject({

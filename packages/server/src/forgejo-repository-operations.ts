@@ -126,12 +126,13 @@ export function createForgejoRepositoryOperations(
         if (!complete) {
           throw new ForgeOperationError('too many pull requests to search on the code host', 502);
         }
-        // A fork's branch of the same name is not this repository's pull request.
+        // A fork's branch of the same name is not this repository's pull request,
+        // nor is one whose head repository is gone (a deleted fork).
         const match = rows
           .filter(
             (row) =>
               row.head.ref === selector.head &&
-              (row.head.repo?.full_name ?? fullName).toLowerCase() === fullName,
+              row.head.repo?.full_name?.toLowerCase() === fullName,
           )
           .sort(
             (a, b) =>

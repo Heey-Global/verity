@@ -3846,6 +3846,8 @@ describe('GET /sessions', () => {
       const prompt = String(dispatchTurnWhenIdle.mock.calls.at(-1)?.[1]);
       expect(prompt).toContain('Forgejo pull request #7');
       expect(prompt).not.toContain('GitHub');
+      // verity-repo reads no check logs, so the turn must not send the agent after them.
+      expect(prompt).toContain('reproduce them locally');
     } finally {
       await prApp.close();
     }

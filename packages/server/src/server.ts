@@ -2762,13 +2762,23 @@ function buildPullRequestCiFailureDisplayPrompt(number: number): string {
   return `Fix failing CI for PR #${String(number)}`;
 }
 
+/** Only GitHub sessions can read check runs and their logs (`gh`); `verity-repo`
+ * exposes none, so a repair turn on another host that asks for them sends the
+ * agent improvising with tools that have no credentials there. */
+function readsCheckLogs(host: string): boolean {
+  return host === 'GitHub';
+}
+
+const LOCAL_CHECKS_INSTRUCTION =
+  "Check logs cannot be read from this sandbox, so find the failing jobs in the repository's CI workflow files and reproduce them locally.";
+
 function buildPullRequestCiFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
   return appendExternalPromptData(
-    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
+    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks${readsCheckLogs(host) ? '' : ` (${LOCAL_CHECKS_INSTRUCTION})`}, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
     `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
@@ -2799,7 +2809,7 @@ function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus, host: string)
   return appendExternalPromptData(
     `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed ${host} Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. ${readsCheckLogs(host) ? `Inspect the concrete failed ${host} Actions runs and their logs with one-time REST reads;` : `${LOCAL_CHECKS_INSTRUCTION} Run them against the merged base branch;`} do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
 Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
     `${host} pull request #${String(pr.number)}`,

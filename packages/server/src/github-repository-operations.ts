@@ -140,8 +140,7 @@ export function createGitHubRepositoryOperations(options: {
       const match = rows
         .filter(
           (row) =>
-            row.head.ref === selector.head &&
-            (row.head.repo?.full_name ?? fullName).toLowerCase() === fullName,
+            row.head.ref === selector.head && row.head.repo?.full_name?.toLowerCase() === fullName,
         )
         .sort(
           (a, b) =>
