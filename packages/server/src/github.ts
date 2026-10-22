@@ -115,7 +115,7 @@ export function parseGitHubRemote(remoteUrl: string): { owner: string; repo: str
 }
 
 /** GitHub repo identity (owner/name) resolved from the `origin` remote. */
-export type GitHubIdentity = { owner: string; repo: string };
+type GitHubIdentity = { owner: string; repo: string };
 
 /** A memoized lookup of the repo's `{ owner, repo }` GitHub identity — see
  *  {@link makeIdentityResolver}. Returns null when there's no GitHub `origin`. */
@@ -998,7 +998,7 @@ export function createGitHubReleaseService(
  * the `projects` table lowercases on persist), plus GitHub's archive flag so
  * pickers can hide archived repos.
  */
-export interface InstallationRepo {
+interface InstallationRepo {
   owner: string;
   repo: string;
   archived?: boolean;

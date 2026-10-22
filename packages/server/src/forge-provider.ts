@@ -10,13 +10,13 @@ import type { ProjectRecord } from '@verity/store';
  */
 
 /** Identifies a forge implementation. Widened as further forges are added. */
-export type ForgeProviderId = 'github';
+type ForgeProviderId = 'github';
 
 /**
  * What a forge supports for its projects. Callers consult these flags to hide a
  * feature the forge lacks instead of offering it and failing on use.
  */
-export interface ForgeCapabilities {
+interface ForgeCapabilities {
   /** The connection can enumerate the repositories it grants access to. */
   readonly repositoryListing: boolean;
   readonly issues: boolean;
@@ -34,7 +34,7 @@ export interface ForgeRepoRef {
 }
 
 /** One repository the forge connection can access, lowercased like `projects` rows. */
-export interface ForgeRepository extends ForgeRepoRef {
+interface ForgeRepository extends ForgeRepoRef {
   archived?: boolean;
 }
 
