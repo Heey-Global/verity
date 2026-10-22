@@ -261,7 +261,7 @@ import {
   type GitOutput,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
-import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
+import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
@@ -1330,7 +1330,7 @@ export interface ServerDeps {
    * unparseable origin), omits owner/repo so the chips degrade to non-tappable. Never
    * throws into the branches list — a rejection degrades to omitting the fields.
    */
-  repoIdentity?: (worktree: string) => Promise<GitHubIdentity | null>;
+  repoIdentity?: (worktree: string) => Promise<ForgeRepoRef | null>;
   /**
    * Account-global Claude quota probe (the undocumented `/api/oauth/usage`
    * endpoint the Claude apps use), surfaced via `GET /provider-limits` so the
