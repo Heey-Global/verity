@@ -215,7 +215,7 @@ export function createForgejoForgeProvider(options: {
           results
             .filter((row): row is PullRequestStatus => row?.phase === 'open')
             .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0] ??
-          results[0] ??
+          results.find((row) => row !== null) ??
           null
         );
       },

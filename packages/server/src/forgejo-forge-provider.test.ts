@@ -109,7 +109,7 @@ it('does not report success when Actions inspection fails after successful statu
   });
 });
 
-it('ignores fork branches and falls back to HEAD when no open pull request exists', async () => {
+it('ignores fork branches and preserves later non-null branch results', async () => {
   vi.useFakeTimers();
   const { provider, json } = fixture();
   const implementation = json.getMockImplementation()!;
@@ -139,7 +139,10 @@ it('ignores fork branches and falls back to HEAD when no open pull request exist
       ? result.map((row) => ({ ...(row as object), state: 'closed', merged: true }))
       : result;
   });
-  expect(await service.prStatusForBranches(['missing', 'feature'])).toBeNull();
+  expect(await service.prStatusForBranches(['missing', 'feature'])).toMatchObject({
+    number: 7,
+    phase: 'merged',
+  });
 });
 
 it('coalesces branch snapshots and status loads until TTL expires', async () => {
