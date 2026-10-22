@@ -15,7 +15,7 @@
 # sandbox is reproducible, not whatever `python:3.15-bookworm` currently resolves
 # to. Renovate (docker:pinDigests) bumps tag+digest together.
 # renovate: datasource=docker depName=python
-ARG PYTHON_VERSION=3.15-bookworm@sha256:589def1896e0bb0f4d73278a020391b4f91c16cccc3736631f6ab53a3d6c5acc
+ARG PYTHON_VERSION=3.15-bookworm@sha256:9444f9c4fdfc3fc18c98cb211c2d2021719fcd619dfa423e77d67334fbad9400
 FROM python:${PYTHON_VERSION} AS python-source
 
 # Digest-pinned alongside the tag so the runtime base is reproducible and
