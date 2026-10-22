@@ -180,6 +180,7 @@ it.each(commands)(
       env: { VERITY_GH_BROKER_CAPABILITY_FILE: '/run/verity-gh/capability' },
     };
     const normal = agentLaunchSpec(request, options);
+    expect(normal.spawnOptions.env?.VERITY_SESSION_WORKTREE).toBe(request.cwd);
     for (const path of ['/opt/agent-seed', '/opt/verity/package-managers']) {
       if (existsSync(path)) {
         const index = normal.args.indexOf(path);

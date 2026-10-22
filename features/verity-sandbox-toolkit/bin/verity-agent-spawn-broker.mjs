@@ -1721,6 +1721,7 @@ export function agentLaunchSpec(request, options) {
           },
           request.sessionEnv,
         ),
+        VERITY_SESSION_WORKTREE: request.cwd,
         // Disabling project config also disables automatic AGENTS.md discovery.
         // Keep repository guidance as text, without allowing repository JSON to
         // configure providers, permissions or executable extensions. Wiki turns

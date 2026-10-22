@@ -637,7 +637,14 @@ describe('agent spawn broker', () => {
           source,
         ).toEqual([...SESSION_RUNTIME_ENV_KEYS].sort());
       }
-      const mentioned = [...text.matchAll(/VERITY_SESSION_[A-Z_]+/gu)].map((match) => match[0]);
+      // Worktree context is derived from the validated launch cwd, never accepted
+      // from the caller's sessionEnv allowlist.
+      const contextText = source.endsWith('/verity-agent-spawn-broker.mjs')
+        ? text.replace(/VERITY_SESSION_WORKTREE: request\.cwd,/u, '')
+        : text;
+      const mentioned = [...contextText.matchAll(/VERITY_SESSION_[A-Z_]+/gu)].map(
+        (match) => match[0],
+      );
       expect([...new Set(mentioned)].sort(), source).toEqual([...SESSION_RUNTIME_ENV_KEYS].sort());
     }
   });
