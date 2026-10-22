@@ -112,6 +112,7 @@ import {
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
 import { type GitHubInstallationService } from './github.js';
+import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
@@ -2415,6 +2416,20 @@ export async function buildEmbeddedServer(
     },
     prStatusTtlMs: 2_000,
   });
+  const forgeForWorktree = async (worktree: string) => {
+    if (config.hostCloneRoot) {
+      for (const project of await eventStore.listProjects({ includeHidden: true })) {
+        const suffix = relative(projectClonePath(config.hostCloneRoot, project), worktree);
+        if (
+          suffix === '' ||
+          (suffix !== '..' && !suffix.startsWith(`..${sep}`) && !suffix.startsWith(sep))
+        ) {
+          return projectForgeProvider(eventStore, githubForge, project);
+        }
+      }
+    }
+    return githubForge;
+  };
   const installationService: GitHubInstallationService = {
     listInstallationRepos: () => githubForge.listRepositories(),
   };
@@ -4501,13 +4516,15 @@ export async function buildEmbeddedServer(
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
     ...(branches !== undefined ? { branches } : {}),
-    branchPr: (b: string, wt: string) => githubForge.prServiceFor(wt).prForBranch(b),
-    branchPrStatus: (b: string, wt: string) => githubForge.prServiceFor(wt).prStatusForBranch(b),
-    branchPrStatusForBranches: (bs: readonly string[], wt: string) =>
-      githubForge.prServiceFor(wt).prStatusForBranches(bs),
-    mergePr: (n: number, wt: string, expectedHeadSha?: string) =>
-      githubForge.prServiceFor(wt).mergePr(n, expectedHeadSha),
-    repoIdentity: (wt: string) => githubForge.identityFor(wt)(),
+    branchPr: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
+    branchPrStatus: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranch(b) ?? null,
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranches(bs) ?? null,
+    mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
+    repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
     // Live GitHub-App credential validation for the onboarding wizard (#320). The
     // route reads + decrypts the stored creds itself (unsealed-only) and hands them
     // here; this just performs the redaction-safe test-mint against GitHub.
@@ -4549,7 +4566,12 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: (project: ProjectRecord) => githubForge.listIssues(project),
+    listProjectGitHubIssues: async (project: ProjectRecord) =>
+      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
+        connected: false,
+        viewerLogin: null,
+        issues: [],
+      },
     latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
     refreshLatestRelease: (owner: string, repo: string) =>
       githubForge.refreshLatestRelease({ owner, repo }),
