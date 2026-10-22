@@ -1,3 +1,4 @@
+import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
   HISTORY_MAX_BYTES,
@@ -163,7 +164,7 @@ export type ProjectState =
   | 'waking'
   | 'failed';
 export type ProjectSetupState = 'pending' | 'secrets_skipped' | 'complete';
-export type ProjectKind = 'github' | 'control_plane' | 'local';
+export type ProjectKind = 'github' | 'forgejo' | 'control_plane' | 'local';
 
 /** Reserved `owner` for projects created without a GitHub repository. Keeps them
  *  inside the existing `UNIQUE(owner, repo)` identity without a nullable owner,
@@ -237,6 +238,7 @@ export interface ProjectRecord {
   repo: string;
   containerName: string;
   kind?: ProjectKind;
+  forgeConnectionId?: string | null;
   /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
    *  for `local` projects and preserved when they are linked to GitHub, so the
    *  clone (and every session worktree persisted under it) never moves. */
@@ -337,6 +339,7 @@ export interface ProjectUpsertInput {
   repo: string;
   containerName: string;
   kind?: ProjectKind;
+  forgeConnectionId?: string | null;
   /** Explicit host clone-directory name; omit to derive `<owner>-<repo>`. Only
    *  written on INSERT — an existing row keeps whatever directory its clone
    *  already lives in. */
@@ -2013,6 +2016,10 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .where('kind', '=', 'slides')
       .execute();
+  }
+
+  get forgeConnections(): ForgeConnectionStore {
+    return new ForgeConnectionStore(this.db, this.cipher);
   }
 
   get googleAccounts(): GoogleAccountStore {
@@ -5269,6 +5276,7 @@ export class EventStore implements EventSink {
     repo: string;
     container_name: string;
     kind?: string | null;
+    forge_connection_id?: string | null;
     clone_dir?: string | null;
     image_ref: string | null;
     image_override_ref?: string | null;
@@ -5299,6 +5307,7 @@ export class EventStore implements EventSink {
       repo: row.repo,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
+      forgeConnectionId: row.forge_connection_id ?? null,
       cloneDir: row.clone_dir ?? null,
       imageRef: row.image_ref,
       imageOverrideRef: row.image_override_ref ?? null,
@@ -5333,6 +5342,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly projectColumns = [
+    'forge_connection_id',
     'id',
     'kind',
     'owner',
@@ -5400,6 +5410,25 @@ export class EventStore implements EventSink {
       // Knowledge lifecycle mutations take this lock before touching a project
       // row. Match that order here so sync cannot deadlock with hide/delete.
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      // Until repository identities become connection-scoped, reject collisions
+      // across forges instead of letting a legacy GitHub sync adopt another forge.
+      const existingBinding = await tx
+        .selectFrom('projects')
+        .select(['kind', 'forge_connection_id'])
+        .where('owner', '=', owner)
+        .where('repo', '=', repo)
+        .executeTakeFirst();
+      if (
+        existingBinding !== undefined &&
+        ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+          (input.forgeConnectionId !== undefined &&
+            existingBinding.forge_connection_id !== null &&
+            existingBinding.forge_connection_id !== input.forgeConnectionId))
+      ) {
+        throw new ProjectIdentityClaimConflict(
+          'Project identity belongs to another forge connection',
+        );
+      }
       const claimed = await tx
         .insertInto('project_identity_claims')
         .values({ owner, repo, project_id: input.id })
@@ -5433,6 +5462,7 @@ export class EventStore implements EventSink {
           repo,
           container_name: containerName,
           kind: input.kind ?? 'github',
+          forge_connection_id: input.forgeConnectionId ?? null,
           clone_dir: input.cloneDir ?? null,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
@@ -5483,6 +5513,9 @@ export class EventStore implements EventSink {
                     string | null
                   >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
                 }
+              : {}),
+            ...(input.forgeConnectionId !== undefined
+              ? { forge_connection_id: input.forgeConnectionId }
               : {}),
             ...(input.kind !== undefined ? { kind: input.kind } : {}),
             ...(input.archived !== undefined ? { archived: input.archived } : {}),
@@ -5535,6 +5568,7 @@ export class EventStore implements EventSink {
           repo,
           container_name: input.containerName.toLowerCase(),
           kind: input.kind ?? 'github',
+          forge_connection_id: input.forgeConnectionId ?? null,
           clone_dir: input.cloneDir ?? null,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,

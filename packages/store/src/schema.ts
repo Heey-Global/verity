@@ -319,7 +319,21 @@ interface IntegrationEventsTable {
  *     hyphen-slug, lowercased). Uniquely-restrained so two concurrent provisions
  *     can't collide at the Docker daemon.
  */
+export interface ForgeConnectionsTable {
+  id: string;
+  provider: 'github' | 'forgejo';
+  base_url: string;
+  label: string;
+  personal_token: string | null;
+  github_app_id: string | null;
+  github_app_installation_id: string | null;
+  github_app_private_key: string | null;
+  created_at: ColumnType<Date, Date | string | undefined, never>;
+  updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
+}
+
 export interface ProjectsTable {
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
   created_by_user_id: ColumnType<string, string | undefined, never>;
@@ -329,9 +343,8 @@ export interface ProjectsTable {
   repo: string;
   /** `verity-<owner>--<repo>` — single hyphen-slug, lowercased. */
   container_name: string;
-  /** `github` for ordinary repository projects; `control_plane` for Verity's
-   *  internal advanced workspace; `local` for a project Verity created with
-   *  `git init` and no remote (no GitHub link yet). */
+  /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
+   *  internal advanced workspace; `local` for a project created without a remote. */
   kind: ColumnType<string, string | undefined, string>;
   /** Host clone-directory NAME under the clone root, when it must not be derived
    *  from `(owner, repo)`. NULL = derive `<owner>-<repo>` (every pre-existing row).
@@ -880,6 +893,7 @@ interface SessionAutomationMarkerTable {
  *  restart, so existing sandboxes' `git push` failed with 401 after any redeploy.
  *  A re-provision UPSERTs (rotating the hash); a deprovision DELETEs (revocation). */
 interface GhTokenCapabilitiesTable {
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   cap_hash: string;
   owner: string;
@@ -1534,6 +1548,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;
   secret_run_grants: SecretRunGrantsTable;
