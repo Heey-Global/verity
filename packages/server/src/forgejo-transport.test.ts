@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:https';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import {
@@ -17,7 +18,7 @@ let token = 'first-fixture';
 const requests: { path: string; auth: string | undefined }[] = [];
 let fixture: ReturnType<typeof createServer>;
 beforeAll(async () => {
-  directory = mkdtempSync(join(process.cwd(), '.cache/forgejo-tls-'));
+  directory = mkdtempSync(join(tmpdir(), 'forgejo-tls-'));
   execFileSync(
     'openssl',
     [
@@ -65,8 +66,8 @@ beforeAll(async () => {
   baseUrl = `https://127.0.0.1:${address.port}/forge`;
 });
 afterAll(async () => {
-  await new Promise<void>((resolve) => fixture.close(() => resolve()));
-  rmSync(directory, { recursive: true, force: true });
+  if (fixture) await new Promise<void>((resolve) => fixture.close(() => resolve()));
+  if (directory) rmSync(directory, { recursive: true, force: true });
 });
 it('uses custom CA, base prefix and current credentials on every page', async () => {
   const transport = new ForgejoTransport(baseUrl, async () => token, ca);
