@@ -15,7 +15,7 @@ interface ForgejoPull {
   merged: boolean;
   mergeable?: boolean;
   updated_at?: string;
-  head: { ref: string; sha: string };
+  head: { ref: string; sha: string; repo?: { full_name?: string } };
   base: { ref: string; sha: string };
   merge_commit_sha?: string;
 }
@@ -164,7 +164,11 @@ export function createForgejoForgeProvider(options: {
         if (!ref) return null;
         const pulls = await pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`);
         const pull = pulls
-          .filter((row) => row.head.ref === branch)
+          .filter(
+            (row) =>
+              row.head.ref === branch &&
+              row.head.repo?.full_name?.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase(),
+          )
           .sort(
             (a, b) =>
               Number(a.state !== 'open') - Number(b.state !== 'open') ||
@@ -188,7 +192,7 @@ export function createForgejoForgeProvider(options: {
           results
             .filter((row): row is PullRequestStatus => row?.phase === 'open')
             .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0] ??
-          results[0] ??
+          results.find((row) => row !== null) ??
           null
         );
       },

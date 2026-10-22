@@ -13,7 +13,7 @@ function fixture() {
     state: 'open',
     merged: false,
     mergeable: true,
-    head: { ref: 'feature', sha: 'abc123' },
+    head: { ref: 'feature', sha: 'abc123', repo: { full_name: 'owner/repo' } },
     base: { ref: 'main', sha: 'def456' },
     updated_at: '2026-01-01T00:00:00Z',
   };
@@ -103,5 +103,39 @@ it('does not report success when Actions inspection fails after successful statu
   );
   expect(await provider.prServiceFor('/checkout').prStatusForBranch('feature')).toMatchObject({
     pipeline: 'unknown',
+  });
+});
+
+it('ignores same-named branches from a fork and preserves later non-null branch results', async () => {
+  const { provider, json } = fixture();
+  const implementation = json.getMockImplementation()!;
+  json.mockImplementation(async (path, ...args) => {
+    const result = await implementation(path, ...args);
+    if (path.includes('/pulls?') && Array.isArray(result) && result.length) {
+      const original = result[0] as { head: { ref: string; sha: string }; updated_at: string };
+      return [
+        {
+          ...original,
+          number: 999,
+          updated_at: '2026-10-01T00:00:00Z',
+          head: { ...original.head, repo: { full_name: 'fork/repo' } },
+        },
+        ...result,
+      ];
+    }
+    return result;
+  });
+  const service = provider.prServiceFor('/checkout');
+  expect(await service.prForBranch('feature')).toBe(7);
+  expect(await service.prStatusForBranches(['missing', 'feature'])).toMatchObject({ number: 7 });
+  json.mockImplementation(async (path, ...args) => {
+    const result = await implementation(path, ...args);
+    return path.includes('/pulls?') && Array.isArray(result)
+      ? result.map((row) => ({ ...(row as object), state: 'closed', merged: true }))
+      : result;
+  });
+  expect(await service.prStatusForBranches(['missing', 'feature'])).toMatchObject({
+    number: 7,
+    phase: 'merged',
   });
 });
