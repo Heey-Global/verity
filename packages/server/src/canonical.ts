@@ -82,7 +82,7 @@ export function parseForgejoRepository(
       return undefined;
     }
   }
-  coordinate = coordinate.replace(/\.git$/u, '');
+  coordinate = coordinate.replace(/\.git$/iu, '').toLowerCase();
   const parts = coordinate.split('/');
   if (
     parts.length !== 2 ||

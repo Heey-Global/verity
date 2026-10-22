@@ -140,3 +140,37 @@ token only on the server. The sandbox trusts a separate public broker CA and
 receives a host-specific broker certificate. Tokens are never returned by the
 retired `/internal/github/token` endpoint. Changing a connection's token or CA
 affects subsequent requests without distributing credentials to sandboxes.
+
+
+### Private Forgejo instances
+
+Forgejo connections require HTTPS, including on private networks. Configure
+`customCaPem` with the connection's PEM CA bundle for an internal certificate
+authority. API and broker upstream requests use this trust only for that
+connection; server Git sets URL-specific `http.<url>.sslCAInfo`. Sandbox Git
+trusts a separate broker CA. Certificate chain, validity and DNS/IP subject
+alternative name verification remain enabled; there is no insecure TLS mode.
+A token or CA change invalidates subsequent provider lookups and cached PR data.
+
+A repository/issue-scoped token does not need `read:user`. Connection validation
+and listing use `/repos/search`; the search response lists repositories visible
+to the token, including public repositories. Validation also probes the same
+endpoint with a randomly generated invalid token and fails closed unless that
+probe is rejected with 401 or 403. A public search that ignores credentials
+cannot validate a connection. `/user` and `/user/repos` are not required (older
+Forgejo versions apply the user scope to the latter as well). Git uses a fixed
+username with token authentication. Scope, TLS and connection failures are
+reported without returning tokens.
+
+PR lookups share a two-second repository snapshot and coalesce concurrent
+requests, with a five-second cooldown after a failed scan. The base/head lookup
+requires a known base branch, so branch discovery retains a paginated fallback
+covering PRs against any base. Commit statuses supply check counts; Actions runs
+only detect work still running. Warning statuses are terminal failures, and a
+false mergeability result remains unknown because it can mean checking is still
+in progress. Merges use an allowed repository merge method, preferring its
+default, and retain the expected-head guard. A 405 response does not disable
+merge support permanently.
+
+Acceptance against a live instance remains necessary. Git LFS and signed
+bootstrap commits are separate follow-ups.

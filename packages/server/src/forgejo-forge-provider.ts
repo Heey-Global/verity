@@ -77,7 +77,7 @@ export function createForgejoForgeProvider(options: {
     throw new Error('Forgejo pagination limit exceeded');
   };
   const unavailable = (error: unknown) =>
-    error instanceof ForgejoRequestError && [404, 405, 501].includes(error.status);
+    error instanceof ForgejoRequestError && [404, 501].includes(error.status);
   const status = async (ref: ForgeRepoRef, pull: ForgejoPull): Promise<PullRequestStatus> => {
     let incomplete = false;
     const checks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
@@ -94,7 +94,7 @@ export function createForgejoForgeProvider(options: {
         contexts.add(check.context);
         checks.total++;
         if (check.status === 'success') checks.successful++;
-        else if (['failure', 'error'].includes(check.status)) checks.failed++;
+        else if (['failure', 'error', 'warning'].includes(check.status)) checks.failed++;
         else checks.pending++;
       }
       checks.completed = checks.successful + checks.failed;
@@ -115,13 +115,9 @@ export function createForgejoForgeProvider(options: {
         if (!result.workflow_runs.length) break;
         for (const run of result.workflow_runs) {
           if (run.commit_sha !== sha) continue;
-          checks.total++;
-          if (['success', 'skipped'].includes(run.status)) checks.successful++;
-          else if (['failure', 'cancelled'].includes(run.status)) checks.failed++;
-          else {
-            checks.pending++;
-            running ||= run.status === 'running';
-          }
+          // Commit statuses carry job counts. Actions only tells us whether work
+          // is still running; counting both sources duplicates the same checks.
+          running ||= ['running', 'waiting', 'queued'].includes(run.status);
         }
         if (page === 1000) throw new Error('Forgejo Actions pagination limit exceeded');
       }
@@ -153,17 +149,38 @@ export function createForgejoForgeProvider(options: {
                 ? 'success'
                 : 'unknown',
       checks,
-      mergeable: pull.mergeable ?? null,
+      mergeable: pull.state === 'open' && !pull.merged && pull.mergeable === true ? true : null,
       mergeState:
-        pull.mergeable === false ? 'dirty' : pull.mergeable === true ? 'clean' : 'unknown',
+        pull.state === 'open' && !pull.merged && pull.mergeable === true ? 'clean' : 'unknown',
     };
+  };
+  // All branches share a repository snapshot and per-SHA checks. The API's
+  // base/head lookup requires a known base; PRs may target any base branch.
+  const cache = new Map<string, { until: number; value: Promise<unknown> }>();
+  const cached = <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    const prior = cache.get(key);
+    if (prior && prior.until > Date.now()) return prior.value as Promise<T>;
+    const entry = { until: Infinity, value: Promise.resolve<unknown>(undefined).then(load) };
+    if (cache.size >= 200) cache.delete(cache.keys().next().value!);
+    cache.set(key, entry);
+    void entry.value.then(
+      () => {
+        entry.until = Date.now() + 2_000;
+      },
+      () => {
+        entry.until = Date.now() + 5_000;
+      },
+    );
+    return entry.value;
   };
   const service = (repoDir: string): ForgePrService => {
     const lookup = async (branch: string) => {
       try {
         const ref = await options.identityFor(repoDir)();
         if (!ref) return null;
-        const pulls = await pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`);
+        const pulls = await cached(`pulls:${coordinate(ref)}`, () =>
+          pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
+        );
         const pull = pulls
           .filter(
             (row) =>
@@ -175,7 +192,12 @@ export function createForgejoForgeProvider(options: {
               Number(a.state !== 'open') - Number(b.state !== 'open') ||
               (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
           )[0];
-        return pull ? await status(ref, pull) : null;
+        return pull
+          ? await cached(
+              `status:${coordinate(ref)}:${pull.number}:${pull.head.sha}:${pull.updated_at ?? ''}`,
+              () => status(ref, pull),
+            )
+          : null;
       } catch (error) {
         if (unavailable(error)) capabilities.pullRequests = false;
         return null;
@@ -201,11 +223,29 @@ export function createForgejoForgeProvider(options: {
         try {
           const ref = await options.identityFor(repoDir)();
           if (!ref) return false;
+          const repository = await transport.json<Record<string, unknown>>(coordinate(ref));
+          const methods: Record<string, string> = {
+            merge: 'allow_merge_commits',
+            squash: 'allow_squash_merge',
+            rebase: 'allow_rebase',
+            'rebase-merge': 'allow_rebase_explicit',
+            'fast-forward-only': 'allow_fast_forward_only_merge',
+          };
+          const preferred =
+            typeof repository.default_merge_style === 'string'
+              ? repository.default_merge_style
+              : 'merge';
+          const method =
+            methods[preferred] && repository[methods[preferred]] === true
+              ? preferred
+              : Object.keys(methods).find((name) => repository[methods[name]!] === true);
+          if (!method) return false;
           // Forgejo verifies head_commit_id atomically with the merge.
           await transport.json(`${coordinate(ref)}/pulls/${number}/merge`, 'POST', {
-            Do: 'merge',
+            Do: method,
             ...(expectedHeadSha ? { head_commit_id: expectedHeadSha } : {}),
           });
+          cache.clear();
           return true;
         } catch (error) {
           if (unavailable(error)) capabilities.pullRequestMerge = false;
@@ -227,13 +267,7 @@ export function createForgejoForgeProvider(options: {
       const row = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls`, 'POST', pull);
       return { number: row.number, url: row.html_url };
     },
-    listRepositories: async () => {
-      try {
-        return await transport.repositories();
-      } catch {
-        return [];
-      }
-    },
+    listRepositories: () => transport.repositories(),
     listIssues: async (project: ProjectRecord) => {
       try {
         const rows = await pages<{

@@ -1,6 +1,8 @@
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createForgejoForgeProvider } from './forgejo-forge-provider.js';
 import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
+
+afterEach(() => vi.useRealTimers());
 
 function fixture() {
   const transport = new ForgejoTransport('https://forge.test/prefix', () =>
@@ -18,6 +20,7 @@ function fixture() {
     updated_at: '2026-01-01T00:00:00Z',
   };
   const json = vi.spyOn(transport, 'json').mockImplementation((path, method) => {
+    if (path === '/repos/owner/repo') return Promise.resolve({ allow_merge_commits: true });
     if (method === 'POST' && path.endsWith('/merge')) return Promise.resolve(undefined);
     if (method === 'POST' && path.endsWith('/pulls')) return Promise.resolve(pull);
     if (path.includes('/pulls?')) return Promise.resolve(path.includes('page=1') ? [pull] : []);
@@ -66,7 +69,7 @@ it('combines newest commit contexts with Actions results and guards merge by hea
   expect(await service.prStatusForBranch('feature')).toMatchObject({
     number: 7,
     pipeline: 'running',
-    checks: { total: 2, successful: 1, failed: 0, pending: 1 },
+    checks: { total: 1, successful: 1, failed: 0, pending: 0 },
     mergeable: true,
   });
   expect(await service.mergePr(7, 'abc123')).toBe(true);
@@ -85,7 +88,7 @@ it('combines newest commit contexts with Actions results and guards merge by hea
 });
 it('degrades unsupported PR operations and exposes the capability change', async () => {
   const { provider, json } = fixture();
-  json.mockRejectedValue(new ForgejoRequestError(405));
+  json.mockRejectedValue(new ForgejoRequestError(501));
   expect(await provider.prServiceFor('/checkout').prStatusForBranch('feature')).toBeNull();
   expect(provider.capabilities.pullRequests).toBe(false);
   expect(await provider.prServiceFor('/checkout').mergePr(7)).toBe(false);
@@ -106,7 +109,8 @@ it('does not report success when Actions inspection fails after successful statu
   });
 });
 
-it('ignores same-named branches from a fork and preserves later non-null branch results', async () => {
+it('ignores fork branches and preserves later non-null branch results', async () => {
+  vi.useFakeTimers();
   const { provider, json } = fixture();
   const implementation = json.getMockImplementation()!;
   json.mockImplementation(async (path, ...args) => {
@@ -128,6 +132,7 @@ it('ignores same-named branches from a fork and preserves later non-null branch 
   const service = provider.prServiceFor('/checkout');
   expect(await service.prForBranch('feature')).toBe(7);
   expect(await service.prStatusForBranches(['missing', 'feature'])).toMatchObject({ number: 7 });
+  vi.advanceTimersByTime(2_001);
   json.mockImplementation(async (path, ...args) => {
     const result = await implementation(path, ...args);
     return path.includes('/pulls?') && Array.isArray(result)
@@ -138,4 +143,95 @@ it('ignores same-named branches from a fork and preserves later non-null branch 
     number: 7,
     phase: 'merged',
   });
+});
+
+it('coalesces branch snapshots and status loads until TTL expires', async () => {
+  vi.useFakeTimers();
+  const { provider, json } = fixture();
+  await Promise.all(
+    Array.from({ length: 10 }, () =>
+      provider.prServiceFor('/checkout').prStatusForBranch('feature'),
+    ),
+  );
+  expect(json.mock.calls.filter(([path]) => path.includes('/pulls?'))).toHaveLength(2);
+  expect(json.mock.calls.filter(([path]) => path.includes('/statuses/'))).toHaveLength(2);
+  await provider.prServiceFor('/other').prStatusForBranches(['missing', 'feature']);
+  expect(json.mock.calls.filter(([path]) => path.includes('/pulls?'))).toHaveLength(2);
+  vi.advanceTimersByTime(2_001);
+  await provider.prServiceFor('/checkout').prStatusForBranch('feature');
+  expect(json.mock.calls.filter(([path]) => path.includes('/pulls?'))).toHaveLength(4);
+});
+
+it('cools down failed repository scans instead of repeating requests on every poll', async () => {
+  vi.useFakeTimers();
+  const { provider, json } = fixture();
+  json.mockRejectedValue(new ForgejoRequestError(500));
+  const service = provider.prServiceFor('/checkout');
+  await service.prStatusForBranch('feature');
+  await service.prStatusForBranch('feature');
+  expect(json).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(5_001);
+  await service.prStatusForBranch('feature');
+  expect(json).toHaveBeenCalledTimes(2);
+});
+
+it('keeps merge support after 405 and chooses the repository default allowed style', async () => {
+  const { provider, json } = fixture();
+  const original = json.getMockImplementation()!;
+  json.mockImplementation((path, ...args) => {
+    if (path === '/repos/owner/repo')
+      return Promise.resolve({ allow_squash_merge: true, default_merge_style: 'squash' });
+    if (path.endsWith('/merge')) return Promise.reject(new ForgejoRequestError(405));
+    return original(path, ...args);
+  });
+  expect(await provider.prServiceFor('/checkout').mergePr(7, 'abc123')).toBe(false);
+  expect(provider.capabilities.pullRequestMerge).toBe(true);
+  expect(json).toHaveBeenCalledWith('/repos/owner/repo/pulls/7/merge', 'POST', {
+    Do: 'squash',
+    head_commit_id: 'abc123',
+  });
+});
+
+it('does not infer a merge conflict from a false or unfinished mergeability result', async () => {
+  const { provider, json } = fixture();
+  const original = json.getMockImplementation()!;
+  json.mockImplementation(async (path, ...args) => {
+    const result = await original(path, ...args);
+    return path.includes('/pulls?') && Array.isArray(result)
+      ? result.map((row) => ({ ...(row as object), mergeable: false }))
+      : result;
+  });
+  expect(await provider.prServiceFor('/checkout').prStatusForBranch('feature')).toMatchObject({
+    mergeState: 'unknown',
+    mergeable: null,
+  });
+});
+
+it('treats warning as terminal and never duplicates checks with completed Actions runs', async () => {
+  const { provider, json } = fixture();
+  const original = json.getMockImplementation()!;
+  json.mockImplementation((path, ...args) => {
+    if (path.includes('/statuses/'))
+      return Promise.resolve(
+        path.includes('page=1') ? [{ context: 'lint', status: 'warning' }] : [],
+      );
+    if (path.includes('/actions/'))
+      return Promise.resolve({
+        workflow_runs: path.includes('page=1') ? [{ status: 'success', commit_sha: 'abc123' }] : [],
+      });
+    return original(path, ...args);
+  });
+  expect(await provider.prServiceFor('/checkout').prStatusForBranch('feature')).toMatchObject({
+    pipeline: 'failure',
+    checks: { total: 1, completed: 1, failed: 1, pending: 0 },
+  });
+});
+
+it('propagates repository-list failures so credentials never look like an empty account', async () => {
+  const { provider } = fixture();
+  const spy = vi
+    .spyOn(ForgejoTransport.prototype, 'repositories')
+    .mockRejectedValueOnce(new ForgejoRequestError(403));
+  await expect(provider.listRepositories()).rejects.toThrow('403');
+  spy.mockRestore();
 });

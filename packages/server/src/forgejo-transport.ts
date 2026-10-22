@@ -1,4 +1,4 @@
-import { X509Certificate } from 'node:crypto';
+import { randomBytes, X509Certificate } from 'node:crypto';
 import { request } from 'node:https';
 
 /** A configured endpoint is authoritative; redirects never receive credentials. */
@@ -100,23 +100,45 @@ export class ForgejoTransport {
         15_000,
       );
       req.on('close', () => clearTimeout(deadline));
-      req.on('error', () => reject(new Error('Forgejo connection unavailable')));
+      req.on('error', (error: NodeJS.ErrnoException) => {
+        const message =
+          error.message === 'Forgejo request timed out'
+            ? 'Forgejo request timed out'
+            : /CERT|TLS|SSL|SELF_SIGNED|VERIFY_LEAF/u.test(error.code ?? '')
+              ? 'Forgejo TLS certificate verification failed'
+              : 'Forgejo connection unavailable';
+        reject(new Error(message));
+      });
       req.end(payload);
     });
   }
 
   async validate(): Promise<void> {
-    const user = await this.json<{ id?: unknown; login?: unknown }>('/user');
-    if (!user || typeof user.id !== 'number' || typeof user.login !== 'string')
-      throw new Error('Invalid Forgejo user response');
+    const result = await this.json<{ data?: unknown }>('/repos/search?limit=1');
+    if (!Array.isArray(result?.data)) throw new Error('Invalid Forgejo repository response');
+    // Some public endpoints ignore credentials. Prove this endpoint actually
+    // rejects an invalid token before treating a search result as validation.
+    const probe = new ForgejoTransport(
+      this.baseUrl,
+      () => Promise.resolve(randomBytes(20).toString('hex')),
+      this.customCaPem,
+    );
+    try {
+      await probe.json('/repos/search?limit=1');
+    } catch (error) {
+      if (error instanceof ForgejoRequestError && [401, 403].includes(error.status)) return;
+      throw error;
+    }
+    throw new Error('Forgejo endpoint does not verify token authentication');
   }
 
   async repositories(): Promise<{ owner: string; repo: string; archived: boolean }[]> {
     const repositories: { owner: string; repo: string; archived: boolean }[] = [];
     for (let page = 1; page <= 1000; page++) {
-      const rows = await this.json<
-        { owner?: { login?: unknown }; name?: unknown; archived?: boolean }[]
-      >(`/user/repos?page=${page}&limit=50`);
+      const result = await this.json<{
+        data: { owner?: { login?: unknown }; name?: unknown; archived?: boolean }[];
+      }>(`/repos/search?page=${page}&limit=50`);
+      const rows = result?.data;
       if (!Array.isArray(rows)) throw new Error('Invalid Forgejo repository response');
       for (const row of rows) {
         if (typeof row.owner?.login !== 'string' || typeof row.name !== 'string')

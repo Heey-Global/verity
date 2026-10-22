@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { containerNameFor, parseOwnerRepo, slugifyProjectName } from './canonical.js';
+import {
+  containerNameFor,
+  parseOwnerRepo,
+  parseForgejoRepository,
+  slugifyProjectName,
+} from './canonical.js';
 
 describe('parseOwnerRepo (#174 §19.0)', () => {
   it('accepts a plain canonical owner/repo', () => {
@@ -180,4 +185,15 @@ it('isolates container identities by connection and unambiguous repository coord
   expect(containerNameFor({ owner: 'a--b', repo: 'c' }, 'one')).not.toBe(
     containerNameFor({ owner: 'a', repo: 'b--c' }, 'one'),
   );
+});
+
+it('normalizes mixed-case Forgejo coordinates and URLs', () => {
+  expect(parseForgejoRepository('Team/Site', 'https://forge.test')).toEqual({
+    owner: 'team',
+    repo: 'site',
+  });
+  expect(parseForgejoRepository('https://forge.test/Team/Site.git', 'https://forge.test')).toEqual({
+    owner: 'team',
+    repo: 'site',
+  });
 });

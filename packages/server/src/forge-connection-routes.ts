@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SealedError, type EventStore } from '@verity/store';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { ForgejoTransport } from './forgejo-transport.js';
+import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
 
 const connectionBody = z.object({
   label: z.string().trim().min(1).max(120),
@@ -27,7 +27,20 @@ export function registerForgeConnectionRoutes(
   };
   const failure = (reply: FastifyReply, error: unknown) => {
     if (error instanceof SealedError) return reply.code(503).send({ error: 'credentials sealed' });
-    return reply.code(422).send({ error: 'Forgejo connection validation failed' });
+    const reason =
+      error instanceof ForgejoRequestError
+        ? error.status === 401
+          ? 'invalid token'
+          : error.status === 403
+            ? 'token lacks repository access or scope'
+            : `upstream HTTP ${error.status}`
+        : error instanceof Error &&
+            /^(Forgejo (?:URL must|TLS certificate|request timed out|connection unavailable|endpoint does not verify token authentication)|Invalid CA certificate bundle)/u.test(
+              error.message,
+            )
+          ? error.message
+          : 'invalid or unavailable Forgejo response';
+    return reply.code(422).send({ error: `Forgejo connection validation failed: ${reason}` });
   };
   app.get('/connections', async (request, reply) => {
     if (!(await authorize(request, reply))) return;

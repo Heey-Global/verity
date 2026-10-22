@@ -2435,13 +2435,10 @@ export async function buildEmbeddedServer(
       () => Promise.resolve(token),
       connection.customCaPem,
     );
-    const user = await transport.json<{ login: string }>('/user');
-    if (typeof user.login !== 'string' || /[\r\n:]/u.test(user.login))
-      throw new Error('Invalid Forgejo identity');
     return {
       url: `${transport.baseUrl}/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}.git`,
       token,
-      authorization: `Authorization: Basic ${Buffer.from(`${user.login}:${token}`).toString('base64')}`,
+      authorization: `Authorization: Basic ${Buffer.from(`oauth2:${token}`).toString('base64')}`,
       customCaPem: connection.customCaPem ?? null,
     };
   };
@@ -3277,12 +3274,7 @@ export async function buildEmbeddedServer(
                   const token = (await eventStore.forgeConnections.credentials(connection.id))
                     ?.personalToken;
                   if (!token) return undefined;
-                  const user = await new ForgejoTransport(
-                    connection.baseUrl,
-                    () => Promise.resolve(token),
-                    connection.customCaPem,
-                  ).json<{ login: string }>('/user');
-                  return { token, login: user.login };
+                  return { token, login: 'oauth2' };
                 },
               }).authorize(request, binding, actions, signal);
             },
