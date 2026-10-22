@@ -265,6 +265,7 @@ import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-pr
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
@@ -5486,6 +5487,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.onGoogleCredentialsChanged !== undefined
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
+  });
+  registerForgeConnectionRoutes(app, deps.eventStore, async () => {
+    const projects = deps.listAvailableRepositories
+      ? await deps.listAvailableRepositories()
+      : await deps.eventStore.listProjects({ includeHidden: true });
+    return projects
+      .filter((project) => project.kind === 'github')
+      .map((project) => ({ owner: project.owner, repo: project.repo }));
   });
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);

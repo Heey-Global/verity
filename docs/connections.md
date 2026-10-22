@@ -54,3 +54,26 @@ authorized services and project usage. Add, reconnect or remove accounts individ
 Service permission upgrades verify the selected account identity. Removing an
 account removes its access without substituting another connected account.
 Google sender aliases remain sender identities within their Gmail account.
+
+## Forge connection API
+
+Administrators can list forge metadata with `GET /connections`, add a Forgejo
+connection with `POST /connections`, rotate its token or update its label and
+CA bundle with `PATCH /connections/:id`, and remove an unused connection with
+`DELETE /connections/:id`. Creation accepts `label`, an HTTPS `baseUrl`, a
+personal access `token`, and an optional PEM `customCaPem` bundle. The server
+validates credentials against `/api/v1/user` before persisting them. Responses
+contain metadata only; tokens remain encrypted in the server store.
+
+Connection origins cannot be changed. A reverse-proxy path prefix and a custom
+HTTPS port are supported. Requests use the connection's CA bundle, enforce a
+15-second deadline, and reject redirects. Repository enumeration is available
+at `GET /connections/:id/repositories` and follows numbered API pages.
+
+Existing GitHub configuration endpoints remain authoritative for the GitHub
+App connection; credential updates and disconnects synchronize its encrypted
+connection record in the same transaction. Projects and pending repository
+reservations are keyed by connection as well as owner and repository name.
+Removing a connection referenced by a project or reservation returns a conflict.
+These APIs prepare Forgejo connections; project creation requires the provider
+and sandbox integration to be enabled separately.
