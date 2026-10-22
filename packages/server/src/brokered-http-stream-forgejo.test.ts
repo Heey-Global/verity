@@ -43,3 +43,28 @@ it('uses the configured port and upstream CA independently from the sandbox-faci
     brokeredHttpStreamTransport({ ...input, ca, allowPrivateAddress: false }),
   ).rejects.toThrow('destination rejected');
 });
+
+it('keeps SAN verification and connection trust isolation on brokered upstream requests', async () => {
+  const unrelatedAuthority = await createProjectEgressCa();
+  const input = {
+    hostname: 'localhost',
+    port,
+    path: '/prefix/repo',
+    method: 'GET',
+    headers: {},
+    body: Buffer.alloc(0),
+    signal: new AbortController().signal,
+    allowPrivateAddress: true,
+  };
+  await expect(
+    brokeredHttpStreamTransport({ ...input, ca: unrelatedAuthority.caCertPem }),
+  ).rejects.toThrow();
+  // Trusting the upstream CA must not allow an IP absent from its DNS-only SAN.
+  await expect(
+    brokeredHttpStreamTransport({ ...input, hostname: '127.0.0.1', ca }),
+  ).rejects.toThrow();
+  const response = await brokeredHttpStreamTransport({ ...input, ca });
+  let body = '';
+  for await (const chunk of response) body += String(chunk);
+  expect(body).toBe('trusted');
+});

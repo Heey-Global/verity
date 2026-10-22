@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
-import { ForgejoTransport } from './forgejo-transport.js';
+import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
 let ctx: TestDb;
 const app = Fastify();
 let user: string | undefined;
@@ -105,4 +105,25 @@ it('reports Forgejo project availability from the sandbox capability', async () 
   } finally {
     await enabled.close();
   }
+});
+
+it('explains scope failures without reflecting token values', async () => {
+  user = 'admin';
+  vi.spyOn(ForgejoTransport.prototype, 'validate').mockRejectedValueOnce(
+    new ForgejoRequestError(403),
+  );
+  const response = await app.inject({
+    method: 'POST',
+    url: '/connections',
+    payload: {
+      baseUrl: 'https://forge.test',
+      label: 'Restricted',
+      token: 'never-reflect-this-token',
+    },
+  });
+  expect(response.statusCode).toBe(422);
+  expect(response.json()).toEqual({
+    error: 'Forgejo connection validation failed: token lacks repository access or scope',
+  });
+  expect(response.body).not.toContain('never-reflect-this-token');
 });
