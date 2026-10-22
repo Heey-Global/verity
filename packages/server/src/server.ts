@@ -265,6 +265,7 @@ import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-pr
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
@@ -5487,6 +5488,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerForgeConnectionRoutes(app, deps.eventStore, async () => {
+    const projects = deps.listAvailableRepositories
+      ? await deps.listAvailableRepositories()
+      : await deps.eventStore.listProjects({ includeHidden: true });
+    return projects
+      .filter((project) => project.kind === 'github')
+      .map((project) => ({ owner: project.owner, repo: project.repo }));
+  });
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
@@ -6831,7 +6840,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
     // Neither the control-plane workspace nor a project without a GitHub
     // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project)) {
+    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
       return { project, release: null };
     }
     // Trigger the in-memory release refresh + read its freshest SETTLED value.

@@ -320,6 +320,7 @@ interface IntegrationEventsTable {
  *     can't collide at the Docker daemon.
  */
 export interface ForgeConnectionsTable {
+  custom_ca_pem: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   provider: 'github' | 'forgejo';
   base_url: string;
@@ -333,6 +334,7 @@ export interface ForgeConnectionsTable {
 }
 
 export interface ProjectsTable {
+  forge_scope: ColumnType<string, never, never>;
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
@@ -431,6 +433,8 @@ export interface ProjectPackageProtectionTable {
 }
 
 interface ProjectIdentityClaimsTable {
+  forge_scope: ColumnType<string, never, never>;
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   owner: string;
   repo: string;
   project_id: string;

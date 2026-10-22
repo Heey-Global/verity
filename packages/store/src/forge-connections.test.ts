@@ -135,3 +135,95 @@ it('encrypts Forgejo tokens, preserves project bindings on sync, and protects co
     await ctx.close();
   }
 });
+
+it('isolates identical repository names and pending links by connection', async () => {
+  const ctx = createRawDb();
+  try {
+    expect(
+      (await new Migrator({ db: ctx.db, provider: migrationProvider }).migrateToLatest()).error,
+    ).toBeUndefined();
+    const store = new EventStore(ctx.db, createSecretCipher(Buffer.alloc(32, 29).toString('hex')));
+    for (const id of ['first', 'second']) {
+      await store.forgeConnections.upsert({
+        id,
+        provider: 'forgejo',
+        baseUrl: 'https://forge.test',
+        label: id,
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+      await store.upsertProject({
+        id,
+        owner: 'same',
+        repo: 'repo',
+        kind: 'forgejo',
+        forgeConnectionId: id,
+        containerName: `container-${id}`,
+        state: 'absent',
+      });
+    }
+    expect((await store.getProjectByOwnerRepo('same', 'repo', 'first'))?.id).toBe('first');
+    expect((await store.getProjectByOwnerRepo('same', 'repo', 'second'))?.id).toBe('second');
+    expect(await store.getProjectByOwnerRepo('same', 'repo')).toBeUndefined();
+    await store.createProject({
+      id: 'local',
+      owner: '__local__',
+      repo: 'local',
+      kind: 'local',
+      containerName: 'local',
+      state: 'absent',
+    });
+    const target = {
+      owner: 'same',
+      repo: 'new',
+      kind: 'forgejo' as const,
+      forgeConnectionId: 'first',
+    };
+    expect(await store.reserveProjectIdentity('local', target)).toBe(true);
+    expect(
+      await store.reserveProjectIdentity('local', { ...target, forgeConnectionId: 'second' }),
+    ).toBe(false);
+    await store.releaseProjectIdentity('local', target);
+    expect(
+      await store.reserveProjectIdentity('local', { ...target, forgeConnectionId: 'second' }),
+    ).toBe(true);
+  } finally {
+    await ctx.close();
+  }
+});
+
+it('synchronizes GitHub credential rotation and disconnect atomically', async () => {
+  const ctx = createRawDb();
+  try {
+    expect(
+      (await new Migrator({ db: ctx.db, provider: migrationProvider }).migrateToLatest()).error,
+    ).toBeUndefined();
+    const store = new EventStore(ctx.db, createSecretCipher(Buffer.alloc(32, 31).toString('hex')));
+    await store.updateVeritySettings({
+      githubAppId: 'app',
+      githubAppInstallationId: 'installation',
+      githubAppPrivateKey: 'first-key',
+    });
+    expect(await store.forgeConnections.credentials('legacy-github')).toMatchObject({
+      githubAppPrivateKey: 'first-key',
+    });
+    await store.updateVeritySettings({ githubAppPrivateKey: 'second-key' });
+    expect(await store.forgeConnections.credentials('legacy-github')).toMatchObject({
+      githubAppPrivateKey: 'second-key',
+      githubAppId: 'app',
+    });
+    await store.updateVeritySettings({
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    expect(await store.forgeConnections.credentials('legacy-github')).toMatchObject({
+      githubAppPrivateKey: null,
+      githubAppId: null,
+    });
+  } finally {
+    await ctx.close();
+  }
+});

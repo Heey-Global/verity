@@ -4464,6 +4464,55 @@ migrations['0160_forge_connections'] = {
   },
 };
 
+migrations['0161_forge_connection_identity'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table forge_connections add column custom_ca_pem text`.execute(db);
+    await sql`create function sync_github_forge_connection() returns trigger language plpgsql as $$
+      begin
+        insert into forge_connections(id, provider, base_url, label, github_app_id,
+          github_app_installation_id, github_app_private_key)
+        values ('legacy-github', 'github', 'https://github.com', 'GitHub', new.github_app_id,
+          new.github_app_installation_id, new.github_app_private_key)
+        on conflict(id) do update set github_app_id = excluded.github_app_id,
+          github_app_installation_id = excluded.github_app_installation_id,
+          github_app_private_key = excluded.github_app_private_key, updated_at = now();
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger sync_github_forge_connection after insert or update of
+      github_app_id, github_app_installation_id, github_app_private_key on verity_settings
+      for each row execute function sync_github_forge_connection()`.execute(db);
+    await sql`alter table projects add column forge_scope text generated always as
+      (coalesce(forge_connection_id, 'legacy-github')) stored`.execute(db);
+    await sql`alter table project_identity_claims add column forge_connection_id text
+      references forge_connections(id) on delete restrict`.execute(db);
+    await sql`update project_identity_claims c set forge_connection_id = p.forge_connection_id
+      from projects p where p.id = c.project_id and p.owner = c.owner and p.repo = c.repo`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims add column forge_scope text generated always as
+      (coalesce(forge_connection_id, 'legacy-github')) stored`.execute(db);
+    await sql`drop index projects_owner_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq on projects(forge_scope, owner, repo)`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(owner, repo)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_owner_repo_uniq on projects(owner, repo)`.execute(db);
+    await sql`alter table project_identity_claims drop column forge_scope, drop column forge_connection_id`.execute(
+      db,
+    );
+    await sql`alter table projects drop column forge_scope`.execute(db);
+    await sql`drop trigger sync_github_forge_connection on verity_settings`.execute(db);
+    await sql`drop function sync_github_forge_connection()`.execute(db);
+    await sql`alter table forge_connections drop column custom_ca_pem`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

@@ -8,6 +8,7 @@ export interface ForgeConnection {
   provider: ForgeConnectionProvider;
   baseUrl: string;
   label: string;
+  customCaPem?: string | null;
 }
 export interface ForgeConnectionCredentials {
   personalToken: string | null;
@@ -27,7 +28,7 @@ export class ForgeConnectionStore {
   async list(): Promise<ForgeConnection[]> {
     const rows = await this.db
       .selectFrom('forge_connections')
-      .select(['id', 'provider', 'base_url', 'label'])
+      .select(['id', 'provider', 'base_url', 'label', 'custom_ca_pem'])
       .orderBy('id')
       .execute();
     return rows.map((row) => ({
@@ -35,6 +36,7 @@ export class ForgeConnectionStore {
       provider: row.provider,
       baseUrl: row.base_url,
       label: row.label,
+      ...(row.custom_ca_pem === null ? {} : { customCaPem: row.custom_ca_pem }),
     }));
   }
 
@@ -77,6 +79,7 @@ export class ForgeConnectionStore {
       provider: input.provider,
       base_url: baseUrl,
       label: input.label,
+      custom_ca_pem: input.customCaPem ?? null,
       personal_token:
         input.personalToken === null ? null : this.cipher.encrypt(input.personalToken),
       github_app_id: input.githubAppId,
@@ -92,6 +95,7 @@ export class ForgeConnectionStore {
           .column('id')
           .doUpdateSet({
             label: row.label,
+            custom_ca_pem: row.custom_ca_pem,
             personal_token: row.personal_token,
             github_app_id: row.github_app_id,
             github_app_installation_id: row.github_app_installation_id,
