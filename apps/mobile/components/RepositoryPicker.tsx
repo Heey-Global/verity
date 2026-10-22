@@ -1,7 +1,7 @@
 // The repositories one code host offers, searchable, as a single-choice list.
 // Shared by New project and the project "Repository" screen.
 import { VerityApiError, type CodeHost, type VerityClient } from '@verity/mobile';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -19,6 +19,7 @@ export function RepositoryPicker({
   selected,
   onSelect,
   disabled = false,
+  autoSelect = true,
 }: {
   client: VerityClient;
   host: CodeHost;
@@ -28,6 +29,9 @@ export function RepositoryPicker({
   selected: string | null;
   onSelect: (repository: string | null) => void;
   disabled?: boolean;
+  /** Preselect the first active repository. Off where a choice has consequences
+   *  a single tap should not trigger (linking pushes history). */
+  autoSelect?: boolean;
 }) {
   const { theme } = useUnistyles();
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -35,9 +39,17 @@ export function RepositoryPicker({
   const [error, setError] = useState<string | undefined>();
   const [generation, setGeneration] = useState(0);
   const [query, setQuery] = useState('');
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const loadedHost = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    // A repository chosen on another host must never travel with the new host's
+    // connection, not even while the new list is still loading.
+    const sameHost = loadedHost.current === host.id;
+    loadedHost.current = host.id;
+    if (!sameHost) onSelect(null);
     setQuery('');
     setError(undefined);
     setLoading(true);
@@ -52,7 +64,11 @@ export function RepositoryPicker({
         if (!active) return;
         const sorted = [...next].sort((a, b) => repositoryName(a).localeCompare(repositoryName(b)));
         setRepositories(sorted);
-        const first = sorted.find((repository) => !repository.archived);
+        const kept =
+          sameHost &&
+          sorted.some((repository) => repositoryName(repository) === selectedRef.current);
+        if (kept) return;
+        const first = autoSelect ? sorted.find((repository) => !repository.archived) : undefined;
         onSelect(first ? repositoryName(first) : null);
       })
       .catch((caught: unknown) => {
@@ -69,7 +85,7 @@ export function RepositoryPicker({
     };
     // `onSelect` is a setter from the parent; reloading on its identity would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, generation, host, initialGithubRepositories]);
+  }, [autoSelect, client, generation, host, initialGithubRepositories]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();

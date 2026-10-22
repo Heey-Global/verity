@@ -9688,14 +9688,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
   // sibling worktree is developing (#122). 404 unknown session; 503 when no
   // project repo is configured (scratch deployments).
+  /** Null for a project not on Forgejo; 'unknown' for a Forgejo project whose
+   *  connection is gone, so the caller never falls back to the broker remote. */
   const forgejoWebHost = async (
     projectId: string | null,
-  ): Promise<{ baseUrl: string; identity: { owner: string; repo: string } } | null> => {
+  ): Promise<{ baseUrl: string; identity: { owner: string; repo: string } } | 'unknown' | null> => {
     if (projectId === null) return null;
     const project = await deps.eventStore.getProject(projectId);
-    if (project?.kind !== 'forgejo' || !project.forgeConnectionId) return null;
+    if (project?.kind !== 'forgejo') return null;
+    if (!project.forgeConnectionId) return 'unknown';
     const connection = await deps.eventStore.forgeConnections.get(project.forgeConnectionId);
-    if (connection?.provider !== 'forgejo') return null;
+    if (connection?.provider !== 'forgejo') return 'unknown';
     return {
       baseUrl: connection.baseUrl,
       identity: { owner: project.owner, repo: project.repo },
@@ -9782,8 +9785,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         : null;
       // A Forgejo project's chips link to its own instance; its origin remote is
       // the sandbox broker, so the identity comes from the project record.
-      const forgeHost = await forgejoWebHost(session.projectId).catch(() => null);
-      const identity = forgeHost?.identity ?? remoteIdentity;
+      const forgeHost = await forgejoWebHost(session.projectId).catch(() => 'unknown' as const);
+      // Without its connection a Forgejo project's remote is still the broker;
+      // unlinked chips beat links to an unrelated GitHub repository.
+      const identity =
+        forgeHost === 'unknown' ? null : forgeHost === null ? remoteIdentity : forgeHost.identity;
       // A `local` project has no PR strip to merge from, so the cockpit needs to know
       // that merging into the project's base branch is possible here at all, and what
       // that base is called. File changes determine strip visibility; the merge
@@ -9827,7 +9833,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
-        ...(forgeHost !== null
+        ...(forgeHost !== null && forgeHost !== 'unknown'
           ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
           : {}),
         ...(localBase !== null ? { localMerge: { base: localBase, hasChanges } } : {}),

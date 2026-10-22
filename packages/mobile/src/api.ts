@@ -1616,7 +1616,12 @@ export const branchListSchema = z.object({
   repo: z.string().min(1).optional(),
   // The web host for those chips when it is not GitHub (a Forgejo project).
   // ABSENT = GitHub, or a server predating Forgejo.
-  codeHost: z.object({ provider: z.literal('forgejo'), baseUrl: z.string().min(1) }).optional(),
+  // A provider this client does not know degrades to unlinked chips instead of
+  // failing the whole branch list.
+  codeHost: z
+    .object({ provider: z.literal('forgejo'), baseUrl: z.string().min(1) })
+    .optional()
+    .catch(undefined),
   // Present ONLY for a project without a GitHub repository, where there is no pull
   // request to merge: `base` names the branch this session's work can be merged into
   // locally. ABSENT = merging goes through the PR strip (or the server is older).

@@ -996,7 +996,10 @@ describe('project settings — repository', () => {
     );
     render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Connect project to GitHub(,|$)/));
+    // Linking pushes history, so nothing is preselected for a single tap.
+    expect(await screen.findByLabelText(/^Connect project to GitHub(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to GitHub(,|$)/));
     expect(linkProjectToGitHub).not.toHaveBeenCalled();
     fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(linkProjectToGitHub).toHaveBeenCalledWith('p/1', 'acme/site'));
@@ -1023,8 +1026,12 @@ describe('project settings — repository', () => {
     );
     render(<ProjectRepositoryScreen />);
 
+    fireEvent.press(await screen.findByText('acme/site'));
     fireEvent.press(await screen.findByLabelText(/^Forgejo, git\.example\.org/));
-    fireEvent.press(await screen.findByLabelText(/^Connect project to Forgejo(,|$)/));
+    // The GitHub choice must not travel with the Forgejo connection.
+    expect(screen.getByLabelText(/^Connect project to Forgejo(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('team/website'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to Forgejo(,|$)/));
     fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() =>
       expect(linkProject).toHaveBeenCalledWith('p/1', 'team/website', 'forgejo-1'),

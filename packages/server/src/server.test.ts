@@ -9539,6 +9539,41 @@ describe('GET /sessions/:id/branches', () => {
     await withId.close();
   });
 
+  it('keeps Forgejo chips unlinked when the project connection is gone', async () => {
+    await ctx.store.upsertProject({
+      id: 'branches-orphan-forgejo',
+      kind: 'forgejo',
+      owner: 'team',
+      repo: 'orphan',
+      containerName: 'forgejo-team-orphan',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'orphan-'));
+    await ctx.store.createSession({
+      sessionId: 'orphan-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-orphan-forgejo',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      // The broker remote parses as a repository but names nothing real.
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/orphan-session/branches' });
+    expect(res.statusCode).toBe(200);
+    const body: { owner?: string; codeHost?: unknown } = res.json();
+    expect(body.owner).toBeUndefined();
+    expect(body.codeHost).toBeUndefined();
+    await withId.close();
+  });
+
   it('omits owner/repo when the identity resolves to null (no GitHub remote, #161)', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/161-x');

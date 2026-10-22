@@ -69,15 +69,18 @@ function NewProject({ client }: { client: VerityClient }) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([loadCodeHosts(client, { forProjects: true }), readLastCodeHost()]).then(
-      ([loaded, remembered]) => {
-        if (!active) return;
-        setHosts(loaded.hosts);
-        setGithubRepositories(loaded.githubRepositories);
-        if (!choiceMade.current)
-          setChoice(preferredCodeHost(loaded.hosts, remembered)?.id ?? LOCAL);
-      },
-    );
+    void Promise.all([
+      loadCodeHosts(client, { forProjects: true }).catch(() => ({
+        hosts: [],
+        githubRepositories: [],
+      })),
+      readLastCodeHost(),
+    ]).then(([loaded, remembered]) => {
+      if (!active) return;
+      setHosts(loaded.hosts);
+      setGithubRepositories(loaded.githubRepositories);
+      if (!choiceMade.current) setChoice(preferredCodeHost(loaded.hosts, remembered)?.id ?? LOCAL);
+    });
     return () => {
       active = false;
     };
@@ -130,6 +133,7 @@ function NewProject({ client }: { client: VerityClient }) {
 
   const choose = (next: string) => {
     choiceMade.current = true;
+    if (next !== choice) setSelectedRepository(null);
     setChoice(next);
     setError(undefined);
   };

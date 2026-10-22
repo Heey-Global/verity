@@ -268,6 +268,35 @@ describe('new project — code hosts', () => {
     expect(mockStorage.get('verity.newProject.codeHost')).toBe('forgejo-1');
   });
 
+  // A GitHub repository sent with the Forgejo connection would create a project
+  // on the wrong host; the selection must clear before the new list arrives.
+  it('clears the repository when switching code hosts', async () => {
+    const fake = client({
+      listAvailableRepositories: jest.fn().mockResolvedValue([project]),
+      listConnections: jest.fn().mockResolvedValue(forgejo),
+      listConnectionRepositories: jest.fn().mockReturnValue(new Promise(() => {})),
+    });
+    mockCreateClient.mockReturnValue(fake);
+    render(<NewProjectScreen />);
+    await screen.findByText('acme/website');
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeEnabled();
+    fireEvent.press(screen.getByRole('radio', { name: /^Forgejo,/ }));
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeDisabled();
+    fireEvent.press(screen.getByRole('button', { name: 'Create project' }));
+    expect(fake.createProject).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local project when code hosts cannot load', async () => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest.fn().mockRejectedValue(new Error('offline')),
+        listConnections: jest.fn().mockRejectedValue(new Error('offline')),
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByLabelText('Project name')).toBeOnTheScreen();
+  });
+
   it('preselects the code host used last time', async () => {
     mockStorage.set('verity.newProject.codeHost', 'forgejo-1');
     mockCreateClient.mockReturnValue(

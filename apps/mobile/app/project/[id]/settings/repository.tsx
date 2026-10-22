@@ -179,12 +179,14 @@ function LinkRepositorySection({
 
   useEffect(() => {
     let active = true;
-    void loadCodeHosts(client, { forProjects: true }).then((loaded) => {
-      if (!active) return;
-      setHosts(loaded.hosts);
-      setGithubRepositories(loaded.githubRepositories);
-      setHostId((current) => current ?? loaded.hosts[0]?.id ?? null);
-    });
+    void loadCodeHosts(client, { forProjects: true })
+      .catch(() => ({ hosts: [], githubRepositories: [] }))
+      .then((loaded) => {
+        if (!active) return;
+        setHosts(loaded.hosts);
+        setGithubRepositories(loaded.githubRepositories);
+        setHostId((current) => current ?? loaded.hosts[0]?.id ?? null);
+      });
     return () => {
       active = false;
     };
@@ -276,7 +278,10 @@ function LinkRepositorySection({
               host={candidate}
               selected={candidate.id === hostId}
               disabled={linking}
-              onPress={() => setHostId(candidate.id)}
+              onPress={() => {
+                if (candidate.id !== hostId) setSelected(null);
+                setHostId(candidate.id);
+              }}
             />
           ))}
         </Group>
@@ -290,6 +295,7 @@ function LinkRepositorySection({
             selected={selected}
             onSelect={setSelected}
             disabled={linking}
+            autoSelect={false}
           />
           <View style={styles.selfStart}>
             <Button
