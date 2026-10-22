@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.75.2](https://github.com/Heey-Global/verity/compare/mobile-v1.75.1...mobile-v1.75.2) (2026-10-22)
+
+
+### Features
+
+* **updates:** recover stuck updates from the app ([#1768](https://github.com/Heey-Global/verity/issues/1768)) ([699be3a](https://github.com/Heey-Global/verity/commit/699be3ad1a7d2e013989441f574de1b3390752af))
+
+
+### Bug Fixes
+
+* **github:** guard PR creation against session branch mismatches ([#1777](https://github.com/Heey-Global/verity/issues/1777)) ([0526fbc](https://github.com/Heey-Global/verity/commit/0526fbca33f26165dfaf214a8e39272012ad551b))
+
 ## [1.75.1](https://github.com/Heey-Global/verity/compare/mobile-v1.75.0...mobile-v1.75.1) (2026-10-21)
 
 
