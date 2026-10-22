@@ -119,7 +119,14 @@ export function createForgejoRepositoryOperations(
             const batch = await transport.json<ForgejoPullRow[]>(
               `${repoPath}/pulls?state=${state}&sort=recentupdate&limit=50&page=${page}`,
             );
-            if (!Array.isArray(batch) || batch.length === 0) return { rows, complete: true };
+            // A malformed page must not pass for proof that no pull request exists.
+            if (!Array.isArray(batch)) {
+              throw new ForgeOperationError(
+                'the code host returned an unexpected pull request list',
+                502,
+              );
+            }
+            if (batch.length === 0) return { rows, complete: true };
             rows.push(...batch.filter(own));
           }
           return { rows, complete: false };
