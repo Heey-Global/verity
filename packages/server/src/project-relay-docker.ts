@@ -37,6 +37,7 @@ const CONTAINER_GENERATION_LABEL = 'verity.container-generation';
 
 export interface DockerProjectRelayOptions {
   docker: DockerClient;
+  forgeAuthorities?: ((projectId: string) => Promise<readonly string[]>) | undefined;
   forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   image: string;
   dataVolume: string;
@@ -148,7 +149,14 @@ export function createDockerProjectRelayStarter(
       env: [
         `NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`,
         ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
-          ? ['VERITY_FORGE_PROXY=github']
+          ? [
+              'VERITY_FORGE_PROXY=github',
+              ...(options.forgeAuthorities
+                ? [
+                    `VERITY_FORGE_AUTHORITIES=${JSON.stringify(await options.forgeAuthorities(context.identity.projectId))}`,
+                  ]
+                : []),
+            ]
           : []),
       ],
       labels: {

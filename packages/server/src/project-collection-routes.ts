@@ -3,18 +3,23 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   LOCAL_PROJECT_OWNER,
-  isLocalProject,
   type EventStore,
   type ProjectRecord,
   type ProjectUpsertInput,
 } from '@verity/store';
-import { containerNameFor, parseOwnerRepo, slugifyProjectName } from './canonical.js';
+import {
+  containerNameFor,
+  parseOwnerRepo,
+  parseForgejoRepository,
+  slugifyProjectName,
+} from './canonical.js';
 
 const orderBody = z.object({ ids: z.array(z.string().min(1)) });
 const createBody = z.union([
   z.object({
     repo: z.string().min(1),
-    kind: z.literal('github').optional(),
+    kind: z.enum(['github', 'forgejo']).optional(),
+    connectionId: z.string().min(1).optional(),
     imageRef: z.string().min(1).nullable().optional(),
   }),
   z.object({
@@ -27,8 +32,14 @@ const createBody = z.union([
 export interface ProjectCollectionRouteDeps {
   store: Pick<
     EventStore,
-    'createProject' | 'getProject' | 'setProjectSetupStatus' | 'upsertProject'
+    | 'createProject'
+    | 'getProject'
+    | 'setProjectSetupStatus'
+    | 'upsertProject'
+    | 'forgeConnections'
+    | 'isActiveAdministrator'
   >;
+  forgejoEnabled?: boolean;
   listOverview: (userId: string | null) => Promise<unknown[]>;
   reorder: (ids: string[]) => Promise<unknown[]>;
   listAvailableRepositories: () => Promise<ProjectRecord[]>;
@@ -91,7 +102,7 @@ export function registerProjectCollectionRoutes(
       projects.filter(
         (project) =>
           project.state === 'absent' &&
-          !isLocalProject(project) &&
+          (project.kind === undefined || project.kind === 'github') &&
           (project.hiddenAt !== null || project.overviewVisible !== true),
       ),
     );
@@ -100,11 +111,31 @@ export function registerProjectCollectionRoutes(
   app.post('/projects', async (request, reply): Promise<unknown> => {
     const body = createBody.parse(request.body);
     const local = body.kind === 'local';
-    const parsed = local
+    let parsed = local
       ? ((slug) => (slug === undefined ? undefined : { owner: LOCAL_PROJECT_OWNER, repo: slug }))(
           slugifyProjectName(body.name),
         )
       : parseOwnerRepo(body.repo);
+    const connectionId = body.kind !== 'local' ? body.connectionId : undefined;
+    let forgeKind: 'github' | 'forgejo' = 'github';
+    if (connectionId || body.kind === 'forgejo') {
+      if (!connectionId) return reply.code(400).send({ error: 'connection required' });
+      if (!request.localUserId || !(await deps.store.isActiveAdministrator(request.localUserId)))
+        return reply.code(403).send({ error: 'administrator required' });
+      const connection = await deps.store.forgeConnections.get(connectionId);
+      if (!connection) return reply.code(404).send({ error: 'connection not found' });
+      if (connection.provider === 'github' && connection.id !== 'legacy-github')
+        return reply
+          .code(400)
+          .send({ error: 'only the existing GitHub App connection is supported' });
+      forgeKind = connection.provider;
+      if (connection.provider === 'forgejo' && body.kind !== 'local')
+        parsed = parseForgejoRepository(body.repo, connection.baseUrl);
+      if (body.kind && body.kind !== forgeKind)
+        return reply.code(400).send({ error: 'provider does not match connection' });
+      if (forgeKind === 'forgejo' && !deps.forgejoEnabled)
+        return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
+    }
     if (parsed === undefined) {
       reply.code(400);
       return { error: local ? 'invalid project name' : 'invalid project' };
@@ -112,7 +143,11 @@ export function registerProjectCollectionRoutes(
     const parsedKey = `${parsed.owner}/${parsed.repo}`;
     if (
       deps.localIdentityReservations.has(parsedKey) ||
-      deps.githubTargetReservations.has(parsedKey)
+      deps.githubTargetReservations.has(
+        connectionId && connectionId !== 'legacy-github'
+          ? `${connectionId}:${parsedKey}`
+          : parsedKey,
+      )
     ) {
       reply.code(409);
       return {
@@ -128,7 +163,12 @@ export function registerProjectCollectionRoutes(
             id: randomUUID(),
             owner: parsed.owner,
             repo: parsed.repo,
-            containerName: containerNameFor(parsed),
+            containerName: containerNameFor(parsed, connectionId),
+            kind: forgeKind,
+            ...(connectionId ? { forgeConnectionId: connectionId } : {}),
+            ...(forgeKind === 'forgejo'
+              ? { cloneDir: containerNameFor(parsed, connectionId) }
+              : {}),
             state: 'absent' as const,
             restore: true,
             overviewVisible: true,

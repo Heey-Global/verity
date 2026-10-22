@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { execFile } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -219,9 +220,10 @@ export async function issueGatewayServerCertificate(
     validityDays?: number;
   },
 ): Promise<PemCertificate> {
-  assertSafeSubjectValue(options.serverName, 'server name');
+  if (!isIP(options.serverName)) assertSafeSubjectValue(options.serverName, 'server name');
   const serverNames = [options.serverName, ...(options.additionalServerNames ?? [])];
-  for (const serverName of serverNames) assertSafeSubjectValue(serverName, 'server name');
+  for (const serverName of serverNames)
+    if (!isIP(serverName)) assertSafeSubjectValue(serverName, 'server name');
   const uniqueServerNames = [...new Set(serverNames)];
   return await issueLeaf(ca, {
     commonName: options.serverName,
@@ -230,7 +232,7 @@ export async function issueGatewayServerCertificate(
       'basicConstraints=critical,CA:FALSE',
       'keyUsage=critical,digitalSignature,keyEncipherment',
       'extendedKeyUsage=serverAuth',
-      `subjectAltName=${uniqueServerNames.map((name) => `DNS:${name}`).join(',')}`,
+      `subjectAltName=${uniqueServerNames.map((name) => `${isIP(name) ? 'IP' : 'DNS'}:${name}`).join(',')}`,
       '',
     ].join('\n'),
   });

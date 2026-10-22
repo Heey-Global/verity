@@ -8,6 +8,7 @@ const PROJECT_COLUMNS = [
   'repo',
   'container_name',
   'kind',
+  'forge_connection_id',
   'clone_dir',
   'image_ref',
   'image_override_ref',
@@ -33,6 +34,7 @@ interface ProjectRow {
   repo: string;
   container_name: string;
   kind: string;
+  forge_connection_id: string | null;
   clone_dir: string | null;
   image_ref: string | null;
   image_override_ref: string | null;
@@ -59,6 +61,7 @@ function projectRowToRecord(row: ProjectRow): ProjectRecord {
     repo: row.repo,
     containerName: row.container_name,
     kind: row.kind as ProjectKind,
+    forgeConnectionId: row.forge_connection_id,
     cloneDir: row.clone_dir,
     imageRef: row.image_ref,
     imageOverrideRef: row.image_override_ref,

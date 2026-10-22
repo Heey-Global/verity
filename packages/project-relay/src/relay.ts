@@ -166,6 +166,7 @@ export const CLAUDE_RELAY_LIMITS: Readonly<ClaudeRelayLimits> = Object.freeze({
 export interface BrokerRelayOptions {
   socketPath?: string;
   forgeProxy?: boolean;
+  forgeAuthorities?: readonly string[];
   limits?: Partial<RelayLimits>;
 }
 
@@ -228,9 +229,14 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
   server.on('connect', (request, socket, head) => {
     if (
       options.forgeProxy !== true ||
-      !['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'].includes(
-        request.url ?? '',
-      ) ||
+      !(
+        options.forgeAuthorities ?? [
+          'github.com:443',
+          'api.github.com:443',
+          'uploads.github.com:443',
+          'ghcr.io:443',
+        ]
+      ).includes(request.url ?? '') ||
       head.length ||
       request.headers['transfer-encoding'] ||
       (request.headers['content-length'] !== undefined && request.headers['content-length'] !== '0')
@@ -310,6 +316,7 @@ export async function startRelay(
   options: {
     host?: string;
     forgeProxy?: boolean;
+    forgeAuthorities?: readonly string[];
     brokerPort?: number;
     claudePort?: number;
     brokerSocketPath?: string;
@@ -324,6 +331,11 @@ export async function startRelay(
   const broker = createBrokerRelayServer({
     ...(options.brokerSocketPath === undefined ? {} : { socketPath: options.brokerSocketPath }),
     forgeProxy: options.forgeProxy ?? process.env.VERITY_FORGE_PROXY === 'github',
+    forgeAuthorities:
+      options.forgeAuthorities ??
+      (process.env.VERITY_FORGE_AUTHORITIES
+        ? (JSON.parse(process.env.VERITY_FORGE_AUTHORITIES) as string[])
+        : ['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443']),
   });
   const claude = createClaudeRelayServer(options.claudeSocketPath);
   const codex = createClaudeRelayServer(options.codexSocketPath ?? CODEX_SOCKET_PATH);

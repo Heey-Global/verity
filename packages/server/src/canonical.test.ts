@@ -172,3 +172,12 @@ describe('slugifyProjectName (projects created without GitHub)', () => {
     expect(parseOwnerRepo(`local/${slug!}`)).toEqual({ owner: 'local', repo: slug });
   });
 });
+
+it('isolates container identities by connection and unambiguous repository coordinates', () => {
+  const repo = { owner: 'same', repo: 'repo' };
+  expect(containerNameFor(repo)).toBe(containerNameFor(repo, 'legacy-github'));
+  expect(containerNameFor(repo, 'one')).not.toBe(containerNameFor(repo, 'two'));
+  expect(containerNameFor({ owner: 'a--b', repo: 'c' }, 'one')).not.toBe(
+    containerNameFor({ owner: 'a', repo: 'b--c' }, 'one'),
+  );
+});
