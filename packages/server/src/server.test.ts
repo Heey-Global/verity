@@ -939,6 +939,7 @@ describe('GET /server/updates', () => {
       state: 'unsupported',
       reason: 'deployment is not managed',
       operation: null,
+      installed: { version: expect.any(String), generation: null },
     });
   });
 
@@ -987,6 +988,12 @@ describe('GET /server/updates', () => {
         state: 'available',
         release: availableRelease,
         operation: preparingOperation,
+        installed: { version: expect.any(String), generation: null },
+        attempt: null,
+        // The fixture's operation last moved in August; this stub controller can
+        // neither read attempts nor retry, so nothing is offered for it.
+        stalled: true,
+        recovery: { retry: false, supersede: false },
       });
     } finally {
       await server.close();

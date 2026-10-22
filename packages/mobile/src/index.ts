@@ -211,9 +211,13 @@ export {
 } from './ui/trustedCliSummary.js';
 export {
   describeServerUpdate,
+  describeServerUpdatePanel,
   serverUpdateAwaitsAttention,
   serverUpdatePollMs,
   showsServerUpdatePanel,
+  type ServerUpdateCard,
+  type ServerUpdateCardAction,
+  type ServerUpdatePanel,
   type ServerUpdateView,
 } from './ui/serverUpdate.js';
 export {
@@ -225,6 +229,7 @@ export {
 export {
   serverUpdateOperationSchema,
   serverUpdateStatusSchema,
+  type ServerUpdateAttempt,
   type ServerUpdateOperation,
   type ServerUpdateStatus,
 } from './api.js';

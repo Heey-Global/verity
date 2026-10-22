@@ -29,6 +29,12 @@ import {
 } from './update-journal.js';
 import { isTerminalOperationState, projectUpdateOperation } from './update-operation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
+import {
+  classifyUpdateError,
+  clearUpdateAttempt,
+  readUpdateAttempt,
+  writeUpdateAttempt,
+} from './update-attempt.js';
 import { openActivationGate } from './activation-gate.js';
 import {
   MANAGED_GATEWAY_CONTROL_SOCKET,
@@ -58,6 +64,9 @@ const FAILABLE: readonly UpdatePhase[] = ['requested', 'pulling', 'verifying-ima
 
 const PREPARING: readonly UpdatePhase[] = [...FAILABLE, 'creating-standby'];
 const RESUME_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+/** At most one operator-requested run per this interval; each run already
+ *  makes several attempts, so a faster cadence only adds registry load. */
+const RETRY_NOW_INTERVAL_MS = 60_000;
 const MAX_DEFERRED_RETRY_MS = 5 * 60_000;
 
 function isFailablePhase(
@@ -162,6 +171,9 @@ export interface UpdateRunner {
   start(): void;
   /** Whatever run is currently queued; excludes deferred retry timers. */
   idle(): Promise<void>;
+  /** Operator-requested resume: drop the deferred backoff and run now. False
+   *  when paced out — a run started less than a minute ago already tried. */
+  retryNow(): boolean;
   /** Serialize another Docker mutation with managed updates. */
   enqueueExclusive(task: () => Promise<void>): Promise<void>;
 }
@@ -253,6 +265,24 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   };
 
   /**
+   * Remember why an attempt failed, for the device deciding whether to retry or
+   * supersede. Best effort: the journal is the authority, this only explains it.
+   */
+  const recordAttempt = async (phase: UpdatePhase, updateId: string, error: unknown) => {
+    try {
+      const previous = await readUpdateAttempt(options.managedRoot);
+      await writeUpdateAttempt(options.managedRoot, {
+        updateId,
+        failures: previous?.updateId === updateId ? previous.failures + 1 : 1,
+        lastAttemptAt: new Date().toISOString(),
+        lastError: { phase, cause: classifyUpdateError(error) },
+      });
+    } catch (recordError) {
+      log(`could not record the failed attempt: ${describe(recordError)}`);
+    }
+  };
+
+  /**
    * Record a failure that happened OUTSIDE the journalled steps — building the
    * Docker actions, reading the sealed authority — so the single slot does not
    * stay occupied by an operation that will never move and refuse every later
@@ -260,14 +290,15 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
    * alone deliberately: there the operation is genuinely resumable. The runner
    * retries it in the background, including after the quick retries run out.
    */
-  const recordStuckFailure = async (): Promise<void> => {
+  const recordStuckFailure = async (updateId: string | undefined): Promise<void> => {
     try {
       const current = await readUpdateJournal(options.managedRoot);
-      if (current === null || !isFailablePhase(current.phase)) return;
+      if (current === null || current.updateId !== updateId || !isFailablePhase(current.phase))
+        return;
       const phase = current.phase;
       await withUpdateJournalLease(options.managedRoot, async () => {
         const pinned = await readUpdateJournal(options.managedRoot);
-        if (pinned?.phase !== phase) return;
+        if (pinned?.updateId !== updateId || pinned.phase !== phase) return;
         await failUpdate(options.managedRoot, phase, `${phase}-failed`);
       });
     } catch (error) {
@@ -277,20 +308,42 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
 
   let deferredRetry: ReturnType<typeof setTimeout> | undefined;
   let deferredDelay = 8_000;
+  // Runs queued or executing. An explicit retry joins them instead of adding
+  // another, so repeated taps cannot outpace the work they ask for.
+  let pending = 0;
+  let retriedAt = -Infinity;
 
   const run = async (): Promise<void> => {
     clearTimeout(deferredRetry);
     deferredRetry = undefined;
     for (let attempt = 0; ; attempt += 1) {
+      // The operation this attempt works on. Its lease is released by the time
+      // a failure is handled, so a supersede may already have replaced it; the
+      // failure belongs to this one and must not be pinned on its successor.
+      const attempted = (await readUpdateJournal(options.managedRoot).catch(() => null))?.updateId;
       try {
         await execute();
         deferredDelay = 8_000;
+        const finished = await readUpdateJournal(options.managedRoot).catch(() => null);
+        if (finished?.phase === 'completed' || finished?.phase === 'rolled-back')
+          await clearUpdateAttempt(options.managedRoot).catch(() => undefined);
         return;
       } catch (error) {
         log(`update operation failed: ${describe(error)}`);
         if (error instanceof Error && error.stack !== undefined)
           log(`update operation failure stack: ${error.stack}`);
-        await recordStuckFailure();
+        // Read the phase before a failable one is overwritten with `failed`, so
+        // the record names the step that broke rather than the outcome.
+        const failing = await readUpdateJournal(options.managedRoot).catch(() => null);
+        // A journal already at `failed` no longer says which step broke; the
+        // closed failure code on the journal explains it instead.
+        // Without a pre-read, the journal now in place is the best evidence of
+        // what ran; refusing to record would leave a stuck `requested` holding
+        // the slot and refusing every later request.
+        const owner = attempted ?? failing?.updateId;
+        if (failing !== null && failing.updateId === owner && failing.phase !== 'failed')
+          await recordAttempt(failing.phase, failing.updateId, error);
+        await recordStuckFailure(owner);
       }
       // Read durable intent again after the failed attempt releases its lease.
       // Backoff stays inside the queue so other Docker work cannot interleave.
@@ -328,7 +381,10 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
 
   let chain: Promise<void> = Promise.resolve();
   const enqueue = (): Promise<void> => {
-    chain = chain.then(run);
+    pending += 1;
+    chain = chain.then(run).finally(() => {
+      pending -= 1;
+    });
     return chain;
   };
   return {
@@ -337,6 +393,15 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
       void enqueue();
     },
     idle: () => chain,
+    retryNow: () => {
+      // Joining a run that is already queued or executing is what was asked for.
+      if (pending > 0) return true;
+      if (Date.now() - retriedAt < RETRY_NOW_INTERVAL_MS) return false;
+      retriedAt = Date.now();
+      deferredDelay = 8_000;
+      void enqueue();
+      return true;
+    },
     enqueueExclusive: (task) => {
       const result = chain.then(task);
       chain = result.catch(() => undefined);

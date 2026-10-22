@@ -12,12 +12,16 @@ import { tint } from './tint';
  * A single item with its own state or control (docs/design-system.md § 5.2).
  * `selected` draws the `action` border with its glow; `muted` is for items that
  * are present but not available (Teams "Soon", a feature not included).
+ * `attention` draws the tonal `attention` border for an item reporting a
+ * problem, alongside the status word that names it — never instead of it.
  */
 export function Card({
   children,
   selected = false,
   muted = false,
   flush = false,
+  attention = false,
+  stacked = false,
 }: {
   children: ReactNode;
   selected?: boolean;
@@ -25,12 +29,18 @@ export function Card({
   /** For a card that holds a single Row or ToggleRow: the row brings its own
    *  padding and fills the card, so the card adds none. */
   flush?: boolean;
+  attention?: boolean;
+  /** Lays the content out top to bottom (status, title, detail, action)
+   *  instead of as one row. */
+  stacked?: boolean;
 }) {
   return (
     <View
       style={[
         styles.card,
+        stacked ? styles.cardStacked : null,
         flush ? styles.cardFlush : null,
+        attention ? styles.cardAttention : null,
         selected ? styles.cardSelected : null,
         muted ? styles.muted : null,
       ]}
@@ -316,6 +326,12 @@ const styles = StyleSheet.create((theme) => ({
   // Clips the row's pressed background to the rounded corners. Not on `card`
   // itself: that would clip the selected glow on iOS.
   cardFlush: { paddingVertical: 0, paddingHorizontal: 0, overflow: 'hidden' },
+  cardStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    paddingVertical: theme.spacing.lg,
+  },
+  cardAttention: { borderColor: tint(theme.colors.attention, 'border') },
   cardSelected: {
     borderColor: theme.colors.action,
     shadowColor: theme.colors.action,
