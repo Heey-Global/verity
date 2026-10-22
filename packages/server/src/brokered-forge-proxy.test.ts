@@ -787,6 +787,7 @@ describe('brokered forge TLS boundary', () => {
                 id: 'R_app',
                 name: 'app',
                 nameWithOwner: 'acme/app',
+                url: 'https://github.com/acme/app',
                 owner: { login: 'acme', id: 'U_acme', __typename: 'User' },
                 viewerPermission: 'WRITE',
                 defaultBranchRef: { name: 'main' },
@@ -889,6 +890,16 @@ describe('brokered forge TLS boundary', () => {
       { env },
     );
     expect(created.stdout).toContain('/issues/3');
+    const sessionWorktree = join(dir, 'pr-session');
+    await exec('git', ['init', '--initial-branch=test', sessionWorktree]);
+    await exec('git', [
+      '-C',
+      sessionWorktree,
+      'remote',
+      'add',
+      'origin',
+      'https://github.com/acme/app.git',
+    ]);
     const pr = await exec(
       join(seed, 'gh'),
       [
@@ -905,7 +916,7 @@ describe('brokered forge TLS boundary', () => {
         '--body',
         'hello',
       ],
-      { env },
+      { env: { ...env, VERITY_SESSION_WORKTREE: sessionWorktree }, cwd: sessionWorktree },
     );
     expect(pr.stdout).toContain('/pull/3');
     await exec(join(seed, 'gh'), ['pr', 'close', '2', '--repo', 'acme/app'], { env });
