@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { X509Certificate } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -153,12 +154,63 @@ async function tlsEndpoint(name: string, san: string, days = 1) {
     { stdio: 'ignore' },
   );
   if (days < 0) {
+    // Negative -days is rejected by newer OpenSSL. Explicit dates also make
+    // this fixture independent of the CI clock and certificate generation time.
+    const csr = join(directory, `${name}.csr`);
+    const config = join(directory, `${name}.cnf`);
+    const database = join(directory, `${name}.index`);
+    const serial = join(directory, `${name}.serial`);
+    writeFileSync(database, '');
+    writeFileSync(serial, '01\n');
+    writeFileSync(
+      config,
+      `[ca]
+ default_ca=fixture
+[fixture]
+ database=${database}
+ serial=${serial}
+ new_certs_dir=${directory}
+ default_md=sha256
+ policy=policy
+ x509_extensions=extensions
+[policy]
+ commonName=supplied
+[extensions]
+ subjectAltName=${san}
+ basicConstraints=critical,CA:TRUE
+`,
+    );
     execFileSync(
       'openssl',
-      ['x509', '-in', certPath, '-signkey', keyPath, '-days', '-1', '-out', certPath],
+      ['req', '-new', '-key', keyPath, '-subj', '/CN=localhost', '-out', csr],
+      { stdio: 'ignore' },
+    );
+    execFileSync(
+      'openssl',
+      [
+        'ca',
+        '-selfsign',
+        '-batch',
+        '-notext',
+        '-config',
+        config,
+        '-in',
+        csr,
+        '-cert',
+        certPath,
+        '-keyfile',
+        keyPath,
+        '-startdate',
+        '20200101000000Z',
+        '-enddate',
+        '20200102000000Z',
+        '-out',
+        certPath,
+      ],
       { stdio: 'ignore' },
     );
   }
+
   const pem = readFileSync(certPath, 'utf8');
   const server = createServer({ key: readFileSync(keyPath), cert: pem }, (_request, reply) => {
     reply.end('[]');
@@ -214,6 +266,7 @@ it('does not share custom trust between connections and accepts a rotated CA onl
 it('rejects an expired certificate even when explicitly trusted', async () => {
   const endpoint = await tlsEndpoint('expired', 'IP:127.0.0.1', -1);
   try {
+    expect(new Date(new X509Certificate(endpoint.pem).validTo).getUTCFullYear()).toBe(2020);
     await expect(
       new ForgejoTransport(endpoint.url('127.0.0.1'), async () => token, endpoint.pem).json('/tls'),
     ).rejects.toThrow();
