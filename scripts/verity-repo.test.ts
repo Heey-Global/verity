@@ -181,8 +181,15 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
     const result = await run(binRoot, ['pr', 'create', '--title', 'Slow']);
     expect(calls).toHaveLength(1);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain('timed out and may have completed');
+    expect(result.stderr).toContain('may have completed');
     expect(result.stderr).not.toContain('unreachable');
+  });
+
+  it('reports a dropped connection after sending as possibly completed', async () => {
+    const { calls, run } = await fixture((_body, reply) => reply.socket?.destroy());
+    const result = await run(binRoot, ['issue', 'comment', '7', '--body', 'Done']);
+    expect(calls).toHaveLength(1);
+    expect(result.stderr).toContain('may have completed');
   });
 
   it('refuses incomplete commands before calling the server', async () => {

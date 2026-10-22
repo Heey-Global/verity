@@ -124,10 +124,14 @@ out="$(curl -sS --max-time "${VERITY_REPO_TIMEOUT_SECONDS:-60}" -w '\n%{http_cod
   -H "authorization: Bearer $cap" \
   -H 'content-type: application/json' \
   --data "$payload" 2>/dev/null)" || curl_status=$?
-# A timed-out write may still have reached the code host; a blind retry would
-# open a second pull request or post the comment twice.
-[ "$curl_status" != 28 ] || fail 'the request timed out and may have completed; check with `verity-repo pr view` or `verity-repo issue view` before retrying'
-[ "$curl_status" = 0 ] || fail 'the Verity server is unreachable'
+# Only a failure to resolve or connect proves the request never left. Anything
+# later (a timeout, a dropped or empty reply) may have reached the code host,
+# and a blind retry would open a second pull request or post the comment twice.
+case "$curl_status" in
+  0) ;;
+  6 | 7) fail 'the Verity server is unreachable' ;;
+  *) fail 'the request failed or timed out and may have completed; check with `verity-repo pr view` or `verity-repo issue view` before retrying' ;;
+esac
 status="${out##*$'\n'}"
 response="${out%$'\n'*}"
 

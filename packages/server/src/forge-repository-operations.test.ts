@@ -126,8 +126,14 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
       forge.pulls.push(pull);
       return Promise.resolve(row(pull));
     }
-    if (path.startsWith(`${base}/pulls?`))
-      return Promise.resolve(path.includes('page=1') ? forge.pulls.map(row) : []);
+    if (path.startsWith(`${base}/pulls?`)) {
+      const wanted = path.includes('state=open')
+        ? forge.pulls.filter((pull) => pull.state === 'open')
+        : forge.pulls;
+      return Promise.resolve(
+        path.includes('page=1&') || path.endsWith('page=1') ? wanted.map(row) : [],
+      );
+    }
     const pullMatch = /\/pulls\/(\d+)$/u.exec(path);
     if (pullMatch) {
       const pull = forge.pulls.find((entry) => entry.number === Number(pullMatch[1]));
@@ -313,13 +319,17 @@ it('strips every stacked Forgejo WIP prefix', () => {
   expect(withoutWipPrefix('Wipe cache')).toBe('Wipe cache');
 });
 
-// Absence is what `pr create` relies on to avoid a duplicate, so a scan that ran
-// out of pages must not report "no pull request for this branch".
-it('refuses to answer when the Forgejo pull request scan is incomplete', async () => {
+// Absence is what `pr create` relies on to avoid a duplicate, so only a complete
+// scan of the open pull requests may report that the branch has none, while a
+// long closed history must not block it.
+it.each([
+  ['open', 'rejects', 'too many open pull requests'],
+  ['all', 'resolves', null],
+] as const)('bounds the Forgejo scan of %s pull requests', async (endless, outcome, message) => {
   const transport = new ForgejoTransport('https://git.example.org', () => Promise.resolve('t'));
   vi.spyOn(transport, 'json').mockImplementation((path: string) =>
     Promise.resolve(
-      path.includes('/pulls?')
+      path.includes(`/pulls?state=${endless}&`)
         ? [
             {
               number: 1,
@@ -329,11 +339,11 @@ it('refuses to answer when the Forgejo pull request scan is incomplete', async (
               base: { ref: 'main' },
             },
           ]
-        : { default_branch: 'main' },
+        : [],
     ),
   );
   const operations = createForgejoRepositoryOperations(transport, { owner: 'team', repo: 'site' });
-  await expect(operations.findPullRequest({ head: 'feat/7-search' })).rejects.toThrow(
-    'too many pull requests',
-  );
+  const lookup = operations.findPullRequest({ head: 'feat/7-search' });
+  if (outcome === 'rejects') await expect(lookup).rejects.toThrow(message);
+  else await expect(lookup).resolves.toBeNull();
 });

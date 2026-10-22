@@ -109,37 +109,37 @@ export function createForgejoRepositoryOperations(
         }
       }
       return forgejo(async () => {
-        const rows: ForgejoPullRow[] = [];
-        let complete = false;
-        for (let page = 1; page <= 100; page++) {
-          const batch = await transport.json<ForgejoPullRow[]>(
-            `${repoPath}/pulls?state=all&sort=recentupdate&limit=50&page=${page}`,
-          );
-          if (!Array.isArray(batch) || batch.length === 0) {
-            complete = true;
-            break;
-          }
-          rows.push(...batch);
-        }
-        // An unfinished scan cannot prove absence, and `pr create` relies on that
-        // answer to avoid opening a second pull request for the same branch.
-        if (!complete) {
-          throw new ForgeOperationError('too many pull requests to search on the code host', 502);
-        }
         // A fork's branch of the same name is not this repository's pull request,
         // nor is one whose head repository is gone (a deleted fork).
-        const match = rows
-          .filter(
-            (row) =>
-              row.head.ref === selector.head &&
-              row.head.repo?.full_name?.toLowerCase() === fullName,
-          )
-          .sort(
-            (a, b) =>
-              Number(a.state !== 'open') - Number(b.state !== 'open') ||
-              (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
-          )[0];
-        return match ? pullView(match) : null;
+        const own = (row: ForgejoPullRow) =>
+          row.head.ref === selector.head && row.head.repo?.full_name?.toLowerCase() === fullName;
+        const scan = async (state: 'open' | 'all') => {
+          const rows: ForgejoPullRow[] = [];
+          for (let page = 1; page <= 100; page++) {
+            const batch = await transport.json<ForgejoPullRow[]>(
+              `${repoPath}/pulls?state=${state}&sort=recentupdate&limit=50&page=${page}`,
+            );
+            if (!Array.isArray(batch) || batch.length === 0) return { rows, complete: true };
+            rows.push(...batch.filter(own));
+          }
+          return { rows, complete: false };
+        };
+        const newest = (rows: ForgejoPullRow[]) =>
+          rows.sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))[0];
+        // Open pull requests first: `pr create` relies on this answer to avoid a
+        // second pull request for the branch, so only a complete open scan may
+        // prove there is none. History is a best-effort fallback for `pr view`.
+        const open = await scan('open');
+        const current = newest(open.rows);
+        if (current) return pullView(current);
+        if (!open.complete) {
+          throw new ForgeOperationError(
+            'too many open pull requests to search on the code host',
+            502,
+          );
+        }
+        const closed = newest((await scan('all')).rows);
+        return closed ? pullView(closed) : null;
       }, 'pull request');
     },
     markPullRequestReady: async (number) => {
