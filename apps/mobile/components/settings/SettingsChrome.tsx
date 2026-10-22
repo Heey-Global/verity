@@ -164,7 +164,8 @@ export function SettingsNavRow({
   disabled = false,
   signature = false,
 }: {
-  icon: IconName;
+  /** A Feather glyph, or `{ element }` for a mark Feather lacks (a code host). */
+  icon: IconName | { element: ReactNode };
   title: string;
   subtitle?: string;
   value?: string;
@@ -192,7 +193,7 @@ export function SettingsNavRow({
     );
   return (
     <Row
-      leading={{ icon, signature }}
+      leading={typeof icon === 'string' ? { icon, signature } : icon}
       title={title}
       subtitle={subtitle}
       trailing={trailing}

@@ -5489,14 +5489,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
-  registerForgeConnectionRoutes(app, deps.eventStore, async () => {
-    const projects = deps.listAvailableRepositories
-      ? await deps.listAvailableRepositories()
-      : await deps.eventStore.listProjects({ includeHidden: true });
-    return projects
-      .filter((project) => project.kind === 'github')
-      .map((project) => ({ owner: project.owner, repo: project.repo }));
-  });
+  registerForgeConnectionRoutes(
+    app,
+    deps.eventStore,
+    async () => {
+      const projects = deps.listAvailableRepositories
+        ? await deps.listAvailableRepositories()
+        : await deps.eventStore.listProjects({ includeHidden: true });
+      return projects
+        .filter((project) => project.kind === 'github')
+        .map((project) => ({ owner: project.owner, repo: project.repo }));
+    },
+    deps.forgejoEnabled === true,
+  );
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
@@ -9683,6 +9688,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
   // sibling worktree is developing (#122). 404 unknown session; 503 when no
   // project repo is configured (scratch deployments).
+  /** Null for a project not on Forgejo; 'unknown' for a Forgejo project whose
+   *  connection is gone, so the caller never falls back to the broker remote. */
+  const forgejoWebHost = async (
+    projectId: string | null,
+  ): Promise<{ baseUrl: string; identity: { owner: string; repo: string } } | 'unknown' | null> => {
+    if (projectId === null) return null;
+    const project = await deps.eventStore.getProject(projectId);
+    if (project?.kind !== 'forgejo') return null;
+    if (!project.forgeConnectionId) return 'unknown';
+    const connection = await deps.eventStore.forgeConnections.get(project.forgeConnectionId);
+    if (connection?.provider !== 'forgejo') return 'unknown';
+    return {
+      baseUrl: connection.baseUrl,
+      identity: { owner: project.owner, repo: project.repo },
+    };
+  };
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
@@ -9759,9 +9780,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
       // chips then stay non-tappable rather than failing the branch list.
-      const identity = deps.repoIdentity
+      const remoteIdentity = deps.repoIdentity
         ? await deps.repoIdentity(session.worktree).catch(() => null)
         : null;
+      // A Forgejo project's chips link to its own instance; its origin remote is
+      // the sandbox broker, so the identity comes from the project record.
+      const forgeHost = await forgejoWebHost(session.projectId).catch(() => 'unknown' as const);
+      // Without its connection a Forgejo project's remote is still the broker;
+      // unlinked chips beat links to an unrelated GitHub repository.
+      const identity =
+        forgeHost === 'unknown' ? null : forgeHost === null ? remoteIdentity : forgeHost.identity;
       // A `local` project has no PR strip to merge from, so the cockpit needs to know
       // that merging into the project's base branch is possible here at all, and what
       // that base is called. File changes determine strip visibility; the merge
@@ -9805,6 +9833,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
+        ...(forgeHost !== null && forgeHost !== 'unknown'
+          ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
+          : {}),
         ...(localBase !== null ? { localMerge: { base: localBase, hasChanges } } : {}),
       };
     },

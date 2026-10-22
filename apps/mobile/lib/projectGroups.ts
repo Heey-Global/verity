@@ -1,5 +1,7 @@
 import {
+  codeHostForProject,
   sameSnapshotValue,
+  type ForgeConnection,
   type ProjectRecord,
   type SessionSummary,
   type DevServer,
@@ -37,6 +39,7 @@ export function projectGroups(
   detectionsByProject: Map<string, DevServerDetection>,
   baseUrl: string | null,
   previous: SessionProjectGroup[] = [],
+  connections: readonly ForgeConnection[] | null = null,
 ): SessionProjectGroup[] {
   const byProject = new Map<string | null, SessionSummary[]>();
   for (const session of sessions) {
@@ -61,7 +64,7 @@ export function projectGroups(
       status: projectOverviewStatus(project, detection),
       portLinks,
       project,
-      repo: project.kind === 'github' ? { owner: project.owner, repo: project.repo } : undefined,
+      repo: repoIdentity(project, connections),
       sessions: byProject.get(project.id) ?? [],
     };
   });
@@ -116,4 +119,22 @@ export function projectGroups(
     shared.every((group, index) => group === previous[index])
     ? previous
     : shared;
+}
+
+/** Owner/repo plus the web host for a repository project. A Forgejo project
+ *  whose connection the app cannot see gets none, so its links stay inert
+ *  rather than pointing at github.com. */
+function repoIdentity(
+  project: ProjectRecord,
+  connections: readonly ForgeConnection[] | null,
+): RepoIdentity | undefined {
+  const host = codeHostForProject(project, connections);
+  if (!host) return undefined;
+  return {
+    owner: project.owner,
+    repo: project.repo,
+    ...(host.provider === 'github'
+      ? {}
+      : { host: { provider: host.provider, baseUrl: host.baseUrl } }),
+  };
 }

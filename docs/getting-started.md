@@ -183,7 +183,7 @@ button "Open Verity" becomes active. Tap it.
 ## Step 5: Create a project and run your first session
 
 1. On the home screen, tap "Add your first project".
-2. Choose "Empty project", give it a name such as `my-first-project`, and tap
+2. Choose "Local project", give it a name such as `my-first-project`, and tap
    "Create project". Verity prepares an isolated sandbox for it, which takes a
    minute the first time. A sandbox is a container on your server where this
    project's agents work, separate from your other projects and from the
@@ -223,8 +223,9 @@ A browser can sign out under Settings → Devices → "This browser".
 Connect GitHub when you want agents to work on your existing repositories and
 open pull requests. In Settings → Connections, choose GitHub and follow the
 sign-in; you choose which repositories Verity may use. Afterwards, "New
-project" offers "GitHub repository" next to "Empty project", and Verity shows
-pull-request and CI status inside each session.
+project" offers "GitHub" next to "Local project", and Verity shows
+pull-request and CI status inside each session. A self-hosted Forgejo server
+connects the same way under Forgejo and then appears next to GitHub.
 
 Other connections, such as Google Drive folders or secret managers, live in
 the same place and are explained in the [connections guide](connections.md).

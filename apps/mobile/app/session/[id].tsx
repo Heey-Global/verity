@@ -12,6 +12,7 @@ import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { CodeHostIcon } from '../../components/CodeHostIcon';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
@@ -90,7 +91,8 @@ import {
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
-  githubRefUrl,
+  forgeRefUrl,
+  providerName,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
@@ -1133,11 +1135,13 @@ export const SessionChat = memo(function SessionChat({
   // Issue # comes from the branch name (#125, works before any PR). The PR chip has
   // moved out of the header — the bottom PR status bar surfaces the PR now.
   const issueNumber = parseBranchIssue(effectiveBranch);
-  // Tappable Issue chip (#161): build the GitHub URL from the server-surfaced owner/
-  // repo. `githubRefUrl` returns null when owner/repo is unknown (no GitHub remote /
-  // older server) — the chip then renders non-tappable, never linking to a broken URL.
-  const repoIdentity = { owner: branches.owner, repo: branches.repo };
-  const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
+  // Tappable Issue chip (#161): build the code-host URL from the server-surfaced owner/
+  // repo and, for Forgejo, its host. `forgeRefUrl` returns null when owner/repo is
+  // unknown (no remote / older server) — the chip then renders non-tappable, never
+  // linking to a broken URL.
+  const repoIdentity = { owner: branches.owner, repo: branches.repo, host: branches.codeHost };
+  const issueUrl = forgeRefUrl('issue', repoIdentity, issueNumber);
+  const codeHostName = providerName(branches.codeHost?.provider ?? 'github');
   // Open PRs cannot be dismissed, so they can render immediately. Wait for the
   // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
@@ -3864,7 +3868,9 @@ export const SessionChat = memo(function SessionChat({
               >
                 <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
+              {issueNumber !== null ? (
+                <IssueRef number={issueNumber} url={issueUrl} hostName={codeHostName} />
+              ) : null}
             </View>
           )}
         </View>
@@ -4717,6 +4723,7 @@ export const SessionChat = memo(function SessionChat({
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
+          codeHost={branches.codeHost}
         />
       ) : null}
       {!visiblePullRequest &&
@@ -4892,11 +4899,19 @@ function HeaderActionButton({
 }
 
 // The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
-// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// string (opens the issue on its code host via `Linking.openURL`, announced as a link) and
 // then tinted like the app's other tappable meta; when `url` is null — owner/repo
 // unknown (no GitHub remote / older server) — it stays plain, faint text and never
 // links to a broken URL (#161).
-function IssueRef({ number, url }: { number: number; url: string | null }) {
+function IssueRef({
+  number,
+  url,
+  hostName,
+}: {
+  number: number;
+  url: string | null;
+  hostName: string;
+}) {
   const label = `#${String(number)}`;
   if (url === null) {
     return (
@@ -4912,7 +4927,7 @@ function IssueRef({ number, url }: { number: number; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on ${hostName}.`}
     >
       <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
@@ -9395,9 +9410,12 @@ function PullRequestBar({
   onMerge,
   onRefresh,
   onDismiss,
+  codeHost,
 }: {
   confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
+  /** Absent for GitHub; the bar names and marks the host it opens. */
+  codeHost: UseBranches['codeHost'];
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
   onDismiss?: () => void;
@@ -9514,7 +9532,7 @@ function PullRequestBar({
             })
           }
           accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
+          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
         >
           <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
           <View style={styles.prMain}>
@@ -9530,6 +9548,11 @@ function PullRequestBar({
               </Text>
             ) : null}
           </View>
+          <CodeHostIcon
+            provider={codeHost?.provider ?? 'github'}
+            size={16}
+            color={theme.colors.textMuted}
+          />
         </Pressable>
         {onDismiss ? (
           <Pressable

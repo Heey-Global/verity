@@ -1,6 +1,6 @@
 import { REPO_CONVENTIONS_SYSTEM_PROMPT } from '@verity/events';
 import { describe, expect, it } from 'vitest';
-import { githubRefUrl, parseBranchIssue } from './branchRef.js';
+import { forgeRefUrl, parseBranchIssue } from './branchRef.js';
 
 describe('parseBranchIssue', () => {
   it('parses the leading issue number from a <type>/<issue>-<slug> branch', () => {
@@ -77,42 +77,40 @@ describe('parseBranchIssue', () => {
   });
 });
 
-describe('githubRefUrl (#161)', () => {
+describe('forgeRefUrl (#161)', () => {
   const id = { owner: 'Example-Org', repo: 'Example-Repo' };
 
   it('builds the canonical issue and PR URLs', () => {
-    expect(githubRefUrl('issue', id, 161)).toBe(
+    expect(forgeRefUrl('issue', id, 161)).toBe(
       'https://github.com/Example-Org/Example-Repo/issues/161',
     );
-    expect(githubRefUrl('pr', id, 127)).toBe(
-      'https://github.com/Example-Org/Example-Repo/pull/127',
-    );
+    expect(forgeRefUrl('pr', id, 127)).toBe('https://github.com/Example-Org/Example-Repo/pull/127');
   });
 
   it('returns null when owner or repo is missing (no GitHub remote / older server)', () => {
-    expect(githubRefUrl('issue', { owner: undefined, repo: 'Example-Repo' }, 161)).toBeNull();
-    expect(githubRefUrl('pr', { owner: 'Example-Org', repo: undefined }, 127)).toBeNull();
-    expect(githubRefUrl('issue', {}, 161)).toBeNull();
+    expect(forgeRefUrl('issue', { owner: undefined, repo: 'Example-Repo' }, 161)).toBeNull();
+    expect(forgeRefUrl('pr', { owner: 'Example-Org', repo: undefined }, 127)).toBeNull();
+    expect(forgeRefUrl('issue', {}, 161)).toBeNull();
   });
 
   it('returns null when owner or repo is the empty string', () => {
-    expect(githubRefUrl('issue', { owner: '', repo: 'Example-Repo' }, 161)).toBeNull();
-    expect(githubRefUrl('pr', { owner: 'Example-Org', repo: '' }, 127)).toBeNull();
+    expect(forgeRefUrl('issue', { owner: '', repo: 'Example-Repo' }, 161)).toBeNull();
+    expect(forgeRefUrl('pr', { owner: 'Example-Org', repo: '' }, 127)).toBeNull();
   });
 
   it('returns null for a missing or non-positive number (no chip to link)', () => {
-    expect(githubRefUrl('pr', id, null)).toBeNull();
-    expect(githubRefUrl('pr', id, undefined)).toBeNull();
-    expect(githubRefUrl('issue', id, 0)).toBeNull();
-    expect(githubRefUrl('issue', id, -5)).toBeNull();
-    expect(githubRefUrl('issue', id, 1.5)).toBeNull();
+    expect(forgeRefUrl('pr', id, null)).toBeNull();
+    expect(forgeRefUrl('pr', id, undefined)).toBeNull();
+    expect(forgeRefUrl('issue', id, 0)).toBeNull();
+    expect(forgeRefUrl('issue', id, -5)).toBeNull();
+    expect(forgeRefUrl('issue', id, 1.5)).toBeNull();
   });
 
   it('percent-encodes owner/repo so an unusual remote name cannot break the URL', () => {
-    expect(githubRefUrl('issue', { owner: 'a b', repo: 'c/d' }, 1)).toBe(
+    expect(forgeRefUrl('issue', { owner: 'a b', repo: 'c/d' }, 1)).toBe(
       'https://github.com/a%20b/c%2Fd/issues/1',
     );
-    const crafted = githubRefUrl(
+    const crafted = forgeRefUrl(
       'issue',
       { owner: 'evil.example/redirect?next=', repo: '#fragment' },
       7,
@@ -121,5 +119,15 @@ describe('githubRefUrl (#161)', () => {
       'https://github.com/evil.example%2Fredirect%3Fnext%3D/%23fragment/issues/7',
     );
     expect(new URL(crafted!).origin).toBe('https://github.com');
+  });
+});
+
+describe('forgeRefUrl on Forgejo', () => {
+  // A Forgejo project linked with the GitHub default would open the wrong host.
+  const host = { provider: 'forgejo' as const, baseUrl: 'https://git.example.org/forge/' };
+  const id = { owner: 'team', repo: 'website', host };
+  it('uses the connection base URL and Forgejo path segments', () => {
+    expect(forgeRefUrl('pr', id, 12)).toBe('https://git.example.org/forge/team/website/pulls/12');
+    expect(forgeRefUrl('issue', id, 3)).toBe('https://git.example.org/forge/team/website/issues/3');
   });
 });

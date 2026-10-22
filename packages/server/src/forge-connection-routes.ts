@@ -16,6 +16,7 @@ export function registerForgeConnectionRoutes(
   app: FastifyInstance,
   store: EventStore,
   githubRepositories: () => Promise<unknown[]> = () => Promise.resolve([]),
+  forgejoProjectsAvailable = false,
 ): void {
   const authorize = async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.localUserId || !(await store.isActiveAdministrator(request.localUserId))) {
@@ -30,7 +31,12 @@ export function registerForgeConnectionRoutes(
   };
   app.get('/connections', async (request, reply) => {
     if (!(await authorize(request, reply))) return;
-    return { connections: await store.forgeConnections.list() };
+    // Clients offer Forgejo for project creation only when the sandbox relay
+    // can serve it; otherwise creation would fail late with 503.
+    return {
+      connections: await store.forgeConnections.list(),
+      forgejoProjectsAvailable,
+    };
   });
   app.post('/connections', async (request, reply) => {
     if (!(await authorize(request, reply))) return;
