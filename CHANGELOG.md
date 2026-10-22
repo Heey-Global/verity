@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.53.0](https://github.com/Heey-Global/verity/compare/v4.52.1...v4.53.0) (2026-10-22)
+
+
+### Features
+
+* **updates:** recover stuck updates from the app ([#1768](https://github.com/Heey-Global/verity/issues/1768)) ([699be3a](https://github.com/Heey-Global/verity/commit/699be3ad1a7d2e013989441f574de1b3390752af))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @anthropic-ai/claude-code to v2.1.303 ([#1774](https://github.com/Heey-Global/verity/issues/1774)) ([5bc1e31](https://github.com/Heey-Global/verity/commit/5bc1e316415b1f4faced76ac3b3010f4663e6ecf))
+* **github:** guard PR creation against session branch mismatches ([#1777](https://github.com/Heey-Global/verity/issues/1777)) ([0526fbc](https://github.com/Heey-Global/verity/commit/0526fbca33f26165dfaf214a8e39272012ad551b))
+* **sandbox:** let confined agents start nested sandboxes under gVisor ([#1767](https://github.com/Heey-Global/verity/issues/1767)) ([2c90f63](https://github.com/Heey-Global/verity/commit/2c90f63ce173b506ada6d36a26dcc1c5c6f8ec51))
+
 ## [4.52.1](https://github.com/Heey-Global/verity/compare/v4.52.0...v4.52.1) (2026-10-21)
 
 
