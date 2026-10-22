@@ -19,6 +19,28 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+// An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
+// the chips would otherwise open an unrelated github.com repository.
+it('drops the repository identity for a code host this client does not know', () => {
+  const parsed = branchListSchema.parse({
+    current: 'feat/1-x',
+    switchable: [],
+    owner: 'team',
+    repo: 'site',
+    codeHost: { provider: 'gitlab', baseUrl: 'https://gitlab.example' },
+  });
+  expect(parsed).toEqual({ current: 'feat/1-x', switchable: [] });
+  expect(
+    branchListSchema.parse({
+      current: 'feat/1-x',
+      switchable: [],
+      owner: 'team',
+      repo: 'site',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+    }),
+  ).toMatchObject({ owner: 'team', codeHost: { provider: 'forgejo' } });
+});
+
 it('retains the same full PR snapshot in overview and branch responses', () => {
   const pullRequest = {
     number: 42,
