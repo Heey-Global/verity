@@ -118,6 +118,17 @@ configured project relay/provisioner. New Forgejo clone and container names
 include a hash of the connection and repository identity. Existing clones retain
 their paths, including when a local project is linked.
 
+Agents in a Forgejo project use `verity-repo` instead of `gh`, which only
+reaches GitHub. `verity-repo pr create`, `pr ready`, `pr view`, `issue list`,
+`issue view` and `issue comment` call `POST /internal/project/repo` with the
+container capability. The server resolves the project and its repository from
+that capability and the project socket, ignores any repository named in the
+request, and runs the action through the project's code host with server-held
+credentials. Pull requests are always opened ready for review: a Forgejo `WIP:`
+title prefix is removed, and `pr ready` clears it on an existing pull request.
+Local projects answer with a "no code host" error. The session prompt names
+`verity-repo` for Forgejo projects; GitHub projects keep `gh`.
+
 For a session in a Forgejo project, `GET /sessions/:id/branches` reports the
 project's `owner` and `repo` and a `codeHost` with the connection's base URL,
 so issue and pull request links open on that instance rather than on GitHub.

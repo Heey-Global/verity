@@ -12,10 +12,18 @@ git config --global core.hooksPath /opt/agent-seed/hooks
 Project containers mount `/opt/agent-seed` read-only and prepend
 `/opt/agent-seed/bin` to `PATH`.
 
-- `bin/gh` redeems the opaque capability mounted at
-  `/run/verity/gh-token-capability` through `verity-gh-token`, then exposes the
-  fresh repository-scoped token only to its child `gh` process. No reusable
+- `bin/gh` runs the pinned GitHub CLI through the Verity forge proxy. It hands
+  the child `gh` process only a placeholder derived from the capability mounted
+  at `/run/verity/gh-token-capability` (via `verity-gh-token`); the proxy swaps
+  it for the real repository-scoped credential on the server side. No reusable
   GitHub credential is mounted in the sandbox or exported to the ambient shell.
+- `bin/verity-repo` opens and readies pull requests and reads and comments on
+  issues for code hosts without a CLI in the sandbox (Forgejo today). Each
+  command goes to `POST /internal/project/repo` with the same capability; the
+  server resolves the project, its repository and its code host and executes
+  the action with server-held credentials, so the command never names a
+  repository and never sees a token. Failures are reported on stderr with a
+  non-zero exit code.
 - `bin/git` is a thin wrapper that refuses `git worktree remove` on a Verity
   session worktree (`.verity-sessions/agent-<id>`) — self-removal would delete
   the tree the session runs in and permanently break it ("workspace no longer

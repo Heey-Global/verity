@@ -28,6 +28,7 @@ export const CODEX_PORT = 8444;
 export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
   'POST /internal/project/memory',
+  'POST /internal/project/repo',
   'POST /internal/package-install',
   'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1) — an ACP agent's only path to the brokered

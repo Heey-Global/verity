@@ -655,6 +655,9 @@ ln -sf /opt/agent-seed/bin/oras /usr/local/bin/oras
 # invocation, so baking it first on PATH is inert on all other operations.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/bin/verity-dev-server
+# Pull requests and issues through the project's code host, executed server-side
+# with the container capability; inert without VERITY_PROJECT_REPO_URL.
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-repo" /opt/agent-seed/bin/verity-repo
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
@@ -676,6 +679,7 @@ install -m 0644 "$FEATURE_DIR/agent-seed/code-review-prompt.md" /opt/agent-seed/
 ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 # Put the marker tool on PATH so `verity-code-review mark` works from any cwd.
 ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
+ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.

@@ -136,6 +136,8 @@ export interface ControlPlaneDeps {
   /** GitHub-token broker capability registry (resolve side) for
    *  `POST /internal/github/token`. Forwarded to {@link buildServer}. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** The code host behind a repository project, for the sandbox `verity-repo` tool. */
+  projectRepository?: ServerDeps['projectRepository'];
   /** Mint a repo-scoped token for a resolved capability binding. Forwarded to
    *  {@link buildServer}. */
   ghTokenMint?:
@@ -433,6 +435,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { ghTokenCapabilities: deps.ghTokenCapabilities }
       : {}),
     ...(deps.ghTokenMint !== undefined ? { ghTokenMint: deps.ghTokenMint } : {}),
+    ...(deps.projectRepository !== undefined ? { projectRepository: deps.projectRepository } : {}),
     ...(deps.mcpGateway !== undefined ? { mcpGateway: deps.mcpGateway } : {}),
     ...(deps.mcpProxyResolveCaller !== undefined
       ? { mcpProxyResolveCaller: deps.mcpProxyResolveCaller }

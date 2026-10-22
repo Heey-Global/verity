@@ -6392,6 +6392,9 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
         );
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
+        );
         expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
