@@ -77,3 +77,10 @@ reservations are keyed by connection as well as owner and repository name.
 Removing a connection referenced by a project or reservation returns a conflict.
 These APIs prepare Forgejo connections; project creation requires the provider
 and sandbox integration to be enabled separately.
+
+The Forgejo provider supports repository lists, open issues, pull request
+creation, lookup and merging, commit statuses and Actions runs. Pull request
+lookups match both the branch name and its repository, and merge requests pass
+the expected head commit to Forgejo. Unsupported operations are reflected in
+provider capabilities. Release badges remain disabled for Forgejo. Credentials
+are resolved per operation so token rotation does not retain stale tokens.

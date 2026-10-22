@@ -120,7 +120,7 @@ it('ignores same-named branches from a fork and preserves later non-null branch 
           updated_at: '2026-10-01T00:00:00Z',
           head: { ...original.head, repo: { full_name: 'fork/repo' } },
         },
-        ...result,
+        ...(result as unknown[]),
       ];
     }
     return result;
