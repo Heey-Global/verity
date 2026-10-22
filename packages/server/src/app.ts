@@ -17,7 +17,7 @@ import type { AuthTokenRegistry } from './auth.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import type { WorktreeProvisioner } from './worktree.js';
 import type { GitBranchService, GitOutput } from './branches.js';
-import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
+import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -187,7 +187,7 @@ export interface ControlPlaneDeps {
   /** Merge a PR by number. Omit → merge route returns 503. */
   mergePr?: ((number: number, worktree: string) => Promise<boolean>) | undefined;
   /** Resolve GitHub owner/repo for a session worktree so Issue/PR chips deep-link correctly. */
-  repoIdentity?: ((worktree: string) => Promise<GitHubIdentity | null>) | undefined;
+  repoIdentity?: ((worktree: string) => Promise<ForgeRepoRef | null>) | undefined;
   /** Latest GitHub release lookup for project overview/detail badges. */
   latestRelease?: ((owner: string, repo: string) => ReleaseSummary | null | undefined) | undefined;
   /** Awaited latest-release refresh for routes that need an immediate answer. */

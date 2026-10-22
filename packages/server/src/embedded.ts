@@ -4,7 +4,6 @@ import { createManagedDevServerSecretResolver } from './managed-dev-server-secre
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import { returnPathSelection } from './remote-return-path-diagnostics.js';
-import { listProjectGitHubIssues } from './project-github-issues.js';
 import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
@@ -112,14 +111,8 @@ import {
   type GitWorktreeOptions,
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
-import {
-  createGitHubIdentityResolver,
-  createGitHubInstallationService,
-  createGitHubPrService,
-  createGitHubReleaseService,
-  openPullRequest,
-  type GitHubInstallationService,
-} from './github.js';
+import { type GitHubInstallationService } from './github.js';
+import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
@@ -2342,55 +2335,6 @@ export async function buildEmbeddedServer(
             : {}),
         })
       : undefined;
-  // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not
-  // globally from config.repoDir. Project sessions live in their own repos, so using
-  // the Verity repo here would miss PRs like sample-app-web. The per-worktree services
-  // keep their own short GitHub TTL caches so the visible PR bar updates quickly
-  // while still coalescing repeated app polls; the token provider is re-read per lookup.
-  const prStatusTtlMs = 2_000;
-  const prServices = new Map<string, ReturnType<typeof createGitHubPrService>>();
-  // Share cooldowns between session worktrees of the SAME repository without
-  // pausing unrelated projects that may use a different GitHub installation.
-  const prFailureCooldowns = new Map<string, { until: number; inFlight?: Promise<void> }>();
-  const prFailureCooldownFor = (
-    owner: string,
-    repo: string,
-  ): { until: number; inFlight?: Promise<void> } => {
-    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-    let cooldown = prFailureCooldowns.get(key);
-    if (cooldown === undefined) {
-      cooldown = { until: 0 };
-      prFailureCooldowns.set(key, cooldown);
-    }
-    return cooldown;
-  };
-  const prServiceFor = (repoDir: string): ReturnType<typeof createGitHubPrService> => {
-    let svc = prServices.get(repoDir);
-    if (svc === undefined) {
-      svc = createGitHubPrService({
-        repoDir,
-        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-        ttlMs: prStatusTtlMs,
-        failureCooldownFor: prFailureCooldownFor,
-      });
-      prServices.set(repoDir, svc);
-    }
-    return svc;
-  };
-  // Repo identity (owner/repo) for the header's tappable Issue/PR chips (#161). Needs
-  // only the repo — owner/repo comes from the `origin` remote, no token required — so
-  // it's available even on token-less deployments. Resolves to null (chips stay
-  // non-tappable) when the repo has no GitHub origin.
-  const repoIdentities = new Map<string, ReturnType<typeof createGitHubIdentityResolver>>();
-  const repoIdentityFor = (repoDir: string): ReturnType<typeof createGitHubIdentityResolver> => {
-    let identity = repoIdentities.get(repoDir);
-    if (identity === undefined) {
-      identity = createGitHubIdentityResolver(repoDir);
-      repoIdentities.set(repoDir, identity);
-    }
-    return identity;
-  };
-
   // GitHub App creds resolve from Verity settings only. The App private key lives
   // encrypted in the DB/secret store; deployment env must not pre-configure or
   // override onboarding state.
@@ -2441,6 +2385,39 @@ export async function buildEmbeddedServer(
         ? githubAppAuthorityKey
         : () => Promise.resolve('test-github-project-token-mint'),
   });
+  const installationListTokenMint = createGitHubAppInstallationTokenMint({
+    ...baseMintOpts,
+    permissions: { metadata: 'read' },
+  });
+  // The forge behind project sessions, the repository list and the release badge
+  // (#1034). Open-PR lookups are built per SESSION WORKTREE, not globally from
+  // config.repoDir: project sessions live in their own repos (#125). The per-worktree
+  // services keep a short TTL so the visible PR bar updates quickly while repeated
+  // app polls still coalesce; the token mint is re-read per lookup.
+  //
+  // The repository list (concept §19, #174) is the live source of the `projects`
+  // cache and mints a dedicated metadata-only installation token. A sealed DB store
+  // must propagate as 503 so mobile can prompt for unlock instead of showing an
+  // empty repository list.
+  //
+  // The latest-release lookup for the project overview is non-blocking: `GET
+  // /projects` reads it synchronously and it refreshes in the background on a TTL.
+  const githubForge = createGitHubForgeProvider({
+    projectTokenMint: cachedProjectTokenMint,
+    issuesTokenMint,
+    installationToken: async () => {
+      try {
+        return await resolveInstallationListToken(installationListTokenMint);
+      } catch (err) {
+        if (err instanceof SealedError) throw err;
+        return undefined;
+      }
+    },
+    prStatusTtlMs: 2_000,
+  });
+  const installationService: GitHubInstallationService = {
+    listInstallationRepos: () => githubForge.listRepositories(),
+  };
   // GitHub-token broker (security review): the sandbox holds an opaque per-project
   // capability and redeems it at POST /internal/github/token instead of carrying a
   // gh-token file. The provisioner issues capabilities into this SAME registry; the
@@ -2464,40 +2441,11 @@ export async function buildEmbeddedServer(
         refreshBase: true,
         fetchAuthHeader: () =>
           resolveRepoWorktreeFetchAuthHeader(
-            () => repoIdentityFor(config.repoDir as string)(),
+            githubForge.identityFor(config.repoDir as string),
             cachedProjectTokenMint,
           ),
       })
     : undefined;
-  const installationListTokenMint = createGitHubAppInstallationTokenMint({
-    ...baseMintOpts,
-    permissions: { metadata: 'read' },
-  });
-  // GitHub-App-installation repo list (concept §19, #174) — the live source of the
-  // `projects` cache, fetched fresh per `GET /projects` (with a per-call TTL cached by
-  // the service so a polled picker doesn't burn rate limit). The DB-backed App path
-  // mints a dedicated metadata-only installation token. A sealed DB store must
-  // propagate as 503 so mobile can prompt for unlock instead of showing an empty
-  // repository list.
-  const installationService = createGitHubInstallationService({
-    asyncToken: async () => {
-      try {
-        return await resolveInstallationListToken(installationListTokenMint);
-      } catch (err) {
-        if (err instanceof SealedError) throw err;
-        return undefined;
-      }
-    },
-  });
-
-  // Latest-release lookup for the project overview: same precondition as the
-  // installation service (an App-installation token). Fleet-wide (keyed by
-  // (owner, repo) per call), non-blocking — `GET /projects` reads it synchronously
-  // and it refreshes in the background on a TTL. Absent → the overview shows no
-  // release version (the field is simply null on the wire).
-  const releaseService = createGitHubReleaseService({
-    asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-  });
 
   const secretRoot =
     config.secretMaterializationRoot ??
@@ -3624,7 +3572,7 @@ export async function buildEmbeddedServer(
       // Linking a local project to a repository that already has history publishes an
       // import branch and opens the pull request that carries it onto the default
       // branch — the token is the one-shot, target-scoped mint the link route made.
-      openPullRequest: (target, token, pr) => openPullRequest(target, token, pr),
+      openPullRequest: (target, token, pr) => githubForge.openPullRequest(target, token, pr),
       gitSecretRoot: secretRoot,
       // GitHub-token broker: the SAME registry the /internal/github/token endpoint
       // resolves against. The provisioner issues a per-container capability into it
@@ -4553,32 +4501,20 @@ export async function buildEmbeddedServer(
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
     ...(branches !== undefined ? { branches } : {}),
-    ...(prServiceFor !== undefined
-      ? { branchPr: (b: string, wt: string) => prServiceFor(wt).prForBranch(b) }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? { branchPrStatus: (b: string, wt: string) => prServiceFor(wt).prStatusForBranch(b) }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? {
-          branchPrStatusForBranches: (bs: readonly string[], wt: string) =>
-            prServiceFor(wt).prStatusForBranches(bs),
-        }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? {
-          mergePr: (n: number, wt: string, expectedHeadSha?: string) =>
-            prServiceFor(wt).mergePr(n, expectedHeadSha),
-        }
-      : {}),
-    repoIdentity: (wt: string) => repoIdentityFor(wt)(),
+    branchPr: (b: string, wt: string) => githubForge.prServiceFor(wt).prForBranch(b),
+    branchPrStatus: (b: string, wt: string) => githubForge.prServiceFor(wt).prStatusForBranch(b),
+    branchPrStatusForBranches: (bs: readonly string[], wt: string) =>
+      githubForge.prServiceFor(wt).prStatusForBranches(bs),
+    mergePr: (n: number, wt: string, expectedHeadSha?: string) =>
+      githubForge.prServiceFor(wt).mergePr(n, expectedHeadSha),
+    repoIdentity: (wt: string) => githubForge.identityFor(wt)(),
     // Live GitHub-App credential validation for the onboarding wizard (#320). The
     // route reads + decrypts the stored creds itself (unsealed-only) and hands them
     // here; this just performs the redaction-safe test-mint against GitHub.
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
-    ghTokenMint: (project) => cachedProjectTokenMint(project),
+    ghTokenMint: (project) => githubForge.mintProjectToken(project),
     // Loopback MCP gateway for ACP sessions (ADR 0014 D1). The approval seam is
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
@@ -4613,11 +4549,10 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: (project: ProjectRecord) =>
-      listProjectGitHubIssues(project, issuesTokenMint),
-    latestRelease: (owner: string, repo: string) => releaseService.latestRelease(owner, repo),
+    listProjectGitHubIssues: (project: ProjectRecord) => githubForge.listIssues(project),
+    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
     refreshLatestRelease: (owner: string, repo: string) =>
-      releaseService.refreshLatestRelease(owner, repo),
+      githubForge.refreshLatestRelease({ owner, repo }),
     // Multi-repo fleet-registry listing (concept §19, #174). The provider syncs
     // the live GitHub-App-installation repos into the durable `projects` cache
     // (upsert preserves worker-owned state — cloning/container_starting/active/
