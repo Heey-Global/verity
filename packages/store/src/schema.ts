@@ -520,6 +520,12 @@ interface BrokeredHttpConsumptionsTable {
  * id='global' so deployment defaults can be imported once and then managed via
  * the Verity API/UI instead of scattered container-local git config. */
 export interface VeritySettingsTable {
+  vuln_scan_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_schedule: ColumnType<string | null, string | null | undefined, string | null>;
+  vuln_scan_session_changes: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_include_dev: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_notify_from: ColumnType<string, string | undefined, string>;
+  vuln_scan_daily_digest: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
@@ -1488,7 +1494,25 @@ interface AttendeeStateTable {
   state_secret: string;
 }
 
+export interface VulnScanResultsTable {
+  content_hash: string;
+  findings: string;
+  scanned_at: ColumnType<Date, Date | undefined, Date>;
+}
+export interface VulnScanStateTable {
+  id: string;
+  project_id: string;
+  session_id: string | null;
+  content_hash: string | null;
+  status: string;
+  detail: string | null;
+  revision: string | null;
+  attempted_at: ColumnType<Date, Date | undefined, Date>;
+}
+
 export interface Database {
+  vuln_scan_results: VulnScanResultsTable;
+  vuln_scan_state: VulnScanStateTable;
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;

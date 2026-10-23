@@ -1,3 +1,6 @@
+import { createVulnerabilityScanService } from './vulnerability-scan.js';
+import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
+import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
 import {
   googleAccountSettingsStatus,
   googleApprovalAccount,
@@ -3807,6 +3810,42 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   app.addHook('onClose', () => {
     automationScheduler.stop();
+  });
+
+  const vulnerabilityService = createVulnerabilityScanService({
+    store: deps.eventStore.vulnerabilityScans,
+    getProject: (id) => deps.eventStore.getProject(id),
+    beginActivity: (id) => {
+      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
+      return () => deps.provisioner?.endProjectSandboxActivity?.(id);
+    },
+    ...(deps.projectRuntime?.runAutomationScript
+      ? {
+          runScript: (project: ProjectRecord, script: string) =>
+            deps.projectRuntime!.runAutomationScript!(project, emptyProjectSettings(project.id), {
+              workdir: '/work',
+              script,
+              timeoutMs: 120_000,
+              maxOutputBytes: 8 * 1024 * 1024,
+            }),
+        }
+      : {}),
+    changed: (id) => resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`),
+  });
+  const vulnerabilityScheduler = startVulnerabilityScheduler({
+    store: deps.eventStore.vulnerabilityScans,
+    listProjects: () => deps.eventStore.listProjects(),
+    scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
+    log: app.log,
+  });
+  registerVulnerabilityRoutes(app, {
+    eventStore: deps.eventStore,
+    service: vulnerabilityService,
+    settingsChanged: () => vulnerabilityScheduler.wake(),
+  });
+  app.addHook('onClose', async () => {
+    vulnerabilityScheduler.stop();
+    await vulnerabilityService.stop();
   });
 
   // SBX-1 helper: is any session bound to this project running a turn right now?
