@@ -1532,11 +1532,7 @@ function ProviderLimitMeters({ rows, compact }: { rows: ProviderLimitRow[]; comp
           <Text style={styles.limitProvider} numberOfLines={1}>
             {row.providerLabel}
           </Text>
-          {compact ? (
-            <View style={styles.limitSegmentsCompact}>{segments(row)}</View>
-          ) : (
-            segments(row)
-          )}
+          {segments(row)}
         </View>
       ))}
     </View>
@@ -1664,7 +1660,7 @@ function ProviderLimitSegment({
     <View
       style={[
         styles.limitSegment,
-        compact ? styles.limitSegmentCompact : null,
+
         usesWideSpacing
           ? window === 'weekly'
             ? styles.limitWeeklySegmentWide
@@ -1675,14 +1671,14 @@ function ProviderLimitSegment({
       <Text style={styles.limitWindowLabel} numberOfLines={1} ellipsizeMode="clip">
         {label}
       </Text>
-      {pace !== null ? (
+      {compact || pace !== null ? (
         <Pressable
           ref={chartRef}
           style={styles.limitChart}
           onPress={showPaceInfo ? closePaceInfo : openPaceInfo}
           accessibilityRole="button"
           accessibilityLabel={`${windowLabel} token pace. ${accessibilityText}. ${paceStatus}`}
-          accessibilityHint="Shows or hides an explanation of the pace marker"
+          accessibilityHint="Shows or hides reset and pace details"
           accessibilityState={{ expanded: showPaceInfo }}
           hitSlop={11}
         >
@@ -1691,13 +1687,15 @@ function ProviderLimitSegment({
       ) : (
         <View style={styles.limitChart}>{chartContent}</View>
       )}
-      <Text
-        style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
-        numberOfLines={1}
-      >
-        {text}
-      </Text>
-      {pace !== null && paceInfoAnchor !== null ? (
+      {!compact ? (
+        <Text
+          style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
+          numberOfLines={1}
+        >
+          {text}
+        </Text>
+      ) : null}
+      {paceInfoAnchor !== null ? (
         <Modal
           visible={showPaceInfo}
           transparent
@@ -1727,13 +1725,19 @@ function ProviderLimitSegment({
                   {windowLabel === 'weekly' ? 'Weekly' : '5-hour'} usage pace
                 </Text>
                 <Text style={styles.limitPaceInfoText}>
-                  {Math.round(usage)}% used · {Math.round(pace)}% at even pace
+                  {percentText ?? 'Usage unknown'} · Resets {text}
                 </Text>
-                <Text style={styles.limitPaceInfoText}>{paceStatus}</Text>
-                <Text style={styles.limitPaceInfoHint}>
-                  The triangle shows where usage would be if your {windowLabel} limit were spread
-                  evenly.
-                </Text>
+                {pace !== null ? (
+                  <>
+                    <Text style={styles.limitPaceInfoText}>
+                      {Math.round(pace)}% at even pace. {paceStatus}
+                    </Text>
+                    <Text style={styles.limitPaceInfoHint}>
+                      The triangle shows where usage would be if your {windowLabel} limit were
+                      spread evenly.
+                    </Text>
+                  </>
+                ) : null}
                 <Pressable
                   style={styles.limitPaceInfoClose}
                   onPress={closePaceInfo}
@@ -1806,6 +1810,9 @@ const SessionRow = memo(function SessionRow({
   onMoveUp?: (() => void) | undefined;
   onMoveDown?: (() => void) | undefined;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const layout = sessionLayout(windowWidth);
+  const compactSidebar = layout.wide && layout.sidebarWidth < 380;
   const finishRowWork = beginRenderWork('sidebar-row-body');
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
@@ -1864,7 +1871,11 @@ const SessionRow = memo(function SessionRow({
     // Pressable: in the narrow layout that Pressable is cloned by `<Link asChild>`,
     // which drops its `style` — so a flex-row set there silently falls back to a
     // column and stacks the dot ABOVE the name. A plain child View keeps its style.
-    <View ref={dragHandleRef} collapsable={false} style={styles.rowInner}>
+    <View
+      ref={dragHandleRef}
+      collapsable={false}
+      style={[styles.rowInner, compactSidebar ? styles.rowInnerCompact : null]}
+    >
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
@@ -1873,7 +1884,7 @@ const SessionRow = memo(function SessionRow({
           here; the dot column holds the single left indicator: a pulsing magenta dot
           while the agent works, else a stable blue dot if there are unread messages (a
           finished session with something new to read), else nothing. */}
-      <View style={styles.colChevron} />
+      {!compactSidebar ? <View style={styles.colChevron} /> : null}
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
       {/* Name with the lifecycle label at its right end; below it the model,
           followed by the issue and its PR status. Attached to the model, they use
@@ -2117,10 +2128,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  limitSegmentsCompact: {
-    flex: 1,
-    gap: theme.spacing.xs,
-  },
   limitProvider: {
     width: 48,
     color: theme.colors.text,
@@ -2133,10 +2140,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     columnGap: 7,
-  },
-  limitSegmentCompact: {
-    flex: 0,
-    minHeight: 26,
   },
   // The phone layout fits both segments evenly. On wider iPad/desktop layouts a
   // weekly reset includes a weekday plus its clock time, so shift WEEK left and
@@ -2604,6 +2607,9 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     paddingVertical: theme.spacing.sm,
     paddingLeft: theme.spacing.lg,
+  },
+  rowInnerCompact: {
+    paddingLeft: theme.spacing.sm,
   },
   selectedRow: {
     backgroundColor: theme.colors.surfaceAlt,
