@@ -23,22 +23,45 @@ const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
 };
 
 describe('release tag ordering', () => {
-  it('reserves tags before the publication queue without inheriting its lock', () => {
-    const registration = dispatch.jobs['register-release-tags'];
-    expect(registration).toBeDefined();
-    // A registration job inside either queue restores the historical-tag race.
-    expect(dispatch.concurrency).toBeUndefined();
-    expect(registration.needs).toBeUndefined();
-    expect(registration.concurrency).toBeUndefined();
-    expect(registration.if).toBeUndefined();
-    expect(dispatch.jobs['release-train'].needs).toBe('register-release-tags');
-    expect(registration.permissions).toEqual({ contents: 'write', 'pull-requests': 'read' });
-    const reserve = registration.steps?.find((step) =>
-      step.run?.includes('release-tag-registration.mjs'),
-    );
-    expect(reserve?.run).toContain('register "$RELEASE_HEAD"');
-    expect(reserve?.if).toContain("github.event_name == 'push'");
-    expect(reserve?.if).toContain('inputs.reconcile');
+  it.each(['backend', 'mobile', 'website'])(
+    'reserves %s tags independently before its publication queue',
+    (train) => {
+      const registration = dispatch.jobs[`register-${train}-tags`];
+      expect(registration).toBeDefined();
+      // A registration job inside either queue restores the historical-tag race.
+      expect(dispatch.concurrency).toBeUndefined();
+      expect(registration.needs).toBeUndefined();
+      expect(registration.concurrency).toBeUndefined();
+      expect(registration.if).toBeUndefined();
+      const publisher = dispatch.jobs[train === 'backend' ? 'release-train' : `release-${train}`];
+      expect(publisher.needs).toBe(`register-${train}-tags`);
+      expect(publisher.if).toBe(`needs.register-${train}-tags.outputs.status != 'superseded'`);
+      expect(registration.permissions).toEqual({ contents: 'write', 'pull-requests': 'read' });
+      const reserve = registration.steps?.find((step) =>
+        step.run?.includes('release-tag-registration.mjs'),
+      );
+      expect(reserve?.run).toContain(`register "$RELEASE_HEAD" ${train}`);
+      expect(reserve?.if).toContain("github.event_name == 'push'");
+      expect(reserve?.if).toContain('inputs.reconcile');
+    },
+  );
+
+  it('serializes and gates the single bounded handoff without blocking unrelated trains', () => {
+    const handoff = dispatch.jobs['resume-superseded'];
+    expect(handoff.needs).toEqual([
+      'register-backend-tags',
+      'register-mobile-tags',
+      'register-website-tags',
+    ]);
+    expect(handoff.concurrency).toEqual({
+      group: 'release-superseded-handoff',
+      queue: 'max',
+      'cancel-in-progress': false,
+    });
+    expect(handoff.if).toContain('always() && !cancelled()');
+    for (const train of ['backend', 'mobile', 'website']) {
+      expect(handoff.if).toContain(`needs.register-${train}-tags.outputs.status == 'superseded'`);
+    }
   });
 
   it('reports the barrier on both ordinary and bot-dispatched PR checks', () => {
