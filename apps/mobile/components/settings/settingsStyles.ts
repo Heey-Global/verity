@@ -312,6 +312,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
+  // Buttons inside a hint box follow its text, so they start where it starts.
+  actionRowStart: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
   settingsSaveState: {
     ...theme.typography.footnote,
     color: theme.colors.textMuted,
@@ -355,6 +361,17 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   updateHeader: {
     gap: 2,
+  },
+  // One operation or release inside a server's box, spaced like a stacked card.
+  updateBlock: {
+    gap: theme.spacing.md,
+  },
+  // Quiet text actions under a box's head ("Check for updates"), left-aligned.
+  updateLinks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: theme.spacing.md,
   },
   updateTitle: {
     ...theme.typography.title,

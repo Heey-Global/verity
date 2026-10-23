@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -8,6 +9,7 @@ import {
   CONNECTOR_MAX_RECONNECT_ATTEMPTS,
   PreviewConnector,
   PreviewEdge,
+  type PreviewEdgeDiagnostic,
   type PreviewEdgeOptions,
   type PreviewConnectorDiagnostic,
   generatePreviewSecret,
@@ -686,6 +688,146 @@ describe('preview tunnel', () => {
     expect(await response.text()).toContain('<h1 id="page-title">This link has expired</h1>');
   });
 
+  it('records where a connector heartbeat reply goes without changing the reply', async () => {
+    const diagnostics: PreviewEdgeDiagnostic[] = [];
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId: 'share-heartbeat-diagnostics',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: 'https://share-heartbeat-diagnostics.preview.example.test',
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const edgePort = await edge.listen();
+    cleanups.push(() => edge.close());
+    const connector = new WebSocket(`ws://127.0.0.1:${edgePort}/__verity/connector`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await opened(connector);
+    // The edge answers pings itself rather than through `ws`'s automatic reply;
+    // an answer that went missing here would drop every tunnel at its first
+    // heartbeat while each diagnostic still looked healthy.
+    const probe = Buffer.from('heartbeat-probe');
+    const pongs: Buffer[] = [];
+    connector.on('pong', (payload) => pongs.push(payload));
+    connector.ping(probe);
+    await vi.waitFor(() =>
+      expect(diagnostics).toContainEqual(expect.objectContaining({ event: 'connector.pong' })),
+    );
+    // A `ws` that ignored `autoPong: false` would answer as well, and every ping
+    // would draw two replies while the edge's own count still read one.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pongs).toEqual([probe]);
+    const closed = new Promise<void>((resolve) => connector.once('close', () => resolve()));
+    connector.close(1000);
+    await closed;
+    await vi.waitFor(() =>
+      expect(diagnostics).toContainEqual(expect.objectContaining({ event: 'connector.closed' })),
+    );
+    expect(diagnostics.filter((entry) => !entry.event.startsWith('loop.'))).toEqual([
+      { event: 'connector.attached', tunnel: 1 },
+      {
+        event: 'connector.ping',
+        tunnel: 1,
+        sinceAttachMs: expect.any(Number),
+        bufferedAmount: expect.any(Number),
+      },
+      { event: 'connector.pong', tunnel: 1, writeMs: expect.any(Number) },
+      {
+        event: 'connector.closed',
+        tunnel: 1,
+        code: 1000,
+        elapsedMs: expect.any(Number),
+        pings: 1,
+        pongs: 1,
+      },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain(token);
+  });
+
+  it('keeps answering heartbeats when the diagnostic observer throws', async () => {
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId: 'share-throwing-diagnostics',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: 'https://share-throwing-diagnostics.preview.example.test',
+      onDiagnostic: () => {
+        throw new Error('log sink failed');
+      },
+    });
+    const edgePort = await edge.listen();
+    cleanups.push(() => edge.close());
+    const connector = new WebSocket(`ws://127.0.0.1:${edgePort}/__verity/connector`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    cleanups.push(() => connector.terminate());
+    await opened(connector);
+    // The records are emitted from inside the ping handler; a failing log sink
+    // that escaped there would cost the tunnel the very reply being recorded.
+    const pong = new Promise<Buffer>((resolve) => connector.once('pong', resolve));
+    connector.ping(Buffer.from('probe'));
+    expect(await pong).toEqual(Buffer.from('probe'));
+  });
+
+  it('reports an edge event-loop stall long enough to miss a heartbeat', async () => {
+    const diagnostics: PreviewEdgeDiagnostic[] = [];
+    const edge = new PreviewEdge({
+      shareId: 'share-loop-lag',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://share-loop-lag.preview.example.test',
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    await edge.listen();
+    cleanups.push(() => edge.close());
+    // A stalled edge answers no ping, which the connector cannot tell apart from
+    // a reply lost on the way; only the edge can record that it was the one stuck.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+    await vi.waitFor(() =>
+      expect(diagnostics).toContainEqual({
+        event: 'loop.lag',
+        lagMs: expect.toSatisfy((lag: number) => lag >= 1_000),
+      }),
+    );
+  });
+
+  it('summarises edge event-loop delay every window even when nothing is wrong', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    cleanups.push(() => {
+      vi.useRealTimers();
+    });
+    const diagnostics: PreviewEdgeDiagnostic[] = [];
+    const edge = new PreviewEdge({
+      shareId: 'share-loop-delay',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://share-loop-delay.preview.example.test',
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    await edge.listen();
+    cleanups.push(() => edge.close());
+    // Silence from a stalled edge and silence from a healthy one read the same;
+    // the periodic summary is what tells them apart afterwards.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(diagnostics).toContainEqual({
+      event: 'loop.delay',
+      windowMs: expect.any(Number),
+      p99Ms: expect.any(Number),
+      maxMs: expect.any(Number),
+      cpuMs: expect.any(Number),
+      // Throttling is reported only where the cgroup's CPU controller exposes it;
+      // a cgroup without that controller has a cpu.stat lacking these counters.
+      ...(cgroupThrottlingReadable()
+        ? { throttledPeriods: expect.any(Number), throttledMs: expect.any(Number) }
+        : {}),
+    });
+  });
+
   it('tears an open stream down when the share expires under it', async () => {
     const target = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -1067,12 +1209,115 @@ describe('preview tunnel', () => {
     await ping;
     expect(diagnostics).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(15_000);
+    expect((connector as unknown as { socket: WebSocket }).socket.readyState).toBe(WebSocket.OPEN);
+    await vi.advanceTimersByTimeAsync(15_000);
     await connector.waitForDisconnect();
     expect(diagnostics.mock.calls).toEqual([
-      [{ event: 'heartbeat.timeout', phase: 'pong' }],
+      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 1 }],
+      [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 2 }],
       [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
     ]);
     expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
+  });
+
+  it('resets consecutive heartbeat misses after a matching pong and on reconnect', async () => {
+    const server = createServer();
+    const peers = new WebSocketServer({ server, autoPong: false });
+    const port = await listen(server);
+    const diagnostics = vi.fn<(entry: PreviewConnectorDiagnostic) => void>();
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'token',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      vi.useRealTimers();
+      connector.close();
+      for (const peer of peers.clients) peer.terminate();
+      peers.close();
+      await closeServer(server);
+    });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    await connector.connect();
+    const supervise = async () => {
+      const socket = (connector as unknown as { socket: WebSocket }).socket;
+      const ping = vi.spyOn(socket, 'ping').mockImplementation((_data, _mask, callback) => {
+        (callback as (error?: Error) => void)();
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      expect(diagnostics).toHaveBeenLastCalledWith({
+        event: 'heartbeat.timeout',
+        phase: 'pong',
+        lateMs: expect.any(Number),
+        missedPongs: 1,
+      });
+      return { socket, ping };
+    };
+    const { socket, ping } = await supervise();
+    socket.emit('pong', ping.mock.calls.at(-1)![0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    expect(diagnostics).toHaveBeenLastCalledWith({
+      event: 'heartbeat.timeout',
+      phase: 'pong',
+      lateMs: expect.any(Number),
+      missedPongs: 1,
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    await connector.waitForDisconnect();
+    await connector.connect();
+    await supervise();
+  });
+
+  it('does not let a stalled event loop turn a received pong into a heartbeat timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
+    const server = createServer();
+    const websocketServer = new WebSocketServer({ server, autoPong: false });
+    const peerConnected = new Promise<WebSocket>((resolve) =>
+      websocketServer.once('connection', resolve),
+    );
+    const port = await listen(server);
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'stall-test',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      connector.close();
+      for (const peer of websocketServer.clients) peer.terminate();
+      websocketServer.close();
+      await closeServer(server);
+      vi.useRealTimers();
+    });
+    await connector.connect();
+    const peer = await peerConnected;
+    const socket = (connector as unknown as { socket: WebSocket }).socket;
+    const ping = new Promise<Buffer>((resolve) => peer.once('ping', resolve));
+    await vi.advanceTimersByTimeAsync(15_000);
+    const payload = await ping;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // The pong reaches the connector's socket while its event loop is blocked
+    // past the reply deadline: when the loop resumes, the expired timer runs
+    // before the pong is read, exactly as after a GC pause or CPU starvation.
+    const receivedPong = new Promise<void>((resolve) => socket.once('pong', () => resolve()));
+    await new Promise<void>((resolve) => {
+      peer.pong(payload, false, () => {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        vi.advanceTimersByTime(15_000);
+        resolve();
+      });
+    });
+    await receivedPong;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(diagnostics).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'heartbeat.timeout' }),
+    );
+    expect(socket.readyState).toBe(WebSocket.OPEN);
   });
 
   it('gives a ping queued behind real socket backpressure its full reply window', async () => {
@@ -1203,7 +1448,12 @@ describe('preview tunnel', () => {
       if (scenario === 'stalled-send') {
         await vi.advanceTimersByTimeAsync(15_000);
         await connector.waitForDisconnect();
-        expect(diagnostics).toHaveBeenCalledWith({ event: 'heartbeat.timeout', phase: 'write' });
+        expect(diagnostics).toHaveBeenCalledWith({
+          event: 'heartbeat.timeout',
+          phase: 'write',
+          lateMs: expect.any(Number),
+          missedPongs: 0,
+        });
         return;
       }
       if (scenario === 'close-pending') {
@@ -1231,8 +1481,12 @@ describe('preview tunnel', () => {
       expect(ping).toHaveBeenCalledTimes(1);
       socket.emit('pong', scenario === 'wrong-pong' ? Buffer.from('stale') : payload);
       await vi.advanceTimersByTimeAsync(9_999);
-      if (scenario === 'wrong-pong') await connector.waitForDisconnect();
-      else expect(socket.readyState).toBe(WebSocket.OPEN);
+      if (scenario === 'wrong-pong') {
+        expect(socket.readyState).toBe(WebSocket.OPEN);
+        flushed?.();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await connector.waitForDisconnect();
+      } else expect(socket.readyState).toBe(WebSocket.OPEN);
     },
   );
 
@@ -2948,3 +3202,12 @@ it('requires a durably completed PIN reservation before forwarding a webhook', a
   expect(finish).toHaveBeenCalledWith('webhook-attempt', true);
   expect(forwarded).not.toHaveBeenCalled();
 });
+
+function cgroupThrottlingReadable(): boolean {
+  try {
+    const stat = readFileSync('/sys/fs/cgroup/cpu.stat', 'utf8');
+    return /^nr_throttled \d+$/m.test(stat) && /^throttled_usec \d+$/m.test(stat);
+  } catch {
+    return false;
+  }
+}

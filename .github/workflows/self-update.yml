@@ -64,7 +64,7 @@ jobs:
     # The GitHub-hosted VM is disposable, while the cutover itself runs against a
     # second privileged DinD daemon selected through DOCKER_HOST. The smoke script
     # also refuses any daemon it cannot prove is throwaway.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Manual and scheduled runs drive the twelve-generation SIGKILL matrix. The
     # release caller selects the bounded forward path below, but shares this
     # backstop because one reusable job owns both profiles.
@@ -269,7 +269,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.0'
+          node-version: '26.12.1'
 
       - name: Fetch the previously released Server image
         shell: bash

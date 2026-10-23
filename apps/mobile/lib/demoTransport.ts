@@ -57,6 +57,29 @@ const project = {
   createdAt: DATE,
   updatedAt: DATE,
 };
+// Synthetic advisory data for UI demonstrations, never a claim about a real package.
+const sampleFinding = {
+  advisoryId: 'DEMO-example',
+  aliases: [],
+  ecosystem: 'npm',
+  package: 'example-package',
+  version: '1.0.0',
+  severity: 'high',
+  summary: 'Sample vulnerability for demonstrating scan controls.',
+  fixedVersions: ['1.0.1'],
+  source: 'package-lock.json',
+  dev: false,
+  modified: null,
+};
+const scanSettings = {
+  enabled: true,
+  schedule: { kind: 'daily', hour: 9, minute: 0, timeZone: 'UTC' },
+  sessionChanges: true,
+  includeDev: true,
+  notifyFrom: 'high',
+  dailyDigest: false,
+};
+const scanIgnores = new Map<string, Record<string, unknown>>();
 interface DemoSession {
   detail: SessionDetail;
   automation?: SessionAutomation;
@@ -223,6 +246,15 @@ function clearTimers(session: DemoSession): void {
 }
 /** Reset closes old streams and cancels replies so they cannot leak into the new demo. */
 export function resetDemoData(): void {
+  scanIgnores.clear();
+  Object.assign(scanSettings, {
+    enabled: true,
+    schedule: { kind: 'daily', hour: 9, minute: 0, timeZone: 'UTC' },
+    sessionChanges: true,
+    includeDev: true,
+    notifyFrom: 'high',
+    dailyDigest: false,
+  });
   for (const session of sessions.values()) clearTimers(session);
   for (const socket of [...sockets]) socket.close();
   sessions.clear();
@@ -484,6 +516,56 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
     typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
   const path = url.pathname;
   const list = () => [...sessions.values()].map((session) => session.detail);
+  if (path === '/settings/vulnerability-scan') {
+    if (method === 'PATCH') Object.assign(scanSettings, body);
+    return json({ settings: scanSettings });
+  }
+  const scanRoute =
+    /^\/(projects|sessions)\/([^/]+)\/vulnerability-scan(?:\/(ignores)(?:\/([^/]+))?)?$/.exec(path);
+  if (scanRoute) {
+    const [, scope, id, ignores, ignoreId] = scanRoute;
+    if (ignores) {
+      if (method === 'DELETE') scanIgnores.delete(ignoreId!);
+      if (method === 'POST') {
+        const key = randomUUID();
+        scanIgnores.set(key, {
+          id: key,
+          package: body.package,
+          advisory_id: body.advisoryId,
+          reason: body.reason ?? '',
+          until_fix: body.untilFix ?? false,
+          expires_at: new Date(Date.now() + Number(body.days) * 86400000).toISOString(),
+        });
+      }
+      return json({ ignores: [...scanIgnores.values()] });
+    }
+    if (method === 'POST') return json({ accepted: true }, 202);
+    const findings = scanIgnores.size ? [] : [sampleFinding];
+    const state = {
+      status: 'ready',
+      detail: null,
+      attemptedAt: DATE,
+      contentHash: 'demo',
+      projectId: scope === 'projects' ? id : (sessions.get(id!)?.detail.projectId ?? PROJECT_ID),
+    };
+    if (scope === 'sessions')
+      return json({
+        enabled: scanSettings.enabled,
+        state,
+        baseline: state,
+        comparable: true,
+        new: findings,
+        fixed: [],
+      });
+    return json({
+      enabled: scanSettings.enabled,
+      scanning: false,
+      state,
+      scannedAt: DATE,
+      findings,
+      sessions: [],
+    });
+  }
   if (path === '/live/ticket' && method === 'POST')
     return json({ ticket: 'd'.repeat(43), expiresAt: new Date(Date.now() + 60000).toISOString() });
   if (path === '/healthz' && method === 'GET')
@@ -707,6 +789,45 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
         name: session.detail.name,
         branch: session.branch,
       });
+    if (rest === '/history/v1' && method === 'GET') {
+      const snapshotSeq = Number(
+        url.searchParams.get('snapshotSeq') ?? session.events.at(-1)?.seq ?? 0,
+      );
+      const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
+      const available = session.events.filter((e) => e.seq < before && e.seq <= snapshotSeq);
+      let page = {
+        contract: 'bounded-history-v1',
+        kind: 'page',
+        snapshotSeq,
+        beforeSeq: null as number | null,
+        hasMore: false,
+        events: [] as StreamEventFrame[],
+      };
+      for (let i = available.length - 1; i >= Math.max(0, available.length - 150); i -= 1) {
+        const event = available[i]!;
+        const candidate = {
+          ...page,
+          events: [event, ...page.events],
+          beforeSeq: event.seq,
+          hasMore: i > 0,
+        };
+        const requiredBytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength;
+        if (requiredBytes > 256 * 1024) {
+          if (page.events.length === 0)
+            return json({
+              contract: page.contract,
+              kind: 'oversized-event',
+              snapshotSeq,
+              seq: event.seq,
+              requiredBytes,
+              maxBytes: 256 * 1024,
+            });
+          break;
+        }
+        page = candidate;
+      }
+      return json(page);
+    }
     if (rest === '/events' && method === 'GET') {
       const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
       const events = session.events.filter((event) => event.seq < before);

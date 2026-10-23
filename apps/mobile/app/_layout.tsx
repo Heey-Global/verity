@@ -30,7 +30,11 @@ import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
-import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
+import { useServerUpdateNotice } from '../lib/serverUpdateBadge';
+import {
+  serverUpdateBannerFor,
+  useServerUpdateBannerDismissal,
+} from '../lib/serverUpdateBannerDismissal';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
@@ -135,7 +139,7 @@ export default function RootLayout() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
         >
-          <ActivityIndicator color={theme.colors.signature} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -189,7 +193,7 @@ function HydratedRoot() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
         >
-          <ActivityIndicator color={theme.colors.signature} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -254,6 +258,10 @@ function HydratedRoot() {
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
               <Stack.Screen
+                name="project/[id]/settings/repository"
+                options={{ title: 'Repository' }}
+              />
+              <Stack.Screen
                 name="project/[id]/settings/services"
                 options={{ title: 'Connections' }}
               />
@@ -269,6 +277,8 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/forgejo/new" options={{ title: 'Connect Forgejo' }} />
+              <Stack.Screen name="settings/forgejo/[id]" options={{ title: 'Forgejo' }} />
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
@@ -293,7 +303,7 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
-              <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
+              <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}
@@ -390,7 +400,12 @@ function AppHeader({
   // Only the overview carries the update banner, and every screen renders this
   // header — so the screen tells the hook whether to poll at all rather than
   // filtering its answer afterwards.
-  const pendingServerUpdate = useServerUpdateBadge(isHome);
+  const pendingServerUpdate = useServerUpdateNotice(isHome);
+  const bannerDismissal = useServerUpdateBannerDismissal(
+    pendingServerUpdate?.baseUrl ?? null,
+    pendingServerUpdate?.version ?? null,
+  );
+  const serverUpdateBanner = serverUpdateBannerFor(pendingServerUpdate, bannerDismissal.dismissed);
   const showMessageSearch = showsMessageSearch(route.name);
   const title = options.title ?? (isHome ? 'Verity' : route.name);
   const routeParams = route.params as { id?: unknown; selected?: unknown } | undefined;
@@ -402,8 +417,8 @@ function AppHeader({
         : undefined;
   return (
     <View style={[styles.header, { paddingTop: insets.top }]}>
-      <WindowControlsProbe onInset={trackWindowControls} />
       <View style={[styles.headerRow, headerRowInset]}>
+        <WindowControlsProbe onInset={trackWindowControls} />
         <View style={styles.headerSide}>
           {isHome ? (
             <>
@@ -492,8 +507,12 @@ function AppHeader({
           ) : null}
         </View>
       </View>
-      {isHome && pendingServerUpdate !== null ? (
-        <ServerUpdateBanner version={pendingServerUpdate} />
+      {isHome && serverUpdateBanner !== null ? (
+        <ServerUpdateBanner
+          version={serverUpdateBanner.version}
+          problem={serverUpdateBanner.problem}
+          onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
+        />
       ) : null}
     </View>
   );

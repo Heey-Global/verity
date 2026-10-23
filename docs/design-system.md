@@ -159,10 +159,17 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   (settings navigation, diagnostics).
 - **Card:** a single item with its own state or control stands alone (subscription,
   each feature switch). Cards of one group are 8 apart.
+- **Sectioned card:** a stacked card about one thing whose head (`CardHead`: title,
+  subtitle, status) is followed by blocks that belong to it — a server and its pending
+  update. `divided` separates the sections with the same 1 px divider as a grouped list,
+  so a block can never be mistaken for a separate item.
 - **Row anatomy** (minimum height 52):
   - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral
-    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`.
+    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
+    `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
+    the shared fill tint. Vulnerability finding rows use this to retain their severity
+    while still allowing navigation.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
@@ -398,6 +405,7 @@ One decision per contested term. These labels are used **verbatim** everywhere.
 | **Update sandbox**          | A reprovision that specifically pulls a newer sandbox image                                                                                                            | Project Container card, only when a newer image exists                                                                        | Reprovision-to-apply-config (same mechanism, but this action is scoped to image bumps)                           |
 | **Refresh token**           | Re-mint the per-project GitHub token; does **not** recreate the container                                                                                              | Project Container card                                                                                                        | Reprovision / Update sandbox (these recreate the container)                                                      |
 | **GitHub connection**       | The authorization that grants Verity repository/API access                                                                                                             | Server GitHub group: clone, push, pull-request access                                                                         | Do not expose "GitHub App" in primary UI; it is an implementation detail                                         |
+| **Forgejo connection**      | The server address and token that grant Verity repository/API access on a Forgejo server                                                                               | Connections → Code, next to GitHub with equal weight; one Forgejo server                                                      | "Instance", "Gitea" or "token" as the row title                                                                  |
 | **Commit author**           | The personal name and GitHub-verified email written to commits                                                                                                         | Server GitHub group and GitHub commits onboarding                                                                             | "Agent Git identity" or GitHub App identity                                                                      |
 | **Verified commits**        | SSH signing that lets GitHub verify Verity-created commits                                                                                                             | Server GitHub group and GitHub commits onboarding                                                                             | Repository access or commit author                                                                               |
 | **Ready**                   | `ready` terminal state meaning "this works / nothing to do"                                                                                                            | The intent name in the status system; not a user-facing word by itself                                                        | The literal label `Ready`                                                                                        |

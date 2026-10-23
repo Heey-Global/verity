@@ -1,4 +1,12 @@
+import { VulnerabilityScanStore } from './vulnerability-scan.js';
+import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
+import {
+  HISTORY_MAX_BYTES,
+  HISTORY_MAX_EVENTS,
+  type BoundedHistoryPage,
+  type BoundedHistoryResult,
+} from '@verity/events';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
@@ -157,7 +165,7 @@ export type ProjectState =
   | 'waking'
   | 'failed';
 export type ProjectSetupState = 'pending' | 'secrets_skipped' | 'complete';
-export type ProjectKind = 'github' | 'control_plane' | 'local';
+export type ProjectKind = 'github' | 'forgejo' | 'control_plane' | 'local';
 
 /** Reserved `owner` for projects created without a GitHub repository. Keeps them
  *  inside the existing `UNIQUE(owner, repo)` identity without a nullable owner,
@@ -231,6 +239,7 @@ export interface ProjectRecord {
   repo: string;
   containerName: string;
   kind?: ProjectKind;
+  forgeConnectionId?: string | null;
   /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
    *  for `local` projects and preserved when they are linked to GitHub, so the
    *  clone (and every session worktree persisted under it) never moves. */
@@ -331,6 +340,7 @@ export interface ProjectUpsertInput {
   repo: string;
   containerName: string;
   kind?: ProjectKind;
+  forgeConnectionId?: string | null;
   /** Explicit host clone-directory name; omit to derive `<owner>-<repo>`. Only
    *  written on INSERT — an existing row keeps whatever directory its clone
    *  already lives in. */
@@ -1384,6 +1394,7 @@ export class EventStore implements EventSink {
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
     this.managedDevServers = new ManagedDevServerStore(db);
+    this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
   }
 
@@ -1392,6 +1403,7 @@ export class EventStore implements EventSink {
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly managedDevServers: ManagedDevServerStore;
+  readonly vulnerabilityScans: VulnerabilityScanStore;
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
     const result = await sql<{
@@ -2007,6 +2019,10 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .where('kind', '=', 'slides')
       .execute();
+  }
+
+  get forgeConnections(): ForgeConnectionStore {
+    return new ForgeConnectionStore(this.db, this.cipher);
   }
 
   get googleAccounts(): GoogleAccountStore {
@@ -4398,6 +4414,54 @@ export class EventStore implements EventSink {
     return sequenced.map((s) => s.event);
   }
 
+  /** Return a contiguous suffix of complete events within the negotiated wire
+   * budget. An oversized boundary event remains the next event to request. */
+  async getBoundedHistory(
+    sessionId: string,
+    beforeSeq?: number,
+    snapshotSeq?: number,
+  ): Promise<BoundedHistoryResult> {
+    // One query establishes the initial snapshot, including the empty-log case.
+    const source = await this.getEventsBeforeSeq(
+      sessionId,
+      HISTORY_MAX_EVENTS,
+      snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
+    );
+    const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
+    const page: BoundedHistoryPage = {
+      contract: 'bounded-history-v1',
+      kind: 'page',
+      events: [],
+      snapshotSeq: snapshot,
+      beforeSeq: null,
+      hasMore: false,
+    };
+    for (let i = source.events.length - 1; i >= 0; i -= 1) {
+      const event = source.events[i]!;
+      const candidate: BoundedHistoryPage = {
+        ...page,
+        events: [event, ...page.events],
+        beforeSeq: event.seq,
+        hasMore: i > 0 || source.hasMore,
+      };
+      const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
+      if (requiredBytes > HISTORY_MAX_BYTES) {
+        if (page.events.length === 0)
+          return {
+            contract: 'bounded-history-v1',
+            kind: 'oversized-event',
+            seq: event.seq,
+            requiredBytes,
+            maxBytes: HISTORY_MAX_BYTES,
+            snapshotSeq: snapshot,
+          };
+        return page;
+      }
+      Object.assign(page, candidate);
+    }
+    return page;
+  }
+
   /**
    * Read a backward page of history: the newest `limit` events with `seq <
    * beforeSeq`, returned in ascending `seq` order (ready to prepend to the
@@ -5215,6 +5279,7 @@ export class EventStore implements EventSink {
     repo: string;
     container_name: string;
     kind?: string | null;
+    forge_connection_id?: string | null;
     clone_dir?: string | null;
     image_ref: string | null;
     image_override_ref?: string | null;
@@ -5245,6 +5310,7 @@ export class EventStore implements EventSink {
       repo: row.repo,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
+      forgeConnectionId: row.forge_connection_id ?? null,
       cloneDir: row.clone_dir ?? null,
       imageRef: row.image_ref,
       imageOverrideRef: row.image_override_ref ?? null,
@@ -5279,6 +5345,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly projectColumns = [
+    'forge_connection_id',
     'id',
     'kind',
     'owner',
@@ -5346,10 +5413,48 @@ export class EventStore implements EventSink {
       // Knowledge lifecycle mutations take this lock before touching a project
       // row. Match that order here so sync cannot deadlock with hide/delete.
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      // A sync may omit the connection, but must never change the provider of
+      // an existing project identified by its durable ID.
+      const byId = await tx
+        .selectFrom('projects')
+        .select(['kind', 'forge_connection_id'])
+        .where('id', '=', input.id)
+        .executeTakeFirst();
+      if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
+        throw new ProjectIdentityClaimConflict(
+          'Project identity belongs to another forge connection',
+        );
+      }
+      if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
+        input = { ...input, forgeConnectionId: byId.forge_connection_id };
+      }
+      const existingBinding = await tx
+        .selectFrom('projects')
+        .select(['kind', 'forge_connection_id'])
+        .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+        .where('owner', '=', owner)
+        .where('repo', '=', repo)
+        .executeTakeFirst();
+      if (
+        existingBinding !== undefined &&
+        ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+          (input.forgeConnectionId !== undefined &&
+            existingBinding.forge_connection_id !== null &&
+            existingBinding.forge_connection_id !== input.forgeConnectionId))
+      ) {
+        throw new ProjectIdentityClaimConflict(
+          'Project identity belongs to another forge connection',
+        );
+      }
       const claimed = await tx
         .insertInto('project_identity_claims')
-        .values({ owner, repo, project_id: input.id })
-        .onConflict((conflict) => conflict.columns(['owner', 'repo']).doNothing())
+        .values({
+          owner,
+          repo,
+          project_id: input.id,
+          forge_connection_id: input.forgeConnectionId ?? null,
+        })
+        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
         .returning('project_id')
         .executeTakeFirst();
       if (claimed === undefined) {
@@ -5357,12 +5462,14 @@ export class EventStore implements EventSink {
           tx
             .selectFrom('project_identity_claims')
             .select('project_id')
+            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
             .where('owner', '=', owner)
             .where('repo', '=', repo)
             .executeTakeFirstOrThrow(),
           tx
             .selectFrom('projects')
             .select('id')
+            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
             .where('owner', '=', owner)
             .where('repo', '=', repo)
             .executeTakeFirst(),
@@ -5379,6 +5486,7 @@ export class EventStore implements EventSink {
           repo,
           container_name: containerName,
           kind: input.kind ?? 'github',
+          forge_connection_id: input.forgeConnectionId ?? null,
           clone_dir: input.cloneDir ?? null,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
@@ -5389,7 +5497,7 @@ export class EventStore implements EventSink {
           provision_warning: null,
         })
         .onConflict((oc) =>
-          oc.columns(['owner', 'repo']).doUpdateSet({
+          oc.columns(['forge_scope', 'owner', 'repo']).doUpdateSet({
             // Preserve custom adopted container names, but migrate old deterministic
             // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
             // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
@@ -5430,6 +5538,9 @@ export class EventStore implements EventSink {
                   >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
                 }
               : {}),
+            ...(input.forgeConnectionId !== undefined
+              ? { forge_connection_id: input.forgeConnectionId }
+              : {}),
             ...(input.kind !== undefined ? { kind: input.kind } : {}),
             ...(input.archived !== undefined ? { archived: input.archived } : {}),
             ...(input.overviewVisible !== undefined
@@ -5466,8 +5577,13 @@ export class EventStore implements EventSink {
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const claimed = await tx
         .insertInto('project_identity_claims')
-        .values({ owner, repo, project_id: input.id })
-        .onConflict((conflict) => conflict.columns(['owner', 'repo']).doNothing())
+        .values({
+          owner,
+          repo,
+          project_id: input.id,
+          forge_connection_id: input.forgeConnectionId ?? null,
+        })
+        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
         .returning('project_id')
         .executeTakeFirst();
       if (claimed === undefined) {
@@ -5481,6 +5597,7 @@ export class EventStore implements EventSink {
           repo,
           container_name: input.containerName.toLowerCase(),
           kind: input.kind ?? 'github',
+          forge_connection_id: input.forgeConnectionId ?? null,
           clone_dir: input.cloneDir ?? null,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
@@ -5630,7 +5747,11 @@ export class EventStore implements EventSink {
     return rows.map((row) => row.id);
   }
 
-  async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
+  async getProjectByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
     // caller can pass the raw GitHub-display form without having to know about
@@ -5638,6 +5759,7 @@ export class EventStore implements EventSink {
     const row = await this.db
       .selectFrom('projects')
       .select(this.projectColumns)
+      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner.toLowerCase())
       .where('repo', '=', repo.toLowerCase())
       .executeTakeFirst();
@@ -5662,7 +5784,7 @@ export class EventStore implements EventSink {
    */
   async linkProjectToGitHub(
     id: string,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
     const row = await this.db.transaction().execute(async (tx) => {
       const existing = await tx
@@ -5679,15 +5801,27 @@ export class EventStore implements EventSink {
       // this final transaction, alongside the local project's identity rewrite,
       // so a pre-publication failure can restore its claim without losing any of
       // its dependent configuration.
-      await this.retireInstallationPlaceholder(tx, targetOwner, targetRepo, id);
+      await this.retireInstallationPlaceholder(
+        tx,
+        targetOwner,
+        targetRepo,
+        id,
+        target.forgeConnectionId,
+      );
       await tx
         .insertInto('project_identity_claims')
-        .values({ owner: targetOwner, repo: targetRepo, project_id: id })
-        .onConflict((conflict) => conflict.columns(['owner', 'repo']).doNothing())
+        .values({
+          owner: targetOwner,
+          repo: targetRepo,
+          project_id: id,
+          forge_connection_id: target.forgeConnectionId ?? null,
+        })
+        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
         .execute();
       const claim = await tx
         .selectFrom('project_identity_claims')
         .select('project_id')
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', targetOwner)
         .where('repo', '=', targetRepo)
         .executeTakeFirst();
@@ -5701,7 +5835,8 @@ export class EventStore implements EventSink {
         .set({
           owner: targetOwner,
           repo: targetRepo,
-          kind: 'github',
+          kind: target.kind ?? 'github',
+          forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
           updated_at: sql`now()`,
         })
@@ -5712,6 +5847,7 @@ export class EventStore implements EventSink {
       if (updated !== undefined) {
         await tx
           .deleteFrom('project_identity_claims')
+          .where('forge_scope', '=', existing.forge_connection_id ?? 'legacy-github')
           .where('owner', '=', existing.owner)
           .where('repo', '=', existing.repo)
           .where('project_id', '=', id)
@@ -5748,10 +5884,12 @@ export class EventStore implements EventSink {
     owner: string,
     repo: string,
     forProjectId: string,
+    forgeConnectionId?: string | null,
   ): Promise<boolean> {
     const holder = await tx
       .selectFrom('projects')
       .select(['id', 'kind', 'state', 'overview_visible'])
+      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner)
       .where('repo', '=', repo)
       .where('id', '!=', forProjectId)
@@ -5804,20 +5942,20 @@ export class EventStore implements EventSink {
 
   async reserveProjectIdentity(
     id: string,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<boolean> {
     const owner = target.owner.toLowerCase();
     const repo = target.repo.toLowerCase();
     return this.db.transaction().execute(async (tx) => {
       const project = await tx
         .selectFrom('projects')
-        .select(['id', 'owner', 'repo'])
+        .select(['id', 'owner', 'repo', 'forge_scope'])
         .where('id', '=', id)
         .executeTakeFirst();
       if (project === undefined) return false;
       const claims = await tx
         .selectFrom('project_identity_claims')
-        .select(['owner', 'repo'])
+        .select(['owner', 'repo', 'forge_scope'])
         .where('project_id', '=', id)
         .execute();
       // A local project normally owns its current local identity plus at most
@@ -5826,8 +5964,12 @@ export class EventStore implements EventSink {
       // first claim and could publish the same project to multiple repositories.
       const hasDifferentPendingTarget = claims.some(
         (claim) =>
-          (claim.owner !== project.owner || claim.repo !== project.repo) &&
-          (claim.owner !== owner || claim.repo !== repo),
+          (claim.forge_scope !== project.forge_scope ||
+            claim.owner !== project.owner ||
+            claim.repo !== project.repo) &&
+          (claim.forge_scope !== (target.forgeConnectionId ?? 'legacy-github') ||
+            claim.owner !== owner ||
+            claim.repo !== repo),
       );
       if (hasDifferentPendingTarget) return false;
       // Keep a sync placeholder (and all of its dependent configuration) intact
@@ -5838,6 +5980,7 @@ export class EventStore implements EventSink {
         .selectFrom('projects')
         .select(['id', 'kind', 'state', 'overview_visible'])
         .forUpdate()
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
         .where('id', '!=', id)
@@ -5869,6 +6012,7 @@ export class EventStore implements EventSink {
         await tx
           .updateTable('project_identity_claims')
           .set({ project_id: id })
+          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
           .where('owner', '=', owner)
           .where('repo', '=', repo)
           .where('project_id', '=', holder.id)
@@ -5876,12 +6020,18 @@ export class EventStore implements EventSink {
       }
       await tx
         .insertInto('project_identity_claims')
-        .values({ owner, repo, project_id: id })
-        .onConflict((conflict) => conflict.columns(['owner', 'repo']).doNothing())
+        .values({
+          owner,
+          repo,
+          project_id: id,
+          forge_connection_id: target.forgeConnectionId ?? null,
+        })
+        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
         .execute();
       const claim = await tx
         .selectFrom('project_identity_claims')
         .select('project_id')
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
         .executeTakeFirst();
@@ -5889,7 +6039,10 @@ export class EventStore implements EventSink {
     });
   }
 
-  async releaseProjectIdentity(id: string, target: { owner: string; repo: string }): Promise<void> {
+  async releaseProjectIdentity(
+    id: string,
+    target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
+  ): Promise<void> {
     const owner = target.owner.toLowerCase();
     const repo = target.repo.toLowerCase();
     await this.db.transaction().execute(async (tx) => {
@@ -5908,6 +6061,7 @@ export class EventStore implements EventSink {
         .selectFrom('projects')
         .select(['id', 'kind', 'state', 'overview_visible'])
         .forUpdate()
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
         .where('id', '!=', id)
@@ -5931,6 +6085,7 @@ export class EventStore implements EventSink {
         await tx
           .updateTable('project_identity_claims')
           .set({ project_id: placeholder.id })
+          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
           .where('owner', '=', owner)
           .where('repo', '=', repo)
           .where('project_id', '=', id)
@@ -5939,6 +6094,7 @@ export class EventStore implements EventSink {
       }
       await tx
         .deleteFrom('project_identity_claims')
+        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
         .where('project_id', '=', id)

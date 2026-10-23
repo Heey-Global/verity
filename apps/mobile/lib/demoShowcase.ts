@@ -47,7 +47,7 @@ export const SHOWCASE_PROJECTS = [
 
 const CLAUDE = 'claude-opus-5-5';
 const CODEX = 'codex/gpt-6.1-sol';
-const OPENCODE = 'verity/qwen3-coder';
+const OPENCODE = 'verity/Qwen3.8-Max';
 
 /** The model new showcase sessions start with; listed in `SHOWCASE_MODELS`. */
 export const SHOWCASE_DEFAULT_MODEL = CLAUDE;
@@ -61,7 +61,8 @@ export const SHOWCASE_MODELS = [
   'codex/gpt-6-astra',
   'codex/gpt-6-sol',
   OPENCODE,
-  'verity/kimi-k2',
+  'verity/Kimi-K3',
+  'verity/DeepSeek-V4.1-Flash-1017',
 ];
 const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
 

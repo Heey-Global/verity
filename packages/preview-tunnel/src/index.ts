@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { isIP } from 'node:net';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
 import { connectorBackpressure } from './connector-backpressure.js';
@@ -37,7 +38,16 @@ import {
 import type { PreviewPinBudget, PinBudgetResult } from './pin-budget.js';
 import { StreamRegistry } from './streams.js';
 import { RequestQueue, RequestQueueError } from './request-queue.js';
-import { expiredPage, loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
+import { ReconnectWait, ReconnectTimeout, ReconnectFull } from './reconnect-wait.js';
+import { requestPathClass, requestMethod, type PreviewRequestLog } from './request-log.js';
+export type { PreviewRequestLog } from './request-log.js';
+import {
+  expiredPage,
+  loginPage,
+  reconnectingPage,
+  PREVIEW_PAGE_CSP,
+  previewErrorPage,
+} from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -49,6 +59,10 @@ const COOKIE_NAME = '__Host-verity-preview';
 const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
+const EDGE_LOOP_PROBE_MS = 500;
+const EDGE_LOOP_LAG_REPORT_MS = 1_000;
+const EDGE_LOOP_SUMMARY_MS = 10_000;
+const CGROUP_CPU_STAT = '/sys/fs/cgroup/cpu.stat';
 
 export function validWebhookPath(value: string): boolean {
   return (
@@ -60,6 +74,9 @@ export function validWebhookPath(value: string): boolean {
 }
 
 export interface PreviewEdgeOptions {
+  onRequest?: (entry: PreviewRequestLog) => void;
+  /** Separate bounded wait for public GET/HEAD requests; defaults to three seconds. */
+  reconnectWaitMs?: number;
   webhookPath?: string;
   shareId: string;
   /** Open access is only enabled by the self-hosted local preview manager. */
@@ -89,16 +106,64 @@ export interface PreviewEdgeOptions {
   trustedProxyHops?: number;
   /** Absolute expiry enforced inside the edge even when Verity is unavailable. */
   expiresAt?: string;
+  /** Bounded transport metadata only; excludes URLs, credentials and payloads. */
+  onDiagnostic?: (diagnostic: PreviewEdgeDiagnostic) => void;
 }
+
+/**
+ * The edge's half of the connector heartbeat. The connector can only see that a
+ * pong never came back; these records say whether its ping reached the edge,
+ * when the edge's reply actually left the process, and whether the edge itself
+ * was stalled — the three places a reply can be lost. `tunnel` numbers the
+ * connector connections this process accepted, so records of one tunnel can be
+ * told from the next.
+ */
+export type PreviewEdgeDiagnostic =
+  | { event: 'connector.attached'; tunnel: number }
+  | {
+      event: 'connector.ping';
+      tunnel: number;
+      sinceAttachMs: number;
+      /** Bytes already queued on the connector socket ahead of the reply. */
+      bufferedAmount: number;
+    }
+  | { event: 'connector.pong'; tunnel: number; writeMs: number }
+  | {
+      event: 'connector.closed';
+      tunnel: number;
+      code: number;
+      elapsedMs: number;
+      pings: number;
+      pongs: number;
+    }
+  | { event: 'loop.lag'; lagMs: number }
+  /**
+   * Event-loop delay and CPU over the last window, so a quiet log still shows
+   * the edge was responsive. `cpuMs` is this process's user plus system time;
+   * the throttling counts come from the container's cgroup and are omitted
+   * where it is not readable.
+   */
+  | {
+      event: 'loop.delay';
+      windowMs: number;
+      p99Ms: number;
+      maxMs: number;
+      cpuMs: number;
+      throttledPeriods?: number;
+      throttledMs?: number;
+    };
 
 export type PreviewConnectorDiagnostic =
   | { event: 'connect.started' }
   | { event: 'connect.established'; elapsedMs: number }
   | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
-  | { event: 'heartbeat.timeout'; phase: 'write' | 'pong' }
+  | { event: 'heartbeat.timeout'; phase: 'write' | 'pong'; lateMs: number; missedPongs: number }
   | { event: 'connection.closed'; code: number; opened: boolean; elapsedMs: number };
 
 export interface PreviewConnectorOptions {
+  /** Share identity supplied by the container creator; optional for older embedders. */
+  shareId?: string;
+  onRequest?: (entry: PreviewRequestLog) => void;
   accessMode?: 'pin' | 'local-open';
   edgeUrl: string;
   connectorToken: string;
@@ -162,6 +227,13 @@ interface ConnectorHttpStream extends ConnectorStreamBase {
   waiting: boolean;
   /** Why the body relay is being torn down, when it is not an upstream fault. */
   failureCode?: StreamResetCode;
+  log: {
+    started: number;
+    generation: number;
+    status: number | null;
+    completed: boolean;
+    emitted: boolean;
+  };
 }
 
 /** One application WebSocket the connector is bridging to the target. A `ws`
@@ -235,9 +307,27 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
   return `scrypt:${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 }
 
+/**
+ * Cumulative CFS throttling of this container (cgroup v2). A CPU limit that is
+ * hit stalls the edge in slices too short for the loop probe to see one by one,
+ * so the count is the only record of it from inside the process.
+ */
+function cgroupThrottling(): { periods: number; usec: number } | undefined {
+  let stat: string;
+  try {
+    stat = readFileSync(CGROUP_CPU_STAT, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const periods = /^nr_throttled (\d+)$/m.exec(stat)?.[1];
+  const usec = /^throttled_usec (\d+)$/m.exec(stat)?.[1];
+  if (periods === undefined || usec === undefined) return undefined;
+  return { periods: Number(periods), usec: Number(usec) };
+}
+
 export class PreviewEdge {
   private readonly options: Required<
-    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>
+    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath' | 'onDiagnostic'>
   > &
     Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>;
   private readonly server: Server;
@@ -250,12 +340,20 @@ export class PreviewEdge {
   private readonly streams: StreamRegistry<EdgeStream>;
   private readonly loginFailures = new Map<string, number[]>();
   private connector: WebSocket | undefined;
+  private connectionGeneration = 0;
+  private readonly reconnect: ReconnectWait<WebSocket>;
   private readonly admissions = new Set<AbortController>();
   private readonly requests: RequestQueue;
   private activeStreams = 0;
   private loginVerifications = 0;
   private readonly expiresAtMs: number;
   private expiryTimer: NodeJS.Timeout | undefined;
+  private readonly diagnose: (diagnostic: PreviewEdgeDiagnostic) => void;
+  private readonly observed: boolean;
+  private tunnels = 0;
+  private loopMonitor: NodeJS.Timeout | undefined;
+  private loopSummary: NodeJS.Timeout | undefined;
+  private loopDelay: ReturnType<typeof monitorEventLoopDelay> | undefined;
 
   constructor(options: PreviewEdgeOptions) {
     if (
@@ -274,6 +372,7 @@ export class PreviewEdge {
     }
     validatePositiveIntegerOption(options.maxBodyBytes, 'maxBodyBytes');
     validatePositiveIntegerOption(options.requestTimeoutMs, 'requestTimeoutMs');
+    validatePositiveIntegerOption(options.reconnectWaitMs, 'reconnectWaitMs');
     validatePositiveIntegerOption(options.maxConcurrentRequests, 'maxConcurrentRequests');
     validatePositiveIntegerOption(options.maxQueuedRequests, 'maxQueuedRequests');
     validatePositiveIntegerOption(options.queueTimeoutMs, 'queueTimeoutMs');
@@ -287,7 +386,20 @@ export class PreviewEdge {
     ) {
       throw new Error('publicOrigin must use https');
     }
+    const onDiagnostic = options.onDiagnostic;
+    this.observed = onDiagnostic !== undefined;
+    // An observer must never break the transport it observes: these records are
+    // emitted from inside the ping handler and the loop timers.
+    this.diagnose = (diagnostic) => {
+      try {
+        onDiagnostic?.(diagnostic);
+      } catch {
+        // Dropped; the next record still goes out.
+      }
+    };
     this.options = {
+      reconnectWaitMs: options.reconnectWaitMs ?? 3_000,
+      onRequest: options.onRequest ?? (() => undefined),
       accessMode: 'pin',
       ...options,
       publicOrigin: origin.origin,
@@ -305,12 +417,16 @@ export class PreviewEdge {
       this.options.maxQueuedRequests,
       this.options.queueTimeoutMs,
     );
+    this.reconnect = new ReconnectWait(() => this.openConnector(), this.options.maxQueuedRequests);
     this.expiresAtMs = Date.parse(this.options.expiresAt);
     if (!Number.isFinite(this.expiresAtMs)) throw new Error('expiresAt must be an ISO timestamp');
     this.streams = new StreamRegistry<EdgeStream>({ maxBodyBytes: this.options.maxBodyBytes });
     this.websocketServer = new WebSocketServer({
       noServer: true,
       maxPayload: encodedPayloadLimit(this.options.maxBodyBytes),
+      // Answered in `attachConnector` instead, so the reply's write completion
+      // can be observed; the answer itself is the same.
+      autoPong: false,
     });
     // Application sockets carry the message itself rather than a base64 frame
     // around one, so their ceiling is the body bound with no envelope allowance.
@@ -461,6 +577,7 @@ export class PreviewEdge {
     if (remaining <= 0) {
       this.expiryTimer = undefined;
       this.connector?.close(4003, 'share expired');
+      this.reconnect.stop(new Error('preview share expired'));
       this.resetAll(new Error('preview share expired'));
       return;
     }
@@ -478,14 +595,74 @@ export class PreviewEdge {
         const address = this.server.address();
         if (!address || typeof address === 'string')
           return reject(new Error('edge has no TCP address'));
+        // Nobody reads the loop records without an observer, so an unobserved
+        // edge keeps no probe timers or histogram running.
+        if (this.observed) this.monitorLoop();
         resolve(address.port);
       });
     });
   }
 
+  /**
+   * Reports event-loop stalls long enough to matter to the connector heartbeat.
+   * A stalled edge answers nothing, and from the connector that is
+   * indistinguishable from a reply lost on the way, so the stall has to be
+   * recorded here, where it happens. Only lag beyond a second is reported.
+   */
+  private monitorLoop(): void {
+    if (this.loopMonitor) return;
+    let expected = performance.now() + EDGE_LOOP_PROBE_MS;
+    this.loopMonitor = setInterval(() => {
+      const now = performance.now();
+      const lagMs = Math.round(now - expected);
+      expected = now + EDGE_LOOP_PROBE_MS;
+      if (lagMs >= EDGE_LOOP_LAG_REPORT_MS) this.diagnose({ event: 'loop.lag', lagMs });
+    }, EDGE_LOOP_PROBE_MS);
+    this.loopMonitor.unref();
+    const delay = monitorEventLoopDelay({ resolution: 20 });
+    delay.enable();
+    this.loopDelay = delay;
+    let cpu = process.cpuUsage();
+    let throttling = cgroupThrottling();
+    let windowStart = performance.now();
+    this.loopSummary = setInterval(() => {
+      // Measured rather than assumed: a stalled edge fires this late, and the
+      // CPU and throttling deltas then cover the longer span.
+      const now = performance.now();
+      const windowMs = Math.round(now - windowStart);
+      windowStart = now;
+      const used = process.cpuUsage(cpu);
+      cpu = process.cpuUsage();
+      const current = cgroupThrottling();
+      this.diagnose({
+        event: 'loop.delay',
+        windowMs,
+        p99Ms: Math.round(delay.percentile(99) / 1e6),
+        maxMs: Math.round(delay.max / 1e6),
+        cpuMs: Math.round((used.user + used.system) / 1e3),
+        ...(current && throttling
+          ? {
+              throttledPeriods: current.periods - throttling.periods,
+              throttledMs: Math.round((current.usec - throttling.usec) / 1e3),
+            }
+          : {}),
+      });
+      throttling = current;
+      delay.reset();
+    }, EDGE_LOOP_SUMMARY_MS);
+    this.loopSummary.unref();
+  }
+
   async close(): Promise<void> {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    if (this.loopMonitor) clearInterval(this.loopMonitor);
+    if (this.loopSummary) clearInterval(this.loopSummary);
+    this.loopDelay?.disable();
+    this.loopMonitor = undefined;
+    this.loopSummary = undefined;
+    this.loopDelay = undefined;
     this.connector?.close(1001, 'edge shutdown');
+    this.reconnect.stop(new Error('preview edge stopped'));
     this.resetAll(new Error('preview edge stopped'));
     await new Promise<void>((resolve, reject) =>
       this.server.close((error) => (error ? reject(error) : resolve())),
@@ -496,10 +673,40 @@ export class PreviewEdge {
 
   private attachConnector(client: WebSocket): void {
     if (this.connector) {
-      this.resetAll(new Error('preview connector was replaced'));
+      this.resetAll(new Error('preview connector was replaced'), true);
       this.connector.close(4001, 'replaced by current connector');
     }
     this.connector = client;
+    this.connectionGeneration += 1;
+    this.reconnect.notify();
+    const tunnel = ++this.tunnels;
+    const attachedAt = performance.now();
+    let pings = 0;
+    let pongs = 0;
+    this.diagnose({ event: 'connector.attached', tunnel });
+    client.on('ping', (payload: Buffer) => {
+      pings += 1;
+      const received = performance.now();
+      this.diagnose({
+        event: 'connector.ping',
+        tunnel,
+        sinceAttachMs: Math.round(received - attachedAt),
+        bufferedAmount: client.bufferedAmount,
+      });
+      try {
+        client.pong(payload, false, (error?: Error) => {
+          if (error) return;
+          pongs += 1;
+          this.diagnose({
+            event: 'connector.pong',
+            tunnel,
+            writeMs: Math.round(performance.now() - received),
+          });
+        });
+      } catch {
+        // Closing already; the close record carries the final counts.
+      }
+    });
     client.on('message', (data, binary) => {
       if (binary) return client.close(1003, 'binary frames are unsupported');
       let frame: unknown;
@@ -513,10 +720,18 @@ export class PreviewEdge {
       }
       this.applyFrame(client, frame);
     });
-    client.once('close', () => {
+    client.once('close', (code: number) => {
+      this.diagnose({
+        event: 'connector.closed',
+        tunnel,
+        code,
+        elapsedMs: Math.round(performance.now() - attachedAt),
+        pings,
+        pongs,
+      });
       if (this.connector === client) {
         this.connector = undefined;
-        this.resetAll(new Error('preview connector disconnected'));
+        this.resetAll(new Error('preview connector disconnected'), true);
       }
     });
   }
@@ -775,10 +990,16 @@ export class PreviewEdge {
   /** Terminates every live stream. Used when the share expires, the edge stops,
    * or the connector goes away — nothing would ever complete these, and a
    * WebSocket left open would outlive the share it belongs to. */
-  private resetAll(error: Error): void {
-    this.requests.cancelPending(error);
-    for (const admission of this.admissions) admission.abort(error);
+  private resetAll(error: Error, tunnelGap = false): void {
+    if (!tunnelGap || this.options.accessMode === 'local-open') {
+      this.requests.cancelPending(error);
+      for (const admission of this.admissions) admission.abort(error);
+    }
     for (const record of this.streams.drain()) record.context.fail(error);
+  }
+
+  private openConnector(): WebSocket | undefined {
+    return this.connector?.readyState === WebSocket.OPEN ? this.connector : undefined;
   }
 
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -788,6 +1009,29 @@ export class PreviewEdge {
     response.once('close', readerGone);
     let streaming = false;
     let budgetAcquired = false;
+    let proxyAttempt = false;
+    let tunnelUnavailable = false;
+    let generation = this.connectionGeneration;
+    const started = performance.now();
+    let logged = false;
+    const log = (): void => {
+      if (!proxyAttempt || logged) return;
+      logged = true;
+      this.options.onRequest({
+        event: 'request.completed',
+        shareId: this.options.shareId,
+        method: requestMethod(request.method ?? 'GET'),
+        pathClass: requestPathClass(request.url ?? '/'),
+        status: response.headersSent ? response.statusCode : null,
+        outcome: response.writableFinished ? 'completed' : 'aborted',
+        durationMs: Math.max(0, Math.floor(performance.now() - started)),
+        tunnelState: this.openConnector() ? 'connected' : 'disconnected',
+        connectionGeneration: generation,
+        tunnelUnavailable,
+      });
+    };
+    response.once('finish', log);
+    response.once('close', log);
     try {
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
       if (this.options.webhookPath) {
@@ -917,24 +1161,36 @@ export class PreviewEdge {
         response.end('Preview request headers are too large or invalid.');
         return;
       }
-      const connector = this.connector;
-      if (!connector || connector.readyState !== WebSocket.OPEN) {
-        sendPreviewError(
-          response,
-          503,
-          'The preview is temporarily unavailable. Try again shortly.',
-          '2',
-        );
-        return;
-      }
+      proxyAttempt = true;
+      const canWait =
+        this.options.accessMode !== 'local-open' && (method === 'GET' || method === 'HEAD');
+      let reconnectDeadline: number | undefined;
+      const getConnector = async (): Promise<WebSocket> => {
+        admission.signal.throwIfAborted();
+        const available = this.openConnector();
+        if (available) return available;
+        if (!canWait) throw new ReconnectTimeout();
+        reconnectDeadline ??= performance.now() + this.options.reconnectWaitMs;
+        return this.reconnect.wait(reconnectDeadline, admission.signal);
+      };
       this.admissions.add(admission);
-      releaseRequest = await this.requests.acquire(admission.signal);
-      // Admission may resume after the reader left or a connector was replaced.
-      admission.signal.throwIfAborted();
-      if (this.expired()) throw new Error('preview share expired');
-      if (this.connector !== connector || connector.readyState !== WebSocket.OPEN) {
-        throw new Error('preview connector disconnected');
-      }
+      const acquireConnector = async (): Promise<WebSocket> => {
+        while (true) {
+          const candidate = await getConnector();
+          admission.signal.throwIfAborted();
+          releaseRequest = await this.requests.acquire(admission.signal);
+          admission.signal.throwIfAborted();
+          if (this.expired()) throw new Error('preview share expired');
+          if (this.openConnector() === candidate) return candidate;
+          releaseRequest();
+          releaseRequest = undefined;
+          if (!canWait) throw new ReconnectTimeout();
+          reconnectDeadline ??= performance.now() + this.options.reconnectWaitMs;
+          if (performance.now() >= reconnectDeadline) throw new ReconnectTimeout();
+        }
+      };
+      let connector = await acquireConnector();
+      generation = this.connectionGeneration;
       if (
         this.options.requestBudget &&
         (request.headers['transfer-encoding'] !== undefined ||
@@ -954,6 +1210,13 @@ export class PreviewEdge {
       );
       admission.signal.throwIfAborted();
       if (this.expired()) throw new Error('preview share expired');
+      if (this.openConnector() !== connector) {
+        releaseRequest?.();
+        releaseRequest = undefined;
+        // No frame has been sent yet. Re-enter admission using the same reconnect deadline.
+        connector = await acquireConnector();
+        generation = this.connectionGeneration;
+      }
       const streamId = randomUUID();
       await new Promise<void>((resolve, reject) => {
         let timer: NodeJS.Timeout | undefined;
@@ -1060,6 +1323,36 @@ export class PreviewEdge {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'preview request failed';
+      if (
+        error instanceof ReconnectTimeout ||
+        error instanceof ReconnectFull ||
+        message.includes('preview connector')
+      )
+        tunnelUnavailable = true;
+      if (error instanceof ReconnectTimeout || error instanceof ReconnectFull) {
+        if (response.destroyed) return;
+        if (this.options.accessMode === 'local-open') {
+          sendPreviewError(
+            response,
+            503,
+            'The preview is temporarily unavailable. Try again shortly.',
+            '2',
+          );
+          return;
+        }
+        const reload =
+          (request.method === 'GET' || request.method === 'HEAD') &&
+          !new URL(request.url ?? '/', this.options.publicOrigin).search;
+        response.writeHead(503, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'retry-after': '2',
+          'content-security-policy': PREVIEW_PAGE_CSP,
+          'x-frame-options': 'DENY',
+        });
+        response.end(request.method === 'HEAD' ? undefined : reconnectingPage(reload));
+        return;
+      }
       if (response.destroyed) return;
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : new Error(message));
@@ -1312,6 +1605,7 @@ export class PreviewConnector {
   private activeStreams = 0;
   private bufferedRequestBytes = 0;
   private queuedRequestBytes = 0;
+  private connectionGeneration = 0;
   private heartbeat: NodeJS.Timeout | undefined;
   private heartbeatDeadline: NodeJS.Timeout | undefined;
 
@@ -1352,6 +1646,8 @@ export class PreviewConnector {
       targetOrigin: target.origin,
       connectTimeoutMs: options.connectTimeoutMs ?? 30_000,
       onDiagnostic: options.onDiagnostic ?? (() => undefined),
+      onRequest: options.onRequest ?? (() => undefined),
+      shareId: options.shareId ?? 'unknown',
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       maxConcurrentRequests: options.maxConcurrentRequests ?? 8,
@@ -1386,6 +1682,7 @@ export class PreviewConnector {
       this.disconnected = new Promise((disconnected) => socket.once('close', () => disconnected()));
       socket.once('open', () => {
         opened = true;
+        this.connectionGeneration += 1;
         this.startHeartbeat(socket);
         this.options.onDiagnostic({
           event: 'connect.established',
@@ -1436,6 +1733,7 @@ export class PreviewConnector {
 
   private startHeartbeat(socket: WebSocket): void {
     let pending: Buffer | undefined;
+    let missedPongs = 0;
     const active = (): boolean =>
       this.socket === socket &&
       this.heartbeat !== undefined &&
@@ -1445,19 +1743,39 @@ export class PreviewConnector {
       this.heartbeatDeadline = undefined;
     };
     const deadline = (phase: 'write' | 'pong'): void => {
-      this.heartbeatDeadline = setTimeout(() => {
+      const armedAt = performance.now();
+      const timer = setTimeout(() => {
         if (!active() || !pending) return;
-        this.options.onDiagnostic({ event: 'heartbeat.timeout', phase });
-        socket.terminate();
+        // After a stalled event loop, expired timers run before the I/O that
+        // piled up meanwhile, so a pong or write completion already received
+        // would lose to this deadline. Decide only once that I/O has been
+        // polled; `lateMs` records how long this process itself was stalled.
+        const lateMs = Math.max(
+          0,
+          Math.floor(performance.now() - armedAt - CONNECTOR_HEARTBEAT_MS),
+        );
+        setImmediate(() => {
+          if (!active() || !pending || this.heartbeatDeadline !== timer) return;
+          if (phase === 'pong') missedPongs += 1;
+          this.options.onDiagnostic({ event: 'heartbeat.timeout', phase, lateMs, missedPongs });
+          if (phase === 'write' || missedPongs >= 2) socket.terminate();
+          else {
+            pending = undefined;
+            clearDeadline();
+            probe();
+          }
+        });
       }, CONNECTOR_HEARTBEAT_MS);
-      this.heartbeatDeadline.unref();
+      timer.unref();
+      this.heartbeatDeadline = timer;
     };
     socket.on('pong', (payload: Buffer) => {
       if (!active() || !pending || !payload.equals(pending)) return;
       pending = undefined;
+      missedPongs = 0;
       clearDeadline();
     });
-    this.heartbeat = setInterval(() => {
+    const probe = (): void => {
       if (socket.readyState !== WebSocket.OPEN || pending) return;
       const probe = randomBytes(8);
       pending = probe;
@@ -1478,7 +1796,8 @@ export class PreviewConnector {
         clearDeadline();
         socket.terminate();
       }
-    }, CONNECTOR_HEARTBEAT_MS);
+    };
+    this.heartbeat = setInterval(probe, CONNECTOR_HEARTBEAT_MS);
     this.heartbeat.unref();
   }
 
@@ -1546,6 +1865,13 @@ export class PreviewConnector {
         bodyComplete: false,
         bodyBytes: 0,
         waiting: true,
+        log: {
+          started: performance.now(),
+          generation: this.connectionGeneration,
+          status: null,
+          completed: false,
+          emitted: false,
+        },
       };
       const result = this.streams.acceptOpen(frame.streamId, 'http', context);
       if (!result.ok) {
@@ -1660,6 +1986,8 @@ export class PreviewConnector {
     context: ConnectorHttpStream,
     message: string,
   ): void {
+    context.log.status = 503;
+    context.log.completed = true;
     sendErrorResponse(socket, streamId, 503, message, this.options.maxBodyBytes);
     this.release(streamId, context);
   }
@@ -1790,6 +2118,21 @@ export class PreviewConnector {
       context.streaming = false;
     }
     if (context.channel === 'http') {
+      if (!context.log.emitted) {
+        context.log.emitted = true;
+        this.options.onRequest({
+          event: 'request.completed',
+          shareId: this.options.shareId,
+          method: requestMethod(context.meta.method),
+          pathClass: requestPathClass(context.meta.path),
+          status: context.log.status,
+          outcome: context.log.completed ? 'completed' : 'aborted',
+          durationMs: Math.max(0, Math.floor(performance.now() - context.log.started)),
+          tunnelState: this.socket?.readyState === WebSocket.OPEN ? 'connected' : 'disconnected',
+          connectionGeneration: context.log.generation,
+          tunnelUnavailable: this.socket?.readyState !== WebSocket.OPEN,
+        });
+      }
       context.cancelled.abort(new Error('preview request released'));
       this.bufferedRequestBytes -= context.bodyBytes;
       if (context.waiting) this.queuedRequestBytes -= context.bodyBytes;
@@ -1851,6 +2194,7 @@ export class PreviewConnector {
       // would reject a large asset while the identical bytes sent chunked went
       // through. What memory there is lives in the send backlog, which
       // `relayBody` bounds directly.
+      context.log.status = upstream.status;
       context.headSent = true;
       this.streams.openOutbound(streamId, 'http', context);
       sendStreamFrame(socket, {
@@ -1875,6 +2219,9 @@ export class PreviewConnector {
           code: context.failureCode ?? 'upstream_error',
         });
       } else {
+        context.log.status = expired.signal.aborted ? 504 : 502;
+        context.log.completed =
+          socket.readyState === WebSocket.OPEN && !context.cancelled.signal.aborted;
         sendErrorResponse(
           socket,
           streamId,
@@ -1952,6 +2299,7 @@ export class PreviewConnector {
           code: context.failureCode ?? 'upstream_error',
         });
       } else {
+        context.log.completed = true;
         sendStreamFrame(socket, { kind: 'stream.end', streamId });
         this.streams.endOutbound(streamId);
       }

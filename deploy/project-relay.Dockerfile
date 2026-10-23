@@ -2,7 +2,7 @@
 # no shell, package manager, diagnostics, credentials, or configurable upstream.
 
 # renovate: datasource=docker depName=node
-FROM node:26.12.0-bookworm-slim@sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913 AS builder
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder
 
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
@@ -22,7 +22,7 @@ RUN npx tsc -b packages/project-relay
 
 # Shell-less runtime, pinned to the exact multi-architecture manifest.
 # renovate: datasource=docker depName=gcr.io/distroless/nodejs26-debian13
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:044d090d0c3ccfd30722126ebe46704885698970c8a303419dc0d704d628f0da
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:3a6f4e6fd37efe00042667d06fd52240f2589ed09b0694fbb3b1bf860030a839
 
 # Use the builder's exact Node patch; the distroless base may lag a patch release.
 COPY --from=builder /usr/local/bin/node /nodejs/bin/node

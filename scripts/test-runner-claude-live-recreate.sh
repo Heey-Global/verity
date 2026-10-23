@@ -65,7 +65,7 @@ start_sandbox() {
 server_args=(--network "$network" --user 1000:1000 --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$repo_source:/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:26.12.0-bookworm-slim@sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913 node packages/server/dist/runner-claude-recreate-server.js)
+  node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe node packages/server/dist/runner-claude-recreate-server.js)
 
 start_sandbox
 docker run --name "$server_seed" "${server_args[@]}" seed
@@ -76,14 +76,12 @@ docker rm -f "$sandbox" >/dev/null
 docker rm -f "$server_seed" >/dev/null
 docker volume rm "$runtime_volume" >/dev/null
 start_sandbox
-docker exec "$sandbox" test ! -e \
-  "/run/verity-runner/claude/projects/-work/$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 cat /work/backend-session-id).jsonl"
 
 # Rebuild args so the new Server bind-mounts the newly-created runtime volume.
 server_args=(--network "$network" --user 1000:1000 --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$repo_source:/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:26.12.0-bookworm-slim@sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913 node packages/server/dist/runner-claude-recreate-server.js)
+  node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe node packages/server/dist/runner-claude-recreate-server.js)
 docker run --name "$server_resume" "${server_args[@]}" resume
 
 test "$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \

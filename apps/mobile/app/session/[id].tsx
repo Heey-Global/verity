@@ -1,3 +1,6 @@
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
+import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
+import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -12,6 +15,7 @@ import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { CodeHostIcon } from '../../components/CodeHostIcon';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
@@ -90,7 +94,8 @@ import {
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
-  githubRefUrl,
+  forgeRefUrl,
+  providerName,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
@@ -323,7 +328,6 @@ import {
   isOldestRowViewable,
   isScrollTowardHistory,
   migratedAnchorOffset,
-  shouldContinueOlderHistory,
   shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
@@ -505,7 +509,6 @@ const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequ
 // translateY the stack onto the true vertical centre of the visible transcript. Keep
 // in sync with styles.msgNav(Btn).
 const NAV_STACK_HALF = 65;
-const SPLIT_SCREEN_MIN_WIDTH = 900;
 const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
   'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
@@ -557,42 +560,6 @@ export default function SessionScreen() {
       retrySecret={retrySecret}
     />
   );
-}
-
-// Send the wide-screen viewer to the split home with this session preselected.
-// Uses `dismissTo` (not `<Redirect>`/`replace`): when a home screen is already
-// below in the stack — the usual case, since sessions are reached via `/new`,
-// an issue, or a list tap that all sit on top of `/` — this pops
-// back to that existing home instead of stacking a *second* `/`. A duplicate
-// home was what surfaced the phantom "‹ Verity" back button on the home header.
-// If no home exists below (e.g. a cold deep-link straight to /session/[id]),
-// `dismissTo` falls back to replacing this route with `/`, exactly like the old
-// redirect did. Mirrors expo-router's own <Redirect>, which fires on focus.
-function SplitScreenRedirect({
-  id,
-  targetMessageId,
-  targetSearchQuery,
-  retrySecret,
-}: {
-  id: string;
-  targetMessageId?: string;
-  targetSearchQuery?: string;
-  retrySecret?: string;
-}) {
-  useFocusEffect(
-    useCallback(() => {
-      router.dismissTo({
-        pathname: '/',
-        params: {
-          selected: id,
-          ...(targetMessageId ? { targetMessageId } : {}),
-          ...(targetSearchQuery ? { targetSearchQuery } : {}),
-          ...(retrySecret ? { retrySecret } : {}),
-        },
-      });
-    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
-  );
-  return null;
 }
 
 /**
@@ -710,6 +677,9 @@ export const SessionChat = memo(function SessionChat({
     session,
     refreshMetadata,
     streamError,
+    historyError,
+    loadingHistory,
+    retryHistory,
     sending,
     sendError,
     cancelError,
@@ -747,7 +717,6 @@ export const SessionChat = memo(function SessionChat({
     oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
-    olderLoadNeedsContinuation,
     olderLoadGeneration,
     loadOlder,
     loadOlderUntil,
@@ -1132,11 +1101,13 @@ export const SessionChat = memo(function SessionChat({
   // Issue # comes from the branch name (#125, works before any PR). The PR chip has
   // moved out of the header — the bottom PR status bar surfaces the PR now.
   const issueNumber = parseBranchIssue(effectiveBranch);
-  // Tappable Issue chip (#161): build the GitHub URL from the server-surfaced owner/
-  // repo. `githubRefUrl` returns null when owner/repo is unknown (no GitHub remote /
-  // older server) — the chip then renders non-tappable, never linking to a broken URL.
-  const repoIdentity = { owner: branches.owner, repo: branches.repo };
-  const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
+  // Tappable Issue chip (#161): build the code-host URL from the server-surfaced owner/
+  // repo and, for Forgejo, its host. `forgeRefUrl` returns null when owner/repo is
+  // unknown (no remote / older server) — the chip then renders non-tappable, never
+  // linking to a broken URL.
+  const repoIdentity = { owner: branches.owner, repo: branches.repo, host: branches.codeHost };
+  const issueUrl = forgeRefUrl('issue', repoIdentity, issueNumber);
+  const codeHostName = providerName(branches.codeHost?.provider ?? 'github');
   // Open PRs cannot be dismissed, so they can render immediately. Wait for the
   // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
@@ -2305,27 +2276,35 @@ export const SessionChat = memo(function SessionChat({
     ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  // With nothing visible there is no list to scroll, so older pages are fetched
+  // until a message appears, the history ends, or a page fails (which shows its
+  // own retry). A fetch that did not move the history cursor ends the walk, so a
+  // page that adds nothing cannot repeat for good; a bookmark jump in progress
+  // owns paging and is left alone.
+  const showsNoMessages = loaded && messages.length === 0;
+  const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    // A reload starts a fresh walk.
+    if (!loaded) emptyPagingCursorRef.current = undefined;
+  }, [loaded]);
+  useEffect(() => {
+    if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
+    if (pendingUserJump !== null) return;
+    if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
+    emptyPagingCursorRef.current = oldestHistorySeq ?? null;
+    void loadOlder();
+  }, [
+    showsNoMessages,
+    hasOlder,
+    loadingOlder,
+    olderLoadStalled,
+    pendingUserJump,
+    oldestHistorySeq,
+    loadOlder,
+  ]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
-  const initialHistoryPrefetchRef = useRef(false);
-  useEffect(() => {
-    if (
-      initialHistoryPrefetchRef.current ||
-      !initialListLoaded ||
-      !loaded ||
-      restoring ||
-      !hasOlder ||
-      loadingOlder
-    )
-      return;
-    initialHistoryPrefetchRef.current = true;
-    // Automatic pages must not compete with initial list measurement.
-    // A single extra page starts after FlashList reports its initial load.
-    // Subsequent pages use the measured four-viewport buffer, so opening a long session
-    // cannot pull its whole transcript into memory.
-    loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2366,36 +2345,6 @@ export const SessionChat = memo(function SessionChat({
       if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
-  const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
-  useEffect(() => {
-    const completed = observedOlderLoadGenerationRef.current !== olderLoadGeneration;
-    observedOlderLoadGenerationRef.current = olderLoadGeneration;
-    if (
-      !shouldContinueOlderHistory(
-        completed,
-        hasOlder,
-        olderLoadStalled,
-        olderLoadNeedsContinuation,
-        isHistoryEdgeVisible(
-          lastScrollYRef.current,
-          lastContentHeightRef.current,
-          lastViewportHeightRef.current,
-          oldestVisibleIndexRef.current,
-          dataRef.current.length,
-        ),
-        userScrollActiveRef.current,
-        historyAppendSettlingRef.current,
-      )
-    )
-      return;
-
-    // A bounded scan may advance across metadata-only pages without changing any
-    // visible rows. Continue after React has committed the new cursor while the
-    // history edge remains visible. Failures/non-progress are deliberately excluded
-    // above, so this cannot become an automatic retry loop.
-    const raf = requestAnimationFrame(() => loadOlderNearStartRef.current());
-    return () => cancelAnimationFrame(raf);
-  }, [hasOlder, olderLoadGeneration, olderLoadNeedsContinuation, olderLoadStalled]);
   useEffect(() => {
     reportScrollDebug('loading-older-state', { loadingOlder });
   }, [loadingOlder, reportScrollDebug]);
@@ -2405,9 +2354,6 @@ export const SessionChat = memo(function SessionChat({
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
-  const sessionMenuRef = useRef<View>(null);
-  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
   const [settingsProjects, setSettingsProjects] = useState<
     Awaited<ReturnType<VerityClient['listProjects']>>
   >([]);
@@ -2503,18 +2449,15 @@ export const SessionChat = memo(function SessionChat({
   // When a jump target isn't in the loaded window yet, page older history toward it
   // until it appears — driven entirely by the effect below (ONE control path, so the
   // async prepends settle across re-renders and the initial call can't race the retry).
-  // `jumpRowsRef` records the row count at the last page request: if a load settles
-  // without adding rows we've made no progress — a flaky fetch, an empty page, or a
-  // target whose id re-keyed away across a coalescing boundary (older text deltas
-  // merging onto an earlier seq when a page prepends) — so we stop instead of
-  // refetching in a tight, unthrottled loop.
+  // Metadata-only pages and coalesced text can advance history without adding rows.
+  // Stop only when the event cursor stalls or a request fails.
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
   const pendingJumpQueryRef = useRef<string | null>(null);
   const highlightMessage = useCallback((messageId: string, searchQuery: string | null = null) => {
     setHighlightedMessageId(messageId);
     setHighlightedSearchQuery(searchQuery);
   }, []);
-  const jumpRowsRef = useRef(-1);
+  const bookmarkCursorRef = useRef<number | undefined>(undefined);
   const jumpToBookmark = useCallback(
     (messageId: string, searchQuery: string | null = null): boolean => {
       const index = rowIndexOfMessage(messageId);
@@ -2536,14 +2479,14 @@ export const SessionChat = memo(function SessionChat({
       // that effect falls through to paging exactly as it would have.
       if (frozenTailRef.current !== null) {
         snapshotLiveTail();
-        jumpRowsRef.current = -1;
+        bookmarkCursorRef.current = undefined;
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
       }
       // Not loaded — let the effect page toward it. Nothing older → the message is gone.
       if (hasOlder) {
-        jumpRowsRef.current = -1; // fresh jump: no page requested yet
+        bookmarkCursorRef.current = undefined; // fresh jump: no page requested yet
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
@@ -2607,14 +2550,19 @@ export const SessionChat = memo(function SessionChat({
       return;
     }
     if (loadingOlder) return; // a page is in flight — wait for it to settle
-    // Give up (don't spin) when there's nothing older left, or the last page added no
-    // rows (no progress toward the target).
-    if (!hasOlder || data.length === jumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        bookmarkCursorRef.current,
+      )
+    ) {
       setPendingJumpId(null);
       pendingJumpQueryRef.current = null;
       return;
     }
-    jumpRowsRef.current = data.length;
+    bookmarkCursorRef.current = oldestHistorySeq;
     pageTowardMessage(pendingJumpId);
   }, [
     cancelPendingUserScrollSettle,
@@ -2624,6 +2572,8 @@ export const SessionChat = memo(function SessionChat({
     hasOlder,
     loadingOlder,
     pageTowardMessage,
+    oldestHistorySeq,
+    olderLoadStalled,
     highlightMessage,
     syncTailFreeze,
   ]);
@@ -3884,22 +3834,15 @@ export const SessionChat = memo(function SessionChat({
               >
                 <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
+              {issueNumber !== null ? (
+                <IssueRef number={issueNumber} url={issueUrl} hostName={codeHostName} />
+              ) : null}
             </View>
           )}
         </View>
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
-          <View ref={sessionMenuRef} collapsable={false}>
-            <HeaderActionButton
-              icon="more-horizontal"
-              label="Session menu"
-              accessibilityLabel="Open session menu"
-              onHint={showHeaderHint}
-              onPress={openSessionMenu}
-            />
-          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -4315,24 +4258,6 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {featureHint.sheet}
-      {sessionMenuAnchor ? (
-        <ActionMenu
-          anchor={sessionMenuAnchor}
-          label="Session menu"
-          onClose={() => setSessionMenuAnchor(null)}
-          items={[
-            {
-              icon: 'settings',
-              title: 'Session settings',
-              subtitle: 'Rename, link or manage this session',
-              onPress: () => {
-                setSessionMenuAnchor(null);
-                setSessionSettingsOpen(true);
-              },
-            },
-          ]}
-        />
-      ) : null}
       {sessionSettingsOpen ? (
         <SessionSettingsDialog
           key={sessionId}
@@ -4492,6 +4417,18 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
+      {historyError ? (
+        <>
+          <Banner tone="attention" text={historyError} />
+          <Button
+            label="Retry history"
+            variant="secondary"
+            size="compact"
+            loading={loadingHistory || loadingOlder}
+            onPress={loaded ? loadOlder : retryHistory}
+          />
+        </>
+      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4529,7 +4466,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
-      {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
+      {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
         // already rendered) rather than a blank pane. Locally-created sessions
@@ -4548,7 +4485,9 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {loadingOlder ? 'Loading earlier history…' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"
@@ -4742,6 +4681,7 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
@@ -4750,6 +4690,7 @@ export const SessionChat = memo(function SessionChat({
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
+          codeHost={branches.codeHost}
         />
       ) : null}
       {!visiblePullRequest &&
@@ -4925,11 +4866,19 @@ function HeaderActionButton({
 }
 
 // The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
-// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// string (opens the issue on its code host via `Linking.openURL`, announced as a link) and
 // then tinted like the app's other tappable meta; when `url` is null — owner/repo
 // unknown (no GitHub remote / older server) — it stays plain, faint text and never
 // links to a broken URL (#161).
-function IssueRef({ number, url }: { number: number; url: string | null }) {
+function IssueRef({
+  number,
+  url,
+  hostName,
+}: {
+  number: number;
+  url: string | null;
+  hostName: string;
+}) {
   const label = `#${String(number)}`;
   if (url === null) {
     return (
@@ -4945,7 +4894,7 @@ function IssueRef({ number, url }: { number: number; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on ${hostName}.`}
     >
       <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
@@ -8068,14 +8017,13 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
         </View>
       ) : null}
       {descriptor.action === 'claude-login' ? (
-        <Pressable
-          style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
-          accessibilityRole="button"
-          accessibilityLabel="Sign in to Claude"
-        >
-          <Text style={styles.eventActionLabel}>Sign in to Claude</Text>
-        </Pressable>
+        <View style={styles.eventActionRow}>
+          <Button
+            label="Sign in to Claude"
+            size="compact"
+            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -9429,15 +9377,19 @@ function PullRequestBar({
   onMerge,
   onRefresh,
   onDismiss,
+  codeHost,
 }: {
   confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
+  /** Absent for GitHub; the bar names and marks the host it opens. */
+  codeHost: UseBranches['codeHost'];
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
   onDismiss?: () => void;
 }) {
   const { theme } = useUnistyles();
   const [merging, setMerging] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
@@ -9538,9 +9490,11 @@ function PullRequestBar({
 
   return (
     <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
+      <View style={[styles.prBar, opening ? styles.prBarPressed : null]}>
         <Pressable
-          style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
+          style={styles.prOpenTarget}
+          onPressIn={() => setOpening(true)}
+          onPressOut={() => setOpening(false)}
           onPress={() =>
             void confirmHint().then((proceed) => {
               if (proceed && mounted.current)
@@ -9548,7 +9502,7 @@ function PullRequestBar({
             })
           }
           accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
+          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
         >
           <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
           <View style={styles.prMain}>
@@ -9564,6 +9518,11 @@ function PullRequestBar({
               </Text>
             ) : null}
           </View>
+          <CodeHostIcon
+            provider={codeHost?.provider ?? 'github'}
+            size={16}
+            color={theme.colors.textMuted}
+          />
         </Pressable>
         {onDismiss ? (
           <Pressable
@@ -11855,18 +11814,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
   },
-  eventAction: {
-    alignSelf: 'flex-start',
-    marginTop: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.signature,
-  },
-  eventActionLabel: {
-    color: theme.colors.background,
-    fontFamily: theme.fonts.bold,
-  },
+  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
   eventActionPressed: {
     opacity: 0.72,
   },

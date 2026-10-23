@@ -685,7 +685,7 @@ export function TasksPanel({
           ) : null}
           {dispatching ? (
             <View style={styles.dispatchStatus} accessibilityLiveRegion="polite">
-              <ActivityIndicator size="small" color={theme.colors.action} />
+              <ActivityIndicator size="small" color={theme.colors.textMuted} />
               <Text style={styles.meta}>
                 {dispatching === 'new' ? 'Starting new session…' : 'Sending task to session…'}
               </Text>

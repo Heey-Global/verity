@@ -2561,6 +2561,54 @@ function responseForError(error) {
   };
 }
 
+async function sessionHomeRequest(kind, sessionId, migration = {}) {
+  if (!SAFE_ID.test(sessionId ?? '')) throw new Error('invalid sessionId');
+  return await new Promise((resolve, reject) => {
+    const socket = createConnection(
+      process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ??
+        '/run/verity-runner-broker/agent-spawn-broker.sock',
+    );
+    let buffered = '';
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error);
+      else resolve({ ok: true });
+    };
+    socket.setTimeout(30000, () => finish(new Error('session home request timed out')));
+    socket.once('error', finish);
+    socket.once('connect', () =>
+      socket.write(
+        JSON.stringify({
+          protocolVersion: 1,
+          kind,
+          sessionId,
+          legacyBackend: migration.legacyBackend,
+          legacySessionId: migration.legacySessionId,
+        }) + '\n',
+      ),
+    );
+    socket.on('data', (chunk) => {
+      buffered += chunk.toString();
+      if (buffered.length > 4096) return finish(new Error('session home response too large'));
+      if (!buffered.includes('\n')) return;
+      try {
+        const response = JSON.parse(buffered.split('\n')[0]);
+        finish(
+          response.ok === true
+            ? undefined
+            : new Error(response.error ?? 'session home request failed'),
+        );
+      } catch (error) {
+        finish(error);
+      }
+    });
+    socket.once('close', () => finish(new Error('session home broker closed before response')));
+  });
+}
+
 export async function handleSupervisorRequest(
   runtimeDir,
   runnerInstanceId,
@@ -2583,10 +2631,22 @@ export async function handleSupervisorRequest(
         // Both ride on the same helper. The Server reads `scriptIsolation` before it
         // raises an approval card for an entry script this Sandbox could not confine.
         managedAgentConfig: true,
+        persistentSessionHomes: true,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,
         scriptIsolation: capabilities.scriptIsolation,
       };
+    case 'prepare-session-home':
+      return await sessionHomeRequest('prepare-session-home', request.sessionId, request);
+    case 'delete-session-home': {
+      if (!SAFE_ID.test(request.sessionId ?? '')) throw new Error('invalid sessionId');
+      const turns = await listTurns(runtimeDir);
+      for (const turn of turns) {
+        if (turn.sessionId === request.sessionId && turnStarter !== undefined)
+          await turnStarter.cancel(turn.turnId);
+      }
+      return await sessionHomeRequest('delete-session-home', request.sessionId);
+    }
     case 'list-turns':
       return { ok: true, turns: await listTurns(runtimeDir) };
     case 'get-turn': {

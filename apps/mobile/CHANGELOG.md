@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.77.0](https://github.com/Heey-Global/verity/compare/mobile-v1.76.0...mobile-v1.77.0) (2026-10-23)
+
+
+### Features
+
+* **forgejo:** integrate connections and mobile repository workflows ([#1805](https://github.com/Heey-Global/verity/issues/1805)) ([5ebd077](https://github.com/Heey-Global/verity/commit/5ebd0778c995deb3be62dc424b7e980381fa6886))
+* **mobile:** let the update banner be dismissed until the next version ([#1807](https://github.com/Heey-Global/verity/issues/1807)) ([2b33ccd](https://github.com/Heey-Global/verity/commit/2b33ccda610b3849379025979990e0e39480f6dd))
+* **mobile:** show app updates next to server updates ([#1806](https://github.com/Heey-Global/verity/issues/1806)) ([ea7fdf0](https://github.com/Heey-Global/verity/commit/ea7fdf07d401298c1801c2eb25f5ac237741bea2))
+* **security:** scan session changes and surface vulnerability diffs ([#1819](https://github.com/Heey-Global/verity/issues/1819)) ([6275bce](https://github.com/Heey-Global/verity/commit/6275bce4878566b2816e7f3a2b63bc5bf5dab32a))
+
+
+### Bug Fixes
+
+* **mobile:** adapt split view to narrower iPad windows ([#1811](https://github.com/Heey-Global/verity/issues/1811)) ([eee498d](https://github.com/Heey-Global/verity/commit/eee498d2545b6c4a45c33bc810a8395656f78386))
+* **mobile:** highlight the entire pull request bar on press ([#1812](https://github.com/Heey-Global/verity/issues/1812)) ([ec5e1b9](https://github.com/Heey-Global/verity/commit/ec5e1b95e94e0cf6daa4e6bb3c52245110106fda))
+* **mobile:** show up to date on the installed row and drop the generation counter ([#1804](https://github.com/Heey-Global/verity/issues/1804)) ([19e5a33](https://github.com/Heey-Global/verity/commit/19e5a33dbb661aeb85bc08fcd45ebe5b6e16c366))
+
+## [1.76.0](https://github.com/Heey-Global/verity/compare/mobile-v1.75.0...mobile-v1.76.0) (2026-10-22)
+
+
+### Features
+
+* **updates:** recover stuck updates from the app ([#1768](https://github.com/Heey-Global/verity/issues/1768)) ([699be3a](https://github.com/Heey-Global/verity/commit/699be3ad1a7d2e013989441f574de1b3390752af))
+
+
+### Bug Fixes
+
+* **mobile:** build the new-meeting screen from the design system ([#1763](https://github.com/Heey-Global/verity/issues/1763)) ([3b79f18](https://github.com/Heey-Global/verity/commit/3b79f185c793a68436733dffb80568ec9eb6079c))
+* **runtime:** update Node to security release 26.12.1 ([#1789](https://github.com/Heey-Global/verity/issues/1789)) ([dd20beb](https://github.com/Heey-Global/verity/commit/dd20beb29dfcf295c971e3babccf74b940d39141))
+
+## [1.75.0](https://github.com/Heey-Global/verity/compare/mobile-v1.74.0...mobile-v1.75.0) (2026-10-21)
+
+
+### Features
+
+* **mobile:** show missing GitHub permissions as an action card and indicator ([#1755](https://github.com/Heey-Global/verity/issues/1755)) ([97063c8](https://github.com/Heey-Global/verity/commit/97063c8ee6c69f00b01237dd41bc95422d69df85))
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
+
+### Bug Fixes
+
+* **github:** explain and recover missing commit-status permissions ([#1737](https://github.com/Heey-Global/verity/issues/1737)) ([2a2b781](https://github.com/Heey-Global/verity/commit/2a2b7813df93f27a68b92123b3399fe9492545d9))
+* **mobile:** bound session history loading and expose recovery ([#1713](https://github.com/Heey-Global/verity/issues/1713)) ([023feee](https://github.com/Heey-Global/verity/commit/023feee98ea28d75ba78d6ea292717714f8e34a3))
+* **mobile:** keep the web app alive on plain-http origins without randomUUID ([#1705](https://github.com/Heey-Global/verity/issues/1705)) ([974b52b](https://github.com/Heey-Global/verity/commit/974b52bc3898ba30d8f4125650bde9fc4bbd055d))
+* **mobile:** remove session settings header menu ([#1714](https://github.com/Heey-Global/verity/issues/1714)) ([8cd1166](https://github.com/Heey-Global/verity/commit/8cd116602dee1804cb8ed61faf513e3193e9ebf0))
+* **mobile:** remove the load earlier history button ([#1735](https://github.com/Heey-Global/verity/issues/1735)) ([18836c5](https://github.com/Heey-Global/verity/commit/18836c5860631eb2d8fc3b460b1593e2c25aecdc))
+
 ## [1.74.0](https://github.com/Heey-Global/verity/compare/mobile-v1.73.0...mobile-v1.74.0) (2026-10-17)
 
 

@@ -98,6 +98,21 @@ const verifiedNodeVersion = readFileSync(
   'utf8',
 ).trim();
 
+/** The start failure runsc reports for a filestore left by an unclean teardown,
+ *  as worded in runsc/container/container.go (createGoferFilestoreInSelf) of the
+ *  release pinned in deploy/gvisor/versions.env, wrapped the way dockerd relays it. */
+function staleFilestoreError(containerId: string): DockerError {
+  const filestore = `/proc/4242/root/var/lib/docker/overlay2/layer/merged/.gvisor.filestore.${containerId}`;
+  return new DockerError({
+    kind: 'other',
+    status: 500,
+    message:
+      `failed to create task for container: OCI runtime create failed: runsc-project: ` +
+      `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
+      `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
+  });
+}
+
 describe('openCodeSettingsConfig', () => {
   it('builds a provider config only from complete settings', () => {
     expect(openCodeSettingsConfig(undefined)).toBeUndefined();
@@ -114,6 +129,7 @@ describe('openCodeSettingsConfig', () => {
       },
       provider: {
         verity: {
+          npm: '@opencode/ai/providers/openai-compatible',
           options: {
             baseURL: 'http://127.0.0.1:47821/opencode',
             apiKey: 'verity-opencode-gateway-placeholder-v1',
@@ -1002,6 +1018,53 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
     expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('replaces a retained sleeping Sandbox whose stale gVisor filestore blocks its start', async () => {
+    // Returning it to sleep would fail every later wake the same way.
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      createdContainerId: 'container-2',
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
+      startContainer: vi.fn(async (containerId: string) => {
+        if (containerId === 'container-1') throw staleFilestoreError('container-1');
+      }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = vi.fn(async () => ({
+      identity: { projectId: id, containerGeneration: 'generation-1' },
+      signingCapability: 'fresh-signing',
+      githubCapability: 'fresh-github',
+    }));
+    const fallback = vi.fn();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      onSandboxWakeFallback: fallback,
+    });
+
+    expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+    expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
   });
 
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {
@@ -6060,6 +6123,91 @@ describe('ProvisionerImpl (#174)', () => {
     expect(startMock).toHaveBeenCalledWith('existing-cid');
   });
 
+  it('replaces a retained container whose stale gVisor filestore blocks every start', async () => {
+    // Repair reaches the conflict path below and used to `docker start` the same
+    // container again. Its id is the gVisor sandbox id, so a filestore left by a
+    // teardown without `runsc delete` failed every Repair identically.
+    const id = await seedProject('active');
+    const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const createContainer = vi
+      .fn()
+      .mockRejectedValueOnce(new DockerError({ kind: 'conflict', message: 'name already in use' }))
+      .mockResolvedValueOnce({ id: 'fresh-cid' });
+    const startMock = vi.fn(async (containerId: string) => {
+      if (containerId === 'stale-cid') throw staleFilestoreError('stale-cid');
+    });
+    const removeMock = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      createContainer,
+      inspectContainer: vi.fn(async () => ({
+        id: 'stale-cid',
+        running: false,
+        labels: { 'verity.project-id': id },
+      })),
+      startContainer: startMock,
+      removeContainer: removeMock,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:2026.06',
+      hostCloneRoot: '/var/lib/verity-dev',
+      claudeConfigVolume: 'claude-config-verity',
+      codexConfigVolume: 'codex-config-verity',
+      git,
+      isDirectory: () => true,
+    });
+
+    const result = await provisioner.recreateContainer(id);
+
+    expect(result.state).toBe('active');
+    expect(removeMock).toHaveBeenCalledWith('stale-cid');
+    expect(createContainer).toHaveBeenCalledTimes(2);
+    expect(startMock.mock.calls.map(([containerId]) => containerId)).toEqual([
+      'stale-cid',
+      'fresh-cid',
+    ]);
+  });
+
+  it('keeps a retained container when its start fails for any other reason', async () => {
+    // Replacement discards the container's writable layer, so it is reserved for
+    // the one failure that only a new container id can clear.
+    const id = await seedProject('active');
+    const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const removeMock = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      createContainer: vi.fn(async () => {
+        throw new DockerError({ kind: 'conflict', message: 'name already in use' });
+      }),
+      inspectContainer: vi.fn(async () => ({
+        id: 'existing-cid',
+        running: false,
+        labels: { 'verity.project-id': id },
+      })),
+      startContainer: vi.fn(async () => {
+        throw new DockerError({ kind: 'other', status: 500, message: 'port is already allocated' });
+      }),
+      removeContainer: removeMock,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:2026.06',
+      hostCloneRoot: '/var/lib/verity-dev',
+      claudeConfigVolume: 'claude-config-verity',
+      codexConfigVolume: 'codex-config-verity',
+      git,
+      isDirectory: () => true,
+    });
+
+    await expect(provisioner.recreateContainer(id)).rejects.toThrow(/port is already allocated/);
+    expect(removeMock).not.toHaveBeenCalledWith('existing-cid');
+  });
+
   it('degrades to the lazy create path on recreate when no pull capability is wired (ADR 0004 soft fallback)', async () => {
     const id = await seedProject('active');
     const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
@@ -6134,14 +6282,37 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
-  it.each([false, true])(
+  it.each([false, true, 'forgejo'] as const)(
     'issues a per-project capability + mounts it (proxy test mode: %s)',
     async (proxyTest) => {
       const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
       const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
       try {
-        const id = await seedProject('absent');
-        const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+        const forgejo = proxyTest === 'forgejo';
+        const origin = forgejo ? 'https://forge.test:8443' : 'https://github.com';
+        const id = forgejo ? randomUUID() : await seedProject('absent');
+        if (forgejo) {
+          await ctx.store.forgeConnections.upsert({
+            id: 'forge',
+            provider: 'forgejo',
+            baseUrl: `${origin}/prefix`,
+            label: 'Forge',
+            personalToken: 'server-side-token',
+            githubAppId: null,
+            githubAppInstallationId: null,
+            githubAppPrivateKey: null,
+          });
+          await ctx.store.createProject({
+            id,
+            ...baseInput,
+            kind: 'forgejo',
+            forgeConnectionId: 'forge',
+          });
+        }
+        const { runner: git, calls: gitCalls } = fakeGit([
+          { match: /\bclone\b/ },
+          { match: /remote set-url/ },
+        ]);
         const { client: docker, calls: dockerCalls } = fakeDocker({
           inspectContainer: vi.fn(async (container: string) => ({
             id: container,
@@ -6159,12 +6330,26 @@ describe('ProvisionerImpl (#174)', () => {
           gitSecretRoot: secretRoot,
           ghTokenCapabilities: capabilities,
           forgeProxy: proxyTest
-            ? { caCertPem: 'public-forge-ca', enabled: (projectId) => projectId === id }
+            ? {
+                caCertPem: 'public-forge-ca',
+                enabled: (projectId) => projectId === id,
+                urlFor: () => Promise.resolve(`${origin}/prefix`),
+              }
+            : undefined,
+          forgeRepositoryAccess: forgejo
+            ? () =>
+                Promise.resolve({
+                  url: `${origin}/prefix/example-org/example-repo.git`,
+                  token: 'server-side-token',
+                  authorization: gitAuthHeader('server-side-token'),
+                  customCaPem: 'upstream-ca',
+                })
             : undefined,
           projectRelay: {
             async start(binding) {
               const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                forgeConnectionId: binding.forgeConnectionId ?? null,
                 owner: 'example-org',
                 repo: 'example-repo',
                 containerGeneration: binding.containerGeneration,
@@ -6207,6 +6392,9 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
         );
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
+        );
         expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
@@ -6218,19 +6406,34 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain('GIT_TERMINAL_PROMPT=0');
           expect(spec.env).toContain('NO_PROXY=');
           expect(spec.env).toContain('no_proxy=');
-          expect(spec.env).toContain('GIT_CONFIG_KEY_2=http.https://github.com.proxy');
+          expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
-        expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
+        expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
         expect(spec.env).toContain(
           `GIT_CONFIG_VALUE_${proxyTest ? 1 : 0}=/opt/agent-seed/bin/verity-gh-cred`,
         );
         expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
+        if (forgejo) {
+          expect(spec.env).toContain('VERITY_FORGE_AUTHORITY=forge.test:8443');
+          expect(JSON.stringify(spec)).not.toContain('server-side-token');
+          expect(gitCalls.some((call) => call.args.includes('http.followRedirects=false'))).toBe(
+            true,
+          );
+          expect(
+            gitCalls.some((call) =>
+              call.args.some((arg) =>
+                arg.startsWith(`http.${origin}/prefix/example-org/example-repo.git.sslCAInfo=`),
+              ),
+            ),
+          ).toBe(true);
+        }
         // The materialized capability resolves back to THIS project's binding.
         expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
           projectId: id,
+          ...(forgejo ? { forgeConnectionId: 'forge' } : {}),
           owner: 'example-org',
           repo: 'example-repo',
           containerGeneration: expect.any(String),

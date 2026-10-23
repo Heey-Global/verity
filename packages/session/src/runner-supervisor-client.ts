@@ -130,6 +130,7 @@ export type SupervisorStartTelemetry = {
 export interface SupervisorRunnerClientOptions {
   /** Test seam for legacy wire fixtures; production keeps the capability check enabled. */
   securityPreflight?: boolean;
+  persistentSessionHomes?: boolean;
   runtimeDir: string;
   store: RunnerFrameStore;
   bus: EventBus;
@@ -1141,6 +1142,8 @@ export class SupervisorRunnerClient implements RunnerClient {
       );
       if (
         capabilities['managedAgentConfig'] !== true ||
+        (this.options.persistentSessionHomes === true &&
+          capabilities['persistentSessionHomes'] !== true) ||
         (opts.planning === true && capabilities['planningIsolation'] !== true)
       )
         throw new Error(
@@ -1191,6 +1194,19 @@ export class SupervisorRunnerClient implements RunnerClient {
       this.options.transcript === undefined
     ) {
       throw new Error('supervisor worker cannot persist opts.transcript without a server sink');
+    }
+    if (this.options.persistentSessionHomes === true) {
+      const prepared = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        {
+          kind: 'prepare-session-home',
+          sessionId: opts.storeSessionId,
+          legacyBackend: this.workerBackend,
+          legacySessionId: opts.resumeSessionId,
+        },
+        this.options.timeoutMs,
+      );
+      if (prepared.ok !== true) throw new Error('Could not prepare persistent session storage');
     }
     // Restore-before-launch (Stage 5b Slice 2): for a `--resume` turn, materialize the
     // durable transcript back onto the shared mount BEFORE the supervisor starts the

@@ -24,34 +24,44 @@ export function parseBranchIssue(branch: string | undefined): number | null {
   return Number.isSafeInteger(issue) && issue > 0 ? issue : null;
 }
 
-/** The repo's GitHub `{ owner, repo }`, as surfaced on the branches response (#161).
+/** Where a repository's web pages live. Defaults to GitHub. */
+export interface RefHost {
+  provider: 'github' | 'forgejo';
+  baseUrl: string;
+}
+
+/** The repo's `{ owner, repo }`, as surfaced on the branches response (#161).
  *  Both undefined when the server is older or there's no GitHub remote. */
 export interface RepoIdentity {
   owner?: string | undefined;
   repo?: string | undefined;
+  /** Where the repository's web pages live; absent means GitHub. */
+  host?: RefHost | undefined;
 }
 
+const GITHUB_REF_HOST: RefHost = { provider: 'github', baseUrl: 'https://github.com' };
+
 /**
- * Build the canonical GitHub URL for an Issue or PR chip (#161), so the header can
- * make the chip tappable (`Linking.openURL`). Returns null — keeping the chip
+ * Build the code-host URL for an Issue or PR chip (#161), so the header can make
+ * the chip tappable (`Linking.openURL`). Returns null — keeping the chip
  * non-tappable — unless owner, repo and a positive integer `number` are ALL present,
- * so a missing identity (no GitHub remote / older server) degrades to a plain,
- * non-linked chip rather than a broken URL. `kind` selects GitHub's path segment:
- * `issues/<n>` vs `pull/<n>` (GitHub redirects `issues/<n>` ↔ `pull/<n>` for the
- * other type, but we use the correct one for each chip). owner/repo are
- * percent-encoded so an unusual remote name can't break the URL.
+ * so a missing identity (no remote / older server) degrades to a plain, non-linked
+ * chip rather than a broken URL. `kind` selects the provider's path segment:
+ * GitHub uses `issues/<n>` and `pull/<n>`, Forgejo `issues/<n>` and `pulls/<n>`.
+ * owner/repo are percent-encoded so an unusual remote name can't break the URL.
  */
-export function githubRefUrl(
+export function forgeRefUrl(
   kind: 'issue' | 'pr',
   identity: RepoIdentity,
   number: number | null | undefined,
 ): string | null {
   const { owner, repo } = identity;
+  const host = identity.host ?? GITHUB_REF_HOST;
   if (owner === undefined || owner === '' || repo === undefined || repo === '') return null;
   if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) return null;
-  const segment = kind === 'issue' ? 'issues' : 'pull';
+  const segment = kind === 'issue' ? 'issues' : host.provider === 'forgejo' ? 'pulls' : 'pull';
   return (
-    `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
+    `${host.baseUrl.replace(/\/$/u, '')}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
     `/${segment}/${String(number)}`
   );
 }

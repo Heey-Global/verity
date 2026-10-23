@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { Children, useState, type ReactNode } from 'react';
 import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -30,6 +30,7 @@ export function TextField({
   keyboardType,
   literal: literalInput = false,
   autoFocus,
+  maxLength,
   accessibilityLabel,
   labelAccessory,
 }: {
@@ -49,6 +50,7 @@ export function TextField({
    *  and `email-address`. */
   literal?: boolean;
   autoFocus?: boolean;
+  maxLength?: number;
   /** When the visible label alone would be ambiguous to VoiceOver. */
   accessibilityLabel?: string;
   /** A status beside the label, e.g. whether a write-only secret is stored. */
@@ -99,6 +101,7 @@ export function TextField({
             secret && revealed && Platform.OS === 'android' ? 'visible-password' : keyboardType
           }
           autoFocus={autoFocus}
+          maxLength={maxLength}
           // Keys, addresses and emails must arrive exactly as typed; prose keeps
           // the platform's capitalization, correction and spell check.
           {...(literal
@@ -142,21 +145,36 @@ export function TextField({
 /**
  * The red hint box under a field or in a flow: a short bold title and one
  * sentence. Announced as an alert so the problem is heard, not just seen.
+ *
+ * `children` are the steps that resolve it (a footnote, buttons). They stay
+ * separately focusable, so the box is then not collapsed into one element —
+ * a button inside a single accessible view cannot be activated by a screen
+ * reader.
  */
-export function HintBox({ title, message }: { title: string; message: string }) {
+export function HintBox({
+  title,
+  message,
+  children,
+}: {
+  title: string;
+  message: string;
+  children?: ReactNode;
+}) {
   const { theme } = useUnistyles();
+  const actionable = Children.toArray(children).length > 0;
   return (
     <View
       style={styles.hint}
-      accessible
+      accessible={!actionable}
       accessibilityRole="alert"
-      accessibilityLabel={`${title}. ${message}`}
+      {...(actionable ? {} : { accessibilityLabel: `${title}. ${message}` })}
       accessibilityLiveRegion="polite"
     >
       <Icon name="alert-circle" size={18} color={theme.colors.attention} />
       <View style={styles.hintBody}>
         <Text style={styles.hintTitle}>{title}</Text>
         <Text style={styles.hintMessage}>{message}</Text>
+        {actionable ? <View style={styles.hintActions}>{children}</View> : null}
       </View>
     </View>
   );
@@ -227,6 +245,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: tint(theme.colors.attention, 'neutral'),
   },
   hintBody: { flex: 1, gap: theme.spacing.xxs },
+  hintActions: { gap: theme.spacing.sm, marginTop: theme.spacing.sm },
   hintTitle: {
     ...theme.typography.body,
     fontFamily: theme.fonts.semibold,

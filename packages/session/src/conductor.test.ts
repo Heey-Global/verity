@@ -12,6 +12,7 @@ import {
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
+  repoToolPullRequestSystemPrompt,
   MEMORY_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
@@ -629,6 +630,43 @@ describe('Conductor.sendTurn', () => {
     );
     expect(terminal).toHaveLength(1);
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
+  });
+
+  it('keeps the error an adapter printed above its exit stack trace', async () => {
+    await ctx.store.createSession({ sessionId: 's-stack', worktree: '/wt/x', model: 'm' });
+    // Shape of a Codex ACP exit: the app-server's reason, then the adapter's Node
+    // stack for the rejected request. The stack alone used to fill the excerpt, so
+    // the operator saw only "Internal error" and never the reason above it.
+    const frame = (n: number) =>
+      `    at handleResponse (file:///usr/local/lib/node_modules/.verity-cli/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js:${2409 + n}:40)`;
+    const stderr = [
+      'ERROR codex_app_server: thread/resume failed: example reason',
+      'ResponseError: Internal error',
+      ...Array.from({ length: 8 }, (_, n) => frame(n)),
+      '',
+      'Internal error',
+    ].join('\n');
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr,
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s-stack', 'go');
+
+    const crashed = (await ctx.store.getEvents('s-stack')).find((e) => e.t === 'error');
+    expect(crashed).toMatchObject({ t: 'error', kind: 'crashed' });
+    expect(crashed && 'message' in crashed ? crashed.message : '').toContain(
+      'thread/resume failed: example reason',
+    );
   });
 
   it.each([
@@ -4735,8 +4773,19 @@ describe('Conductor.startSession', () => {
    *  the runtime prompt its first turn is launched with. */
   async function freshTurnSystemPrompt(
     sessionId: string,
-    kind: 'github' | 'local',
+    kind: 'github' | 'forgejo' | 'local',
   ): Promise<string> {
+    if (kind === 'forgejo')
+      await ctx.store.forgeConnections.upsert({
+        id: `forgejo-${sessionId}`,
+        provider: 'forgejo',
+        baseUrl: 'https://git.example.org',
+        label: 'Forgejo',
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
     await ctx.store.upsertProject({
       id: `project-${sessionId}`,
       owner: kind === 'local' ? '__local__' : 'acme',
@@ -4744,6 +4793,7 @@ describe('Conductor.startSession', () => {
       containerName: `verity-${sessionId}`,
       state: 'active',
       kind,
+      ...(kind === 'forgejo' ? { forgeConnectionId: `forgejo-${sessionId}` } : {}),
     });
     await ctx.store.createSession({
       sessionId,
@@ -4803,6 +4853,17 @@ describe('Conductor.startSession', () => {
 
     expect(appended).toContain(PULL_REQUEST_SYSTEM_PROMPT);
     expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+  });
+
+  // `gh` cannot reach Forgejo; the first fresh turn must already name the tool
+  // that can, and must not also carry the `gh` instructions it would follow.
+  it('gives a Forgejo project the verity-repo pull-request directive', async () => {
+    const appended = await freshTurnSystemPrompt('s-forgejo-project', 'forgejo');
+
+    expect(appended).toContain(repoToolPullRequestSystemPrompt('Forgejo'));
+    expect(appended).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
+    expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+    expect(appended.split(REPO_CONVENTIONS_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('reclassifies a linked project on its next fresh context, not on resumed turns', async () => {
@@ -7267,6 +7328,127 @@ describe('Conductor — backend session state', () => {
       backendSessionId: 's1',
     });
   });
+
+  // A Codex thread whose first turn died before its prompt has no rollout, and
+  // neither does the Verity id the second rung tries. codex-acp reports both only
+  // through `staleResume`; the ladder has to reach the cold start, or the session
+  // stays bound to a thread no turn can ever load.
+  it('cold-starts Codex when the Verity id is just as unknown as the bound thread', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'codex/default' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: 'codex',
+      backendSessionId: 'unmaterialized_thread',
+      contextSeq: 5,
+    });
+    const seenResumeIds: Array<string | undefined> = [];
+    const codex: Backend = {
+      run: async (opts) => {
+        seenResumeIds.push(opts.resumeSessionId);
+        if (opts.resumeSessionId !== undefined) {
+          return {
+            sessionId: undefined,
+            exitCode: 1,
+            stderr: 'Internal error',
+            aborted: false,
+            staleResume: true,
+          };
+        }
+        await opts.onSession?.('thread_fresh');
+        return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      codexBackend: codex,
+      worktreeExists: async () => true,
+    });
+
+    const result = await conductor.sendTurn('s1', 'resume');
+
+    expect(result.exitCode).toBe(0);
+    expect(seenResumeIds).toEqual(['unmaterialized_thread', 's1', undefined]);
+    expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+      backendSessionId: 'thread_fresh',
+    });
+  });
+
+  // codex-acp can accept the load of a thread it never materialized and only fail
+  // when the prompt starts the turn. That rejection names the bound thread, so no
+  // turn ran in it; the same message about another thread is a different failure.
+  it.each(
+    (['adapter log', 'ACP error'] as const).flatMap((shape) => [
+      [shape, 'the bound thread', 'dead_thread', ['dead_thread', 's1', undefined], 'thread_fresh'],
+      [shape, 'another thread', 'other_thread', ['dead_thread'], 'dead_thread'],
+      // A longer id that merely starts with the bound one is still another thread.
+      [shape, 'a thread named after it', 'dead_thread_2', ['dead_thread'], 'dead_thread'],
+    ]) as Array<['adapter log' | 'ACP error', string, string, Array<string | undefined>, string]>,
+  )(
+    'treats a Codex prompt rejected (%s) for %s accordingly',
+    async (shape, _label, missing, expectedResumeIds, expectedBinding) => {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'codex/default',
+      });
+      await ctx.store.upsertSessionBackendState({
+        sessionId: 's1',
+        backend: 'codex',
+        backendSessionId: 'dead_thread',
+        contextSeq: 5,
+      });
+      const seenResumeIds: Array<string | undefined> = [];
+      const codex: Backend = {
+        run: async (opts) => {
+          seenResumeIds.push(opts.resumeSessionId);
+          if (opts.resumeSessionId === 'dead_thread') {
+            await opts.onSession?.('dead_thread');
+            return {
+              sessionId: 'dead_thread',
+              exitCode: 1,
+              stderr:
+                shape === 'adapter log'
+                  ? [
+                      `[SYSTEM_ERROR] Prompt for session dead_thread failed: Error: thread not found: ${missing}`,
+                      `Error: thread not found: ${missing}`,
+                      '    at handleResponse (file:///codex-acp/dist/index.js:2409:40)',
+                      '',
+                      'Internal error',
+                    ].join('\n')
+                  : // The adapter answered the prompt, and the backend appended the
+                    // ACP error with its details, as it does since codex-acp put the
+                    // reason in `data.details` only.
+                    `\nInternal error: thread not found: ${missing}`,
+              aborted: false,
+            };
+          }
+          if (opts.resumeSessionId === 's1') {
+            return {
+              sessionId: undefined,
+              exitCode: 1,
+              stderr: 'Internal error',
+              aborted: false,
+              staleResume: true,
+            };
+          }
+          await opts.onSession?.('thread_fresh');
+          return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        codexBackend: codex,
+        worktreeExists: async () => true,
+      });
+
+      await conductor.sendTurn('s1', 'resume');
+
+      expect(seenResumeIds).toEqual(expectedResumeIds);
+      expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+        backendSessionId: expectedBinding,
+      });
+    },
+  );
 
   it('clears a stale Claude backend id and cold-starts with DB handoff context', async () => {
     await ctx.store.createSession({

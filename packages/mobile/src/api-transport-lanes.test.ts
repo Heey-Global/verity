@@ -15,6 +15,7 @@ describe('transport admission metadata', () => {
       (client: VerityClient) => client.getHistory('s/1', { beforeSeq: 50 }),
       'interactive',
     ],
+    ['bounded history', (client: VerityClient) => client.getBoundedHistory('s/1'), 'interactive'],
     ['activity', (client: VerityClient) => client.getActivity('s/1'), 'interactive'],
     ['session list', (client: VerityClient) => client.listSessions(), 'interactive'],
     ['project list', (client: VerityClient) => client.listProjects(), 'interactive'],

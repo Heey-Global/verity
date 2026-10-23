@@ -105,7 +105,7 @@ function ActionMenuRow({
     >
       <View style={styles.icon}>
         {busy ? (
-          <ActivityIndicator size="small" color={theme.colors.signature} />
+          <ActivityIndicator size="small" color={theme.colors.textMuted} />
         ) : (
           <Icon
             name={icon}

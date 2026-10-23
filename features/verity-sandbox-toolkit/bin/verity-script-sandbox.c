@@ -2,6 +2,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <stddef.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <linux/landlock.h>
 #include <limits.h>
 #include <mntent.h>
@@ -33,6 +40,153 @@ static void allow_path(int ruleset, const char *path, __u64 rights) {
   if (syscall(SYS_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) < 0)
     fail("landlock_add_rule");
   close(parent);
+}
+
+/* glibc discovers a main thread's stack through /proc/self/maps. Granting
+   /proc read access would also expose peer agents' environments. A supervisor
+   outside Landlock instead supplies only the requesting process's own maps.
+   Descendants inherit the filter, not access to the supervisor or other procfs
+   files. Namespace isolation already has a private procfs and needs no broker. */
+static void supervise_self_maps(void) {
+  int channel[2];
+  if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, channel) < 0)
+    fail("create process metadata channel");
+  if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) < 0) fail("track isolated descendants");
+  pid_t child = fork();
+  if (child < 0) fail("start process metadata supervisor");
+  if (child == 0) {
+    close(channel[0]);
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0) fail("bind metadata supervisor lifetime");
+    if (getppid() == 1) _exit(126);
+#if defined(__x86_64__)
+    const unsigned int architecture = AUDIT_ARCH_X86_64;
+#elif defined(__aarch64__)
+    const unsigned int architecture = AUDIT_ARCH_AARCH64;
+#else
+#error Unsupported sandbox architecture
+#endif
+    struct sock_filter instructions[] = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, architecture, 1, 0),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef SYS_open
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_open, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+#endif
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {
+      .len = sizeof(instructions) / sizeof(instructions[0]), .filter = instructions,
+    };
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
+    int listener = (int)syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER,
+                               SECCOMP_FILTER_FLAG_NEW_LISTENER, &program);
+    if (listener < 0) fail("self maps notification filter");
+    char byte = 'x';
+    struct iovec data = {.iov_base = &byte, .iov_len = 1};
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr message = {
+      .msg_iov = &data, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control),
+    };
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(header), &listener, sizeof(listener));
+    if (sendmsg(channel[1], &message, 0) != 1) fail("send process metadata listener");
+    close(listener);
+    close(channel[1]);
+    return;
+  }
+  close(channel[1]);
+  /* The child can inspect its own memory, but must not ptrace this supervisor. */
+  if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) fail("protect metadata supervisor");
+  char byte;
+  struct iovec data = {.iov_base = &byte, .iov_len = 1};
+  char control[CMSG_SPACE(sizeof(int))] = {0};
+  struct msghdr message = {
+    .msg_iov = &data, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control),
+  };
+  if (recvmsg(channel[0], &message, 0) != 1) fail("receive process metadata listener");
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  if (header == NULL || header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(sizeof(int))) {
+    errno = EPROTO; fail("invalid process metadata listener");
+  }
+  int listener;
+  memcpy(&listener, CMSG_DATA(header), sizeof(listener));
+  close(channel[0]);
+  int primary_status = 126 << 8;
+  for (;;) {
+    int status;
+    pid_t reaped;
+    while ((reaped = waitpid(-1, &status, WNOHANG)) > 0)
+      if (reaped == child) primary_status = status;
+    if (reaped < 0 && errno == ECHILD) break;
+    struct pollfd ready = {.fd = listener, .events = POLLIN};
+    int count = poll(&ready, 1, 100);
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) fail("poll process metadata listener");
+    if (count == 0 || !(ready.revents & POLLIN)) continue;
+    struct seccomp_notif request = {0};
+    if (ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) < 0) {
+      if (errno == ENOENT || errno == EINTR) continue;
+      fail("receive process metadata request");
+    }
+    struct seccomp_notif_resp response = {
+      .id = request.id, .flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+    };
+    int path_arg = request.data.nr == SYS_openat ? 1 : 0;
+    char memory[64];
+    snprintf(memory, sizeof(memory), "/proc/%u/mem", request.pid);
+    int mem = open(memory, O_RDONLY | O_CLOEXEC);
+    if (mem < 0) { response.flags = 0; response.error = -errno; }
+    else {
+      if (ioctl(listener, SECCOMP_IOCTL_NOTIF_ID_VALID, &request.id) < 0) {
+        close(mem);
+        if (errno == ENOENT) continue;
+        fail("validate process metadata request");
+      }
+      char path[PATH_MAX] = {0};
+      ssize_t length = pread(mem, path, sizeof(path) - 1, (off_t)request.data.args[path_arg]);
+      close(mem);
+      if (length > 0 && memchr(path, '\0', (size_t)length) != NULL && !strcmp(path, "/proc/self/maps")) {
+        response.flags = 0;
+        unsigned long flags = request.data.args[path_arg + 1];
+        if (flags & ~(unsigned long)(O_CLOEXEC | O_LARGEFILE)) response.error = -EACCES;
+        else {
+          char maps[64];
+          snprintf(maps, sizeof(maps), "/proc/%u/maps", request.pid);
+          int fd = open(maps, O_RDONLY | O_CLOEXEC);
+          if (fd < 0) response.error = -errno;
+          else {
+            /* Supplying this exact fd is safe even if hostile code races its
+               pathname: it can receive only its own read-only mappings. */
+            struct seccomp_notif_addfd add = {
+              .id = request.id, .flags = SECCOMP_ADDFD_FLAG_SEND, .srcfd = (__u32)fd,
+              .newfd_flags = flags & O_CLOEXEC,
+            };
+            int result = ioctl(listener, SECCOMP_IOCTL_NOTIF_ADDFD, &add);
+            int saved_errno = errno;
+            close(fd);
+            if (result >= 0) continue;
+            if (saved_errno == ENOENT) continue;
+            errno = saved_errno;
+            fail("supply process mappings");
+          }
+        }
+      }
+    }
+    if (ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response) < 0 && errno != ENOENT)
+      fail("complete process metadata request");
+  }
+  close(listener);
+  if (WIFEXITED(primary_status)) exit(WEXITSTATUS(primary_status));
+  if (WIFSIGNALED(primary_status)) exit(128 + WTERMSIG(primary_status));
+  exit(126);
 }
 
 static void write_mapping(const char *path, unsigned int inside, unsigned int outside) {
@@ -147,9 +301,9 @@ static void enter_pid_namespace(void) {
 
 /* gVisor does not implement Landlock, but does implement unprivileged user and
    mount namespaces. Build a new root containing only the paths the Landlock
-   policy allows, then chroot into it. The namespace root maps to the caller's
-   uid outside, so it gains mount/chroot capability without gaining host or
-   container privilege. */
+   policy allows, then pivot into it. As the namespace's creator the helper
+   holds mount/pivot capability there without gaining host or container
+   privilege. */
 static void isolate_with_mounts(const char *root, const char *dynamic_root, char **secret_paths,
                                 int secret_count, int isolate_writes) {
   uid_t uid = getuid();
@@ -176,10 +330,17 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
     if (write(setgroups, "deny\n", 5) != 5) fail("disable setgroups");
     close(setgroups);
   }
-  write_mapping("/proc/self/uid_map", 0, (unsigned int)uid);
-  write_mapping("/proc/self/gid_map", 0, (unsigned int)gid);
-  if (setresgid(0, 0, 0) < 0 || setresuid(0, 0, 0) < 0) fail("enter user namespace");
+  /* Keep the caller's own ids rather than mapping them to root. A nested user
+     namespace may map its parent's uid 0 only if its creator held CAP_SETFCAP,
+     which the confined process never does, so a root mapping here broke every
+     nested sandbox an agent starts (Linux 5.12+ and gVisor alike). */
+  write_mapping("/proc/self/uid_map", (unsigned int)uid, (unsigned int)uid);
+  write_mapping("/proc/self/gid_map", (unsigned int)gid, (unsigned int)gid);
+  if (setresgid(gid, gid, gid) < 0 || setresuid(uid, uid, uid) < 0)
+    fail("enter user namespace");
   if (unshare(CLONE_NEWNS) < 0) fail("unshare mount namespace");
+  /* pivot_root rejects shared propagation, and none of these mounts may leak out. */
+  if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) < 0) fail("make mounts slave");
   enter_pid_namespace();
   if (mount("tmpfs", sandbox, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700,size=16m") < 0)
     fail("mount sandbox root");
@@ -208,12 +369,33 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   if (mount("proc", proc, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) < 0)
     fail("mount proc");
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
+  /* A private, size-limited /tmp. Codex creates its daemon rendezvous
+     directory there regardless of TMPDIR, and its bubblewrap binds /tmp, so
+     nested sandboxes need it present and writable. It is this sandbox's own
+     tmpfs: nothing from the container's /tmp is visible, and nothing persists. */
+  char tmp[PATH_MAX];
+  if (snprintf(tmp, sizeof(tmp), "%s/tmp", sandbox) >= (int)sizeof(tmp)) {
+    errno = ENAMETOOLONG;
+    fail("tmp path");
+  }
+  if (mkdir(tmp, 0700) < 0 && errno != EEXIST) fail("create tmp");
+  if (mount("tmpfs", tmp, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700,size=16m") < 0)
+    fail("mount tmp");
 
-  bind_into(sandbox, root, !isolate_writes);
-  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, isolate_writes == 2 || !isolate_writes);
+  bind_into(sandbox, root, isolate_writes != 2);
+  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, 1);
   for (int i = 0; i < secret_count; i++)
-    bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root"));
-  if (chroot(sandbox) < 0) fail("chroot");
+    bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root") ||
+               !strcmp(secret_paths[i * 2 - 1], "--write-root"));
+  /* pivot_root rather than chroot: the kernel (and gVisor) refuses to create a
+     user namespace from a chrooted process, which broke every nested sandbox
+     an agent starts, such as Codex's read-only reviewer. Detaching the old
+     root keeps it as unreachable as chroot did. The only other process in this
+     mount namespace is the PID-namespace parent, which is moved along but only
+     waits and relays signals; the cleaner forked before it keeps the host view. */
+  if (chdir(sandbox) < 0) fail("enter sandbox root");
+  if (syscall(SYS_pivot_root, ".", ".") < 0) fail("pivot_root");
+  if (umount2(".", MNT_DETACH) < 0) fail("detach previous root");
   if (chdir("/") < 0) fail("chdir sandbox root");
   if (write(cleanup[1], "x", 1) != 1) fail("clean sandbox root");
   close(cleanup[1]);
@@ -264,7 +446,9 @@ static void isolate_reads(const char *root, const char *dynamic_root, char **sec
   if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights | (isolate_writes ? write_rights : 0));
   for (int i = 0; i < secret_count; i++)
     allow_path(ruleset, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root")
-      ? rights | write_rights : LANDLOCK_ACCESS_FS_READ_FILE);
+      ? rights | write_rights :
+      !strcmp(secret_paths[i * 2 - 1], "--write-root") ? rights | write_rights :
+      !strcmp(secret_paths[i * 2 - 1], "--read-root") ? rights : LANDLOCK_ACCESS_FS_READ_FILE);
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
   if (syscall(SYS_landlock_restrict_self, ruleset, 0) < 0) fail("landlock_restrict_self");
   close(ruleset);
@@ -281,7 +465,7 @@ int main(int argc, char **argv) {
   }
   if (argc < 9 || strcmp(argv[1], "--root") || strcmp(argv[3], "--cwd") ||
       strcmp(argv[5], "--loading")) {
-    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH|--runtime-root PATH] -- COMMAND\n",
+    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH|--runtime-root PATH|--read-root PATH|--write-root PATH] -- COMMAND\n",
           stderr);
     return 126;
   }
@@ -311,16 +495,31 @@ int main(int argc, char **argv) {
     isolate_writes = 2;
     command++;
   }
+  int self_maps = 0;
+  if (command < argc && !strcmp(argv[command], "--self-proc-maps")) {
+    self_maps = 1;
+    command++;
+  }
   int secret_start = command;
   while (command + 1 < argc && (!strcmp(argv[command], "--secret") ||
+      !strcmp(argv[command], "--read-root") ||
+      (isolate_writes && !strcmp(argv[command], "--write-root")) ||
       (isolate_writes == 2 && !strcmp(argv[command], "--runtime-root")))) {
     if (argv[command + 1][0] != '/') { errno = EINVAL; fail("invalid secret path"); }
     /* Validate private runtime storage after dropping to its owning identity;
        the broker cannot traverse agent-owned 0700 transcript parents. */
-    if (!strcmp(argv[command], "--runtime-root")) {
+    if (strcmp(argv[command], "--secret")) {
       struct stat metadata;
       if (lstat(argv[command + 1], &metadata) < 0) fail("stat runtime root");
       if (!S_ISDIR(metadata.st_mode)) { errno = EINVAL; fail("invalid runtime root"); }
+      char resolved[PATH_MAX];
+      if (strcmp(argv[command], "--runtime-root")) {
+        if (realpath(argv[command + 1], resolved) == NULL) fail("resolve runtime root");
+        if (strcmp(resolved, argv[command + 1])) {
+          errno = EINVAL;
+          fail("runtime root must be canonical and contain no symbolic links");
+        }
+      }
     }
     command += 2;
   }
@@ -331,6 +530,11 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[6], "dynamic") && dynamic_root == NULL) {
     errno = EINVAL;
     fail("missing dynamic root");
+  }
+  if (self_maps) {
+    int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    const char *force = getenv("VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE");
+    if (abi >= 1 && (force == NULL || strcmp(force, "1"))) supervise_self_maps();
   }
   isolate_reads(argv[2], dynamic_root, &argv[secret_start + 1], (command - secret_start) / 2, isolate_writes);
   if (chdir(argv[4]) < 0) fail("chdir");

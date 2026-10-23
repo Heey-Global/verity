@@ -939,6 +939,7 @@ describe('GET /server/updates', () => {
       state: 'unsupported',
       reason: 'deployment is not managed',
       operation: null,
+      installed: { version: expect.any(String), generation: null },
     });
   });
 
@@ -987,6 +988,12 @@ describe('GET /server/updates', () => {
         state: 'available',
         release: availableRelease,
         operation: preparingOperation,
+        installed: { version: expect.any(String), generation: null },
+        attempt: null,
+        // The fixture's operation last moved in August; this stub controller can
+        // neither read attempts nor retry, so nothing is offered for it.
+        stalled: true,
+        recovery: { retry: false, supersede: false },
       });
     } finally {
       await server.close();
@@ -2855,6 +2862,36 @@ describe('POST /sessions/:id/debug/scroll', () => {
 });
 
 describe('GET /sessions/:id/events (backward pagination)', () => {
+  it('negotiates whole byte-bounded history independently from the legacy route', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: '界'.repeat(100_000) });
+    const bounded = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(bounded.statusCode).toBe(200);
+    expect(bounded.json()).toMatchObject({
+      contract: 'bounded-history-v1',
+      kind: 'oversized-event',
+    });
+    expect(Buffer.byteLength(bounded.body)).toBeLessThanOrEqual(256 * 1024);
+    const legacy = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
+    expect(legacy.json().events[0].event.delta).toBe('界'.repeat(100_000));
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'complete tail '.repeat(1000) });
+    const plain = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(plain.json()).toMatchObject({ kind: 'page', hasMore: true });
+    expect(plain.json().events).toHaveLength(1);
+    expect(plain.json().events[0].event.delta).toBe('complete tail '.repeat(1000));
+    expect(Buffer.byteLength(plain.body)).toBeLessThanOrEqual(256 * 1024);
+    const compressed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/history/v1',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(compressed.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.body);
+
+    const invalid = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1?beforeSeq=0' });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it('negotiates compression for history while leaving other responses untouched', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'history '.repeat(1_000) });
@@ -3754,6 +3791,70 @@ describe('GET /sessions', () => {
           { displayPrompt: 'Fix failing CI for PR #7' },
         );
       });
+    } finally {
+      await prApp.close();
+    }
+  });
+
+  // A Forgejo PR described as a GitHub one sends the agent to `gh` and GitHub
+  // Actions, which cannot see it; the repair turn must name the real host.
+  it('names the Forgejo code host in the CI repair turn of a Forgejo project', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'repair-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'repair-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'repair-forgejo',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'forgejo-team-site',
+      state: 'active',
+    });
+    const branchPrStatus = vi.fn(async () => ({
+      number: 7,
+      title: 'feat: x',
+      url: 'https://git.example.org/team/site/pulls/7',
+      phase: 'open' as const,
+      headSha: 'abc123',
+      pipeline: 'failure' as const,
+      checks: { completed: 2, total: 2, successful: 1, failed: 1, pending: 0 },
+      mergeable: false,
+    }));
+    const prApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: {
+        current: vi.fn(async () => 'feat/x'),
+        switchable: vi.fn(async () => [] as string[]),
+        previewable: vi.fn(async () => [] as string[]),
+        switch: vi.fn(),
+      } as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        projectId: 'repair-forgejo-project',
+      });
+      await prApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalled());
+      const prompt = String(dispatchTurnWhenIdle.mock.calls.at(-1)?.[1]);
+      expect(prompt).toContain('Forgejo pull request #7');
+      expect(prompt).not.toContain('GitHub');
+      // verity-repo reads no check logs, so the turn must not send the agent after them.
+      expect(prompt).toContain('reproduce them locally');
     } finally {
       await prApp.close();
     }
@@ -9460,6 +9561,90 @@ describe('GET /sessions/:id/branches', () => {
     await withId.close();
   });
 
+  // A Forgejo checkout's origin is the sandbox broker, so the remote parse is
+  // wrong for links; the chips must use the project and its instance instead.
+  it('links Forgejo project chips to the configured instance', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'branches-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org/forge',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'branches-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'branches-forgejo',
+      owner: 'team',
+      repo: 'website',
+      containerName: 'forgejo-team-website',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'forgejo-'));
+    await ctx.store.createSession({
+      sessionId: 'forgejo-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-forgejo-project',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/forgejo-session/branches' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      owner: 'team',
+      repo: 'website',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org/forge' },
+    });
+    await withId.close();
+  });
+
+  it('keeps Forgejo chips unlinked when the project connection is gone', async () => {
+    await ctx.store.upsertProject({
+      id: 'branches-orphan-forgejo',
+      kind: 'forgejo',
+      owner: 'team',
+      repo: 'orphan',
+      containerName: 'forgejo-team-orphan',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'orphan-'));
+    await ctx.store.createSession({
+      sessionId: 'orphan-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-orphan-forgejo',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      // The broker remote parses as a repository but names nothing real.
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/orphan-session/branches' });
+    expect(res.statusCode).toBe(200);
+    const body: { owner?: string; codeHost?: unknown } = res.json();
+    expect(body.owner).toBeUndefined();
+    expect(body.codeHost).toBeUndefined();
+    await withId.close();
+  });
+
   it('omits owner/repo when the identity resolves to null (no GitHub remote, #161)', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/161-x');
@@ -12673,6 +12858,72 @@ describe('POST /projects/:id/link-github', () => {
       ...overrides,
     };
   }
+
+  it('links through the selected Forgejo connection without adopting another connection repository', async () => {
+    await createLocal('p-forge-link');
+    for (const id of ['forge-first', 'forge-second'])
+      await ctx.store.forgeConnections.upsert({
+        id,
+        provider: 'forgejo',
+        baseUrl: 'https://forge.test/prefix',
+        label: id,
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+    await ctx.store.createProject({
+      id: 'other-forge-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'forge-second',
+      owner: 'owner',
+      repo: 'repo',
+      containerName: 'other-forge',
+      state: 'active',
+    });
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('forge-admin');
+    const provisioner = fakeProvisioner();
+    const ghTokenMint = vi.fn(() => Promise.resolve('server-only-fixture'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner,
+      ghTokenMint,
+      authRegistry: registry,
+      forgejoEnabled: true,
+    });
+    try {
+      const response = await a.inject({
+        method: 'POST',
+        url: '/projects/p-forge-link/link',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { repo: 'https://forge.test/prefix/owner/repo.git', connectionId: 'forge-first' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        project: {
+          kind: 'forgejo',
+          forgeConnectionId: 'forge-first',
+          owner: 'owner',
+          repo: 'repo',
+          cloneDir: 'local-my-project',
+        },
+      });
+      expect(ghTokenMint).toHaveBeenCalledWith({
+        owner: 'owner',
+        repo: 'repo',
+        forgeConnectionId: 'forge-first',
+        kind: 'forgejo',
+      });
+      expect((await ctx.store.getProject('other-forge-project'))?.forgeConnectionId).toBe(
+        'forge-second',
+      );
+    } finally {
+      await a.close();
+    }
+  });
 
   it('503s when the provisioner cannot link', async () => {
     const res = await app.inject({
@@ -16101,4 +16352,83 @@ it('replaces a meeting index entry by transcript path when the title changes', a
   } finally {
     rmSync(meetingDir, { recursive: true, force: true });
   }
+});
+
+describe('vulnerability scan session integration', () => {
+  it('hydrates summary warnings and scans after an interrupted turn without starting an agent', async () => {
+    await ctx.store.upsertProject({
+      id: 'vuln-project',
+      owner: 'test',
+      repo: 'vuln',
+      containerName: 'vuln',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'vuln-session',
+      worktree: '/work/session',
+      projectId: 'vuln-project',
+      model: 'm',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, sessionChanges: true });
+    const finding = {
+      advisoryId: 'GHSA-example',
+      aliases: [],
+      ecosystem: 'npm',
+      package: 'example',
+      version: '1',
+      severity: 'high' as const,
+      summary: '',
+      fixedVersions: [],
+      source: 'package-lock.json',
+      dev: false,
+      modified: null,
+    };
+    await ctx.store.vulnerabilityScans.putCached('integration-main', [finding]);
+    await ctx.store.vulnerabilityScans.putCached('integration-session', [
+      finding,
+      { ...finding, package: 'added' },
+    ]);
+    for (const sessionId of [null, 'vuln-session'])
+      await ctx.store.vulnerabilityScans.setState({
+        projectId: 'vuln-project',
+        sessionId,
+        contentHash: sessionId ? 'integration-session' : 'integration-main',
+        status: 'ready',
+        detail: null,
+        revision: 'abc',
+        attemptedAt: new Date(),
+      });
+    const server = buildServer({ eventStore: ctx.store, bus, conductor });
+    try {
+      await vi.waitFor(async () => {
+        const sessions = (await server.inject('/sessions')).json<
+          { sessionId: string; attention?: { code: string; message: string }[] }[]
+        >();
+        expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
+          code: 'vulnerability_new',
+          message: '1 new vulnerability',
+        });
+      });
+      const projects = (await server.inject('/projects')).json<
+        { id: string; vulnerabilitySummary?: unknown }[]
+      >();
+      expect(projects.find((p) => p.id === 'vuln-project')?.vulnerabilitySummary).toEqual({
+        count: 1,
+        critical: 0,
+        high: 1,
+      });
+      bus.publish('vuln-session', { seq: 1, ts: Date.now(), event: { t: 'interrupted' } });
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await ctx.store.vulnerabilityScans.getState('vuln-project', 'vuln-session'))?.status,
+          ).toBe('unavailable'),
+        { timeout: 5000 },
+      );
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
 });

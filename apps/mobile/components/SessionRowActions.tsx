@@ -338,7 +338,7 @@ function SwipeAction({
   secondary?: { label: string; icon: IconName; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const tone = side === 'favorite' ? theme.colors.signature : theme.colors.attention;
+  const tone = side === 'favorite' ? theme.colors.action : theme.colors.attention;
   const [isArmed, setArmed] = useState(false);
   const arm = useCallback(
     (on: boolean) => {
@@ -488,7 +488,7 @@ export function SessionContextMenu({
         <MenuItem
           icon="star"
           label={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          color={favorite ? theme.colors.signature : theme.colors.text}
+          color={favorite ? theme.colors.action : theme.colors.text}
           onPress={pick(onToggleFavorite)}
         />
         <MenuItem icon="edit-2" label="Edit…" color={theme.colors.text} onPress={pick(onEdit)} />

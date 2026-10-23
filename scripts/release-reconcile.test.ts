@@ -22,10 +22,15 @@ type Fixture = {
   releaseRuns?: Run[];
   promoteRuns?: Run[];
   ota?: boolean;
+  backend?: boolean;
+  openOta?: boolean;
+  otaRuns?: Run[];
+  message?: string;
   native?: {
     path?: string;
     compatible?: boolean;
     open?: boolean;
+    stale?: boolean;
     mainMoved?: boolean;
     oldHead?: boolean;
     recent?: boolean;
@@ -40,6 +45,7 @@ function sweep(fixture: Fixture) {
   git('config', 'user.email', 'test@example.invalid');
   git('config', 'user.name', 'Test');
   git('config', 'commit.gpgSign', 'false');
+  git('config', 'tag.gpgSign', 'false');
   // Assembled so the changed-area guard in ci-workflow.test.ts does not read
   // this fixture as a script consuming a release-managed file.
   const manifest = (train: string) =>
@@ -58,6 +64,12 @@ function sweep(fixture: Fixture) {
     mkdirSync(join(cwd, 'apps/mobile/plugins'), { recursive: true });
     writeFileSync(join(cwd, 'apps/mobile/plugins/capture.js'), 'native change');
   }
+  if (fixture.backend) {
+    writeFileSync(
+      join(cwd, 'release-please-config.backend.json'),
+      readFileSync(resolve('release-please-config.backend.json')),
+    );
+  }
   git('add', '.');
   const commitDate = fixture.approvedAt ?? approvedAt;
   execFileSync('git', ['commit', '-qm', 'chore(mobile): promote OTA 1.33.1'], {
@@ -65,7 +77,7 @@ function sweep(fixture: Fixture) {
     env: { ...process.env, GIT_AUTHOR_DATE: commitDate, GIT_COMMITTER_DATE: commitDate },
   });
   if (fixture.native) {
-    git('tag', 'mobile-v1.33.0');
+    git('tag', fixture.backend ? 'v1.2.3' : 'mobile-v1.33.0');
     const nativePath = fixture.native.rename
       ? 'capture.js'
       : (fixture.native.path ?? 'apps/mobile/plugins/capture.js');
@@ -74,7 +86,7 @@ function sweep(fixture: Fixture) {
     else writeFileSync(join(cwd, nativePath), 'native change');
     git('add', '.');
     const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
-    execFileSync('git', ['commit', '-qm', 'feat(tasks): capture tasks'], {
+    execFileSync('git', ['commit', '-qm', fixture.message ?? 'feat(tasks): capture tasks'], {
       cwd,
       env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
@@ -116,7 +128,11 @@ if (joined.includes('/git/ref/heads/main')) {
   writeFileSync(seen, '1');
   process.stdout.write(JSON.stringify({object:{sha:moved ? 'f'.repeat(40) : process.env.RECONCILE_HEAD}}));
 } else if (joined.includes('/pulls?state=open')) {
-  process.stdout.write(fixture.native?.open ? '42' : '');
+  process.stdout.write(joined.includes('components--mobile-ota') ? (fixture.openOta ? '42' : '') : (fixture.native?.open ? '42' : ''));
+} else if (/\\/pulls\\/42$/.test(joined)) {
+  process.stdout.write(JSON.stringify({state:'open',user:{login:'github-actions[bot]'},head:{sha:'a'.repeat(40)}}));
+} else if (joined.includes('/compare/')) {
+  process.stdout.write(JSON.stringify({ahead_by:fixture.native?.stale ? 1 : 0}));
 } else if (joined.includes('/releases?')) {
   process.stdout.write((fixture.releases ?? []).map((r) => JSON.stringify({ tag_name: r.tag_name, draft: !!r.draft, prerelease: !!r.prerelease })).join('\\n') + '\\n');
 } else if (joined.includes('/pulls?')) {
@@ -125,8 +141,10 @@ if (joined.includes('/git/ref/heads/main')) {
   rows.push({ ...pr('server', 900), labels: ['autorelease: tagged'] }, { ...pr('server', 901), merged_at: null });
   process.stdout.write(rows.map((row) => JSON.stringify(row)).join('\\n') + '\\n');
 } else if (joined.includes('/actions/workflows/release-dispatch.yml/runs?')) {
-  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, display_title: run.display_title === 'replan' ? 'Replan native mobile ' + process.env.RECONCILE_HEAD : run.display_title, html_url: 'https://runs.invalid/release/' + index }));
+  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, display_title: run.display_title === 'replan' ? (fixture.backend ? 'Replan server ' : 'Replan native mobile ') + process.env.RECONCILE_HEAD : run.display_title, html_url: 'https://runs.invalid/release/' + index }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
+} else if (joined.includes('/actions/workflows/mobile-ota.yml/runs?')) {
+  process.stdout.write(JSON.stringify([{workflow_runs:(fixture.otaRuns ?? []).map((run) => ({...run,head_sha:process.env.RECONCILE_HEAD,html_url:'https://runs.invalid/ota'}))}]));
 } else if (joined.includes('/actions/workflows/mobile-ota-promote.yml/runs?')) {
   const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/promote/' + index }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
@@ -457,4 +475,131 @@ describe('missing native Staging planning', () => {
     expect(result.status).toBe(0);
     expect(result.dispatches).toEqual([replan]);
   });
+});
+
+describe('missing Server Staging planning', () => {
+  const releases = [{ tag_name: 'v1.2.3' }];
+  const replan = 'workflow run release-dispatch.yml --ref main -f backend-replan=true';
+  const base = { backend: true, ota: false, releases };
+  it('recovers a missing push plan', () => {
+    const result = sweep({ ...base, native: { path: 'packages/server/src/example.ts' } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered by a server revert', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'revert(server): restore previous behavior',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered by a squash body entry', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'chore: maintenance\n\nfix(server): correct storage',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it('recovers a release triggered only by a breaking footer', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      message: 'refactor(server): revise storage\n\nBREAKING CHANGE: storage format changed',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it.each([
+    { path: 'apps/mobile/app/example.tsx' },
+    { path: 'docs/website/example.md' },
+    { path: 'packages/server/src/example.ts', open: true },
+    { path: 'packages/server/src/example.ts', oldHead: true },
+    { path: 'packages/server/src/example.ts', mainMoved: true },
+    { path: 'packages/server/src/example.ts', recent: true },
+  ])('does not dispatch for excluded or changing state %j', (native) => {
+    const result = sweep({ ...base, native });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('waits for an active dispatcher', () => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      releaseRuns: [run({ status: 'queued' })],
+    });
+    expect(result.dispatches).toEqual([]);
+  });
+  it.each(['success', 'failure'])('does not loop after a %s plan', (conclusion) => {
+    const result = sweep({
+      ...base,
+      native: { path: 'packages/server/src/example.ts' },
+      releaseRuns: [run({ display_title: 'replan', conclusion })],
+    });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+  });
+});
+
+it('refreshes an existing stale Server release PR after a missed push', () => {
+  const result = sweep({
+    backend: true,
+    ota: false,
+    releases: [{ tag_name: 'v1.2.3' }],
+    native: { path: 'packages/server/src/example.ts', open: true, stale: true },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.dispatches).toEqual([
+    'workflow run release-dispatch.yml --ref main -f backend-replan=true',
+  ]);
+});
+it.each(['queued', 'completed'])('avoids duplicate stale PR refresh for %s planning', (status) => {
+  const result = sweep({
+    backend: true,
+    ota: false,
+    releases: [{ tag_name: 'v1.2.3' }],
+    native: { path: 'packages/server/src/example.ts', open: true, stale: true },
+    releaseRuns: [run({ status, display_title: 'replan' })],
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.dispatches).toEqual([]);
+});
+
+it('refreshes an existing stale native release PR without creating a Server plan', () => {
+  const result = sweep({
+    ota: false,
+    releases: [{ tag_name: 'mobile-v1.33.0', prerelease: true }],
+    native: { open: true, stale: true },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.dispatches).toEqual([
+    'workflow run release-dispatch.yml --ref main -f mobile-replan=true',
+  ]);
+});
+it.each([{ recent: true }, { oldHead: true }, { mainMoved: true }])(
+  'waits before refreshing stale PRs when Main changes: %j',
+  (state) => {
+    const result = sweep({
+      backend: true,
+      ota: false,
+      releases: [{ tag_name: 'v1.2.3' }],
+      native: { open: true, stale: true, ...state },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  },
+);
+
+it('refreshes an existing stale OTA PR through the compatibility-gated OTA workflow', () => {
+  const result = sweep({ ota: false, openOta: true, native: { stale: true } });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.dispatches).toEqual(['workflow run mobile-ota.yml --ref main']);
+});
+it('does not repeatedly refresh an OTA PR for the same Main source', () => {
+  const result = sweep({ ota: false, openOta: true, native: { stale: true }, otaRuns: [run({})] });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.dispatches).toEqual([]);
 });

@@ -28,6 +28,11 @@ on:
         default: '180'
         required: true
         type: string
+      uplink_test_ip:
+        description: Optional IPv4 of a separate test entry for the Uplink host (empty uses public DNS)
+        default: ''
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -51,19 +56,67 @@ jobs:
             (( SOAK_SECONDS >= 30 && SOAK_SECONDS <= 600 )) ||
             { echo 'soak_seconds must be an integer from 30 to 600' >&2; exit 1; }
 
+      - name: Validate test entry
+        env:
+          UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
+          UPLINK_TEST_IP: ${{ inputs.uplink_test_ip }}
+        run: |
+          set -euo pipefail
+          [[ -z "$UPLINK_TEST_IP" ]] && exit 0
+          octet='(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+          [[ "$UPLINK_TEST_IP" =~ ^$octet\.$octet\.$octet\.$octet$ ]] ||
+            { echo 'uplink_test_ip must be a dotted IPv4 address' >&2; exit 1; }
+          [[ "$UPLINK_ORIGIN" =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?/?$ ]] ||
+            { echo 'uplink_origin must be a bare https host to route it to a test entry' >&2; exit 1; }
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.0'
+          node-version: '26.12.1'
 
       - name: Install dependencies
         run: npm ci
 
       - name: Verify admission regression tests
         run: node --test scripts/remote-control-staging/probe.test.mjs scripts/remote-control-staging/workflow.test.mjs
+
+      # A run that died before its cleanup must not route a later public-DNS soak.
+      - name: Remove a leftover test entry route
+        run: |
+          set -euo pipefail
+          if grep -q '# verity-soak-test-entry$' /etc/hosts; then
+            echo '::warning::Removing a leftover Uplink test entry route'
+            sudo sed -i '' '/# verity-soak-test-entry$/d' /etc/hosts
+            sudo dscacheutil -flushcache
+            sudo killall -HUP mDNSResponder
+          fi
+
+      # Only this runner machine resolves the Uplink host to the test entry; the concurrency
+      # group keeps soaks serial. Hostname, SNI and certificate validation stay unchanged,
+      # and the paired Core keeps its own resolution.
+      - name: Route the Uplink host to the test entry
+        if: inputs.uplink_test_ip != ''
+        env:
+          UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
+          UPLINK_TEST_IP: ${{ inputs.uplink_test_ip }}
+        run: |
+          set -euo pipefail
+          host="${UPLINK_ORIGIN#https://}"
+          host="${host%/}"
+          # Keep the entry off the last line of a hosts file that lacks a final newline.
+          [[ -z "$(tail -c1 /etc/hosts)" ]] || echo | sudo tee -a /etc/hosts >/dev/null
+          printf '%s %s # verity-soak-test-entry\n' "$UPLINK_TEST_IP" "$host" |
+            sudo tee -a /etc/hosts >/dev/null
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder
+          # Every family must reach the test entry: a public AAAA record would bypass it.
+          resolved="$(node -e 'require("node:dns").lookup(process.argv[1], { all: true }, (e, a) => { if (e) throw e; console.log([...new Set(a.map((r) => r.address))].join(" ")); })' "$host")"
+          [[ "$resolved" == "$UPLINK_TEST_IP" ]] ||
+            { echo "Uplink host still resolves to $resolved" >&2; exit 1; }
+          echo "Soak route: test entry $UPLINK_TEST_IP"
 
       - name: Run native app tunnel soak
         timeout-minutes: 12
@@ -76,3 +129,11 @@ jobs:
           VERITY_REMOTE_PROBE_SOAK_SECONDS: ${{ inputs.soak_seconds }}
           VERITY_REMOTE_PROBE_SOAK_STREAMS: '6'
         run: bash scripts/remote-control-staging/run.sh
+
+      - name: Remove the test entry route
+        if: always() && inputs.uplink_test_ip != ''
+        run: |
+          set -euo pipefail
+          sudo sed -i '' '/# verity-soak-test-entry$/d' /etc/hosts
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder

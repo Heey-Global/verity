@@ -1,15 +1,17 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.76.1",
+  "runtime": "1.76.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
+  "tag": "mobile-v1.76.1",
+  "branch": "staging-mobile-v1.76.1-b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
+  "baseline": "mobile-v1.76.0",
+  "group": "8bfe628c-24b5-47c8-b0b2-408eb214e5bc",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "let the update banner be dismissed until the next version (#1807)",
+    "show app updates next to server updates (#1806)",
+    "integrate connections and mobile repository workflows (#1805)",
+    "show up to date on the installed row and drop the generation counter (#1804)"
   ]
 }

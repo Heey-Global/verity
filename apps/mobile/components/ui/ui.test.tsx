@@ -52,6 +52,31 @@ describe('Row', () => {
     expect(chevrons()).toHaveLength(1);
   });
 
+  it('retains attention and success icon colors on navigable status rows', () => {
+    const { rerender } = render(
+      <Row
+        title="Finding"
+        leading={{ icon: 'shield', intent: 'needsSetup' }}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    const icon = () =>
+      screen
+        .UNSAFE_getAllByProps({ name: 'shield' })
+        .find((node) => (node.type as unknown) === 'Feather')!;
+    expect(icon().props.color).toBe(lightTheme.colors.attention);
+    rerender(
+      <Row
+        title="Fixed"
+        leading={{ icon: 'shield', intent: 'ready' }}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    expect(icon().props.color).toBe(lightTheme.colors.success);
+  });
+
   // VoiceOver hears a pressable row as one element; a status left out of its
   // label is a state nobody hears.
   it('speaks the subtitle and trailing status as part of a pressable row', () => {

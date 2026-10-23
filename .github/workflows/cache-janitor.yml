@@ -51,7 +51,7 @@ jobs:
     # runners are exactly the contended resource the cache pressure hurts. It must
     # also be able to run while every one of them is busy — that is when the cache
     # is fullest.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       # `actions: write` is the whole point — deleting a cache entry needs it,
@@ -69,7 +69,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.12.0'
+          node-version: '26.12.1'
           # No `cache: npm` here either, and here it is not even a trade-off: the
           # script has zero dependencies and never runs `npm ci`.
 

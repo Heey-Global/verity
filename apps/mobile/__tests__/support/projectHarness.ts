@@ -15,13 +15,14 @@ export function makeDetail(
     dopplerConfig?: string | null;
     defaultModel?: string | null;
     allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
-    kind?: 'github' | 'local';
+    kind?: 'github' | 'forgejo' | 'local';
   } = {},
 ): ProjectDetail {
   return {
     project: {
       id: 'p/1',
       kind: overrides.kind ?? 'github',
+      ...(overrides.kind === 'forgejo' ? { forgeConnectionId: 'forgejo-1' } : {}),
       owner: 'heey-global',
       repo: 'verity',
       containerName: 'dev-heey-global-verity',
@@ -69,6 +70,9 @@ export type ProjectClientOverrides = {
   listModels?: jest.Mock;
   listAvailableRepositories?: jest.Mock;
   linkProjectToGitHub?: jest.Mock;
+  linkProject?: jest.Mock;
+  listConnections?: jest.Mock;
+  listConnectionRepositories?: jest.Mock;
   listHttpMcpConnections?: jest.Mock;
   listProjectMcpBindings?: jest.Mock;
   setProjectMcpBinding?: jest.Mock;
@@ -133,6 +137,11 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
     listAvailableRepositories:
       opts.listAvailableRepositories ?? jest.fn(notImplemented('listAvailableRepositories')),
     linkProjectToGitHub: opts.linkProjectToGitHub ?? jest.fn(notImplemented('linkProjectToGitHub')),
+    linkProject: opts.linkProject ?? jest.fn(notImplemented('linkProject')),
+    // A server that predates code-host connections: GitHub only.
+    listConnections: opts.listConnections ?? jest.fn().mockResolvedValue(null),
+    listConnectionRepositories:
+      opts.listConnectionRepositories ?? jest.fn(notImplemented('listConnectionRepositories')),
     listHttpMcpConnections: opts.listHttpMcpConnections ?? jest.fn().mockResolvedValue([]),
     listProjectMcpBindings: opts.listProjectMcpBindings ?? jest.fn().mockResolvedValue([]),
     setProjectMcpBinding:
@@ -142,3 +151,11 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
     ),
   } as unknown as VerityClient;
 }
+
+/** `GET /connections` with one Forgejo instance, as the app sees it. */
+export const forgejoConnections = (available = true) => ({
+  connections: [
+    { id: 'forgejo-1', provider: 'forgejo', baseUrl: 'https://git.example.org', label: 'Forgejo' },
+  ],
+  forgejoProjectsAvailable: available,
+});

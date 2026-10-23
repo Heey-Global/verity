@@ -91,6 +91,10 @@ const UNCERTAIN_RECOVERY_EXHAUSTED_NOTICE =
   'session — send the message again if the work did not finish.';
 /** How often the in-flight liveness sweep runs. */
 const TURN_LIVENESS_SWEEP_MS = 30_000;
+/** Trailing stderr kept in the crash row the app shows when an agent dies silently.
+ * Matches the technical-detail tail the app renders (`TECHNICAL_LIMIT` in
+ * packages/mobile/src/ui/agentEvent.ts); more would be cut off there anyway. */
+const CRASH_STDERR_EXCERPT_CHARS = 2000;
 /** How many consecutive sweeps an in-flight turn may append NO event before its
  * Runner is probed. Startup recovery only settles turns a restart left behind; a
  * Runner that dies while the Server keeps running produced no such crash, so
@@ -215,6 +219,7 @@ import {
   turnSystemPrompt,
   withBackendSystemPrompt,
   type ExternalPermissionAnswer,
+  type TurnCodeHost,
   type PermissionDecisionSource,
 } from './turn-system-prompt.js';
 
@@ -1262,13 +1267,30 @@ export class Conductor {
     await this.deps.store.deleteSessionBackendState(sessionId, backend);
   }
 
-  private isStaleCodexResume(result: RunResult): boolean {
-    if (result.exitCode === 0 || result.aborted) return false;
-    return /thread\/resume failed|no rollout found for thread id/i.test(result.stderr);
+  private isStaleCodexResume(result: RunResult, resumeSessionId: string): boolean {
+    if (result.exitCode === 0 || result.aborted || result.executionObserved === true) return false;
+    if (result.staleResume === true) return true;
+    if (/thread\/resume failed|no rollout found for thread id/i.test(result.stderr)) return true;
+    // codex-acp can accept the load of a thread it never materialized, from live
+    // app-server state that is gone by the time the prompt starts the turn. Codex
+    // then rejects `turn/start` for that very thread, so no turn ran and nothing
+    // the cold retry repeats has happened yet. Any other thread id is not this.
+    // The rejection reaches stderr as codex-acp logs it, or as the ACP error the
+    // backend appends when the adapter answered the prompt instead of exiting.
+    // That second form does not name the request; it is read as the prompt's
+    // because a load refused this way is already a `staleResume` above, and
+    // setup requests after the load do not look threads up by this id.
+    const rejected = [
+      `Prompt for session ${resumeSessionId} failed: Error: thread not found: ${resumeSessionId}`,
+      `Internal error: thread not found: ${resumeSessionId}`,
+    ];
+    return result.stderr
+      .split(/\r?\n/u)
+      .some((line) => rejected.some((suffix) => line.trimEnd().endsWith(suffix)));
   }
 
   private isStaleClaudeResume(result: RunResult, resumeSessionId: string): boolean {
-    if (result.aborted) return false;
+    if (result.aborted || result.executionObserved === true) return false;
     return namesMissingConversation(result.stderr, resumeSessionId);
   }
 
@@ -1340,7 +1362,7 @@ export class Conductor {
       resumeSessionId === undefined,
       // Only a fresh context carries the runtime prompt, so a resumed turn has
       // nothing to tailor and skips the project read entirely.
-      resumeSessionId === undefined && (await this.isLocalProjectSession(session)),
+      resumeSessionId === undefined ? await this.codeHostForSession(session) : 'github',
     );
     const runOpts = {
       ...builtRunOpts,
@@ -1609,7 +1631,7 @@ export class Conductor {
     const codexStale =
       backendKey === 'codex' &&
       resumeSessionId !== undefined &&
-      (this.isStaleCodexResume(first.result) || first.result.staleResume === true);
+      this.isStaleCodexResume(first.result, resumeSessionId);
 
     // The backend-neutral stale resume: the agent ANSWERED the resume with an error,
     // so the conversation this session is bound to is not one it can restore. Unlike
@@ -1631,7 +1653,12 @@ export class Conductor {
     // read off stderr, `staleResume` an answered `resourceNotFound` — and the
     // backend tests pin it, but the ordering makes the overlap harmless anyway:
     // this cold retry runs first and its own result is what the replay sees.
-    if (!codexStale && resumeSessionId !== undefined && first.result.staleResume === true) {
+    if (
+      !codexStale &&
+      resumeSessionId !== undefined &&
+      first.result.staleResume === true &&
+      first.result.executionObserved !== true
+    ) {
       first.backend.closeSession?.(resumeSessionId);
       await this.clearBackendSessionState(sessionId, backendKey);
       await this.markTurnRunning(sessionId, await this.deps.store.latestEventSeq(sessionId));
@@ -1667,7 +1694,8 @@ export class Conductor {
         opts,
         retryResumeId,
       );
-      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result)) continue;
+      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result, retryResumeId))
+        continue;
       await this.persistBackendSessionState(sessionId, backendKey, retry.backendSessionId);
       return retry.result;
     }
@@ -4747,9 +4775,9 @@ export class Conductor {
     // This is the first await after the start lock is taken, and the lock is only
     // released from inside the promise below — so a throwing read has to release
     // it here or the worktree stays permanently unstartable for this conductor.
-    let localProject: boolean;
+    let codeHost: TurnCodeHost;
     try {
-      localProject = await this.isLocalProjectSpawn(opts.sessionId);
+      codeHost = await this.codeHostForSpawn(opts.sessionId);
     } catch (error) {
       this.starting.delete(opts.worktree);
       throw error;
@@ -4763,7 +4791,7 @@ export class Conductor {
       const turnId = randomUUID();
       const startCommandId = randomUUID();
       const runOpts = {
-        ...this.buildStartOpts(opts, localProject, (sessionId) => {
+        ...this.buildStartOpts(opts, codeHost, (sessionId) => {
           if (boundId !== undefined) return;
           const publicSessionId = opts.sessionId ?? sessionId;
           boundId = publicSessionId;
@@ -5308,7 +5336,10 @@ export class Conductor {
       }
       return;
     }
-    const tail = result.stderr ? `: ${result.stderr.slice(-500)}` : '';
+    // Long enough for an adapter's error line above the stack trace it prints
+    // before exiting: Codex ACP reports a rejected app-server request as a Node
+    // stack plus "Internal error", which alone filled the former 500 characters.
+    const tail = result.stderr ? `: ${result.stderr.slice(-CRASH_STDERR_EXCERPT_CHARS)}` : '';
     const event = {
       t: 'error' as const,
       kind: 'crashed',
@@ -5561,19 +5592,21 @@ export class Conductor {
    *  very push/PR guidance this exists to remove. Failing the turn is also what
    *  the adjacent {@link projectMemoryPrompt} read already does on the same
    *  fresh-context path, so a down store fails it either way. */
-  private async isLocalProjectSession(session: SessionRecord): Promise<boolean> {
-    if (session.projectId === null) return false;
+  private async codeHostForSession(session: SessionRecord): Promise<TurnCodeHost> {
+    if (session.projectId === null) return 'github';
     const project = await this.deps.store.getProject(session.projectId);
-    return project !== undefined && isLocalProject(project);
+    if (project === undefined) return 'github';
+    if (isLocalProject(project)) return 'local';
+    return project.kind === 'forgejo' ? 'forgejo' : 'github';
   }
 
-  /** {@link isLocalProjectSession} for the spawn path, which is handed an id
+  /** {@link codeHostForSession} for the spawn path, which is handed an id
    *  rather than a record. An unknown id is not an error here: `startSession`
    *  accepts a spawn whose session the backend still has to mint. */
-  private async isLocalProjectSpawn(sessionId: string | undefined): Promise<boolean> {
-    if (sessionId === undefined) return false;
+  private async codeHostForSpawn(sessionId: string | undefined): Promise<TurnCodeHost> {
+    if (sessionId === undefined) return 'github';
     const session = await this.deps.store.getSession(sessionId);
-    return session !== undefined && (await this.isLocalProjectSession(session));
+    return session === undefined ? 'github' : await this.codeHostForSession(session);
   }
 
   private buildRunOpts(
@@ -5582,7 +5615,7 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
     includeRuntimePrompt: boolean,
-    localProject: boolean,
+    codeHost: TurnCodeHost,
   ): RunTurnOptions {
     // Planning mode is the session's, not the request's: it overrides whatever
     // posture the turn asked for, because a turn that could still change files is
@@ -5593,9 +5626,7 @@ export class Conductor {
       ? PLANNING_PERMISSION_MODE
       : (opts.permissionMode ?? this.deps.permissionMode);
     const timeoutMs = opts.timeoutMs ?? this.deps.timeoutMs;
-    const systemPrompt = includeRuntimePrompt
-      ? turnSystemPrompt(localProject)
-      : RESUME_SYSTEM_PROMPT;
+    const systemPrompt = includeRuntimePrompt ? turnSystemPrompt(codeHost) : RESUME_SYSTEM_PROMPT;
     // exactOptionalPropertyTypes: omit absent keys rather than assign undefined.
     return {
       store: this.deps.store,
@@ -5644,7 +5675,7 @@ export class Conductor {
 
   private buildStartOpts(
     opts: StartOptions,
-    localProject: boolean,
+    codeHost: TurnCodeHost,
     onSession: (id: string) => void | Promise<void>,
   ): RunTurnOptions {
     const permissionMode = opts.permissionMode ?? this.deps.permissionMode;
@@ -5660,8 +5691,8 @@ export class Conductor {
       // Same per-turn directives (choices #97 + delegation #138) on a fresh session.
       appendSystemPrompt:
         opts.appendSystemPrompt === undefined
-          ? turnSystemPrompt(localProject)
-          : `${turnSystemPrompt(localProject)}\n\n${opts.appendSystemPrompt}`,
+          ? turnSystemPrompt(codeHost)
+          : `${turnSystemPrompt(codeHost)}\n\n${opts.appendSystemPrompt}`,
       onSession,
       // Mid-turn permission control loop (#27) for the first turn of a fresh session.
       // The runner's `onPermissionRequest` is wired by the RunnerClient; startSession's

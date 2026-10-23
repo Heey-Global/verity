@@ -23,6 +23,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 export interface ProjectRelayRuntimeOptions {
   app: FastifyInstance;
   forgeProxy?: BrokeredForgeProxy | undefined;
+  forgeAuthorities?: ((projectId: string) => Promise<readonly string[]>) | undefined;
   forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   docker: DockerClient;
   signingCapabilities: SigningCapabilityRegistry;
@@ -99,6 +100,7 @@ export function createProjectRelayRuntime(
     createDockerProjectRelayStarter({
       docker: options.docker,
       forgeProxyEnabled: options.forgeProxyEnabled,
+      forgeAuthorities: options.forgeAuthorities,
       image: options.image,
       dataVolume: options.dataVolume,
       dataVolumeRoot: options.dataVolumeRoot,

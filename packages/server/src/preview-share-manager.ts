@@ -44,6 +44,13 @@ const CREATING_LEASE_MS = 2 * 60_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
+
+/**
+ * Failures of connectors that were created but never became ready, raised only
+ * after the connector was removed again. Kept beside the original error rather
+ * than wrapping it, so share creation still reports what actually failed.
+ */
+const removedUnreadyConnectorFailures = new WeakSet<object>();
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
 export interface PreviewEdgeCreate {
@@ -795,8 +802,29 @@ export class PreviewShareManager {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
         if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.state === 'active') await this.replaceConnector(share, true);
-        else await this.stop(share.id);
+        if (share.state !== 'active') {
+          await this.stop(share.id);
+          continue;
+        }
+        try {
+          await this.replaceConnector(share, true);
+        } catch (error) {
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !removedUnreadyConnectorFailures.has(error)
+          )
+            throw error;
+          // The offline page is a courtesy to visitors, not a precondition of the
+          // mutation. A connector the edge refuses (an unknown share answers 404)
+          // failed every Repair of the project before its container was created.
+          // replaceConnector has already removed both connectors, so the link is
+          // simply unreachable until reconcile() brings one up again.
+          this.options.log?.warn(
+            { shareId: share.id, projectId, err: error },
+            'public preview stays unreachable during the project change: its offline connector did not start',
+          );
+        }
       }
       return mutation();
     });
@@ -960,6 +988,13 @@ export class PreviewShareManager {
       timed(() => this.options.edge.remove(id)),
     ]);
     const [connectorRemove, uplinkRemove] = cleanup;
+    // A queued Uplink removal is durable: it is persisted before this error is
+    // raised and retried whenever the Uplink connects. Treating it as a failure
+    // left the share in `revoking` for as long as the Uplink was unreachable,
+    // so stopping it answered 500 and every Repair of its project aborted.
+    const uplinkQueued =
+      uplinkRemove?.status === 'rejected' &&
+      uplinkRemove.reason instanceof PreviewShareRemovalQueuedError;
     const complete = cleanup.every((result) => result.status === 'fulfilled');
     this.options.log?.[complete ? 'info' : 'warn'](
       {
@@ -967,13 +1002,15 @@ export class PreviewShareManager {
         waitedForCreationMs,
         connectorRemoveMs: connectorRemove?.status === 'fulfilled' ? connectorRemove.value : null,
         uplinkRemoveMs: uplinkRemove?.status === 'fulfilled' ? uplinkRemove.value : null,
+        ...(uplinkQueued ? { uplinkRemoveQueued: true } : {}),
         totalMs: Math.round(performance.now() - startedAt),
       },
       complete ? 'public preview share stopped' : 'public preview share stop incomplete',
     );
     const failures: unknown[] = [];
     for (const result of cleanup) {
-      if (result.status === 'rejected') failures.push(result.reason);
+      if (result.status === 'rejected' && !(result === uplinkRemove && uplinkQueued))
+        failures.push(result.reason);
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, 'public preview revocation did not complete');
@@ -1285,6 +1322,7 @@ export class PreviewShareManager {
         ...(share.devServerId ? { [DEV_SERVER_LABEL]: share.devServerId } : {}),
       },
       env: [
+        `VERITY_PREVIEW_SHARE_ID=${share.id}`,
         `VERITY_PREVIEW_EDGE_URL=${share.edgeUrl}`,
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
         ...(offline ? ['VERITY_PREVIEW_OFFLINE=1'] : []),
@@ -1321,7 +1359,10 @@ export class PreviewShareManager {
       timer?.mark('connectorReady');
       return created.id;
     } catch (error) {
+      // A failed removal propagates as itself: the connector it leaves behind
+      // would collide with the next one by name, so nothing may skip past it.
       await removeContainer(this.options.docker, created.id);
+      if (typeof error === 'object' && error !== null) removedUnreadyConnectorFailures.add(error);
       throw error;
     }
   }
@@ -2081,7 +2122,11 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
       options?: unknown;
       models?: unknown;
     };
-    if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
+    if (
+      (npm !== '@opencode/ai/providers/openai-compatible' && npm !== '@ai-sdk/openai-compatible') ||
+      name !== 'OpenAI-compatible'
+    )
+      return false;
     if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
     if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
     const timeout = (gateway as { timeout?: unknown }).timeout;

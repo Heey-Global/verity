@@ -15,6 +15,7 @@ import {
   createPushReplyPerformer,
   parsePushPayload,
   parseServerUpdatePush,
+  parseVulnerabilityPush,
   resolvePushResponse,
   type VerityClient,
   type PushCategorySpec,
@@ -230,6 +231,7 @@ export async function handlePushResponse(
   navigateToSession: (sessionId: string) => void,
   expectedDeviceId?: string | null,
   navigateToSettings?: () => void,
+  navigateToVulnerabilities?: (projectId: string | null) => void,
 ): Promise<void> {
   const data: unknown = response.notification.request.content.data;
   // Handled before the session parser, and never through it: this push carries no
@@ -237,6 +239,13 @@ export async function handlePushResponse(
   // tap on "Verity update available" would fall out at the null check below and the
   // notification would open the app on whatever screen it was already showing —
   // an announcement that names an action and then does not lead to it.
+  const vulnerability = parseVulnerabilityPush(data);
+  if (vulnerability !== null) {
+    if (vulnerability.deviceId !== expectedDeviceId) return;
+    if (vulnerability.sessionId) navigateToSession(vulnerability.sessionId);
+    else navigateToVulnerabilities?.(vulnerability.projectId);
+    return;
+  }
   const serverUpdate = parseServerUpdatePush(data);
   if (serverUpdate !== null) {
     // Same pairing check the merge action gets: a notification left in the tray by

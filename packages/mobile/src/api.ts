@@ -1,3 +1,15 @@
+import {
+  vulnerabilitySettingsSchema,
+  vulnerabilityProjectSchema,
+  vulnerabilitySessionSchema,
+  vulnerabilityIgnoresSchema,
+  type VulnerabilitySettings,
+} from './vulnerability.js';
+import {
+  boundedHistoryResultSchema,
+  HISTORY_MAX_BYTES,
+  type BoundedHistoryPage,
+} from '@verity/events';
 import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
@@ -39,7 +51,7 @@ export interface TransportRequestInit extends RequestInit {
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
   return /^\/(?:sessions|projects)$/u.test(pathname) ||
-    /^\/sessions\/[^/]+(?:\/(?:events|activity))?$/u.test(pathname)
+    /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
 }
@@ -423,7 +435,10 @@ export const projectRecordSchema = z.object({
   containerName: z.string().min(1),
   // `local` = created without a GitHub repository; `owner` is the reserved
   // `local` placeholder, so the UI shows `repo` alone as the project name.
-  kind: z.enum(['github', 'control_plane', 'local']).default('github'),
+  kind: z.enum(['github', 'forgejo', 'control_plane', 'local']).default('github'),
+  // The code-host connection behind a repository project. Migrated and legacy
+  // GitHub projects carry `legacy-github`; optional for servers predating it.
+  forgeConnectionId: z.string().nullable().optional(),
   imageRef: z.string().nullable(),
   state: projectStateSchema,
   // Newer servers preserve the legacy `state` projection for older clients and
@@ -441,6 +456,13 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  vulnerabilitySummary: z
+    .object({
+      count: z.number().int().nonnegative(),
+      critical: z.number().int().nonnegative(),
+      high: z.number().int().nonnegative(),
+    })
+    .optional(),
   latestReleaseTag: z.string().nullable().optional(),
   latestReleaseName: z.string().nullable().optional(),
   latestReleaseUrl: z.string().nullable().optional(),
@@ -461,6 +483,42 @@ export const projectRecordSchema = z.object({
   updatedAt: z.string(),
 });
 export type ProjectRecord = z.infer<typeof projectRecordSchema>;
+
+/** A configured code host from `GET /connections`. Never carries credentials;
+ *  `legacy-github` mirrors the GitHub connection from Settings. */
+const forgeConnectionSchema = z.object({
+  id: z.string().min(1),
+  provider: z.enum(['github', 'forgejo']),
+  baseUrl: z.string().min(1),
+  label: z.string(),
+  customCaPem: z.string().nullable().optional(),
+});
+export type ForgeConnection = z.infer<typeof forgeConnectionSchema>;
+
+/** `GET /connections`. `forgejoProjectsAvailable` is false when the server cannot
+ *  run Forgejo projects (no project relay), so the app must not offer creation. */
+const forgeConnectionListSchema = z.object({
+  connections: z.array(forgeConnectionSchema),
+  forgejoProjectsAvailable: z.boolean().default(false),
+});
+export type ForgeConnectionList = z.infer<typeof forgeConnectionListSchema>;
+
+/** Body for adding a Forgejo instance. The token is validated server-side and
+ *  never returned. */
+export interface ForgejoConnectionRequest {
+  label: string;
+  baseUrl: string;
+  token: string;
+  customCaPem?: string | null;
+}
+
+/** A repository a code-host connection can reach. */
+const connectionRepositorySchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  archived: z.boolean().optional(),
+});
+export type ConnectionRepository = z.infer<typeof connectionRepositorySchema>;
 
 /** The result of linking a local project to GitHub. `pullRequest` is present when the
  *  target repository already had history: the project's history rides in on
@@ -849,9 +907,38 @@ export const serverUpdateStatusSchema = z.discriminatedUnion('state', [
   }),
   z.object({ state: z.literal('unreachable'), reason: z.string() }),
 ]);
+// What the server adds for recovering a stuck update. Every field is optional:
+// a server that predates them simply offers no recovery, and a malformed value
+// degrades to "not reported" instead of failing the whole update panel.
+const serverUpdateAttemptSchema = z.object({
+  updateId: z.string().min(1),
+  failures: z.number().int().nonnegative(),
+  lastAttemptAt: z.string().min(1),
+  lastError: z.object({ phase: z.string().min(1), cause: z.string().min(1) }).nullable(),
+});
+export type ServerUpdateAttempt = z.infer<typeof serverUpdateAttemptSchema>;
+
+const serverUpdateRecoverySchema = z.object({
+  installed: z
+    .object({
+      version: z.string().min(1),
+      generation: z.number().int().positive().nullable(),
+    })
+    .optional()
+    .catch(undefined),
+  attempt: serverUpdateAttemptSchema.nullable().optional().catch(undefined),
+  stalled: z.boolean().optional().catch(undefined),
+  recovery: z.object({ retry: z.boolean(), supersede: z.boolean() }).optional().catch(undefined),
+});
+
 export type ServerUpdateStatus = z.infer<typeof serverUpdateStatusSchema> & {
   operation: ServerUpdateOperation | null;
-};
+} & Partial<{
+    installed: { version: string; generation: number | null };
+    attempt: ServerUpdateAttempt | null;
+    stalled: boolean;
+    recovery: { retry: boolean; supersede: boolean };
+  }>;
 
 const serverUpdateEnvelopeSchema = z.object({
   operation: serverUpdateOperationSchema.nullable(),
@@ -1263,6 +1350,12 @@ export type WelcomeSession = z.infer<typeof welcomeSessionSchema>;
  *  redacted failure message (`'locked'` when the store is sealed, `'not configured'`
  *  when creds are missing). The server NEVER returns the token or PEM here. */
 export const githubAppValidateSchema = z.object({
+  commitStatusPermission: z
+    .object({
+      state: z.enum(['ready', 'app_update_required', 'approval_required', 'unknown']),
+      url: z.string().url().optional(),
+    })
+    .optional(),
   ok: z.boolean(),
   accountLogin: z.string().optional(),
   error: z.string().optional(),
@@ -1420,6 +1513,12 @@ export const sessionHistorySchema = z.object({
   hasMore: z.boolean(),
 });
 export type SessionHistoryPage = z.infer<typeof sessionHistorySchema>;
+interface BoundedHistoryOptions {
+  beforeSeq?: number;
+  snapshotSeq?: number | undefined;
+  signal?: AbortSignal;
+  timing?: SwitchTiming | undefined;
+}
 
 const turnResponseSchema = z.object({
   sessionId: z.string().min(1),
@@ -1538,31 +1637,57 @@ export type PermissionDecided = z.infer<typeof permissionDecidedSchema>;
  * PREVIEW live (#122 — incl. ones a sibling worktree is developing). `previewable`
  * is OPTIONAL on the wire so an app newer than the server still parses (absent →
  * no preview rows). */
-export const branchListSchema = z.object({
-  current: z.string(),
-  switchable: z.array(z.string()),
-  previewable: z.array(z.string()).optional(),
-  // True when the session record/history still exists but its workspace was
-  // intentionally cleaned up after merge/archive. Branch controls should go inert
-  // without surfacing a transport error.
-  workspaceMissing: z.boolean().optional(),
-  // The open PR number for the CURRENT branch, looked up from GitHub (#125). `null`
-  // = looked up, no open PR; ABSENT = the server is older OR GitHub isn't configured
-  // (no token/remote) — both render as "no PR chip", independent of the issue chip.
-  currentPr: z.number().int().positive().nullable().optional(),
-  pullRequest: pullRequestSchema.optional(),
-  // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
-  // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
-  // older server OR no GitHub remote, in which case the chips stay non-tappable rather
-  // than linking to a broken URL. They travel together (the server sets both or
-  // neither), but each is independently optional for forward/back-compat.
-  owner: z.string().min(1).optional(),
-  repo: z.string().min(1).optional(),
-  // Present ONLY for a project without a GitHub repository, where there is no pull
-  // request to merge: `base` names the branch this session's work can be merged into
-  // locally. ABSENT = merging goes through the PR strip (or the server is older).
-  localMerge: z.object({ base: z.string().min(1), hasChanges: z.boolean().optional() }).optional(),
+const branchCodeHostSchema = z.object({
+  provider: z.literal('forgejo'),
+  baseUrl: z.string().min(1),
 });
+
+/** A code host this client does not know: since an absent `codeHost` means
+ *  GitHub, keeping its owner/repo would link the chips to an unrelated GitHub
+ *  repository. Dropping all three leaves them unlinked and the list parseable. */
+function withKnownCodeHost(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || !('codeHost' in raw)) return raw;
+  const { codeHost, owner, repo, ...rest } = raw as Record<string, unknown>;
+  if (codeHost === undefined || branchCodeHostSchema.safeParse(codeHost).success) return raw;
+  void owner;
+  void repo;
+  return rest;
+}
+
+export const branchListSchema = z.preprocess(
+  withKnownCodeHost,
+  z.object({
+    current: z.string(),
+    switchable: z.array(z.string()),
+    previewable: z.array(z.string()).optional(),
+    // True when the session record/history still exists but its workspace was
+    // intentionally cleaned up after merge/archive. Branch controls should go inert
+    // without surfacing a transport error.
+    workspaceMissing: z.boolean().optional(),
+    // The open PR number for the CURRENT branch, looked up from GitHub (#125). `null`
+    // = looked up, no open PR; ABSENT = the server is older OR GitHub isn't configured
+    // (no token/remote) — both render as "no PR chip", independent of the issue chip.
+    currentPr: z.number().int().positive().nullable().optional(),
+    pullRequest: pullRequestSchema.optional(),
+    // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
+    // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
+    // older server OR no GitHub remote, in which case the chips stay non-tappable rather
+    // than linking to a broken URL. They travel together (the server sets both or
+    // neither), but each is independently optional for forward/back-compat.
+    owner: z.string().min(1).optional(),
+    repo: z.string().min(1).optional(),
+    // The web host for those chips when it is not GitHub (a Forgejo project).
+    // ABSENT = GitHub, or a server predating Forgejo. See `withKnownCodeHost` for a
+    // host this client does not know.
+    codeHost: branchCodeHostSchema.optional(),
+    // Present ONLY for a project without a GitHub repository, where there is no pull
+    // request to merge: `base` names the branch this session's work can be merged into
+    // locally. ABSENT = merging goes through the PR strip (or the server is older).
+    localMerge: z
+      .object({ base: z.string().min(1), hasChanges: z.boolean().optional() })
+      .optional(),
+  }),
+);
 export type BranchList = z.infer<typeof branchListSchema>;
 
 const pullRequestMergedSchema = z.object({ merged: z.literal(true) });
@@ -1720,6 +1845,7 @@ export interface SpawnRequest {
  * which {@link VerityClient.linkProjectToGitHub} can connect to one later. */
 export type CreateProjectRequest =
   | { repo: string; kind?: 'github'; imageRef?: string | null }
+  | { repo: string; kind: 'forgejo'; connectionId: string; imageRef?: string | null }
   | { kind: 'local'; name: string; imageRef?: string | null };
 
 /** Body for `POST /devices/:id/push-token`: registers this device's Expo push
@@ -2921,6 +3047,54 @@ export class VerityClient {
     }
   }
 
+  /** Configured code hosts. Null when this server predates `/connections` or the
+   *  signed-in user is not an administrator; callers then fall back to the
+   *  GitHub-only behavior. */
+  async listConnections(): Promise<ForgeConnectionList | null> {
+    try {
+      const res = await this.request('/connections', { method: 'GET' });
+      return forgeConnectionListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async createForgejoConnection(body: ForgejoConnectionRequest): Promise<ForgeConnection> {
+    const res = await this.request('/connections', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return forgeConnectionSchema.parse(await res.json());
+  }
+
+  /** Rename a Forgejo connection or replace its token/CA; the server re-validates. */
+  async updateForgejoConnection(
+    id: string,
+    body: Partial<Omit<ForgejoConnectionRequest, 'baseUrl'>>,
+  ): Promise<ForgeConnection> {
+    const res = await this.request(`/connections/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return forgeConnectionSchema.parse(await res.json());
+  }
+
+  /** 409 while a project still uses the connection. */
+  async deleteConnection(id: string): Promise<void> {
+    await this.request(`/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async listConnectionRepositories(id: string): Promise<ConnectionRepository[]> {
+    const res = await this.request(`/connections/${encodeURIComponent(id)}/repositories`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(connectionRepositorySchema) }).parse(await res.json())
+      .repositories;
+  }
+
   async getVeritySettings(): Promise<VeritySettings | null> {
     const res = await this.request('/settings', { method: 'GET' });
     return veritySettingsResponseSchema.parse(await res.json()).settings;
@@ -2944,10 +3118,29 @@ export class VerityClient {
   async getServerUpdates(): Promise<ServerUpdateStatus> {
     const res = await this.request('/server/updates', { method: 'GET' });
     const body: unknown = await res.json();
+    const recovery = serverUpdateRecoverySchema.parse(body);
     return {
       ...serverUpdateStatusSchema.parse(body),
       ...serverUpdateEnvelopeSchema.parse(body),
+      ...(recovery.installed === undefined ? {} : { installed: recovery.installed }),
+      ...(recovery.attempt === undefined ? {} : { attempt: recovery.attempt }),
+      ...(recovery.stalled === undefined ? {} : { stalled: recovery.stalled }),
+      ...(recovery.recovery === undefined ? {} : { recovery: recovery.recovery }),
     };
+  }
+
+  /**
+   * Resume the stuck operation `updateId` now — what restarting the Updater on
+   * the host used to be the only way to do. Named by id so a stale screen cannot
+   * re-run an operation that has since finished or been replaced.
+   */
+  async retryServerUpdate(updateId: string): Promise<ServerUpdateOperation> {
+    const res = await this.request('/server/updates/retry', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ updateId }),
+    });
+    return serverUpdateAcceptedSchema.parse(await res.json()).operation;
   }
 
   /**
@@ -3085,7 +3278,7 @@ export class VerityClient {
     Record<
       'github' | 'claude' | 'codex' | 'opencode' | 'google' | 'matrix' | 'doppler' | 'mcp',
       number
-    >
+    > & { forgejo: Record<string, number> }
   > {
     const response = await this.request('/connections/usage', { method: 'GET' });
     return z
@@ -3098,6 +3291,8 @@ export class VerityClient {
         matrix: z.number().int().nonnegative(),
         doppler: z.number().int().nonnegative(),
         mcp: z.number().int().nonnegative(),
+        // Per Forgejo connection id; absent on servers predating Forgejo.
+        forgejo: z.record(z.string(), z.number().int().nonnegative()).default({}),
       })
       .parse(await response.json());
   }
@@ -3908,6 +4103,17 @@ export class VerityClient {
     return linkedProjectSchema.parse(await res.json());
   }
 
+  /** Provider-neutral form of {@link linkProjectToGitHub}: link a local project
+   *  to an existing repository on the selected code-host connection. */
+  async linkProject(id: string, repo: string, connectionId: string): Promise<LinkedProject> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo, connectionId }),
+    });
+    return linkedProjectSchema.parse(await res.json());
+  }
+
   async deprovisionProject(id: string, opts: { purge?: boolean } = {}): Promise<ProjectRecord> {
     const qs = opts.purge === true ? '?purge=true' : '';
     const res = await this.request(`/projects/${encodeURIComponent(id)}/deprovision${qs}`, {
@@ -4432,6 +4638,104 @@ export class VerityClient {
     markSessionSwitch(timing, 'events-json-parse-end');
     const page = sessionHistorySchema.parse(json);
     markSessionSwitch(timing, 'events-schema-end', page.events.length);
+    return page;
+  }
+
+  /** A stalled fetch/body read must settle into a retryable state, even when a
+   * transport fails to reject its promise after cancellation. */
+  async getBoundedHistory(
+    id: string,
+    opts: BoundedHistoryOptions = {},
+  ): Promise<BoundedHistoryPage> {
+    const controller = new AbortController();
+    let interrupt!: (error: Error) => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      interrupt = reject;
+    });
+    const cancel = () => {
+      interrupt(new Error('History loading was cancelled.'));
+      controller.abort();
+    };
+    const timer = setTimeout(() => {
+      interrupt(new Error('History loading timed out. Retry.'));
+      controller.abort();
+    }, 30_000);
+    opts.signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      if (opts.signal?.aborted) {
+        cancel();
+        return await interrupted;
+      }
+      return await Promise.race([
+        this.readBoundedHistory(id, { ...opts, signal: controller.signal }),
+        interrupted,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', cancel);
+    }
+  }
+
+  /** A dedicated endpoint prevents older Core versions ignoring a byte-budget query. */
+  private async readBoundedHistory(
+    id: string,
+    opts: BoundedHistoryOptions,
+  ): Promise<BoundedHistoryPage> {
+    const params = new URLSearchParams();
+    if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
+    if (opts.snapshotSeq !== undefined) params.set('snapshotSeq', String(opts.snapshotSeq));
+    let res;
+    try {
+      res = await this.request(
+        `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
+        { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
+        this.fetchImpl,
+        { trace: opts.timing },
+      );
+    } catch (error) {
+      if (error instanceof VerityApiError && error.status === 404) {
+        throw new Error(
+          'Bounded history is unavailable. Update Core and check that this session still exists.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    markSessionSwitch(opts.timing, 'events-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(opts.timing, 'events-body-read-end');
+    if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
+      throw new Error('Core returned history above the supported size limit. Update Core.');
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      throw new Error('Core does not support the required history contract. Update Core.');
+    }
+    const parsed = boundedHistoryResultSchema.safeParse(json);
+    if (!parsed.success)
+      throw new Error('Core does not support the required history contract. Update Core.');
+    const page = parsed.data;
+    if (page.kind === 'oversized-event') {
+      throw new Error(
+        `History event ${page.seq} exceeds the page size limit. No events were skipped.`,
+      );
+    }
+    if (
+      (opts.snapshotSeq !== undefined && page.snapshotSeq !== opts.snapshotSeq) ||
+      page.events.some(
+        (e, i) =>
+          e.seq > page.snapshotSeq ||
+          (opts.beforeSeq !== undefined && e.seq >= opts.beforeSeq) ||
+          (i > 0 && e.seq <= page.events[i - 1]!.seq),
+      ) ||
+      page.beforeSeq !== (page.events[0]?.seq ?? null) ||
+      (page.hasMore && page.events.length === 0)
+    ) {
+      throw new Error('Core returned invalid history cursors.');
+    }
+    markSessionSwitch(opts.timing, 'events-schema-end', page.events.length);
     return page;
   }
 
@@ -5001,6 +5305,77 @@ export class VerityClient {
     return res.arrayBuffer();
   }
 
+  async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {
+    const res = await this.request(
+      '/settings/vulnerability-scan',
+      patch
+        ? {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          }
+        : { method: 'GET' },
+    );
+    return vulnerabilitySettingsSchema.parse(
+      ((await res.json()) as { settings: unknown }).settings,
+    );
+  }
+  async projectVulnerabilities(id: string) {
+    return vulnerabilityProjectSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async sessionVulnerabilities(id: string) {
+    return vulnerabilitySessionSchema.parse(
+      await (
+        await this.request(`/sessions/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async scanVulnerabilities(id: string) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+      method: 'POST',
+    });
+  }
+  async vulnerabilityIgnores(id: string) {
+    return vulnerabilityIgnoresSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+          method: 'GET',
+        })
+      ).json(),
+    ).ignores;
+  }
+  async ignoreVulnerability(
+    id: string,
+    body: {
+      advisoryId: string;
+      package: string;
+      source: string;
+      sessionId?: string;
+      days: 30 | 90;
+      untilFix: boolean;
+      reason: string;
+    },
+  ) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async restoreVulnerability(id: string, ignoreId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores/${encodeURIComponent(ignoreId)}`,
+      { method: 'DELETE' },
+    );
+  }
   private async request(
     path: string,
     init: TransportRequestInit,
@@ -5046,7 +5421,8 @@ export class VerityClient {
       for (const listener of this.readListeners) listener(resource);
     }
     const timing = timingOverride?.trace;
-    const timingKind = path.includes('/events') ? 'events' : 'session';
+    const timingKind =
+      path.includes('/events') || path.includes('/history/v1') ? 'events' : 'session';
     markSessionSwitch(timing, `${timingKind}-request-start`);
     const diagnosticRequestId = beginSwitchTransportRequest(timing, timingKind);
     if (diagnosticRequestId) {

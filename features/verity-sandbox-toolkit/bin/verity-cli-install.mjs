@@ -62,6 +62,9 @@ export function installCli(
       rmSync(link);
     }
   }
+  // V2 changes package names but still owns the same `opencode` command.
+  if (id === 'opencode')
+    rmSync(path.join(globalRoot, 'opencode-ai'), { recursive: true, force: true });
   const previousGlobal = path.join(globalRoot, name);
   rmSync(previousGlobal, { recursive: true, force: true });
   for (const file of ['package.json', 'package-lock.json']) {

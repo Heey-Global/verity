@@ -24,6 +24,7 @@ import { PROJECT_GITHUB_TOKEN_PERMISSIONS } from './github-app-token.js';
  *  because Verity is pull-based (it mints installation tokens on demand, it does
  *  not receive events). Permissions are least-privilege for what Verity does:
  *  - `checks: read` — read CI/check-run status for PR bars and merge readiness.
+ *  - `statuses: read` — read commit statuses through separate diagnostic tokens.
  *  - `actions: write` — monitor and administer GitHub Actions workflow runs
  *    (`gh run view/watch/rerun/cancel`); `checks` alone only exposes the roll-up status.
  *  - `workflows: write` — push changes to `.github/workflows/*` files; GitHub
@@ -54,6 +55,8 @@ export function buildManifest(base: string): Record<string, unknown> {
     public: false,
     default_permissions: {
       ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
+      // Keep optional diagnostics out of ordinary project-token requirements.
+      statuses: 'read',
       packages: 'read',
       metadata: 'read',
     },

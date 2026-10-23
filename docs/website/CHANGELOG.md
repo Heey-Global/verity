@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.5.2](https://github.com/Heey-Global/verity/compare/website-v2.5.1...website-v2.5.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to b5047b9 ([#1747](https://github.com/Heey-Global/verity/issues/1747)) ([1914469](https://github.com/Heey-Global/verity/commit/1914469e75718e3b66100d00b489258cbf4fc6f7))
+
+## [2.5.1](https://github.com/Heey-Global/verity/compare/website-v2.5.0...website-v2.5.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **github:** explain and recover missing commit-status permissions ([#1737](https://github.com/Heey-Global/verity/issues/1737)) ([2a2b781](https://github.com/Heey-Global/verity/commit/2a2b7813df93f27a68b92123b3399fe9492545d9))
+
+## [2.5.0](https://github.com/Heey-Global/verity/compare/website-v2.4.0...website-v2.5.0) (2026-10-18)
+
+
+### Features
+
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
 ## [2.4.0](https://github.com/Heey-Global/verity/compare/website-v2.3.0...website-v2.4.0) (2026-10-17)
 
 

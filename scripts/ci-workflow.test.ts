@@ -2123,7 +2123,14 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
-    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26', 'xcode-27']);
+    const hostedImages = new Set([
+      'ubuntu-24.04',
+      'ubuntu-24.04-arm',
+      'ubuntu-26.04',
+      'ubuntu-26.04-arm',
+      'macos-26',
+      'xcode-27',
+    ]);
     const offenders = jobs
       .filter(declaresRunner)
       .filter(({ job }) => {
@@ -2147,9 +2154,13 @@ describe('GitHub-hosted runner boundary', () => {
       };
       const job = workflow.jobs['architecture-smoke'];
       expect(job?.['runs-on']).toBe('${{ matrix.runner }}');
+      const runner = job?.strategy?.matrix?.include?.find(
+        ({ architecture }) => architecture === 'amd64',
+      )?.runner;
+      expect(runner).toMatch(/^ubuntu-(?:24|26)\.04$/u);
       expect(job?.strategy?.matrix?.include).toEqual([
-        { architecture: 'amd64', runner: 'ubuntu-24.04' },
-        { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+        { architecture: 'amd64', runner },
+        { architecture: 'arm64', runner: `${runner}-arm` },
       ]);
       const build = job?.steps?.find((step) => step.uses?.startsWith('docker/build-push-action@'));
       expect(build?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
@@ -2158,7 +2169,7 @@ describe('GitHub-hosted runner boundary', () => {
       const gate = workflow.jobs['smoke-test'];
       expect([gate?.needs].flat()).toContain('architecture-smoke');
       expect(gate?.if).toBe('${{ always() }}');
-      expect(gate?.['runs-on']).toBe('ubuntu-24.04');
+      expect(gate?.['runs-on']).toBe('ubuntu-26.04');
       expect(gate?.steps).toHaveLength(1);
       expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
     }
@@ -2283,7 +2294,7 @@ describe('GitHub-hosted runner boundary', () => {
     const snapshot = ci.jobs['public-snapshot'];
     expect(snapshot?.if).toBeUndefined();
     expect(snapshot?.needs).toBeUndefined();
-    expect(snapshot?.['runs-on']).toBe('ubuntu-24.04');
+    expect(snapshot?.['runs-on']).toBe('ubuntu-26.04');
     const install = (snapshot?.steps ?? []).find((step) => step.name === 'Install pinned Gitleaks');
     expect(install?.run).toContain('version=8.30.1');
     expect(install?.run).toContain(
@@ -2342,7 +2353,7 @@ describe('GitHub-hosted runner boundary', () => {
       jobs: Record<string, Job>;
     };
     const job = ci.jobs.installer;
-    expect(job?.['runs-on']).toBe('ubuntu-24.04');
+    expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
     const suite = (job?.steps ?? []).find((step) =>
       step.run?.includes('node --test deploy/bin/verity-install.test.mjs'),
@@ -4156,6 +4167,17 @@ describe('Claude ACP sandbox smoke', () => {
         'http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url',
       );
     }
+  });
+
+  it('uses the session home for durable transcript recreation and checks loss before restore', () => {
+    const recreate = readFileSync('packages/server/src/runner-claude-recreate-server.ts', 'utf8');
+    expect(recreate).toMatch(/new ServerTranscript\(\{[^}]*veritySessionId: STORE_SESSION_ID/su);
+    expect(recreate).toContain('persistentSessionHomes: true');
+    const lossCheck = recreate.indexOf(
+      'existsSync(serverTranscript.transcriptFile(resumeSessionId, worktree))',
+    );
+    expect(lossCheck).toBeGreaterThan(0);
+    expect(lossCheck).toBeLessThan(recreate.indexOf('client.startTurn('));
   });
 
   it('answers ACP auth probes with managed settings without starting a session', async () => {

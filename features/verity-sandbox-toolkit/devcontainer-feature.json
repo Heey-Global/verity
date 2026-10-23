@@ -2,7 +2,7 @@
   "id": "verity-sandbox-toolkit",
   "version": "0.0.0-managed",
   "name": "Verity Sandbox Toolkit",
-  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
+  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + osv-scanner + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
   "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
   "installsAfter": ["ghcr.io/devcontainers/features/node"],
   "customizations": {
@@ -23,12 +23,12 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.300",
+      "default": "2.1.304",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
       "type": "string",
-      "default": "0.90.0",
+      "default": "0.94.0",
       "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
     },
     "installCodex": {
@@ -38,7 +38,7 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.162.1",
+      "default": "0.163.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
@@ -49,12 +49,12 @@
     "installOpencode": {
       "type": "boolean",
       "default": true,
-      "description": "Install the opencode-ai CLI globally (requires node on PATH)."
+      "description": "Install the @opencode/cli CLI globally (requires node on PATH)."
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "1.19.0",
-      "description": "Exact opencode-ai npm version to pin."
+      "default": "2.0.32",
+      "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {
       "type": "boolean",
@@ -109,7 +109,12 @@
     "hooksPath": {
       "type": "string",
       "default": "/opt/agent-seed/hooks",
-      "description": "git core.hooksPath — points at the agent-seed pre-commit secret hook and the pre-push secret + code review hook."
+      "description": "git core.hooksPath \u2014 points at the agent-seed pre-commit secret hook and the pre-push secret + code review hook."
+    },
+    "osvScannerVersion": {
+      "type": "string",
+      "default": "2.6.0",
+      "description": "Exact google/osv-scanner release version to pin (no leading v). Runs vulnerability scans without an AI backend."
     }
   }
 }

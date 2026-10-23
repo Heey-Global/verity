@@ -11,7 +11,7 @@ share the same Unix identity.
 | Guarantee | Claude Code | Codex | OpenCode | Verification |
 | --- | --- | --- | --- | --- |
 | Managed global configuration | Broker-owned fresh HOME and configuration tree | Same; gateway-only `config.toml` | Same; fresh XDG config and gateway-only provider | `agent-security-boundary.test.ts`, native probes |
-| Project settings cannot configure providers or MCP | Empty `settingSources`, strict MCP, empty plugins and agents; API-key helper disabled | Installer removes ACP's automatic project trust; project layers stay untrusted | Project config discovery disabled; pure mode enabled | ACP tests, `codex-acp-hardening.test.ts`, native probes |
+| Project settings cannot configure providers or MCP | Empty `settingSources`, strict MCP, empty plugins and agents; API-key helper disabled | Installer removes ACP's automatic project trust; project layers stay untrusted | Project config discovery disabled; external-plugin policy enforced | ACP tests, `codex-acp-hardening.test.ts`, native probes |
 | Text guidance remains available | Current cwd's regular `AGENTS.md` appended as text (up to 256 KiB) | Native `AGENTS.md` discovery | Explicit current cwd `AGENTS.md` instruction | Claude ACP test and OpenCode probe |
 | Automatic project extensions disabled | No settings/plugins/custom agents from project discovery | Untrusted config/hooks/exec policies; native multi-agent and plugins disabled; automatic skills catalog disabled | No project agents, custom tools or plugins | Managed launch and adversarial ACP probes |
 | Planning protects project files | Shared native helper | Shared native helper, plus native read-only posture | Shared native helper, plus verified plan posture | Shell/subprocess write refusal and writable negative control |
@@ -97,4 +97,5 @@ against deliberately broken policy before relying on them.
 The ARM64 helper is cross-compiled from the same source and pinned compiler as
 AMD64; native execution requires an ARM64 test host. Full upstream inference,
 container recreation and deployment must be verified in the target environment.
-OpenCode 2 remains a separate migration.
+OpenCode V2 migration and rollback are documented in
+[the migration runbook](opencode-v2-migration.md).
