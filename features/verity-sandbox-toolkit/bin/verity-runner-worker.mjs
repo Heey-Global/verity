@@ -124,8 +124,8 @@ var require_util = __commonJS({
       const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
       return values;
     }
-    function joinValues(array2, separator = "|") {
-      return array2.map((val) => stringifyPrimitive(val)).join(separator);
+    function joinValues(array3, separator = "|") {
+      return array3.map((val) => stringifyPrimitive(val)).join(separator);
     }
     function jsonStringifyReplacer(_, value) {
       if (typeof value === "bigint")
@@ -20136,11 +20136,11 @@ var require_schemas2 = __commonJS({
     exports.undefined = _undefined;
     exports.null = _null;
     exports.any = any;
-    exports.unknown = unknown2;
+    exports.unknown = unknown3;
     exports.never = never;
     exports.void = _void;
     exports.date = date;
-    exports.array = array2;
+    exports.array = array3;
     exports.keyof = keyof;
     exports.object = object3;
     exports.strictObject = strictObject;
@@ -20187,7 +20187,7 @@ var require_schemas2 = __commonJS({
     exports.superRefine = superRefine;
     exports.instanceof = _instanceof;
     exports.json = json;
-    exports.preprocess = preprocess;
+    exports.preprocess = preprocess2;
     var core = __importStar(require_core2());
     var index_js_1 = require_core2();
     var processors = __importStar(require_json_schema_processors());
@@ -20258,7 +20258,7 @@ var require_schemas2 = __commonJS({
         return nonoptional(this, params);
       },
       array() {
-        return array2(this);
+        return array3(this);
       },
       or(arg) {
         return union3([this, arg]);
@@ -20935,7 +20935,7 @@ var require_schemas2 = __commonJS({
       exports.ZodType.init(inst, def);
       inst._zod.processJSONSchema = (ctx, json2, params) => processors.unknownProcessor(inst, ctx, json2, params);
     });
-    function unknown2() {
+    function unknown3() {
       return core._unknown(exports.ZodUnknown);
     }
     exports.ZodNever = core.$constructor("ZodNever", (inst, def) => {
@@ -21000,7 +21000,7 @@ var require_schemas2 = __commonJS({
         return this.element;
       }
     });
-    function array2(element, params) {
+    function array3(element, params) {
       return core._array(exports.ZodArray, element, params);
     }
     function keyof(schema) {
@@ -21021,10 +21021,10 @@ var require_schemas2 = __commonJS({
         return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall }));
       },
       passthrough() {
-        return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall: unknown2() }));
+        return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall: unknown3() }));
       },
       loose() {
-        return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall: unknown2() }));
+        return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall: unknown3() }));
       },
       strict() {
         return this.clone(index_js_1.util.mergeDefs(this._zod.def, { catchall: never() }));
@@ -21077,7 +21077,7 @@ var require_schemas2 = __commonJS({
       return new exports.ZodObject({
         type: "object",
         shape,
-        catchall: unknown2(),
+        catchall: unknown3(),
         ...index_js_1.util.normalizeParams(params)
       });
     }
@@ -21584,8 +21584,8 @@ var require_schemas2 = __commonJS({
     function _function(params) {
       return new exports.ZodFunction({
         type: "function",
-        input: Array.isArray(params?.input) ? tuple(params?.input) : params?.input ?? array2(unknown2()),
-        output: params?.output ?? unknown2()
+        input: Array.isArray(params?.input) ? tuple(params?.input) : params?.input ?? array3(unknown3()),
+        output: params?.output ?? unknown3()
       });
     }
     exports.ZodCustom = core.$constructor("ZodCustom", (inst, def) => {
@@ -21649,11 +21649,11 @@ var require_schemas2 = __commonJS({
     exports.stringbool = stringbool;
     function json(params) {
       const jsonSchema = lazy(() => {
-        return union3([string3(params), number2(), boolean2(), _null(), array2(jsonSchema), record3(string3(), jsonSchema)]);
+        return union3([string3(params), number2(), boolean2(), _null(), array3(jsonSchema), record3(string3(), jsonSchema)]);
       });
       return jsonSchema;
     }
-    function preprocess(fn, schema) {
+    function preprocess2(fn, schema) {
       return new exports.ZodPreprocess({
         type: "pipe",
         in: transform(fn),
@@ -25338,7 +25338,7 @@ import { constants as constants3 } from "node:fs";
 import { open as open2 } from "node:fs/promises";
 import { join as join2 } from "node:path";
 
-// node_modules/@agentclientprotocol/sdk/dist/schema/index.js
+// node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/index.js
 var AGENT_METHODS = {
   initialize: "initialize",
   authenticate: "authenticate",
@@ -25378,22 +25378,22 @@ var PROTOCOL_METHODS = {
 };
 var PROTOCOL_VERSION = 1;
 
-// node_modules/@agentclientprotocol/sdk/dist/schema-deserialize.js
-var import_v4 = __toESM(require_v4(), 1);
+// node_modules/@agentclientprotocol/sdk/dist/core/schema-deserialize.js
+var z13 = __toESM(require_v4(), 1);
 var skippedItem = /* @__PURE__ */ Symbol("skippedItem");
 function defaultOnError(schema, fallback) {
   return schema.catch(fallback);
 }
 function requiredDefaultOnError(schema, fallback) {
   const schemaWithCatch = schema.catch(fallback);
-  return import_v4.z.unknown().transform((value, context) => {
+  return z13.unknown().transform((value, context) => {
     if (value !== void 0)
       return schemaWithCatch.parse(value);
     context.addIssue({
       code: "custom",
       message: "Required value is missing"
     });
-    return import_v4.z.NEVER;
+    return z13.NEVER;
   });
 }
 function stringTag(value, key) {
@@ -25416,13 +25416,13 @@ function excludeKnownTags(schema, key, knownTags) {
   });
 }
 function preserveCustomPayload(schema, key, knownTags) {
-  return import_v4.z.unknown().transform((value, context) => {
+  return z13.unknown().transform((value, context) => {
     const result3 = schema.safeParse(value);
     if (!result3.success) {
       for (const issue of result3.error.issues) {
         context.addIssue({ ...issue, input: value });
       }
-      return import_v4.z.NEVER;
+      return z13.NEVER;
     }
     const output = result3.data;
     const tag = stringTag(value, key);
@@ -25439,7 +25439,7 @@ function preserveCustomPayload(schema, key, knownTags) {
   });
 }
 function defaultOnErrorOptionalStringTag(schema, key) {
-  return import_v4.z.preprocess((value) => {
+  return z13.preprocess((value) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       return value;
     }
@@ -25454,10 +25454,10 @@ function defaultOnErrorOptionalStringTag(schema, key) {
   }, schema);
 }
 function vecSkipError(itemSchema) {
-  return import_v4.z.array(itemSchema.catch(skippedItem)).transform((items) => items.filter((item) => item !== skippedItem));
+  return z13.array(itemSchema.catch(skippedItem)).transform((items) => items.filter((item) => item !== skippedItem));
 }
 
-// node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js
+// node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/zod.gen.js
 var z14 = __toESM(require_v4(), 1);
 var zRequestId = z14.union([z14.number(), z14.string()]).nullable();
 var zSessionId = z14.string();
@@ -26882,7 +26882,7 @@ var zCancelRequestNotification = z14.object({
   _meta: defaultOnError(z14.record(z14.string(), z14.unknown()).nullish(), () => void 0)
 });
 
-// node_modules/@agentclientprotocol/sdk/dist/jsonrpc.js
+// node_modules/@agentclientprotocol/sdk/dist/core/jsonrpc.js
 var CANCEL_REQUEST_METHOD = "$/cancel_request";
 function isRequestMessage(value) {
   return isJsonRpcEnvelope(value) && "id" in value && typeof value["method"] === "string" && isJsonRpcId(value["id"]);
@@ -27144,6 +27144,7 @@ var Connection = class {
   nextRequestId = 0;
   staticHandlers = [];
   dynamicHandlers = /* @__PURE__ */ new Set();
+  fallbackHandlers = [];
   stream;
   writeQueue = Promise.resolve();
   abortController = new AbortController();
@@ -27378,6 +27379,7 @@ var Connection = class {
   initialize(stream, handlers, options) {
     this.stream = stream;
     this.staticHandlers = handlers;
+    this.fallbackHandlers = [...options?.fallbackHandlers ?? []];
     this.allowBatches = options?.allowBatches ?? true;
     this.closedPromise = new Promise((resolve4) => {
       this.abortController.signal.addEventListener("abort", () => resolve4());
@@ -27515,7 +27517,8 @@ var Connection = class {
     try {
       for (const handler of [
         ...this.staticHandlers,
-        ...this.dynamicHandlers.values()
+        ...this.dynamicHandlers.values(),
+        ...this.fallbackHandlers
       ]) {
         if (this.abortController.signal.aborted) {
           return;
@@ -27641,6 +27644,7 @@ var Connection = class {
 };
 var ConnectionBuilder = class {
   handlers = [];
+  fallbackHandlers = [];
   connectionName;
   /**
    * Sets a diagnostic name used by handlers created from this builder.
@@ -27654,6 +27658,14 @@ var ConnectionBuilder = class {
    */
   withHandler(handler) {
     this.handlers.push(handler);
+    return this;
+  }
+  /**
+   * Adds a fallback after static and dynamic handlers. Each connection snapshots
+   * this registration alongside the builder's other handlers.
+   */
+  withFallbackHandler(handler) {
+    this.fallbackHandlers.push(handler);
     return this;
   }
   /**
@@ -27702,7 +27714,13 @@ var ConnectionBuilder = class {
    * Connects the configured handlers to a stream.
    */
   connect(stream, options) {
-    return new Connection(stream, this.handlers, options);
+    return new Connection(stream, this.handlers, {
+      ...options,
+      fallbackHandlers: [
+        ...options?.fallbackHandlers ?? [],
+        ...this.fallbackHandlers
+      ]
+    });
   }
   /**
    * Connects to a stream for the lifetime of `op`, then closes the connection.
@@ -27810,7 +27828,7 @@ function protocolErrorResponse(error) {
   };
 }
 
-// node_modules/@agentclientprotocol/sdk/dist/stream-limits.js
+// node_modules/@agentclientprotocol/sdk/dist/core/stream-limits.js
 var DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 var MessageTooLargeError = class extends Error {
   maxMessageBytes;
@@ -27869,7 +27887,7 @@ var MessageBuffer = class {
   }
 };
 
-// node_modules/@agentclientprotocol/sdk/dist/line-buffer.js
+// node_modules/@agentclientprotocol/sdk/dist/core/line-buffer.js
 var newline = 10;
 var LineBuffer = class {
   /** Bytes of the current (incomplete) line, carried across chunks. */
@@ -27931,7 +27949,7 @@ function stripCarriageReturn(line) {
   return line[line.byteLength - 1] === 13 ? line.subarray(0, -1) : line;
 }
 
-// node_modules/@agentclientprotocol/sdk/dist/stream.js
+// node_modules/@agentclientprotocol/sdk/dist/core/stream.js
 function ndJsonStream(output, input, options = {}) {
   const maxMessageBytes = resolveMaxMessageBytes(options.maxMessageBytes);
   const textEncoder = new TextEncoder();
@@ -28035,7 +28053,7 @@ function ndJsonStream(output, input, options = {}) {
   return { readable, writable };
 }
 
-// node_modules/@agentclientprotocol/sdk/dist/schema/guards.gen.js
+// node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/guards.gen.js
 var z15 = __toESM(require_v4(), 1);
 var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z15.object({ mode: z15.literal("form") })).and(z15.object({ message: z15.string() }));
 var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z15.object({ mode: z15.literal("url") })).and(z15.object({ message: z15.string() }));
@@ -28075,7 +28093,57 @@ var zGuardCreateElicitationResponseCancel = z15.object({
   action: z15.literal("cancel")
 });
 
-// node_modules/@agentclientprotocol/sdk/dist/acp.js
+// node_modules/@agentclientprotocol/sdk/dist/core/app-handlers.js
+function parseParams(parser, params) {
+  if (!parser) {
+    return params;
+  }
+  if (typeof parser === "function") {
+    return parser(params);
+  }
+  return parser.parse(params);
+}
+function registerAppRequest(builder, spec, context, handler, serializeResponse, lifecycle) {
+  const handle = async (params, responder, cx, method) => {
+    try {
+      const response = await handler(context(params, cx, responder.signal, responder.id, method));
+      const sentResponse = serializeResponse ? serializeResponse(response) : response;
+      await responder.respond(sentResponse);
+      lifecycle?.afterResponse(params, sentResponse, cx);
+    } catch (error) {
+      lifecycle?.onError(cx, error);
+      throw error;
+    }
+  };
+  if (spec.method === "*") {
+    builder.withFallbackHandler({
+      handleMessage: async (message, cx) => {
+        if (message.kind !== "request")
+          return Handled.no(message);
+        await handle(message.params, message.responder, cx, message.method);
+        return Handled.yes();
+      }
+    });
+  } else {
+    builder.onReceiveRequest(spec.method, (params) => parseParams(spec.params, params), (params, responder, cx) => handle(params, responder, cx, spec.method));
+  }
+}
+function registerAppNotification(builder, spec, context, handler) {
+  if (spec.method === "*") {
+    builder.withFallbackHandler({
+      handleMessage: async (message, cx) => {
+        if (message.kind !== "notification")
+          return Handled.no(message);
+        await handler(context(message.params, cx, cx.signal, message.method));
+        return Handled.yes();
+      }
+    });
+  } else {
+    builder.onReceiveNotification(spec.method, (params) => parseParams(spec.params, params), (params, cx) => handler(context(params, cx, cx.signal, spec.method)));
+  }
+}
+
+// node_modules/@agentclientprotocol/sdk/dist/v1/acp.js
 function ndJsonStream2(output, input, options) {
   return ndJsonStream(output, input, options);
 }
@@ -28190,6 +28258,17 @@ var AgentContext = class _AgentContext extends AcpContext {
   /** @internal */
   static create(cx, requestId) {
     return new _AgentContext(cx, requestId);
+  }
+  /**
+   * Executes a command in a new client terminal.
+   *
+   * Returns a handle for reading output, waiting for exit, killing the command,
+   * and releasing the terminal. Check the client's terminal capability first.
+   * Use `await using` or call `release()` when finished.
+   */
+  async createTerminal(params, options) {
+    const response = await this.request(CLIENT_METHODS.terminal_create, params, options);
+    return TerminalHandle.create(response.terminalId, params.sessionId, this.connectionContext);
   }
   request(method, params, options) {
     const spec = clientRequestSpecsByMethod[method];
@@ -28557,15 +28636,6 @@ var ActiveSession = class _ActiveSession {
     return [prompt];
   }
 };
-function parseParams(parser, params) {
-  if (!parser) {
-    return params;
-  }
-  if (typeof parser === "function") {
-    return parser(params);
-  }
-  return parser.parse(params);
-}
 function requestSpec(method, params, mapResponse) {
   return {
     method,
@@ -28576,15 +28646,6 @@ function requestSpec(method, params, mapResponse) {
 }
 function notificationSpec(method, params) {
   return { method, params };
-}
-function registerAppRequest(builder, spec, context, handler) {
-  builder.onReceiveRequest(spec.method, (params) => parseParams(spec.params, params), async (params, responder, cx) => {
-    const response = await handler(context(params, cx, responder.signal, responder.id));
-    await responder.respond(spec.mapResponse ? spec.mapResponse(response) : response);
-  });
-}
-function registerAppNotification(builder, spec, context, handler) {
-  builder.onReceiveNotification(spec.method, (params) => parseParams(spec.params, params), (params, cx) => handler(context(params, cx, cx.signal)));
 }
 function specsByMethod(specs) {
   const byMethod = {};
@@ -28633,31 +28694,35 @@ var agentRequestSpecsByMethod = specsByMethod(agentRequestSpecs);
 var agentNotificationSpecsByMethod = specsByMethod(agentNotificationSpecs);
 var clientRequestSpecsByMethod = specsByMethod(clientRequestSpecs);
 var clientNotificationSpecsByMethod = specsByMethod(clientNotificationSpecs);
-function agentRequestContext(params, client2, signal, requestId) {
+function agentRequestContext(params, client2, signal, requestId, method) {
   return {
+    method,
     params,
     requestId,
     signal,
     client: client2
   };
 }
-function agentNotificationContext(params, client2, signal) {
+function agentNotificationContext(params, client2, signal, method) {
   return {
+    method,
     params,
     signal,
     client: client2
   };
 }
-function clientRequestContext(params, agent, signal, requestId) {
+function clientRequestContext(params, agent, signal, requestId, method) {
   return {
+    method,
     params,
     requestId,
     signal,
     agent
   };
 }
-function clientNotificationContext(params, agent, signal) {
+function clientNotificationContext(params, agent, signal, method) {
   return {
+    method,
     params,
     signal,
     agent
@@ -28725,6 +28790,7 @@ var stableConnectionOptions = { allowBatches: false };
 var AgentApp = class {
   builder = Connection.builder();
   connectHandlers = [];
+  fallbackKinds = /* @__PURE__ */ new Set();
   constructor(options = {}) {
     if (options.name) {
       this.builder.name(options.name);
@@ -28741,6 +28807,12 @@ var AgentApp = class {
   connect(target2, options = {}) {
     return this.connectConnection(target2, options).connection;
   }
+  /**
+   * Connects this agent app to a stream or client app for the lifetime of `op`.
+   *
+   * The callback receives an `AgentContext` for calling client-side methods.
+   * When `op` resolves or rejects, the connection is closed.
+   */
   connectWith(target2, op) {
     const { rawConnection, connection } = this.connectConnection(target2);
     return rawConnection.runUntil(() => op(connection.client));
@@ -28770,6 +28842,14 @@ var AgentApp = class {
     return this;
   }
   onRequest(method, handlerOrParams, handler) {
+    if (method === "*") {
+      if (handler)
+        throw new Error("Wildcard handlers receive raw params; omit the parser.");
+      if (this.fallbackKinds.has("request"))
+        throw new Error("A request fallback is already registered.");
+      this.fallbackKinds.add("request");
+      return this.request({ method }, handlerOrParams);
+    }
     if (handler) {
       return this.request({ method, params: handlerOrParams }, handler);
     }
@@ -28780,6 +28860,14 @@ var AgentApp = class {
     return this.request(spec, handlerOrParams);
   }
   onNotification(method, handlerOrParams, handler) {
+    if (method === "*") {
+      if (handler)
+        throw new Error("Wildcard handlers receive raw params; omit the parser.");
+      if (this.fallbackKinds.has("notification"))
+        throw new Error("A notification fallback is already registered.");
+      this.fallbackKinds.add("notification");
+      return this.notification({ method }, handlerOrParams);
+    }
     if (handler) {
       return this.notification({ method, params: handlerOrParams }, handler);
     }
@@ -28790,11 +28878,11 @@ var AgentApp = class {
     return this.notification(spec, handlerOrParams);
   }
   request(spec, handler) {
-    registerAppRequest(this.builder, spec, (params, cx, signal, requestId) => agentRequestContext(params, AgentContext.create(cx, requestId), signal, requestId), handler);
+    registerAppRequest(this.builder, spec, (params, cx, signal, requestId, method) => agentRequestContext(params, AgentContext.create(cx, requestId), signal, requestId, method), handler, spec.mapResponse);
     return this;
   }
   notification(spec, handler) {
-    registerAppNotification(this.builder, spec, (params, cx, signal) => agentNotificationContext(params, AgentContext.create(cx), signal), handler);
+    registerAppNotification(this.builder, spec, (params, cx, signal, method) => agentNotificationContext(params, AgentContext.create(cx), signal, method), handler);
     return this;
   }
   connectConnection(target2, options = {}) {
@@ -28835,6 +28923,7 @@ function client(options) {
 var ClientApp = class {
   builder = Connection.builder();
   connectHandlers = [];
+  fallbackKinds = /* @__PURE__ */ new Set();
   constructor(options = {}) {
     if (options.name) {
       this.builder.name(options.name);
@@ -28855,6 +28944,12 @@ var ClientApp = class {
   connect(target2) {
     return this.connectConnection(target2).connection;
   }
+  /**
+   * Connects this client app to a stream or agent app for the lifetime of `op`.
+   *
+   * The callback receives a `ClientContext` for calling agent-side methods.
+   * When `op` resolves or rejects, the connection is closed.
+   */
   connectWith(target2, op) {
     const { rawConnection, connection } = this.connectConnection(target2);
     return rawConnection.runUntil(() => op(connection.agent));
@@ -28870,6 +28965,14 @@ var ClientApp = class {
     return this;
   }
   onRequest(method, handlerOrParams, handler) {
+    if (method === "*") {
+      if (handler)
+        throw new Error("Wildcard handlers receive raw params; omit the parser.");
+      if (this.fallbackKinds.has("request"))
+        throw new Error("A request fallback is already registered.");
+      this.fallbackKinds.add("request");
+      return this.request({ method }, handlerOrParams);
+    }
     if (handler) {
       return this.request({ method, params: handlerOrParams }, handler);
     }
@@ -28880,6 +28983,14 @@ var ClientApp = class {
     return this.request(spec, handlerOrParams);
   }
   onNotification(method, handlerOrParams, handler) {
+    if (method === "*") {
+      if (handler)
+        throw new Error("Wildcard handlers receive raw params; omit the parser.");
+      if (this.fallbackKinds.has("notification"))
+        throw new Error("A notification fallback is already registered.");
+      this.fallbackKinds.add("notification");
+      return this.notification({ method }, handlerOrParams);
+    }
     if (handler) {
       return this.notification({ method, params: handlerOrParams }, handler);
     }
@@ -28890,11 +29001,11 @@ var ClientApp = class {
     return this.notification(spec, handlerOrParams);
   }
   request(spec, handler) {
-    registerAppRequest(this.builder, spec, (params, cx, signal, requestId) => clientRequestContext(params, ClientContext.create(cx, requestId), signal, requestId), handler);
+    registerAppRequest(this.builder, spec, (params, cx, signal, requestId, method) => clientRequestContext(params, ClientContext.create(cx, requestId), signal, requestId, method), handler, spec.mapResponse);
     return this;
   }
   notification(spec, handler) {
-    registerAppNotification(this.builder, spec, (params, cx, signal) => clientNotificationContext(params, ClientContext.create(cx), signal), handler);
+    registerAppNotification(this.builder, spec, (params, cx, signal, method) => clientNotificationContext(params, ClientContext.create(cx), signal, method), handler);
     return this;
   }
   connectConnection(target2) {
@@ -28927,42 +29038,81 @@ var ClientApp = class {
     };
   }
 };
-var legacyAgentRequestMethods = /* @__PURE__ */ new Set([
-  AGENT_METHODS.initialize,
-  AGENT_METHODS.authenticate,
-  AGENT_METHODS.providers_list,
-  AGENT_METHODS.providers_set,
-  AGENT_METHODS.providers_disable,
-  AGENT_METHODS.session_new,
-  AGENT_METHODS.session_load,
-  AGENT_METHODS.session_set_mode,
-  AGENT_METHODS.session_set_config_option,
-  AGENT_METHODS.session_prompt,
-  AGENT_METHODS.session_list,
-  AGENT_METHODS.session_delete,
-  AGENT_METHODS.session_fork,
-  AGENT_METHODS.session_resume,
-  AGENT_METHODS.session_close,
-  AGENT_METHODS.logout
-]);
-var legacyAgentNotificationMethods = /* @__PURE__ */ new Set([
-  AGENT_METHODS.session_cancel
-]);
-var legacyClientRequestMethods = /* @__PURE__ */ new Set([
-  CLIENT_METHODS.session_request_permission,
-  CLIENT_METHODS.fs_write_text_file,
-  CLIENT_METHODS.fs_read_text_file,
-  CLIENT_METHODS.terminal_create,
-  CLIENT_METHODS.terminal_output,
-  CLIENT_METHODS.terminal_release,
-  CLIENT_METHODS.terminal_wait_for_exit,
-  CLIENT_METHODS.terminal_kill,
-  CLIENT_METHODS.elicitation_create
-]);
-var legacyClientNotificationMethods = /* @__PURE__ */ new Set([
-  CLIENT_METHODS.session_update,
-  CLIENT_METHODS.elicitation_complete
-]);
+var TerminalHandle = class _TerminalHandle {
+  /**
+   * Terminal identifier returned by `terminal/create`.
+   */
+  id;
+  sessionId;
+  connection;
+  constructor(id2, sessionId2, conn) {
+    this.id = id2;
+    this.sessionId = sessionId2;
+    this.connection = conn;
+  }
+  /** @internal */
+  static create(id2, sessionId2, conn) {
+    return new _TerminalHandle(id2, sessionId2, conn);
+  }
+  /**
+   * Gets the current terminal output without waiting for the command to exit.
+   */
+  currentOutput() {
+    return this.connection.sendRequest(CLIENT_METHODS.terminal_output, {
+      sessionId: this.sessionId,
+      terminalId: this.id
+    });
+  }
+  /**
+   * Waits for the terminal command to complete and returns its exit status.
+   */
+  waitForExit() {
+    return this.connection.sendRequest(CLIENT_METHODS.terminal_wait_for_exit, {
+      sessionId: this.sessionId,
+      terminalId: this.id
+    });
+  }
+  /**
+   * Kills the terminal command without releasing the terminal.
+   *
+   * The terminal remains valid after killing, allowing you to:
+   * - Get the final output with `currentOutput()`
+   * - Check the exit status
+   * - Release the terminal when done
+   *
+   * Useful for implementing timeouts or cancellation.
+   */
+  kill() {
+    return this.connection.sendRequest(CLIENT_METHODS.terminal_kill, {
+      sessionId: this.sessionId,
+      terminalId: this.id
+    }, emptyObjectResponse);
+  }
+  /**
+   * Releases the terminal and frees all associated resources.
+   *
+   * If the command is still running, it will be killed.
+   * After release, the terminal ID becomes invalid and cannot be used
+   * with other terminal methods.
+   *
+   * Tool calls that already reference this terminal will continue to
+   * display its output.
+   *
+   * **Important:** Always call this method when done with the terminal.
+   */
+  release() {
+    return this.connection.sendRequest(CLIENT_METHODS.terminal_release, {
+      sessionId: this.sessionId,
+      terminalId: this.id
+    }, emptyObjectResponse);
+  }
+  /**
+   * Releases the terminal when used with `await using`.
+   */
+  async [Symbol.asyncDispose]() {
+    await this.release();
+  }
+};
 
 // packages/session/dist/acp-backend.js
 import { createHash as createHash2 } from "node:crypto";

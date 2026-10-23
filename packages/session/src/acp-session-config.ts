@@ -1,5 +1,5 @@
-import * as acp from '@agentclientprotocol/sdk';
-import type { SessionConfigOption } from '@agentclientprotocol/sdk';
+import * as acp from '@agentclientprotocol/sdk/unstable';
+import type { SessionConfigOption } from '@agentclientprotocol/sdk/unstable';
 import type { AcpSessionSetup } from './acp-backend.js';
 
 /**
