@@ -1292,6 +1292,9 @@ const ProjectGroup = memo(function ProjectGroup({
                     the slot outright, and its metadata (the release tag) is only
                     shown when nothing is. Both at once is what made a status
                     message and a version number share — and squeeze — one line. */}
+                  {group.status && group.project?.vulnerabilitySummary?.count ? (
+                    <Icon name="shield" size={14} color={theme.colors.attention} />
+                  ) : null}
                   {group.status ? (
                     <Text
                       style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
@@ -1904,6 +1907,9 @@ const SessionRow = memo(function SessionRow({
           ) : null}
         </View>
         <View style={styles.sessionLine}>
+          {notice?.code === 'vulnerability_new' ? (
+            <Icon name="shield" size={14} color={theme.colors.attention} />
+          ) : null}
           <Text
             style={[
               styles.rowSub,

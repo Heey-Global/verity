@@ -619,6 +619,48 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
+  it('cancels temporary scan sleep when activity changes during Docker inspection', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => ({
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      })),
+    });
+    const relay = defaultProjectRelay();
+    relay.sleep = async () => undefined;
+    const p = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+    p.tryBeginProjectSandboxActivity(id);
+    p.endProjectSandboxActivity(id);
+    const expected = p.projectSandboxLastActivityAt(id);
+    vi.spyOn(docker, 'inspectContainer').mockImplementation(async () => {
+      const result = {
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await p.ensureProjectSandboxAwake(id);
+      return result;
+    });
+    expect(
+      await p.sleepProject(id, {
+        shouldRestore: () => p.projectSandboxLastActivityAt(id) === expected,
+      }),
+    ).toMatchObject({ state: 'active' });
+    expect(calls.find((c) => c.method === 'stopContainer')).toBeUndefined();
+  });
+
   it('refuses to sleep while a Sandbox activity lease is held', async () => {
     const id = await seedProject('active');
     const { client: docker, calls } = fakeDocker();
@@ -1110,7 +1152,7 @@ describe('ProvisionerImpl (#174)', () => {
       projectRelay: relay,
     });
 
-    const first = provisioner.ensureProjectSandboxAwake(id);
+    const first = provisioner.wakeProjectForScan(id);
     await vi.waitFor(() => expect(reactivate).toHaveBeenCalledOnce());
     await expect(ctx.store.getProject(id)).resolves.toMatchObject({ state: 'waking' });
     // The overview reconciles on its polling path while the retained container
@@ -1120,12 +1162,17 @@ describe('ProvisionerImpl (#174)', () => {
       state: 'waking',
     });
     const second = provisioner.ensureProjectSandboxAwake(id);
+    const scanJoin = provisioner.wakeProjectForScan(id);
     release();
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      expect.objectContaining({ state: 'active' }),
+      expect.objectContaining({
+        project: expect.objectContaining({ state: 'active' }),
+        owned: true,
+      }),
       expect.objectContaining({ state: 'active' }),
     ]);
+    await expect(scanJoin).resolves.toMatchObject({ owned: false, project: { state: 'active' } });
     expect(reactivate).toHaveBeenCalledOnce();
   });
 

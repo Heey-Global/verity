@@ -1,3 +1,4 @@
+import { vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
 import {
   createVulnerabilitySessionMonitor,
@@ -3827,6 +3828,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
       return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
     },
+    ...(deps.provisioner?.projectSandboxLastActivityAt &&
+    deps.provisioner.tryBeginProjectSandboxActivity &&
+    deps.provisioner.endProjectSandboxActivity
+      ? {
+          acquireSandbox: vulnerabilitySandboxLease({
+            provisioner: deps.provisioner,
+            getProject: (id) => deps.eventStore.getProject(id),
+            warn: (error) =>
+              app.log.warn({ err: error }, 'Vulnerability scan sandbox restoration failed'),
+          }),
+        }
+      : {}),
     beginActivity: (id) => {
       if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
       return () => deps.provisioner?.endProjectSandboxActivity?.(id);
@@ -7704,6 +7717,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { code: 404, error: `project ${id} not found` };
       }
       if (project.state === 'active') {
+        // An explicit wake takes ownership from a temporary background scan.
+        await deps.provisioner.ensureProjectSandboxAwake?.(id);
         return {
           code: 200,
           project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
