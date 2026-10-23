@@ -571,7 +571,7 @@ describe('settings/server-update', () => {
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
-    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(await screen.findByText('Up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
@@ -612,7 +612,7 @@ describe('settings/server-update', () => {
       for (const refresh of [...mockLiveRefresh]) await refresh();
     });
 
-    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(await screen.findByText('Up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     jest.useRealTimers();
   });
@@ -834,7 +834,7 @@ describe('server update channel selection', () => {
         jest.advanceTimersByTime(2_000);
       });
       await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeChecked());
-      expect(screen.queryByText('Verity is up to date')).toBeNull();
+      expect(screen.queryByText('Up to date')).toBeNull();
     } finally {
       jest.useRealTimers();
     }
@@ -989,7 +989,9 @@ describe('stuck server update', () => {
     render(<ServerUpdateScreen />);
 
     expect(await screen.findByText('Update to 4.52.0 did not finish')).toBeOnTheScreen();
-    expect(screen.getByText('Generation 155 · running')).toBeOnTheScreen();
+    expect(screen.getByText('Version 4.52.0')).toBeOnTheScreen();
+    // The Updater's generation counter means nothing to the person reading this.
+    expect(screen.queryByText(/Generation/)).toBeNull();
     expect(screen.getByText('Updating companions · step 15 of 16')).toBeOnTheScreen();
     expect(screen.getByText('Updating companions failed: network timeout')).toBeOnTheScreen();
     expect(screen.getByText('Version 4.52.1 available')).toBeOnTheScreen();

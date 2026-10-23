@@ -46,7 +46,7 @@
     "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.93.0",
+    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     "@agentclientprotocol/codex-acp": "2.2.2",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
@@ -57,8 +57,8 @@
     "@vitest/coverage-v8": "5.0.5",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
-    "ignore": "7.0.12",
-    "knip": "6.42.0",
+    "ignore": "7.0.13",
+    "knip": "6.42.1",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -71,7 +71,7 @@
     "release-please": "17.11.2",
     "semver": "7.8.5",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.71.2",
+    "typescript-eslint": "8.72.0",
     "uuid": "14.0.3",
     "vitest": "5.0.5",
     "ws": "8.22.0",

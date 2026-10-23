@@ -271,13 +271,43 @@ describe('server update screen', () => {
     const panel = describeServerUpdatePanel(
       status({ installed: { version: '1.3.0', generation: 2 } }),
     );
-    expect(panel.installed).toEqual({ version: '1.3.0', generation: 2 });
+    expect(panel.installed).toEqual({ version: '1.3.0', publishedAt: null, upToDate: false });
     expect(panel.cards).toHaveLength(1);
     expect(panel.cards[0]).toMatchObject({
       status: { label: 'Available', tone: 'active' },
       action: { kind: 'install', label: 'Install 1.4.0', targetDigest: release.serverImage },
       notesVersion: '1.4.0',
     });
+  });
+
+  it('says up to date on the installed row alone instead of repeating it in a card', () => {
+    const panel = describeServerUpdatePanel(
+      status({ state: 'current', installed: { version: '1.4.0', generation: 7 } }),
+    );
+    expect(panel).toEqual({
+      installed: { version: '1.4.0', publishedAt: release.publishedAt, upToDate: true },
+      cards: [],
+    });
+  });
+
+  it('dates the installed row only with the release that is actually running', () => {
+    // A server ahead of its channel is current, but not running that release.
+    const panel = describeServerUpdatePanel(
+      status({ state: 'current', installed: { version: '1.4.1', generation: 7 } }),
+    );
+    expect(panel.installed).toEqual({ version: '1.4.1', publishedAt: null, upToDate: true });
+  });
+
+  it('does not call a server up to date while an operation on it is unfinished', () => {
+    const panel = describeServerUpdatePanel(
+      status({
+        state: 'current',
+        installed: { version: '1.4.0', generation: 7 },
+        operation: operation({ state: 'activating', phase: 'reconciling-companions' }),
+      }),
+    );
+    expect(panel.installed).toMatchObject({ upToDate: false });
+    expect(panel.cards).toHaveLength(1);
   });
 
   it('shows progress for a moving operation and offers nothing', () => {
