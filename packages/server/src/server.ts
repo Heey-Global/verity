@@ -1,3 +1,4 @@
+import { startVulnerabilityPush } from './vulnerability-push.js';
 import {
   createVulnerabilitySessionMonitor,
   type VulnerabilitySummary,
@@ -3710,6 +3711,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // would otherwise resolve the channel and send into a closing PushSender.
     await serverUpdateNotifier?.close();
     await pushFirePoints?.close();
+    await vulnerabilityPush?.stop();
     await pushSender?.close();
   });
   // P0b: on graceful shutdown, mark any in-flight turn `interrupted` before the
@@ -3861,6 +3863,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
     if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
   });
+  const vulnerabilityPush = pushSender
+    ? startVulnerabilityPush({
+        store: deps.eventStore,
+        sender: pushSender,
+        warn: (err) => app.log.warn({ err }, 'Vulnerability push failed'),
+      })
+    : undefined;
+
   const presentProject = (...args: Parameters<typeof publicProject>): PublicProjectRecord => ({
     ...publicProject(...args),
     vulnerabilitySummary: vulnerabilitySessions.projects.get(args[0].id),
