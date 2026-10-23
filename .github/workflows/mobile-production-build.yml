@@ -83,8 +83,9 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 240); do
-            state="$(gh release view "$MOBILE_TAG" --json isDraft,assets)"
-            if jq -e '.isDraft == false and any(.assets[]; .name == "native-staging.json")' <<< "$state" >/dev/null; then
+            # This read-only token cannot see the release while it is a draft.
+            if state="$(gh release view "$MOBILE_TAG" --json isDraft,assets)" &&
+              jq -e '.isDraft == false and any(.assets[]; .name == "native-staging.json")' <<< "$state" >/dev/null; then
               gh release download "$MOBILE_TAG" --pattern native-staging.json --output "$RUNNER_TEMP/native-staging.json" --clobber
               jq -e --slurpfile staging "$RUNNER_TEMP/native-staging.json" \
                 '.source == $staging[0].source and .version == $staging[0].version and .product == "mobile-native" and .appId != $staging[0].appId' \
