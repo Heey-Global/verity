@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.2](https://github.com/Heey-Global/verity/compare/mobile-v1.76.1...mobile-v1.76.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **mobile:** highlight the entire pull request bar on press ([#1812](https://github.com/Heey-Global/verity/issues/1812)) ([ec5e1b9](https://github.com/Heey-Global/verity/commit/ec5e1b95e94e0cf6daa4e6bb3c52245110106fda))
+
 ## [1.76.1](https://github.com/Heey-Global/verity/compare/mobile-v1.76.0...mobile-v1.76.1) (2026-10-23)
 
 
