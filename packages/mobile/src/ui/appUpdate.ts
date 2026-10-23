@@ -117,13 +117,21 @@ function compareVersions(left: string, right: string): number {
  * The store version this app should be updated to, or null. Compared with the
  * binary, not with the running JavaScript: an over-the-air 1.75.4 still runs in
  * a 1.75.0 binary, and only a store release above that binary is news. The
- * Staging app is not in the App Store, and only iOS asks it.
+ * Staging app is not in the App Store, only iOS asks it, and a binary that does
+ * not report its version is not compared at all.
  */
 export function appStoreUpdate(facts: AppUpdateFacts): AppStoreRelease | null {
-  if (facts.variant !== 'production' || facts.platform !== 'ios' || facts.store === null)
+  if (
+    facts.variant !== 'production' ||
+    facts.platform !== 'ios' ||
+    // Development builds share the production bundle id but are not what the
+    // store installed; they say "Off" instead of sending anyone there.
+    !facts.updatesEnabled ||
+    facts.store === null ||
+    facts.nativeVersion === null
+  )
     return null;
-  const installed = facts.nativeVersion ?? facts.runningVersion;
-  return compareVersions(facts.store.version, installed) > 0 ? facts.store : null;
+  return compareVersions(facts.store.version, facts.nativeVersion) > 0 ? facts.store : null;
 }
 
 export function describeAppUpdate(facts: AppUpdateFacts): AppUpdateBox {

@@ -67,7 +67,7 @@ export function resetAppStoreLookupForTests(): void {
   lookup = undefined;
 }
 
-function useAppStoreRelease(enabled: boolean): AppStoreRelease | null {
+function useAppStoreRelease(enabled: boolean, revision = 0): AppStoreRelease | null {
   const [release, setRelease] = useState<AppStoreRelease | null>(null);
   useEffect(() => {
     if (!enabled) return undefined;
@@ -78,7 +78,7 @@ function useAppStoreRelease(enabled: boolean): AppStoreRelease | null {
     return () => {
       active = false;
     };
-  }, [enabled]);
+  }, [enabled, revision]);
   return release;
 }
 
@@ -114,12 +114,16 @@ export function useAppStoreUpdateVersion(enabled: boolean): string | null {
 /** Everything the App box shows, and the one check it can start. */
 export function useAppUpdateFacts(): { facts: AppUpdateFacts; check: () => void } {
   const updates = Updates.useUpdates();
-  const store = useAppStoreRelease(true);
+  // Bumped by an explicit check, so it asks the App Store again as well.
+  const [revision, setRevision] = useState(0);
+  const store = useAppStoreRelease(true, revision);
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
   const check = useCallback(() => {
     setChecking(true);
     setCheckFailed(false);
+    lookup = undefined;
+    setRevision((current) => current + 1);
     // Downloads only. A restart is the person's call, so nothing they are
     // doing is interrupted; the downloaded update shows up as ready.
     void downloadAppUpdate()

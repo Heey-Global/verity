@@ -70,6 +70,13 @@ describe('app update box', () => {
     expect(appStoreUpdate(facts({ nativeVersion: '1.77.0', store: store('1.76.0') }))).toBeNull();
   });
 
+  it('keeps a development build off the App Store', () => {
+    expect(describeAppUpdate(facts({ updatesEnabled: false, store: store('1.76.0') })).tag).toEqual(
+      { label: 'Off', intent: 'optional' },
+    );
+    expect(appStoreUpdate(facts({ nativeVersion: null, store: store('1.76.0') }))).toBeNull();
+  });
+
   it('never asks the App Store about the Staging app or another platform', () => {
     expect(appStoreUpdate(facts({ variant: 'staging', store: store('1.76.0') }))).toBeNull();
     expect(appStoreUpdate(facts({ platform: 'android', store: store('1.76.0') }))).toBeNull();

@@ -79,6 +79,14 @@ describe('app box on the update screen', () => {
     expect(Updates.reloadAsync).not.toHaveBeenCalled();
   });
 
+  it('asks the App Store again on an explicit check', async () => {
+    render(<AppUpdateSection />);
+    expect(await screen.findByText('Up to date')).toBeOnTheScreen();
+    fetchMock.mockResolvedValue(lookup('1.76.0'));
+    fireEvent.press(screen.getByText('Check for updates'));
+    expect(await screen.findByText('Version 1.76.0 is available')).toBeOnTheScreen();
+  });
+
   it('restarts into a downloaded update on request', async () => {
     useUpdates.mockReturnValue({ isUpdatePending: true, isChecking: false, isDownloading: false });
     render(<AppUpdateSection />);
