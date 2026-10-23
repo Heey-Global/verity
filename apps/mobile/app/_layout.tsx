@@ -417,8 +417,8 @@ function AppHeader({
         : undefined;
   return (
     <View style={[styles.header, { paddingTop: insets.top }]}>
-      <WindowControlsProbe onInset={trackWindowControls} />
       <View style={[styles.headerRow, headerRowInset]}>
+        <WindowControlsProbe onInset={trackWindowControls} />
         <View style={styles.headerSide}>
           {isHome ? (
             <>
