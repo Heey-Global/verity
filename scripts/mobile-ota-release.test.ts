@@ -509,7 +509,7 @@ describe('OTA CLI interrupted external operations', () => {
       false,
     );
   });
-  it('dismisses stale approvals before CI while preserving exact-head approval', () => {
+  it('dismisses stale approvals for the new candidate while preserving exact-head approval', () => {
     const service = serviceFixture({
       reviews: [
         { id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) },
@@ -521,10 +521,13 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.status).toBe(0);
     const state = service.state();
     expect(state.reviews?.map((review) => review.state)).toEqual(['DISMISSED', 'APPROVED']);
+    // The app-authored candidate commit starts its own pull_request CI, so the
+    // dismissal follows that commit and nothing dispatches CI explicitly.
+    const commit = state.calls.findIndex((call) => call.includes('createCommitOnBranch'));
     const dismissal = state.calls.findIndex((call) => call.includes('/reviews/1/dismissals'));
-    const dispatch = state.calls.findIndex((call) => call.startsWith('gh workflow run'));
-    expect(dismissal).toBeGreaterThan(-1);
-    expect(dispatch).toBeGreaterThan(dismissal);
+    expect(commit).toBeGreaterThan(-1);
+    expect(dismissal).toBeGreaterThan(commit);
+    expect(state.calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
 
   it('does not make the new candidate mergeable if stale approval cannot be cleared', () => {
@@ -584,7 +587,8 @@ describe('OTA CLI interrupted external operations', () => {
             !call.includes('--branch staging-staging-'),
         ),
     ).toHaveLength(1);
-    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(true);
+    // CI follows from the app-authored commit, not from a dispatch.
+    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
   it.each(['metadata', 'pull'] as const)(
     'recovers the first branch when %s creation was interrupted before any PR exists',
