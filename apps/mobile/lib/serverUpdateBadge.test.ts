@@ -221,5 +221,15 @@ describe('useServerUpdateNotice', () => {
     createClient.mockReturnValue(fakeClient(jest.fn().mockResolvedValue(failed)));
     const again = renderHook(() => useServerUpdateNotice(true));
     await waitFor(() => expect(again.result.current).toMatchObject({ problem: true }));
+    again.unmount();
+
+    // A finished earlier update is history: that banner can still be put away.
+    const completed = {
+      ...available,
+      operation: { state: 'completed', phase: 'completed' },
+    } as unknown as ServerUpdateStatus;
+    createClient.mockReturnValue(fakeClient(jest.fn().mockResolvedValue(completed)));
+    const later = renderHook(() => useServerUpdateNotice(true));
+    await waitFor(() => expect(later.result.current).toMatchObject({ problem: false }));
   });
 });
