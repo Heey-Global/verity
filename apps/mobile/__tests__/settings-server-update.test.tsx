@@ -455,7 +455,7 @@ describe('settings/server-update', () => {
     );
     // Once accepted, the panel reports progress instead of offering the action
     // again — a second press would race the operation already running.
-    expect(await screen.findByText('Step 1 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 1 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
@@ -532,7 +532,7 @@ describe('settings/server-update', () => {
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
-    expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 2 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
@@ -671,7 +671,7 @@ describe('settings/server-update', () => {
       for (const refresh of [...mockLiveRefresh]) await refresh();
     });
 
-    expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 2 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     jest.useRealTimers();
   });
