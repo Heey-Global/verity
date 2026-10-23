@@ -4681,7 +4681,6 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
@@ -4733,6 +4732,8 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {/* Last above the composer: below the plan and the PR bar, never above them. */}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}

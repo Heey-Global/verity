@@ -4576,6 +4576,18 @@ migrations['0163_vulnerability_actions'] = {
   },
 };
 
+// A session is compared with the commit it branched from, so packages the default
+// branch upgraded later are not reported as added by the session.
+migrations['0164_vulnerability_session_base'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_state add column base_content_hash text
+      references vuln_scan_results(content_hash) on delete set null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_state drop column base_content_hash`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

@@ -3886,6 +3886,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
   });
   void vulnerabilitySessions.rebuild();
+  void vulnerabilitySessions
+    .rescanMissingBaselines()
+    .catch((err: unknown) => app.log.warn({ err }, 'Vulnerability baseline refresh failed'));
   const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
     if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
   });
