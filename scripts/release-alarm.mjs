@@ -29,7 +29,7 @@ export const crashThreshold = 3;
  */
 export function planAlarm({ result, problems, recentConclusions, issue, runUrl, mention }) {
   if (result === 'cancelled' || result === 'skipped') return { action: 'none' };
-  let current = problems ?? [];
+  let current = [...new Set(problems ?? [])];
   if (result !== 'success' && !current.length) {
     // The sweep crashed before reporting. That says nothing about the
     // releases, so it never closes an open issue.
