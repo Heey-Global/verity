@@ -362,6 +362,17 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   updateHeader: {
     gap: 2,
   },
+  // One operation or release inside a server's box, spaced like a stacked card.
+  updateBlock: {
+    gap: theme.spacing.md,
+  },
+  // Quiet text actions under a box's head ("Check for updates"), left-aligned.
+  updateLinks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
   updateTitle: {
     ...theme.typography.title,
     color: theme.colors.text,

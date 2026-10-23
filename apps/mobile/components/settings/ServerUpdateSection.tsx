@@ -29,9 +29,9 @@ import {
 } from '../../lib/serverUpdateChannelWrite';
 import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
-import { SettingsGroup, SettingsPanel } from './SettingsChrome';
+import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
-import { Button, Card, HintBox, Row, StatusTag, Text as UiText, type StatusIntent } from '../ui';
+import { Button, Card, CardHead, HintBox, StatusTag, Text as UiText } from '../ui';
 
 // Cadence for asking whether an unanswered install request started anything.
 // How long an unchanged status may still be the Updater catching up with a
@@ -263,11 +263,12 @@ export function ServerUpdateSection({
   }
   if (!showsServerUpdatePanel(status)) {
     return (
-      <SettingsPanel>
-        <Text style={styles.updateDetail}>
-          This deployment was not installed by Verity, so it updates itself externally.
-        </Text>
-      </SettingsPanel>
+      <Card stacked>
+        <CardHead
+          title="Verity Server"
+          subtitle="This deployment was not installed by Verity, so it updates itself externally."
+        />
+      </Card>
     );
   }
   const view = describeServerUpdate(status);
@@ -292,40 +293,36 @@ export function ServerUpdateSection({
 
   if (channelNeedsRefresh) {
     return (
-      <SettingsGroup title="Update">
-        <SettingsPanel>
-          <View style={styles.updateProgressRow}>
-            <ActivityIndicator size="small" color={theme.colors.text} />
-            <Text style={styles.updateDetail}>
-              Checking the selected channel… Retrying if the server is unavailable.
-            </Text>
-          </View>
-        </SettingsPanel>
-      </SettingsGroup>
+      <SettingsPanel>
+        <View style={styles.updateProgressRow}>
+          <ActivityIndicator size="small" color={theme.colors.text} />
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
+          </Text>
+        </View>
+      </SettingsPanel>
     );
   }
 
+  // One box for the server: its head says what runs and how it is doing, and
+  // every operation or release below it belongs to it — never a card of its own
+  // that could be read as something else's.
   const panel = describeServerUpdatePanel(status);
   return (
     <>
-      {panel.installed !== null ? (
-        <SettingsGroup title="Installed">
-          <Card flush>
-            <Row
-              title="Verity Server"
-              subtitle={installedSubtitle(panel.installed)}
-              trailing={
-                panel.installed.upToDate ? (
-                  <StatusTag intent="ready" label="Up to date" />
-                ) : undefined
-              }
-            />
-          </Card>
-        </SettingsGroup>
-      ) : null}
-      {panel.cards.map((card) => (
-        <SettingsGroup key={card.key} title={card.section}>
-          <UpdateCard
+      <Card stacked divided attention={panel.cards.some((card) => card.status.tone === 'problem')}>
+        <CardHead
+          title="Verity Server"
+          subtitle={panel.installed === null ? undefined : installedSubtitle(panel.installed)}
+          trailing={
+            panel.tag === null ? undefined : (
+              <StatusTag intent={panel.tag.intent} label={panel.tag.label} />
+            )
+          }
+        />
+        {panel.cards.map((card) => (
+          <UpdateBlock
+            key={card.key}
             card={card}
             client={client}
             busy={starting || retrying !== undefined}
@@ -335,22 +332,15 @@ export function ServerUpdateSection({
             onInstall={install}
             onRetry={retry}
           />
-        </SettingsGroup>
-      ))}
+        ))}
+      </Card>
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
     </>
   );
 }
 
-const TAG_INTENT: Record<ServerUpdateCard['status']['tone'], StatusIntent> = {
-  problem: 'needsSetup',
-  done: 'ready',
-  active: 'optional',
-  idle: 'optional',
-};
-
-/** One operation or release: its state, what happened, and its single way forward. */
-function UpdateCard({
+/** One operation or release inside the server's box: what happened, and its single way forward. */
+function UpdateBlock({
   card,
   client,
   busy,
@@ -374,13 +364,8 @@ function UpdateCard({
   const releasedAt =
     card.release === null ? undefined : formatReleaseDate(card.release.publishedAt);
   return (
-    <Card stacked attention={card.status.tone === 'problem'}>
+    <View style={styles.updateBlock}>
       <View style={styles.updateHeader}>
-        {card.progress !== null ? (
-          <StatusTag intent="transient" label={card.status.label} />
-        ) : (
-          <StatusTag intent={TAG_INTENT[card.status.tone]} label={card.status.label} />
-        )}
         <UiText variant="title" accessibilityRole="header">
           {card.title}
         </UiText>
@@ -435,7 +420,7 @@ function UpdateCard({
       {card.notesVersion !== null ? (
         <ServerReleaseNotes client={client} version={card.notesVersion} />
       ) : null}
-    </Card>
+    </View>
   );
 }
 

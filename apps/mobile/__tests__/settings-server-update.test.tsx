@@ -23,6 +23,9 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 );
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+// The app's own box shares the screen and says "Up to date" too; it has its own
+// suite (settings-app-update.test.tsx), so this one sees only the server.
+jest.mock('../components/settings/AppUpdateSection', () => ({ AppUpdateSection: () => null }));
 
 import ServerUpdateScreen from '../app/settings/server-update';
 import ServerUpdateChannelScreen from '../app/settings/server-update-channel';
@@ -990,6 +993,8 @@ describe('stuck server update', () => {
 
     expect(await screen.findByText('Update to 4.52.0 did not finish')).toBeOnTheScreen();
     expect(screen.getByText('Version 4.52.0')).toBeOnTheScreen();
+    // The server's box names its state once, on its head, for both blocks below.
+    expect(screen.getByText('Stuck')).toBeOnTheScreen();
     // The Updater's generation counter means nothing to the person reading this.
     expect(screen.queryByText(/Generation/)).toBeNull();
     expect(screen.getByText('Updating companions · step 15 of 16')).toBeOnTheScreen();
