@@ -1,3 +1,4 @@
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
@@ -4680,6 +4681,7 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
@@ -9387,6 +9389,7 @@ function PullRequestBar({
 }) {
   const { theme } = useUnistyles();
   const [merging, setMerging] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
@@ -9487,9 +9490,11 @@ function PullRequestBar({
 
   return (
     <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
+      <View style={[styles.prBar, opening ? styles.prBarPressed : null]}>
         <Pressable
-          style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
+          style={styles.prOpenTarget}
+          onPressIn={() => setOpening(true)}
+          onPressOut={() => setOpening(false)}
           onPress={() =>
             void confirmHint().then((proceed) => {
               if (proceed && mounted.current)

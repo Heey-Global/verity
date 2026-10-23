@@ -69,7 +69,7 @@ run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublishe
 permissions: read-all
 
 jobs:
-  register-release-tags:
+  register-backend-tags:
     # Never wait for the train lock: workflow merges must see the immutable
     # release refs even while an earlier native build is still running.
     runs-on: ubuntu-26.04
@@ -77,6 +77,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    outputs:
+      status: ${{ steps.reserve.outputs.status }}
+      head: ${{ steps.reserve.outputs.head }}
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,21 +91,83 @@ jobs:
         with:
           node-version: '26.12.1'
       - name: Reserve approved release commits
+        id: reserve
         if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_HEAD: ${{ github.sha }}
-        run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD"
+        run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" backend
+
+  register-mobile-tags:
+    # Never wait for the train lock: workflow merges must see the immutable
+    # release refs even while an earlier native build is still running.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      status: ${{ steps.reserve.outputs.status }}
+      head: ${{ steps.reserve.outputs.head }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Reserve approved release commits
+        id: reserve
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_HEAD: ${{ github.sha }}
+        run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" mobile
+
+  register-website-tags:
+    # Never wait for the train lock: workflow merges must see the immutable
+    # release refs even while an earlier native build is still running.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      status: ${{ steps.reserve.outputs.status }}
+      head: ${{ steps.reserve.outputs.head }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Reserve approved release commits
+        id: reserve
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_HEAD: ${{ github.sha }}
+        run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" website
 
   release-train:
-    needs: register-release-tags
+    needs: register-backend-tags
+    if: needs.register-backend-tags.outputs.status != 'superseded'
     # Keep metadata and publication for one train in the same lifecycle lock.
     # Otherwise an unpublished draft can be mistaken for a new release boundary.
     strategy:
       fail-fast: false
       matrix:
-        train: [backend, mobile, website]
+        train: [backend]
     concurrency:
       group: release-${{ matrix.train }}
       queue: max
@@ -135,3 +200,121 @@ jobs:
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}
+
+  release-mobile:
+    needs: register-mobile-tags
+    if: needs.register-mobile-tags.outputs.status != 'superseded'
+    # Keep metadata and publication for one train in the same lifecycle lock.
+    # Otherwise an unpublished draft can be mistaken for a new release boundary.
+    strategy:
+      fail-fast: false
+      matrix:
+        train: [mobile]
+    concurrency:
+      group: release-${{ matrix.train }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: write
+      pull-requests: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    with:
+      train: ${{ matrix.train }}
+      mobile-tag: ${{ inputs['mobile-tag'] || '' }}
+      backend-version: ${{ inputs['backend-version'] || '' }}
+      backend-ref: ${{ inputs['backend-ref'] || '' }}
+      backend-republish: ${{ inputs['backend-republish'] || false }}
+      backend-artifact-only: ${{ matrix.train == 'backend' && inputs['backend-artifact-only'] || false }}
+      backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
+      backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
+      # The publisher dispatches this run through the API, which carries inputs
+      # as strings, while the manual form sends a real boolean. Normalize both:
+      # a string reaching this boolean input fails the whole dispatched run.
+      mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
+      backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
+      website-version: ${{ inputs['website-version'] || '' }}
+      website-ref: ${{ inputs['website-ref'] || '' }}
+
+  release-website:
+    needs: register-website-tags
+    if: needs.register-website-tags.outputs.status != 'superseded'
+    # Keep metadata and publication for one train in the same lifecycle lock.
+    # Otherwise an unpublished draft can be mistaken for a new release boundary.
+    strategy:
+      fail-fast: false
+      matrix:
+        train: [website]
+    concurrency:
+      group: release-${{ matrix.train }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: write
+      pull-requests: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    with:
+      train: ${{ matrix.train }}
+      mobile-tag: ${{ inputs['mobile-tag'] || '' }}
+      backend-version: ${{ inputs['backend-version'] || '' }}
+      backend-ref: ${{ inputs['backend-ref'] || '' }}
+      backend-republish: ${{ inputs['backend-republish'] || false }}
+      backend-artifact-only: ${{ matrix.train == 'backend' && inputs['backend-artifact-only'] || false }}
+      backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
+      backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
+      # The publisher dispatches this run through the API, which carries inputs
+      # as strings, while the manual form sends a real boolean. Normalize both:
+      # a string reaching this boolean input fails the whole dispatched run.
+      mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
+      backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
+      website-version: ${{ inputs['website-version'] || '' }}
+      website-ref: ${{ inputs['website-ref'] || '' }}
+
+  resume-superseded:
+    needs: [register-backend-tags, register-mobile-tags, register-website-tags]
+    if: >-
+      always() && !cancelled() &&
+      (needs.register-backend-tags.outputs.status == 'superseded' ||
+       needs.register-mobile-tags.outputs.status == 'superseded' ||
+       needs.register-website-tags.outputs.status == 'superseded')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-superseded-handoff
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Resume once on current main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          BACKEND_HEAD: ${{ needs.register-backend-tags.outputs.head }}
+          MOBILE_HEAD: ${{ needs.register-mobile-tags.outputs.head }}
+          WEBSITE_HEAD: ${{ needs.register-website-tags.outputs.head }}
+        run: node scripts/release-superseded-handoff.mjs

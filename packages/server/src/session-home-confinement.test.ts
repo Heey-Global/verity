@@ -125,11 +125,15 @@ if printf bad > '${root}/work/new' 2>/dev/null; then exit 25; fi
 // Under gVisor every agent runs on the mount-namespace path. A chrooted process
 // may not create a user namespace, so a helper that chroots silently breaks each
 // nested sandbox an agent starts — Codex's read-only reviewer failed every push
-// gate that way while all filesystem confinement checks stayed green. Allowing
+// gate that way while all filesystem confinement checks stayed green. Mapping the
+// caller to root breaks it the same way: a nested namespace may not map its
+// parent's uid 0 without CAP_SETFCAP, so `unshare` succeeds but writing the
+// uid_map fails. Codex also creates its daemon directory in /tmp whatever TMPDIR
+// says, so /tmp must be writable — and private, never the container's. Allowing
 // nesting hands the agent CAP_SYS_ADMIN over its own mount table, so the
 // inherited binds must stay locked there: no remount to writable, no unmount
 // revealing what lies beneath.
-it('lets confined agents start nested sandboxes on the mount-namespace path', (context) => {
+it('lets confined agents start nested sandboxes on the mount-namespace path', async (context) => {
   const probe = run([], 'exit 0', true);
   if (probe.status !== 0) {
     context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
@@ -142,11 +146,17 @@ it('lets confined agents start nested sandboxes on the mount-namespace path', (c
     return;
   }
   const knowledge = join(root, 'knowledge');
-  const result = run(
-    ['--read-root', knowledge],
-    `set -eu
-# Codex's bubblewrap binds /tmp and aborts when it is missing.
-test -d /tmp
+  // The literal /tmp, not tmpdir(): TMPDIR often points elsewhere.
+  const hostMarker = `/tmp/verity-host-tmp-${process.pid}`;
+  await writeFile(hostMarker, 'host');
+  let result;
+  try {
+    result = run(
+      ['--read-root', knowledge],
+      `set -eu
+test "$(id -u)" = ${String(process.getuid?.())} || exit 30
+if test -e '${hostMarker}'; then exit 31; fi
+mkdir -m 0700 "/tmp/codex-daemon-$(id -u)" || exit 37
 /usr/bin/unshare --user --map-root-user --mount /bin/sh -c '
 test "$(cat "$1/source")" = reference || exit 32
 if printf bad > "$1/source" 2>/dev/null; then exit 33; fi
@@ -155,8 +165,11 @@ if /usr/bin/umount -l "$1" 2>/dev/null; then exit 35; fi
 if printf bad > "$1/source" 2>/dev/null; then exit 36; fi
 ' sh '${knowledge}'
 `,
-    true,
-  );
+      true,
+    );
+  } finally {
+    await rm(hostMarker, { force: true });
+  }
   expect(result.status, result.stderr).toBe(0);
 });
 

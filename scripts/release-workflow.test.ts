@@ -1171,9 +1171,21 @@ describe('release train concurrency', () => {
     const callers = Object.values(dispatch.jobs).filter(
       (job) => job.uses === './.github/workflows/release.yml',
     );
-    expect(callers).toHaveLength(1);
+    expect(callers).toHaveLength(3);
     const caller = callers[0];
-    expect(caller?.strategy?.matrix?.train).toEqual(['backend', 'mobile', 'website']);
+    expect(callers.flatMap((job) => job.strategy?.matrix?.train ?? [])).toEqual([
+      'backend',
+      'mobile',
+      'website',
+    ]);
+    for (const job of callers) {
+      expect(job.concurrency).toEqual({
+        group: 'release-${{ matrix.train }}',
+        queue: 'max',
+        'cancel-in-progress': false,
+      });
+      expect(job.uses).toBe('./.github/workflows/release.yml');
+    }
     expect(caller?.strategy?.['fail-fast']).toBe(false);
     expect(caller?.concurrency).toEqual({
       group: 'release-${{ matrix.train }}',

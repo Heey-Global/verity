@@ -1,4 +1,11 @@
 import {
+  vulnerabilitySettingsSchema,
+  vulnerabilityProjectSchema,
+  vulnerabilitySessionSchema,
+  vulnerabilityIgnoresSchema,
+  type VulnerabilitySettings,
+} from './vulnerability.js';
+import {
   boundedHistoryResultSchema,
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
@@ -449,6 +456,13 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  vulnerabilitySummary: z
+    .object({
+      count: z.number().int().nonnegative(),
+      critical: z.number().int().nonnegative(),
+      high: z.number().int().nonnegative(),
+    })
+    .optional(),
   latestReleaseTag: z.string().nullable().optional(),
   latestReleaseName: z.string().nullable().optional(),
   latestReleaseUrl: z.string().nullable().optional(),
@@ -5291,6 +5305,77 @@ export class VerityClient {
     return res.arrayBuffer();
   }
 
+  async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {
+    const res = await this.request(
+      '/settings/vulnerability-scan',
+      patch
+        ? {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          }
+        : { method: 'GET' },
+    );
+    return vulnerabilitySettingsSchema.parse(
+      ((await res.json()) as { settings: unknown }).settings,
+    );
+  }
+  async projectVulnerabilities(id: string) {
+    return vulnerabilityProjectSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async sessionVulnerabilities(id: string) {
+    return vulnerabilitySessionSchema.parse(
+      await (
+        await this.request(`/sessions/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async scanVulnerabilities(id: string) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+      method: 'POST',
+    });
+  }
+  async vulnerabilityIgnores(id: string) {
+    return vulnerabilityIgnoresSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+          method: 'GET',
+        })
+      ).json(),
+    ).ignores;
+  }
+  async ignoreVulnerability(
+    id: string,
+    body: {
+      advisoryId: string;
+      package: string;
+      source: string;
+      sessionId?: string;
+      days: 30 | 90;
+      untilFix: boolean;
+      reason: string;
+    },
+  ) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async restoreVulnerability(id: string, ignoreId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores/${encodeURIComponent(ignoreId)}`,
+      { method: 'DELETE' },
+    );
+  }
   private async request(
     path: string,
     init: TransportRequestInit,

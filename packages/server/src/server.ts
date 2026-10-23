@@ -1,3 +1,11 @@
+import { startVulnerabilityPush } from './vulnerability-push.js';
+import {
+  createVulnerabilitySessionMonitor,
+  type VulnerabilitySummary,
+} from './vulnerability-session.js';
+import { createVulnerabilityScanService } from './vulnerability-scan.js';
+import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
+import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
 import {
   googleAccountSettingsStatus,
   googleApprovalAccount,
@@ -757,6 +765,7 @@ export interface PublicProjectRecord extends Omit<
   latestReleaseName: string | null;
   latestReleaseUrl: string | null;
   latestReleasePublishedAt: string | null;
+  vulnerabilitySummary?: VulnerabilitySummary | undefined;
   sandboxUpdate: SandboxUpdateStatus;
   /** Whether this project's recorded attestation verdict still holds against the
    *  toolkit this Server ships — `null` for every row the drift report declines
@@ -3702,6 +3711,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // would otherwise resolve the channel and send into a closing PushSender.
     await serverUpdateNotifier?.close();
     await pushFirePoints?.close();
+    await vulnerabilityPush?.stop();
     await pushSender?.close();
   });
   // P0b: on graceful shutdown, mark any in-flight turn `interrupted` before the
@@ -3807,6 +3817,83 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   app.addHook('onClose', () => {
     automationScheduler.stop();
+  });
+
+  const vulnerabilityService = createVulnerabilityScanService({
+    store: deps.eventStore.vulnerabilityScans,
+    getProject: (id) => deps.eventStore.getProject(id),
+    getSession: (id) => deps.eventStore.getSession(id),
+    sessionPath: (session, project) => {
+      if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
+      return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
+    },
+    beginActivity: (id) => {
+      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
+      return () => deps.provisioner?.endProjectSandboxActivity?.(id);
+    },
+    ...(deps.projectRuntime?.runAutomationScript
+      ? {
+          runScript: (project: ProjectRecord, script: string) =>
+            deps.projectRuntime!.runAutomationScript!(project, emptyProjectSettings(project.id), {
+              workdir: '/work',
+              script,
+              timeoutMs: 120_000,
+              maxOutputBytes: 8 * 1024 * 1024,
+            }),
+        }
+      : {}),
+    changed: (id) => {
+      resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
+      void vulnerabilitySessions.rebuild();
+    },
+  });
+  const vulnerabilitySessions = createVulnerabilitySessionMonitor({
+    store: deps.eventStore.vulnerabilityScans,
+    service: vulnerabilityService,
+    getSession: (id) => deps.eventStore.getSession(id),
+    listSessions: () => deps.eventStore.listSessions(),
+    isBusy: (id) => conductor.isBusy(id),
+    changed: () => {
+      resources.invalidate('/sessions');
+      resources.invalidate('/projects');
+    },
+    warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
+  });
+  void vulnerabilitySessions.rebuild();
+  const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
+    if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
+  });
+  const vulnerabilityPush = pushSender
+    ? startVulnerabilityPush({
+        store: deps.eventStore,
+        sender: pushSender,
+        warn: (err) => app.log.warn({ err }, 'Vulnerability push failed'),
+      })
+    : undefined;
+
+  const presentProject = (...args: Parameters<typeof publicProject>): PublicProjectRecord => ({
+    ...publicProject(...args),
+    vulnerabilitySummary: vulnerabilitySessions.projects.get(args[0].id),
+  });
+  const vulnerabilityScheduler = startVulnerabilityScheduler({
+    store: deps.eventStore.vulnerabilityScans,
+    listProjects: () => deps.eventStore.listProjects(),
+    scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
+    log: app.log,
+  });
+  registerVulnerabilityRoutes(app, {
+    eventStore: deps.eventStore,
+    service: vulnerabilityService,
+    settingsChanged: () => {
+      vulnerabilityScheduler.wake();
+      void vulnerabilitySessions.rebuild();
+    },
+  });
+  app.addHook('onClose', async () => {
+    vulnerabilityScheduler.stop();
+    unsubscribeVulnerabilityTurns();
+    await vulnerabilitySessions.stop();
+    await vulnerabilityService.stop();
   });
 
   // SBX-1 helper: is any session bound to this project running a turn right now?
@@ -5299,6 +5386,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
+      newVulnerabilities: vulnerabilitySessions.attention.get(session.sessionId),
       projectId: session.projectId,
       disconnectedSandboxProjects:
         deps.provisioner?.disconnectedSandboxProjects?.() ?? NO_DISCONNECTED_SANDBOXES,
@@ -7048,7 +7136,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       )) ?? new Map<string, SandboxUpdateStatus>();
     const verdicts = sandboxRepairVerdicts();
     return resolved.map(({ project, release }) =>
-      publicProject(
+      presentProject(
         project,
         release,
         isControlPlaneProject(project)
@@ -7201,7 +7289,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sandboxRepairVerdicts(),
       );
       return {
-        project: publicProject(
+        project: presentProject(
           resolved.project,
           resolved.release,
           sandboxUpdate,
@@ -7226,7 +7314,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // After the last row write in this handler, so no list started in between
       // can memoise a state this request is still about to change.
       deps.invalidateProjectList?.();
-      return publicProject(
+      return presentProject(
         resolved.project,
         resolved.release,
         sandboxUpdate,
@@ -7590,7 +7678,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project.state === 'sleeping') {
         return {
           code: 200,
-          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       }
       if (project.state !== 'active') {
@@ -7600,7 +7688,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const slept = await deps.provisioner.sleepProject(id);
         return {
           code: 200,
-          project: publicProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: project sleep failed');
@@ -7618,7 +7706,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project.state === 'active') {
         return {
           code: 200,
-          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       }
       if (project.state !== 'sleeping') {
@@ -7628,7 +7716,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const awake = await deps.provisioner.wakeProject(id);
         return {
           code: 200,
-          project: publicProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
@@ -9510,7 +9598,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     PROJECT_MODEL_ERROR,
     isSleepLifecycleState,
-    publicProject: (project) => publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+    publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
 
