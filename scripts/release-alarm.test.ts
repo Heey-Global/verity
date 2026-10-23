@@ -109,8 +109,10 @@ describe('release stall alarm', () => {
     const { reconcile, alarm } = workflow.jobs;
     expect(reconcile?.permissions?.issues).toBeUndefined();
     expect(reconcile?.outputs?.problems).toBe('${{ steps.sweep.outputs.problems }}');
+    // Problems are a verdict, not a crash: only a sweep that never wrote its
+    // verdict fails the job, which is what the crash count reads.
     expect(reconcile?.steps?.find((step) => step.id === 'sweep')?.run).toBe(
-      'node scripts/release-reconcile.mjs',
+      `node scripts/release-reconcile.mjs || grep -q '^problems=' "$GITHUB_OUTPUT"`,
     );
     expect(alarm?.needs).toBe('reconcile');
     expect(alarm?.if).toBe('always()');

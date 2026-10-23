@@ -37,7 +37,7 @@ export function planAlarm({ result, problems, recentConclusions, issue, runUrl, 
     if (crashes.length < crashThreshold || crashes.some((conclusion) => conclusion === 'success'))
       return { action: 'none' };
     current = [
-      `The reconciliation sweep has failed ${crashThreshold} times in a row without a verdict, so nothing is watching releases; see ${runUrl}.`,
+      `The reconciliation sweep has crashed ${crashThreshold} times in a row without a verdict, so nothing is watching releases.`,
     ];
   }
   if (!current.length) {
@@ -107,17 +107,30 @@ function main() {
     throw new Error('Invalid PROBLEMS');
   const problems = /** @type {string[] | undefined} */ (parsedProblems);
 
+  // A sweep job that fails crashed before its verdict: the workflow step
+  // succeeds whenever the verdict was written, problems or not. Superseded
+  // (cancelled) runs say nothing either way.
   const runs = /** @type {{id: number, conclusion: string | null}[]} */ (
     ghJson([
       'api',
-      `repos/${repository}/actions/workflows/release-reconcile.yml/runs?status=completed&per_page=${crashThreshold + 1}`,
+      `repos/${repository}/actions/workflows/release-reconcile.yml/runs?status=completed&per_page=${crashThreshold + 3}`,
       '--jq',
       '[.workflow_runs[] | {id, conclusion}]',
     ])
-  );
-  const recentConclusions = runs
-    .filter((run) => String(run.id) !== runId)
-    .map((run) => run.conclusion ?? 'none');
+  )
+    .filter((run) => String(run.id) !== runId && run.conclusion !== 'cancelled')
+    .slice(0, crashThreshold - 1);
+  const recentConclusions = runs.map((run) => {
+    const jobs = /** @type {{name: string, conclusion: string | null}[]} */ (
+      ghJson([
+        'api',
+        `repos/${repository}/actions/runs/${run.id}/jobs`,
+        '--jq',
+        '[.jobs[] | {name, conclusion}]',
+      ])
+    );
+    return jobs.find((job) => job.name === 'reconcile')?.conclusion ?? 'none';
+  });
   const issues = /** @type {{number: number, body: string | null}[]} */ (
     ghJson([
       'issue',
@@ -169,6 +182,9 @@ function main() {
   } else {
     console.log('No alarm change.');
   }
+  // The issue is the notification; the red run keeps Actions honest too.
+  if (plan.action === 'open' || plan.action === 'update' || (problems?.length ?? 0) > 0)
+    process.exitCode = 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main();

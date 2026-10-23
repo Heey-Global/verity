@@ -81,7 +81,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
-        run: node scripts/release-reconcile.mjs
+        # A verdict, even one naming problems, is a successful sweep; the alarm
+        # job turns problems red. Only a sweep that crashed before writing its
+        # verdict fails here, which release-alarm.mjs counts as a crash.
+        run: node scripts/release-reconcile.mjs || grep -q '^problems=' "$GITHUB_OUTPUT"
 
   alarm:
     # The only writer to issues; the sweep itself stays read-and-dispatch.
