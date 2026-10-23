@@ -146,11 +146,14 @@ it('lets confined agents start nested sandboxes on the mount-namespace path', as
     return;
   }
   const knowledge = join(root, 'knowledge');
-  const hostMarker = join(tmpdir(), `verity-host-tmp-${process.pid}`);
+  // The literal /tmp, not tmpdir(): TMPDIR often points elsewhere.
+  const hostMarker = `/tmp/verity-host-tmp-${process.pid}`;
   await writeFile(hostMarker, 'host');
-  const result = run(
-    ['--read-root', knowledge],
-    `set -eu
+  let result;
+  try {
+    result = run(
+      ['--read-root', knowledge],
+      `set -eu
 test "$(id -u)" = ${String(process.getuid?.())} || exit 30
 if test -e '${hostMarker}'; then exit 31; fi
 mkdir -m 0700 "/tmp/codex-daemon-$(id -u)" || exit 37
@@ -162,9 +165,11 @@ if /usr/bin/umount -l "$1" 2>/dev/null; then exit 35; fi
 if printf bad > "$1/source" 2>/dev/null; then exit 36; fi
 ' sh '${knowledge}'
 `,
-    true,
-  );
-  await rm(hostMarker, { force: true });
+      true,
+    );
+  } finally {
+    await rm(hostMarker, { force: true });
+  }
   expect(result.status, result.stderr).toBe(0);
 });
 
