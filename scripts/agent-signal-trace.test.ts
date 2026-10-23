@@ -93,8 +93,14 @@ try:
     while True:
         event = json.loads(tracer.stderr.readline())
         if event['event'] == 'detached': break
-    with open('/proc/%d/status' % attached['pid']) as status:
-        state = next(line for line in status if line.startswith('State:'))
+    # PTRACE_DETACH returns before the scheduler necessarily exposes the group stop.
+    deadline = time.monotonic() + 2
+    while True:
+        with open('/proc/%d/status' % attached['pid']) as status:
+            state = next(line for line in status if line.startswith('State:'))
+        if 'T (stopped)' in state or time.monotonic() >= deadline:
+            break
+        time.sleep(.01)
     os.kill(attached['pid'], signal.SIGCONT)
     tracer.wait(timeout=5)
     print(json.dumps({'state': state, 'status':tracer.returncode}))

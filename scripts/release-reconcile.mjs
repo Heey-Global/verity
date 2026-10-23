@@ -88,7 +88,7 @@ function releases() {
  * a page, so paginate and cut to the exact time here.
  * @param {string} workflow
  * @param {number} since
- * @returns {{status: string, conclusion: string | null, event: string, created_at: string, html_url: string, display_title: string}[]}
+ * @returns {{status: string, conclusion: string | null, event: string, created_at: string, html_url: string, display_title: string, head_sha: string}[]}
  */
 function workflowRuns(workflow, since) {
   const day = new Date(since).toISOString().slice(0, 10);
@@ -139,6 +139,7 @@ function workflowRuns(workflow, since) {
       created_at: run.created_at,
       html_url: run.html_url,
       display_title: title,
+      head_sha: 'head_sha' in run && typeof run.head_sha === 'string' ? run.head_sha : '',
     };
   });
   return parsed
@@ -254,6 +255,61 @@ if (stranded.length) {
   }
 }
 
+// An existing PR can be stale when a newer push never starts its workflow.
+/** @param {string} number @param {boolean} backend @param {boolean} [ota] */
+function refreshOpenReleasePr(number, backend, ota = false) {
+  if (!/^\d+$/.test(number)) throw new Error('Ambiguous open release PR');
+  const head = git('rev-parse', 'HEAD');
+  const currentMain = () => {
+    const raw = /** @type {unknown} */ (
+      JSON.parse(gh('api', `repos/${repository}/git/ref/heads/main`))
+    );
+    return /** @type {{object:{sha:string}}} */ (raw).object.sha;
+  };
+  const pr = () => {
+    const raw = /** @type {unknown} */ (
+      JSON.parse(gh('api', `repos/${repository}/pulls/${number}`))
+    );
+    return /** @type {{state:string,user:{login:string},head:{sha:string}}} */ (raw);
+  };
+  const original = pr();
+  if (
+    original.state !== 'open' ||
+    original.user.login !== 'github-actions[bot]' ||
+    !/^[a-f0-9]{40}$/.test(original.head.sha)
+  )
+    throw new Error('Invalid open release PR identity');
+  if (currentMain() !== head) return;
+  const time = Date.parse(git('log', '-1', '--format=%cI'));
+  if (!Number.isFinite(time)) throw new Error('Invalid Main commit time');
+  if (time > now - graceMs) return;
+  const rawComparison = /** @type {unknown} */ (
+    JSON.parse(gh('api', `repos/${repository}/compare/${original.head.sha}...${head}`))
+  );
+  const comparison = /** @type {{ahead_by:number}} */ (rawComparison);
+  if (!Number.isInteger(comparison.ahead_by) || comparison.ahead_by < 0)
+    throw new Error('Invalid release comparison');
+  if (comparison.ahead_by === 0) return;
+  const workflow = ota ? 'mobile-ota.yml' : releaseWorkflow;
+  const runs = workflowRuns(workflow, time);
+  if (runs.some((run) => run.status !== 'completed')) return;
+  const title = `Replan ${backend ? 'server' : 'native mobile'} ${head}`;
+  if (runs.some((run) => (ota ? run.head_sha === head : run.display_title === title))) {
+    notes.push(
+      `Release PR #${number}: planning already attempted for ${head}; inspect that run before retrying.`,
+    );
+    return;
+  }
+  const latest = pr();
+  if (currentMain() !== head || latest.state !== 'open' || latest.head.sha !== original.head.sha)
+    return;
+  const flag = backend ? 'backend-replan=true' : 'mobile-replan=true';
+  if (ota) gh('workflow', 'run', workflow, '--ref', 'main');
+  else gh('workflow', 'run', workflow, '--ref', 'main', '-f', flag);
+  dispatched.push(ota ? workflow : `${workflow} (${flag})`);
+  notes.push(`Refreshing stale release PR #${number} for Main ${head}.`);
+}
+
 // A newer Server release push can displace Mobile planning without owning it.
 // Publication recovery alone cannot notice a release PR that was never created.
 function reconcileNativePlanning() {
@@ -271,7 +327,9 @@ function reconcileNativePlanning() {
       '--jq',
       '.[] | select(.head.ref == "release-please--branches--main--components--mobile") | .number',
     );
-  if (openNativePrs()) {
+  const openNative = openNativePrs();
+  if (openNative) {
+    refreshOpenReleasePr(openNative, false);
     notes.push('Mobile planning: a native Staging release PR already exists.');
     return;
   }
@@ -354,7 +412,9 @@ function reconcileBackendPlanning() {
       '--jq',
       '.[] | select(.head.ref == "release-please--branches--main--components--server") | .number',
     );
-  if (openServerPrs()) {
+  const openServer = openServerPrs();
+  if (openServer) {
+    refreshOpenReleasePr(openServer, true);
     notes.push('Server planning: a Server Staging release PR already exists.');
     return;
   }
@@ -441,6 +501,16 @@ function reconcileBackendPlanning() {
 reconcileBackendPlanning();
 
 reconcileNativePlanning();
+
+// OTA planning owns its compatibility and publication gates in its own workflow.
+const openOta = gh(
+  'api',
+  '--paginate',
+  `repos/${repository}/pulls?state=open&base=main&per_page=100`,
+  '--jq',
+  '.[] | select(.head.ref == "release-please--branches--main--components--mobile-ota") | .number',
+);
+if (openOta) refreshOpenReleasePr(openOta, false, true);
 
 if (existsSync(otaManifest)) {
   const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(otaManifest, 'utf8')));

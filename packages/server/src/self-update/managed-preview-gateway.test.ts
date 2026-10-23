@@ -65,18 +65,38 @@ function request(port: number) {
   });
 }
 
+// An ephemeral port on one loopback address can already be occupied on another.
+async function previewFixture(initialPort = 0) {
+  for (let attempt = 0; ; attempt++) {
+    const firstCloser = closers.length;
+    try {
+      const port = await target('127.0.0.2', attempt === 0 ? initialPort : 0);
+      await target('127.0.0.3', port);
+      const gateway = await startManagedGateway({
+        publicPort: 0,
+        internalPort: 0,
+        publicHost: '127.0.0.1',
+        localPreviewPorts: [port],
+        backend: { host: '127.0.0.2', publicPort: port, internalPort: port },
+        allowedBackendHosts: ['127.0.0.2', '127.0.0.3'],
+      });
+      closers.push(() => gateway.close());
+      return { port, gateway };
+    } catch (error) {
+      for (const close of closers.splice(firstCloser).reverse()) await close();
+      if (
+        attempt >= 9 ||
+        !(error instanceof Error) ||
+        !('code' in error) ||
+        error.code !== 'EADDRINUSE'
+      )
+        throw error;
+    }
+  }
+}
+
 it('routes local previews to the selected generation preserving HTTP origin and websocket bytes', async () => {
-  const port = await target('127.0.0.2');
-  await target('127.0.0.3', port);
-  const gateway = await startManagedGateway({
-    publicPort: 0,
-    internalPort: 0,
-    publicHost: '127.0.0.1',
-    localPreviewPorts: [port],
-    backend: { host: '127.0.0.2', publicPort: port, internalPort: port },
-    allowedBackendHosts: ['127.0.0.2', '127.0.0.3'],
-  });
-  closers.push(() => gateway.close());
+  const { port, gateway } = await previewFixture();
   expect(await request(port)).toBe(`127.0.0.2:laptop.local:${port}:/api?x=1`);
   const socket = connect(port, '127.0.0.1');
   socket.on('error', () => undefined);
@@ -107,4 +127,13 @@ it('closes already opened listeners if a preview port is unavailable', async () 
       allowedBackendHosts: ['127.0.0.1'],
     }),
   ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+});
+
+it('selects another port and releases backend listeners after a cross-address collision', async () => {
+  const occupied = await target('127.0.0.1');
+  const { port } = await previewFixture(occupied);
+  expect(port).not.toBe(occupied);
+  expect(await request(port)).toBe(`127.0.0.2:laptop.local:${port}:/api?x=1`);
+  await target('127.0.0.2', occupied);
+  await target('127.0.0.3', occupied);
 });
