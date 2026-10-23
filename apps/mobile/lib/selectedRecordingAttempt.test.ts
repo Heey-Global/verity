@@ -273,7 +273,10 @@ it('bounds preparation expiry even while DATA is pending', async () => {
   jest.useFakeTimers();
   mockArm.mockImplementation(async () => ({
     ...status(),
-    expiresAt: new Date(Date.now() + 1000).toISOString(),
+    selection: {
+      ...status().selection,
+      preparationExpiresAt: new Date(Date.now() + 1000).toISOString(),
+    },
   }));
   let rejectStart!: (error: Error) => void;
   mockStart.mockImplementation(
@@ -287,8 +290,10 @@ it('bounds preparation expiry even while DATA is pending', async () => {
   for (let i = 0; i < 40 && !rejectStart; i++) await Promise.resolve();
   expect(rejectStart).toBeDefined();
   await jest.advanceTimersByTimeAsync(1001);
-  await rejected;
+  const stoppedAtPreparationExpiry = mockStop.mock.calls.length > 0;
   rejectStart(new Error('closed'));
+  await rejected;
+  expect(stoppedAtPreparationExpiry).toBe(true);
   for (let i = 0; i < 10; i++) await Promise.resolve();
   expect(mockRequest).not.toHaveBeenCalled();
   expect(mockStop).toHaveBeenCalled();

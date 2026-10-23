@@ -142,7 +142,11 @@ export async function selectedRecordingAttempt(
             if (remaining <= 0) throw new Error('Selected recording expired');
             utcDeadline = Date.parse(armed.expiresAt);
             liveDeadline = Math.min(liveDeadline, performance.now() + remaining);
-            expiry = setTimeout(abort, remaining);
+            const preparationRemaining =
+              Date.parse(armed.selection.preparationExpiresAt ?? '') - Date.now();
+            if (!Number.isFinite(preparationRemaining) || preparationRemaining <= 0)
+              throw new Error('Selected preparation expired');
+            expiry = setTimeout(abort, Math.min(remaining, preparationRemaining));
             return result;
           },
         },
