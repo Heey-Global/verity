@@ -47,7 +47,34 @@ export const recordingCoreRecordSchema = (() => {
     'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
   ]);
   const position = { eventOrder: count, elapsedMs: elapsed };
+  const frameType = z.enum([
+    'stream.open',
+    'stream.data',
+    'stream.end',
+    'stream.reset',
+    'attached',
+    'unknown',
+  ]);
+  const endpoint = z.object({
+    address: z.union([z.ipv4(), z.ipv6()]),
+    port: z.number().int().min(1).max(65535),
+  });
+  const association = z.object({
+    schemaVersion: z.literal(1),
+    bindingSource: z.literal('authenticated_control_session_request'),
+    processBootId: z.string().uuid(),
+    socketLifetimeId: z.string().uuid().nullable(),
+    session: hash,
+    request: hash,
+    coverageStart: z.enum(['before_socket_creation', 'after_socket_creation']),
+    activatedAt: z.string().datetime(),
+    socketEndpoints: z.object({ local: endpoint.nullable(), remote: endpoint.nullable() }),
+    uplinkConnectionId: z.null(),
+    natAssociation: z.literal('unknown'),
+    envoyAssociation: z.literal('unknown'),
+  });
   const first = z.object({
+    type: frameType.optional(),
     ...position,
     encodedBytes: count,
     decodedBytes: count,
@@ -88,6 +115,8 @@ export const recordingCoreRecordSchema = (() => {
     event: z.literal('remote.return_path'),
     schemaVersion: z.literal(1),
     transport: recordingTransportSchema.optional(),
+    association: association.optional(),
+    callbackMeaning: z.literal('local_acceptance_not_peer_receipt').optional(),
     session: hash,
     generation: hash,
     party: z.literal('installation'),
@@ -121,7 +150,11 @@ export const recordingCoreRecordSchema = (() => {
     events: z.array(event).max(128),
   });
 
-  return coreRecordingSummary;
+  return coreRecordingSummary.refine(
+    (summary) =>
+      summary.association === undefined || summary.association.session === summary.session,
+    { message: 'Association session mismatch' },
+  );
 })();
 
 export const recordingUplinkRecordSchema = (() => {

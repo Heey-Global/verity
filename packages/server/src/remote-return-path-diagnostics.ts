@@ -122,6 +122,7 @@ export class RemoteReturnPathDiagnostics {
       if (!totals) this.droppedStreamObservations++;
       else if (stage === 'send') {
         totals.firstSend ??= {
+          type,
           eventOrder: this.order + 1,
           elapsedMs: performance.now() - this.started,
           encodedBytes,
@@ -135,6 +136,7 @@ export class RemoteReturnPathDiagnostics {
         totals.decodedBytes += decodedBytes;
       } else if (stage === 'callback') {
         totals.firstCallback ??= {
+          type,
           eventOrder: this.order + 1,
           elapsedMs: performance.now() - this.started,
           outcome,
@@ -232,6 +234,7 @@ export class RemoteReturnPathDiagnostics {
       session: this.session,
       generation: this.generation,
       party: 'installation',
+      callbackMeaning: 'local_acceptance_not_peer_receipt',
       eventOrder: this.order,
       elapsedMs: performance.now() - this.started,
       droppedEvents: this.droppedEvents,

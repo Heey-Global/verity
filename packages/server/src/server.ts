@@ -4572,6 +4572,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       manager.refreshStatus((request.params as { runId: string }).runId),
     ),
   );
+  app.get('/api/remote-control/recordings/:runId/selection', async (request, reply) =>
+    recordingRequest(request, reply, (manager) =>
+      manager.selectedStatus((request.params as { runId: string }).runId),
+    ),
+  );
   app.delete('/api/remote-control/recordings/:runId', async (request, reply) =>
     recordingRequest(request, reply, (manager) =>
       manager.stop((request.params as { runId: string }).runId),
