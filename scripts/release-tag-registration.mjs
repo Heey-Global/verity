@@ -2,6 +2,7 @@
 import { appendFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 const trains = [
   { train: 'backend', component: 'server', path: '.', prefix: 'v' },
@@ -108,7 +109,7 @@ export function registerReleaseTags(mode, head, options = {}) {
       // Old release PRs can predate the manifest; absence is not an API failure.
       if (!git(['ls-tree', '--name-only', sha, '--', manifestPath])) continue;
       if (versionAt(sha, spec) !== version) continue;
-      if (pr.user?.login !== 'github-actions[bot]') throw new Error(`Unexpected author for ${tag}`);
+      if (!isReleaseBotLogin(pr.user?.login)) throw new Error(`Unexpected author for ${tag}`);
       if (contained) matches.push(sha);
       else later.push(sha);
     }

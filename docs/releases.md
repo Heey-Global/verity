@@ -257,10 +257,11 @@ each identity before offering production approval.
 
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the
-rolling PR only after preparing the candidate, then dispatches verification for
-its new head. Before dispatch, staging dismisses approvals of older heads and
-stops if dismissal fails. Promotion independently rejects any remaining stale
-approval. Configure required checks on the protected branch as well.
+rolling PR only after preparing the candidate; the app-authored commit triggers
+verification of the new head. Staging dismisses approvals of older heads right
+after writing the candidate and stops if dismissal fails. Promotion independently
+rejects any remaining stale approval. Configure required checks on the protected
+branch as well.
 
 Merging freezes the manifest used by promotion. Promotion validates that source,
 runtime, candidate reference, and EAS group agree, changes the candidate
@@ -278,10 +279,18 @@ Each lifecycle queue uses `queue: max` and does not cancel active publication.
 Arrival order is not commit order, so source and release-boundary checks remain
 necessary. Keep manual maintenance/rollback actions explicit.
 
-Release Please and OTA use the repository `GITHUB_TOKEN`. Bot-created PR updates
-do not recursively trigger normal PR workflows, so generated PRs explicitly
-dispatch CI against their current branch head. Do not weaken CI or add a personal
-token to work around that behavior.
+Release Please, the Staging OTA proposal and the production proposers write
+their branches, pull requests and labels with a short-lived installation token
+of the repository's release GitHub App (`actions/create-github-app-token` with
+the `RELEASE_APP_ID` variable and the `RELEASE_APP_PRIVATE_KEY` secret). Pull
+requests created with the workflow `GITHUB_TOKEN` never emit `pull_request`
+events, so earlier automation dispatched CI and Gitleaks against every generated
+branch by hand; app-authored pull requests trigger those workflows like any other
+PR, and CI classifies them by author and head branch into the owning release
+train. The app's `<slug>[bot]` login and `github-actions[bot]`, which authored
+the merged history, are the only trusted release authors; workflows pass the slug
+to the scripts as `RELEASE_BOT_LOGINS`. Everything else in the release workflows
+keeps the `GITHUB_TOKEN`. Do not weaken CI or add a personal token.
 
 Before deploying changed release automation, let old publication jobs finish:
 running jobs retain the workflow code and locks from their original commit.

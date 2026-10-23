@@ -810,11 +810,15 @@ describe('signed GitHub release evidence', () => {
     const finalize = workflow.jobs['finalize-backend-release'];
     expect(finalize.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(finalize.needs).toContain('publish-server-release-evidence');
-    expect(finalize.permissions?.issues).toBe('write');
-    // Recovery moves the release PR labels through the issues endpoint, which
-    // GitHub authorizes against the pull-request scope for a PR: with read
-    // access the move 403s after every artifact is published (run 36481465237).
-    expect(finalize.permissions?.['pull-requests']).toBe('write');
+    // Every write (labels, release edit, promotion PR) goes through the release
+    // app token, so the promotion PR triggers its own pull_request CI. The app
+    // holds Issues and Pull requests write: label moves on a PR are authorized
+    // against the pull-request scope (run 36481465237).
+    expect(finalize.permissions).toEqual({ contents: 'read' });
+    const approval = finalize.steps.find(
+      (step) => step.name === 'Open production approval for staged Server',
+    );
+    expect(approval?.env?.GH_TOKEN).toBe('${{ steps.app-token.outputs.token }}');
     const publish = { run: readFileSync('scripts/finalize-server-production.sh', 'utf8') };
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');

@@ -1,7 +1,7 @@
 name: verity-release-reconcile
 
 # Publication is event-driven: the push that merges a release PR publishes it,
-# and the push that merges an OTA promotion activates its candidate. GitHub
+# and the push that merges an OTA or Server promotion activates its candidate. GitHub
 # delivers those pushes at most once, not exactly once. On 2026-09-28 the
 # promotion merge for mobile 1.41.1 produced no run of any workflow, and the
 # release merge for server 2.16.1 handed its publication to that same push. Both
@@ -45,7 +45,7 @@ jobs:
       contents: write
       pull-requests: read
     steps:
-      # The sweep reads the release manifests and the OTA promotion manifest
+      # The sweep reads the release manifests and the promotion manifests
       # at the main head, and dates the promotion approval from its history.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,8 +58,21 @@ jobs:
         with:
           node-version: '26.12.1'
 
+      # Open release PRs are authored by the release app; its `<slug>[bot]`
+      # login is an output of minting a token, so mint one that can only read
+      # metadata.
+      - name: Resolve release app identity
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
+
       - name: Dispatch publication that no push run reconciled
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/release-reconcile.mjs

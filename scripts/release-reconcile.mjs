@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Missed-event backstop for release publication; see release-reconcile.yml.
 // Publication is event-driven, and a push event GitHub never delivered leaves
-// a merged release PR or an approved OTA candidate with no run at all. This
+// a merged release PR or an approved promotion candidate with no run at all. This
 // script detects those and dispatches the ordinary workflows. It publishes
 // nothing itself, and it reports states that need a human as errors instead
 // of retrying them every sweep.
@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { nativePathKind } from './mobile-native-compatibility.mjs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 const repository = process.env.GITHUB_REPOSITORY;
 if (!repository) throw new Error('GITHUB_REPOSITORY is required');
@@ -275,7 +276,7 @@ function refreshOpenReleasePr(number, backend, ota = false) {
   const original = pr();
   if (
     original.state !== 'open' ||
-    original.user.login !== 'github-actions[bot]' ||
+    !isReleaseBotLogin(original.user.login) ||
     !/^[a-f0-9]{40}$/.test(original.head.sha)
   )
     throw new Error('Invalid open release PR identity');
@@ -512,17 +513,35 @@ const openOta = gh(
 );
 if (openOta) refreshOpenReleasePr(openOta, false, true);
 
-if (existsSync(otaManifest)) {
-  const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(otaManifest, 'utf8')));
-  if (
-    typeof candidate !== 'object' ||
-    candidate === null ||
-    !('tag' in candidate) ||
-    typeof candidate.tag !== 'string' ||
-    !/^mobile-v\d+\.\d+\.\d+$/.test(candidate.tag)
-  )
-    throw new Error('Invalid OTA promotion manifest');
-  const tag = candidate.tag;
+for (const { manifest, workflow, label, server } of [
+  { manifest: otaManifest, workflow: promoteWorkflow, label: 'OTA', server: false },
+  {
+    manifest: 'releases/server-production.json',
+    workflow: 'server-production-promote.yml',
+    label: 'Server',
+    server: true,
+  },
+]) {
+  if (!existsSync(manifest)) continue;
+  const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(manifest, 'utf8')));
+  if (typeof candidate !== 'object' || candidate === null)
+    throw new Error(`Invalid ${label} promotion manifest`);
+  const tag = server
+    ? 'version' in candidate &&
+      typeof candidate.version === 'string' &&
+      /^\d+\.\d+\.\d+$/.test(candidate.version) &&
+      'schema' in candidate &&
+      candidate.schema === 1 &&
+      'product' in candidate &&
+      candidate.product === 'server'
+      ? `v${candidate.version}`
+      : undefined
+    : 'tag' in candidate &&
+        typeof candidate.tag === 'string' &&
+        /^mobile-v\d+\.\d+\.\d+$/.test(candidate.tag)
+      ? candidate.tag
+      : undefined;
+  if (!tag) throw new Error(`Invalid ${label} promotion manifest`);
   const delivered = published.some(
     (entry) => entry.tag_name === tag && !entry.draft && !entry.prerelease,
   );
@@ -533,27 +552,28 @@ if (existsSync(otaManifest)) {
     // human already has to look at, not something to hammer every sweep. The
     // commit date is the merge time because main takes squash merges only,
     // which the release-please job enforces before every release.
-    const approvedAt = Date.parse(git('log', '-1', '--format=%cI', '--', otaManifest));
-    if (!Number.isFinite(approvedAt)) throw new Error('OTA promotion manifest has no history');
-    const latest =
-      approvedAt > now - graceMs ? undefined : workflowRuns(promoteWorkflow, approvedAt)[0];
+    const approvedAt = Date.parse(git('log', '-1', '--format=%cI', '--', manifest));
+    if (!Number.isFinite(approvedAt)) throw new Error(`${label} promotion manifest has no history`);
+    const latest = approvedAt > now - graceMs ? undefined : workflowRuns(workflow, approvedAt)[0];
     if (approvedAt > now - graceMs) {
       notes.push(
-        `OTA: ${tag} was approved less than the push run lag ago; waiting for its own run.`,
+        `${label}: ${tag} was approved less than the push run lag ago; waiting for its own run.`,
       );
     } else if (!latest) {
-      gh('workflow', 'run', promoteWorkflow, '--ref', 'main');
-      dispatched.push(promoteWorkflow);
-      notes.push(`OTA: ${tag} is approved and no promotion run followed its merge.`);
+      gh('workflow', 'run', workflow, '--ref', 'main');
+      dispatched.push(workflow);
+      notes.push(`${label}: ${tag} is approved and no promotion run followed its merge.`);
     } else if (latest.status !== 'completed') {
-      notes.push(`OTA: promotion run ${latest.html_url} for ${tag} is still ${latest.status}.`);
+      notes.push(
+        `${label}: promotion run ${latest.html_url} for ${tag} is still ${latest.status}.`,
+      );
     } else if (latest.conclusion === 'success') {
       problems.push(
-        `OTA: ${tag} is approved but unpublished although promotion run ${latest.html_url} ended green; the candidate it promoted differs from the manifest on main, so inspect the manifest history before dispatching ${promoteWorkflow} again.`,
+        `${label}: ${tag} is approved but unpublished although promotion run ${latest.html_url} ended green; the candidate it promoted differs from the manifest on main, so inspect the manifest history before dispatching ${workflow} again.`,
       );
     } else {
       problems.push(
-        `OTA: ${tag} is approved but unpublished and its last promotion run ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; retry ${promoteWorkflow} once the cause is fixed.`,
+        `${label}: ${tag} is approved but unpublished and its last promotion run ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; retry ${workflow} once the cause is fixed.`,
       );
     }
   }

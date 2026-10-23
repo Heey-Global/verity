@@ -66,8 +66,13 @@ describe('workflow token least privilege', () => {
       'mobile-ota-promote.yml': {
         promote: { actions: 'write', contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
+      // Writes go through the release app token so generated PRs run their
+      // own pull_request CI; GITHUB_TOKEN keeps only what the app cannot do.
       'mobile-ota.yml': {
-        update: { actions: 'write', contents: 'write', issues: 'write', 'pull-requests': 'write' },
+        update: { contents: 'read' },
+      },
+      'mobile-production-build.yml': {
+        'finalize-mobile-production': { actions: 'read', contents: 'read' },
       },
       'release-reconcile.yml': {
         // contents: write reads draft releases, which GitHub hides from read
@@ -78,12 +83,9 @@ describe('workflow token least privilege', () => {
         notices: { actions: 'write', contents: 'write' },
       },
       'release.yml': {
-        'release-please': {
-          actions: 'write',
-          contents: 'write',
-          issues: 'write',
-          'pull-requests': 'write',
-        },
+        // contents: write reads draft releases for the lifecycle steps.
+        'release-please': { contents: 'write', 'pull-requests': 'read' },
+        'finalize-backend-release': { contents: 'read' },
         'self-update-gate': { contents: 'read', packages: 'read' },
       },
     };
@@ -91,7 +93,9 @@ describe('workflow token least privilege', () => {
     for (const [file, jobs] of Object.entries(expected)) {
       const parsed = workflow(file);
       expect(parsed.permissions, file).toEqual(
-        file === 'release.yml' ? { contents: 'read' } : 'read-all',
+        ['release.yml', 'mobile-production-build.yml'].includes(file)
+          ? { contents: 'read' }
+          : 'read-all',
       );
       for (const [job, permissions] of Object.entries(jobs))
         expect(parsed.jobs?.[job]?.permissions, `${file}:${job}`).toEqual(permissions);
@@ -151,16 +155,17 @@ describe('release-please train isolation', () => {
     expect(JSON.stringify(job)).not.toContain('.release/backend--');
   });
 
-  it('dispatches each generated PR with its owning train', () => {
-    const dispatch = workflowReleaseJob().steps?.find(
-      (step) => step.name === 'Run checks for release PRs',
-    );
-
-    expect(dispatch?.run).toContain(
-      'gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"',
+  it('authors generated PRs as the release app so they run their own CI', () => {
+    const steps = workflowReleaseJob().steps ?? [];
+    // GITHUB_TOKEN-authored PRs emit no pull_request event; the app's do.
+    expect(steps.find((step) => step.name === 'Run checks for release PRs')).toBeUndefined();
+    expect(JSON.stringify(steps)).not.toContain('gh workflow run ci.yml');
+    expect(steps.find((step) => step.id === 'app-token')?.with?.['app-id']).toBe(
+      '${{ vars.RELEASE_APP_ID }}',
     );
     for (const train of trains) {
-      expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
+      const action = steps.find((step) => step.id === `release-${train}`);
+      expect(action?.with?.token, train).toBe('${{ steps.app-token.outputs.token }}');
     }
   });
 
@@ -1188,12 +1193,11 @@ describe('native iOS compile gate', () => {
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
       commands.indexOf('filter[version]=$next_build'),
     );
+    // App-authored release PRs reach mobile-native-verify through its own
+    // pull_request path filter; no dispatch from the release job remains.
     const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(releaseSource).toContain(
-      '^apps/mobile/(CHANGELOG\\.md|app\\.config\\.ts|version\\.txt)$',
-    );
-    expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
-    expect(releaseSource).toContain('gh workflow run gitleaks-dispatch.yml');
+    expect(releaseSource).not.toContain('gh workflow run mobile-native-verify.yml');
+    expect(releaseSource).not.toContain('gh workflow run gitleaks-dispatch.yml');
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");

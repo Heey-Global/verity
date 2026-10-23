@@ -22,6 +22,9 @@ type Fixture = {
   releaseRuns?: Run[];
   promoteRuns?: Run[];
   ota?: boolean;
+  serverPromotion?: boolean;
+  serverPromoteRuns?: Run[];
+  invalidServerPromotion?: boolean;
   backend?: boolean;
   openOta?: boolean;
   otaRuns?: Run[];
@@ -60,11 +63,22 @@ function sweep(fixture: Fixture) {
       JSON.stringify({ schema: 1, version: '1.33.1', tag: 'mobile-v1.33.1' }),
     );
   }
+  if (fixture.serverPromotion) {
+    mkdirSync(join(cwd, 'releases'), { recursive: true });
+    writeFileSync(
+      join(cwd, 'releases/server-production.json'),
+      JSON.stringify({
+        schema: 1,
+        product: 'server',
+        version: fixture.invalidServerPromotion ? 'invalid' : '1.2.3',
+      }),
+    );
+  }
   if (fixture.native?.rename) {
     mkdirSync(join(cwd, 'apps/mobile/plugins'), { recursive: true });
     writeFileSync(join(cwd, 'apps/mobile/plugins/capture.js'), 'native change');
   }
-  if (fixture.backend) {
+  if (fixture.backend || fixture.serverPromotion) {
     writeFileSync(
       join(cwd, 'release-please-config.backend.json'),
       readFileSync(resolve('release-please-config.backend.json')),
@@ -76,6 +90,7 @@ function sweep(fixture: Fixture) {
     cwd,
     env: { ...process.env, GIT_AUTHOR_DATE: commitDate, GIT_COMMITTER_DATE: commitDate },
   });
+  if (fixture.serverPromotion && !fixture.native) git('tag', 'v1.2.3');
   if (fixture.native) {
     git('tag', fixture.backend ? 'v1.2.3' : 'mobile-v1.33.0');
     const nativePath = fixture.native.rename
@@ -145,6 +160,9 @@ if (joined.includes('/git/ref/heads/main')) {
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-ota.yml/runs?')) {
   process.stdout.write(JSON.stringify([{workflow_runs:(fixture.otaRuns ?? []).map((run) => ({...run,head_sha:process.env.RECONCILE_HEAD,html_url:'https://runs.invalid/ota'}))}]));
+} else if (joined.includes('/actions/workflows/server-production-promote.yml/runs?')) {
+  const runs = (fixture.serverPromoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/server-promote/' + index }));
+  process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-ota-promote.yml/runs?')) {
   const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/promote/' + index }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
@@ -602,4 +620,59 @@ it('does not repeatedly refresh an OTA PR for the same Main source', () => {
   const result = sweep({ ota: false, openOta: true, native: { stale: true }, otaRuns: [run({})] });
   expect(result.status, result.stderr).toBe(0);
   expect(result.dispatches).toEqual([]);
+});
+
+describe('approved Server Production recovery', () => {
+  const serverPromote = 'workflow run server-production-promote.yml --ref main';
+  const sweepServer = (fixture: Fixture = {}) =>
+    sweep({ ota: false, serverPromotion: true, ...fixture });
+  it('recovers a missed push while ignoring older promotion runs', () => {
+    const result = sweepServer({
+      serverPromoteRuns: [run({ created_at: '2026-09-28T17:00:00Z' })],
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([serverPromote]);
+  });
+  it('waits for the approval push grace period', () => {
+    const result = sweepServer({ approvedAt: new Date().toISOString() });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it.each(['queued', 'in_progress'])('waits for a %s attempt', (status) => {
+    const result = sweepServer({ serverPromoteRuns: [run({ status, conclusion: null })] });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it.each(['failure', 'cancelled', 'success'])(
+    'reports a completed %s without publication',
+    (conclusion) => {
+      const result = sweepServer({ serverPromoteRuns: [run({ conclusion })] });
+      expect(result.status).toBe(1);
+      expect(result.dispatches).toEqual([]);
+      expect(result.stdout).toContain('::error::Server: v1.2.3 is approved but unpublished');
+    },
+  );
+  it.each([{ draft: true }, { prerelease: true }])(
+    'does not count staging or draft as delivered: %j',
+    (release) => {
+      const result = sweepServer({ releases: [{ tag_name: 'v1.2.3', ...release }] });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.dispatches).toEqual([serverPromote]);
+    },
+  );
+  it('leaves a published Production release alone', () => {
+    const result = sweepServer({ releases: [{ tag_name: 'v1.2.3' }] });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('rejects malformed approval metadata without dispatch', () => {
+    const result = sweepServer({ invalidServerPromotion: true });
+    expect(result.status).not.toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('recovers Server and OTA independently', () => {
+    const result = sweepServer({ ota: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([promote, serverPromote]);
+  });
 });

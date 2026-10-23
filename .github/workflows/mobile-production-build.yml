@@ -43,17 +43,28 @@ jobs:
       (needs.publish-mobile-native.result == 'skipped' && inputs.production-run-id != ''))
     runs-on: ubuntu-26.04
     timeout-minutes: 130
+    # The production proposal (branch push, signed commit, PR, approval
+    # dismissals) is written with the release app token so the promotion PR
+    # triggers pull_request CI. GITHUB_TOKEN reads the release, this run's
+    # artifact and the recovery run's provenance.
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      actions: write
+      actions: read
+      contents: read
     env:
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     steps:
+      - name: Mint release app token
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # The proposer pushes the promotion branch with the checkout credentials.
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
@@ -95,7 +106,8 @@ jobs:
 
       - name: Open native production approval
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
           version="${MOBILE_TAG#mobile-v}"
