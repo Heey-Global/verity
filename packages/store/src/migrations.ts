@@ -4513,6 +4513,43 @@ migrations['0161_forge_connection_identity'] = {
   },
 };
 
+migrations['0162_vulnerability_scan'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings
+      add column vuln_scan_enabled boolean not null default true,
+      add column vuln_scan_schedule text default '{"kind":"daily","hour":9,"minute":0,"timeZone":"UTC"}',
+      add column vuln_scan_session_changes boolean not null default true,
+      add column vuln_scan_include_dev boolean not null default true,
+      add column vuln_scan_notify_from text not null default 'high',
+      add column vuln_scan_daily_digest boolean not null default false`.execute(db);
+    await sql`create table vuln_scan_results (
+      content_hash text primary key,
+      findings text not null,
+      scanned_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table vuln_scan_state (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text unique references sessions(session_id) on delete cascade,
+      content_hash text references vuln_scan_results(content_hash) on delete set null,
+      status text not null check (status in ('ready','error','unavailable','no_lockfiles')),
+      detail text,
+      revision text,
+      attempted_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create unique index vuln_scan_main_project on vuln_scan_state(project_id)
+      where session_id is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vuln_scan_state`.execute(db);
+    await sql`drop table vuln_scan_results`.execute(db);
+    await sql`alter table verity_settings drop column vuln_scan_enabled,
+      drop column vuln_scan_schedule, drop column vuln_scan_session_changes,
+      drop column vuln_scan_include_dev, drop column vuln_scan_notify_from,
+      drop column vuln_scan_daily_digest`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

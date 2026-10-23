@@ -449,6 +449,13 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  vulnerabilitySummary: z
+    .object({
+      count: z.number().int().nonnegative(),
+      critical: z.number().int().nonnegative(),
+      high: z.number().int().nonnegative(),
+    })
+    .optional(),
   latestReleaseTag: z.string().nullable().optional(),
   latestReleaseName: z.string().nullable().optional(),
   latestReleaseUrl: z.string().nullable().optional(),

@@ -1,4 +1,4 @@
-import * as acp from '@agentclientprotocol/sdk';
+import * as acp from '@agentclientprotocol/sdk/unstable';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
@@ -9,7 +9,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionUpdate,
-} from '@agentclientprotocol/sdk';
+} from '@agentclientprotocol/sdk/unstable';
 import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {

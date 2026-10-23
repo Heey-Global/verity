@@ -259,8 +259,6 @@ export type ServerUpdateCardAction =
 
 export interface ServerUpdateCard {
   readonly key: string;
-  /** Section label above the card. */
-  readonly section: string;
   readonly status: {
     readonly label: string;
     readonly tone: 'active' | 'problem' | 'done' | 'idle';
@@ -300,6 +298,15 @@ export interface ServerUpdatePanel {
     readonly publishedAt: string | null;
     readonly upToDate: boolean;
   } | null;
+  /**
+   * The state of the server as a whole, for the head of its box. Drawn with the
+   * design system's status intents; null when there is nothing to say.
+   */
+  readonly tag: {
+    readonly label: string;
+    readonly intent: 'ready' | 'needsSetup' | 'optional' | 'transient';
+  } | null;
+  /** Blocks inside the server's box, below its head, in order. */
   readonly cards: readonly ServerUpdateCard[];
 }
 
@@ -364,7 +371,6 @@ function availabilityCard(status: ServerUpdateStatus, key: string | null): Serve
   const view = describeServerUpdate(status);
   const base = {
     key: 'availability',
-    section: 'Update',
     release:
       'release' in status
         ? { version: status.release.version, publishedAt: status.release.publishedAt }
@@ -428,6 +434,37 @@ function availabilityCard(status: ServerUpdateStatus, key: string | null): Serve
  * never beside an operation for another version.
  */
 export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpdatePanel {
+  const parts = panelParts(status);
+  return { ...parts, tag: headTag(parts) };
+}
+
+/**
+ * One word for the head of the box, taken from the block that matters most —
+ * the first. A problem names itself ("Stuck", "Failed"); a release on offer is
+ * an update to make; a running operation is in motion.
+ */
+function headTag({ installed, cards }: Omit<ServerUpdatePanel, 'tag'>): ServerUpdatePanel['tag'] {
+  const first = cards[0];
+  if (first === undefined)
+    return installed?.upToDate === true ? { label: 'Up to date', intent: 'ready' } : null;
+  if (first.progress !== null)
+    return {
+      label: first.status.label === 'Rolling back' ? 'Rolling back' : 'Updating',
+      intent: 'transient',
+    };
+  switch (first.status.tone) {
+    case 'problem':
+      return { label: first.status.label, intent: 'needsSetup' };
+    case 'active':
+      return { label: 'Update', intent: 'needsSetup' };
+    case 'done':
+      return { label: first.status.label, intent: 'ready' };
+    case 'idle':
+      return { label: first.status.label, intent: 'optional' };
+  }
+}
+
+function panelParts(status: ServerUpdateStatus): Omit<ServerUpdatePanel, 'tag'> {
   const operation = status.operation;
   const running =
     status.installed?.version ?? (status.state === 'current' ? status.release.version : null);
@@ -469,7 +506,6 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
       cards: [
         {
           key: operation.updateId,
-          section: 'Update',
           status: {
             label: operation.state === 'rolling-back' ? 'Rolling back' : 'In progress',
             tone: 'active',
@@ -499,7 +535,6 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
     const promoted = PROMOTED.includes(operation.phase);
     const stuck: ServerUpdateCard = {
       key: operation.updateId,
-      section: 'Unfinished update',
       status: { label: 'Stuck', tone: 'problem' },
       title: `Update to ${named} did not finish`,
       release: null,
@@ -535,7 +570,6 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
         {
           ...availabilityCard(status, offer),
           key: 'supersede',
-          section: 'Available',
           status: { label: 'New version', tone: 'active' },
           title: `Version ${status.release.version} available`,
           detail: `Replaces the unfinished update. Verity finishes or skips the stuck step, then installs ${status.release.version}.`,
@@ -549,7 +583,6 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
   const outcome = describeOperation(operation);
   const failure: ServerUpdateCard = {
     key: operation.updateId,
-    section: 'Update',
     status: {
       label: operation.state === 'rolled-back' ? 'Rolled back' : 'Failed',
       tone: 'problem',
@@ -586,7 +619,7 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
     };
   return {
     installed,
-    cards: [failure, { ...availabilityCard(status, offer), section: 'Available' }],
+    cards: [failure, availabilityCard(status, offer)],
   };
 }
 

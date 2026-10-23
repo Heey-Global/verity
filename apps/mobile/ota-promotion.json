@@ -1,14 +1,17 @@
 {
   "schema": 1,
-  "version": "1.75.1",
-  "runtime": "1.75.0",
+  "version": "1.76.1",
+  "runtime": "1.76.0",
   "channel": "production",
-  "commit": "dc81928d8acb5305181b7e7f04a2e22449d3ce4f",
-  "tag": "mobile-v1.75.1",
-  "branch": "staging-mobile-v1.75.1-dc81928d8acb5305181b7e7f04a2e22449d3ce4f",
-  "baseline": "mobile-v1.75.0",
-  "group": "f223b1ca-652e-4826-8222-cf4f2233f90f",
+  "commit": "b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
+  "tag": "mobile-v1.76.1",
+  "branch": "staging-mobile-v1.76.1-b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
+  "baseline": "mobile-v1.76.0",
+  "group": "8bfe628c-24b5-47c8-b0b2-408eb214e5bc",
   "notes": [
-    "build the new-meeting screen from the design system (#1763)"
+    "let the update banner be dismissed until the next version (#1807)",
+    "show app updates next to server updates (#1806)",
+    "integrate connections and mobile repository workflows (#1805)",
+    "show up to date on the installed row and drop the generation counter (#1804)"
   ]
 }

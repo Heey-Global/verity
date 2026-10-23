@@ -14,6 +14,14 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/vulnerability-scan'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/vulnerability-scan'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/live-meetings/online'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
@@ -29,6 +37,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
     routeScopeKey('GET', '/projects/:id/github/issues'),
     { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/vulnerability-scan'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
   ],
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
   [

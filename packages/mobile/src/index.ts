@@ -223,6 +223,16 @@ export {
   type TrustedCliSummary,
 } from './ui/trustedCliSummary.js';
 export {
+  appStoreUpdate,
+  describeAppUpdate,
+  parseAppStoreLookup,
+  type AppStoreRelease,
+  type AppUpdateAction,
+  type AppUpdateBlock,
+  type AppUpdateBox,
+  type AppUpdateFacts,
+} from './ui/appUpdate.js';
+export {
   describeServerUpdate,
   describeServerUpdatePanel,
   serverUpdateAwaitsAttention,

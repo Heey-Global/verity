@@ -1,4 +1,4 @@
-import type { RequestError, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
+import type { RequestError, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk/unstable';
 
 import type { Backend } from './backend.js';
 import type { RunResult, RunTurnOptions } from './backend-contract.js';

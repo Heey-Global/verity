@@ -22,6 +22,7 @@ export function Card({
   flush = false,
   attention = false,
   stacked = false,
+  divided = false,
 }: {
   children: ReactNode;
   selected?: boolean;
@@ -33,7 +34,11 @@ export function Card({
   /** Lays the content out top to bottom (status, title, detail, action)
    *  instead of as one row. */
   stacked?: boolean;
+  /** For a stacked card made of sections — a head and the blocks below it:
+   *  separates them with the same 1 px divider `Group` draws between rows. */
+  divided?: boolean;
 }) {
+  const sections = divided ? Children.toArray(children).filter(isValidElement) : null;
   return (
     <View
       style={[
@@ -45,7 +50,45 @@ export function Card({
         muted ? styles.muted : null,
       ]}
     >
-      {children}
+      {sections === null
+        ? children
+        : sections.map((section, index) => (
+            <Fragment key={section.key ?? index}>
+              {index > 0 ? <View style={styles.divider} /> : null}
+              {section}
+            </Fragment>
+          ))}
+    </View>
+  );
+}
+
+/**
+ * The head of a stacked card: what the card is about, one line under it, and
+ * its state. The same title/subtitle/trailing slots as a `Row`, without the
+ * row's own padding, which the stacked card already provides.
+ */
+export function CardHead({
+  title,
+  subtitle,
+  trailing,
+}: {
+  title: string;
+  subtitle?: string | undefined;
+  trailing?: ReactNode;
+}) {
+  return (
+    <View style={styles.head}>
+      <View style={styles.body}>
+        <Text style={styles.title} numberOfLines={2} accessibilityRole="header">
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.subtitle} numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {trailing !== undefined ? <View style={styles.trailing}>{trailing}</View> : null}
     </View>
   );
 }
@@ -346,6 +389,7 @@ const styles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
   },
   divider: { height: 1, backgroundColor: theme.colors.border },
+  head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   // Rows fill their container, so a row inside a card spans the card's width.
   row: {
     flexGrow: 1,
