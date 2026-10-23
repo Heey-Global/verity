@@ -16355,6 +16355,64 @@ it('replaces a meeting index entry by transcript path when the title changes', a
 });
 
 describe('vulnerability scan session integration', () => {
+  it('scans a paused project only after its manual start finishes and leaves it active', async () => {
+    const id = 'vuln-paused-start';
+    await ctx.store.upsertProject({
+      id,
+      owner: 'test',
+      repo: id,
+      containerName: id,
+      state: 'absent',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provision = vi.fn(async (projectId: string) => {
+      await ready;
+      return (await ctx.store.updateProjectState(projectId, 'active'))!;
+    });
+    const run = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        worktree: '/work/.verity-vuln-test1234/tree',
+        hash: 'a'.repeat(64),
+        revision: 'b'.repeat(40),
+        lockfiles: [],
+      }),
+      stderr: '',
+      timedOut: false,
+    }));
+    const runtime = {
+      runAutomationScript: run,
+    } as unknown as import('./project-runtime.js').ProjectRuntime;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision },
+      projectRuntime: runtime,
+    });
+    try {
+      expect(
+        (await server.inject({ method: 'POST', url: `/projects/${id}/repair` })).statusCode,
+      ).toBe(202);
+      expect(provision).toHaveBeenCalledOnce();
+      expect(run).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(async () =>
+        expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe('no_lockfiles'),
+      );
+      expect((await ctx.store.getProject(id))?.state).toBe('active');
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await server.close();
+    }
+  });
+
   it.each(['success', 'failure', 'takeover'] as const)(
     'temporarily wakes a sleeping project for a manual scan: %s',
     async (scenario) => {

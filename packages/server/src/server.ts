@@ -1,3 +1,4 @@
+import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
 import {
@@ -3473,8 +3474,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return true;
   };
-  const afterProjectProvision = async (projectId: string): Promise<void> => {
+  const afterProjectProvision = async (
+    projectId: string,
+    scanAfterStart = false,
+  ): Promise<void> => {
     if (await discardProvisionOfDeletedProject(projectId)) return;
+    if (scanAfterStart) {
+      void scanStartedProjectIfNeeded(projectId, {
+        store: deps.eventStore.vulnerabilityScans,
+        getProject: (id) => deps.eventStore.getProject(id),
+        service: vulnerabilityService,
+      }).catch((error: unknown) =>
+        app.log.warn({ err: error, projectId }, 'Vulnerability scan after project start failed'),
+      );
+    }
   };
   /** Settle a provision the caller is not waiting on (the routes answer `202` and
    *  let the worker clone and build in the background). Either outcome ends at
@@ -3487,7 +3500,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onError: (error: unknown) => void,
   ): void => {
     void provision.then(
-      () => afterProjectProvision(projectId),
+      () => afterProjectProvision(projectId, true),
       async (error: unknown) => {
         onError(error);
         await discardProvisionOfDeletedProject(projectId);
