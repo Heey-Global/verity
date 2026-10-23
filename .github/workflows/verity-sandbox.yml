@@ -390,6 +390,9 @@ jobs:
             test -x /usr/local/bin/verity-gh-token
             test -x /opt/agent-seed/bin/verity-gh-cred
             test -x /usr/local/bin/verity-gh-cred
+            # Pull requests and issues for non-GitHub code hosts go through verity-repo.
+            test -x /opt/agent-seed/bin/verity-repo
+            test "$(readlink /usr/local/bin/verity-repo)" = "/opt/agent-seed/bin/verity-repo"
             tmp_gh_test="$(mktemp -d)"
             trap "rm -rf \"$tmp_gh_test\"" EXIT
             printf "%s\n" \

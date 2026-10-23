@@ -254,6 +254,10 @@ function HydratedRoot() {
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
               <Stack.Screen
+                name="project/[id]/settings/repository"
+                options={{ title: 'Repository' }}
+              />
+              <Stack.Screen
                 name="project/[id]/settings/services"
                 options={{ title: 'Connections' }}
               />
@@ -269,6 +273,8 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/forgejo/new" options={{ title: 'Connect Forgejo' }} />
+              <Stack.Screen name="settings/forgejo/[id]" options={{ title: 'Forgejo' }} />
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />

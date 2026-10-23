@@ -12,6 +12,7 @@ import {
   type HttpFetch,
 } from './github.js';
 import { listProjectGitHubIssues } from './project-github-issues.js';
+import { createGitHubRepositoryOperations } from './github-repository-operations.js';
 
 export interface GitHubForgeProviderOptions {
   /** Cached repository-scoped installation token used for PR, release and broker calls. */
@@ -102,6 +103,12 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
     openPullRequest: (target, token, pr) => openPullRequest(target, token, pr, fetchOpt),
     listIssues: (project: ProjectRecord) =>
       listProjectGitHubIssues(project, opts.issuesTokenMint, opts.fetch),
+    repositoryOperations: (project) =>
+      createGitHubRepositoryOperations({
+        project,
+        token: () => opts.projectTokenMint({ owner: project.owner, repo: project.repo }),
+        ...fetchOpt,
+      }),
     listRepositories: () => installation.listInstallationRepos(),
     latestRelease: (ref) => releases.latestRelease(ref.owner, ref.repo),
     refreshLatestRelease: (ref) => releases.refreshLatestRelease(ref.owner, ref.repo),

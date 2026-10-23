@@ -12,6 +12,7 @@ import {
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
+  repoToolPullRequestSystemPrompt,
   MEMORY_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
@@ -4772,8 +4773,19 @@ describe('Conductor.startSession', () => {
    *  the runtime prompt its first turn is launched with. */
   async function freshTurnSystemPrompt(
     sessionId: string,
-    kind: 'github' | 'local',
+    kind: 'github' | 'forgejo' | 'local',
   ): Promise<string> {
+    if (kind === 'forgejo')
+      await ctx.store.forgeConnections.upsert({
+        id: `forgejo-${sessionId}`,
+        provider: 'forgejo',
+        baseUrl: 'https://git.example.org',
+        label: 'Forgejo',
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
     await ctx.store.upsertProject({
       id: `project-${sessionId}`,
       owner: kind === 'local' ? '__local__' : 'acme',
@@ -4781,6 +4793,7 @@ describe('Conductor.startSession', () => {
       containerName: `verity-${sessionId}`,
       state: 'active',
       kind,
+      ...(kind === 'forgejo' ? { forgeConnectionId: `forgejo-${sessionId}` } : {}),
     });
     await ctx.store.createSession({
       sessionId,
@@ -4840,6 +4853,17 @@ describe('Conductor.startSession', () => {
 
     expect(appended).toContain(PULL_REQUEST_SYSTEM_PROMPT);
     expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+  });
+
+  // `gh` cannot reach Forgejo; the first fresh turn must already name the tool
+  // that can, and must not also carry the `gh` instructions it would follow.
+  it('gives a Forgejo project the verity-repo pull-request directive', async () => {
+    const appended = await freshTurnSystemPrompt('s-forgejo-project', 'forgejo');
+
+    expect(appended).toContain(repoToolPullRequestSystemPrompt('Forgejo'));
+    expect(appended).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
+    expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+    expect(appended.split(REPO_CONVENTIONS_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('reclassifies a linked project on its next fresh context, not on resumed turns', async () => {

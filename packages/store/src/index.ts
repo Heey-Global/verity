@@ -1,4 +1,11 @@
 export {
+  ForgeConnectionStore,
+  type ForgeConnection,
+  type ForgeConnectionProvider,
+  type ForgeConnectionCredentials,
+  type ForgeConnectionInput,
+} from './forge-connections.js';
+export {
   MatrixOutboundStore,
   type MatrixSendSnapshot,
   type MatrixDelivery,
