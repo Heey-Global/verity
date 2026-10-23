@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { expect, it } from 'vitest';
+import { join } from 'node:path';
 
-const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const read = (path: string) => readFileSync(join(__dirname, '..', path), 'utf8');
 
 it('measures corner intrusion at the header row instead of across the window', () => {
-  const native = read('apps/mobile/native/VerityWindowControls.swift');
+  const native = read('native/VerityWindowControls.swift');
   // A window-wide measurement can report no intrusion at the buttons' height.
   expect(native).toMatch(
     /let adapted = edgeInsets\(for: \.margins\(cornerAdaptation: \.horizontal\)\)/u,
@@ -12,7 +12,7 @@ it('measures corner intrusion at the header row instead of across the window', (
   expect(native).not.toMatch(/window\.edgeInsets\(/u);
   expect(native).toMatch(/let base = layoutMargins/u);
 
-  const header = read('apps/mobile/app/_layout.tsx');
+  const header = read('app/_layout.tsx');
   // Measuring the status-bar region as part of the row changes corner adaptation.
   expect(header).toMatch(
     /<View style=\{\[styles\.headerRow, headerRowInset\]\}>\s*<WindowControlsProbe onInset=\{trackWindowControls\} \/>/u,
