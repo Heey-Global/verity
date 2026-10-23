@@ -556,6 +556,7 @@ export {
   SERVER_UPDATE_PUSH_KIND,
   parsePushPayload,
   parseServerUpdatePush,
+  parseVulnerabilityPush,
   pushPayloadSchema,
   serverUpdatePushSchema,
   type PushKind,
@@ -647,3 +648,9 @@ export type {
   GoogleSessionAccessStatus,
   ProjectDriveFolder,
 } from './api.js';
+
+export {
+  vulnerabilityFixPrompt,
+  type VulnerabilityFinding,
+  type VulnerabilitySettings,
+} from './vulnerability.js';

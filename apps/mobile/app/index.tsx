@@ -1286,6 +1286,20 @@ const ProjectGroup = memo(function ProjectGroup({
                   {group.status ? (
                     <Text
                       style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
+                      onPress={
+                        group.project?.vulnerabilitySummary?.count
+                          ? (event) => {
+                              event.stopPropagation();
+                              router.push({
+                                pathname: '/project/[id]/vulnerability-scan',
+                                params: { id: group.project!.id },
+                              });
+                            }
+                          : undefined
+                      }
+                      accessibilityRole={
+                        group.project?.vulnerabilitySummary?.count ? 'link' : undefined
+                      }
                       numberOfLines={1}
                     >
                       {group.status.label}

@@ -1,3 +1,4 @@
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -4715,6 +4716,7 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}

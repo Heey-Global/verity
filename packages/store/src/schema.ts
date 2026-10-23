@@ -1510,7 +1510,36 @@ export interface VulnScanStateTable {
   attempted_at: ColumnType<Date, Date | undefined, Date>;
 }
 
+export interface VulnIgnoresTable {
+  id: string;
+  project_id: string;
+  advisory_id: string;
+  aliases: string;
+  package: string;
+  ecosystem: string;
+  severity: string;
+  until_fix: boolean;
+  expires_at: Date;
+  reason: string;
+  created_at: ColumnType<Date, Date | undefined, Date>;
+}
+export interface VulnNotificationsTable {
+  id: string;
+  user_id: string;
+  project_id: string;
+  session_id: string | null;
+  package: string;
+  created_at: ColumnType<Date, Date | undefined, Date>;
+  sent_at: Date | null;
+}
+export interface VulnDigestsTable {
+  user_id: string;
+  day: string;
+}
 export interface Database {
+  vuln_digests: VulnDigestsTable;
+  vuln_ignores: VulnIgnoresTable;
+  vuln_notifications: VulnNotificationsTable;
   vuln_scan_results: VulnScanResultsTable;
   vuln_scan_state: VulnScanStateTable;
   attendee_state: AttendeeStateTable;

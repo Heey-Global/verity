@@ -91,3 +91,16 @@ export function parsePushPayload(data: unknown): PushPayload | null {
   const result = pushPayloadSchema.safeParse(data);
   return result.success ? result.data : null;
 }
+
+/** Informational scan notifications never authorize an agent action. */
+export function parseVulnerabilityPush(data: unknown) {
+  const result = z
+    .object({
+      kind: z.literal('vulnerability'),
+      projectId: z.string().min(1).nullable(),
+      sessionId: z.string().min(1).nullable(),
+      deviceId: z.string().min(1),
+    })
+    .safeParse(data);
+  return result.success ? result.data : null;
+}
