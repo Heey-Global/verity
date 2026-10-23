@@ -175,8 +175,9 @@ route scopes; mobile data tests cover strict exports and the dedicated recording
 transport. App Jest tests cover admission hold, bounded attempts, stale or changed
 readiness, cancellation, late native start and terminal cleanup receipts.
 
-Targeted mutations removing Core socket continuity, reservation equality and the
-native inactive check each fail their corresponding guard tests. Source is
+Targeted mutations removing Core socket continuity, reservation equality, the
+selection baseline isolation and the native inactive check each fail their
+corresponding guard tests. Source is
 restored before final build, lint and formatting checks. Apple CI compiles and
 runs offline native fixtures on the exact reviewed source SHA; an empty
 `installation_handle` and `soak_seconds=0` disable the installed-session probes.

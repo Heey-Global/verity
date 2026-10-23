@@ -81,7 +81,7 @@ export class CoordinatedRecordingManager {
         this.monotonic() >= current.deadline ||
         this.wall() >= Date.parse(current.status.expiresAt) ||
         (current.status.selection?.confirmed &&
-          !current.status.selection.readiness?.ready &&
+          !current.status.evidence?.readiness.ready &&
           (this.wall() >= Date.parse(current.status.selection.preparationExpiresAt!) ||
             this.monotonic() >= (current.preparationDeadline ?? Infinity)))
       ) {
@@ -192,7 +192,7 @@ export class CoordinatedRecordingManager {
           )
             throw new Error('selection_mismatch');
           run.status.evidence = evidence;
-          if (run.status.selection)
+          if (requireSelection && run.status.selection)
             run.status.selection.readiness = structuredClone(evidence.readiness);
         }
         if (remote.state === 'preparing') {

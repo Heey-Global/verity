@@ -134,6 +134,27 @@ describe('selected Core arming', () => {
       expect(activation.status().enabled).toBe(false);
     }
   });
+  it('does not let ordinary status refreshes replace the validated socket baseline', async () => {
+    const { manager, uplink, id, ready } = fixture();
+    await manager.start(id, 30000, 3, 'selected');
+    const selected = await manager.selectedStatus(id);
+    const original = selected.selection?.readiness?.installation.socketLifetimeId;
+    ready.readiness.revision++;
+    ready.readiness.monotonicMs++;
+    ready.readiness.installation.socketLifetimeId = '00000000-0000-4000-8000-000000000099';
+    uplink.status.mockResolvedValue(metadata(ready));
+    expect(
+      (await manager.refreshStatus(id)).selection?.readiness?.installation.socketLifetimeId,
+    ).toBe(original);
+    ready.readiness.revision++;
+    ready.readiness.monotonicMs++;
+    uplink.status.mockResolvedValue(metadata(ready));
+    expect(await manager.selectedStatus(id)).toMatchObject({
+      phase: 'failed',
+      selection: { confirmed: false },
+    });
+    expect(uplink.stop).toHaveBeenCalledWith(id);
+  });
   it('preserves selected Core records in export and excludes foreign sessions', async () => {
     const { manager, id } = fixture();
     await manager.start(id, 30000, 3, 'selected');
