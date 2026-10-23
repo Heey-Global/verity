@@ -290,6 +290,14 @@ describe('server update screen', () => {
     });
   });
 
+  it('dates the installed row only with the release that is actually running', () => {
+    // A server ahead of its channel is current, but not running that release.
+    const panel = describeServerUpdatePanel(
+      status({ state: 'current', installed: { version: '1.4.1', generation: 7 } }),
+    );
+    expect(panel.installed).toEqual({ version: '1.4.1', publishedAt: null, upToDate: true });
+  });
+
   it('does not call a server up to date while an operation on it is unfinished', () => {
     const panel = describeServerUpdatePanel(
       status({
@@ -298,7 +306,7 @@ describe('server update screen', () => {
         operation: operation({ state: 'activating', phase: 'reconciling-companions' }),
       }),
     );
-    expect(panel.installed).toMatchObject({ upToDate: false, publishedAt: null });
+    expect(panel.installed).toMatchObject({ upToDate: false });
     expect(panel.cards).toHaveLength(1);
   });
 

@@ -439,7 +439,12 @@ export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpd
       ? null
       : {
           version: running,
-          publishedAt: upToDate ? status.release.publishedAt : null,
+          // "current" means nothing newer, not the same release: a prerelease
+          // can run while a stable channel offers an older one.
+          publishedAt:
+            status.state === 'current' && status.release.version === running
+              ? status.release.publishedAt
+              : null,
           upToDate,
         };
   const view = describeServerUpdate(status);

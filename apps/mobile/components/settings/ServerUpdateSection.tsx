@@ -453,7 +453,6 @@ function formatStallSince(iso: string): string {
   return hours >= 1 ? `${when} · ${String(hours)} h` : when;
 }
 
-/** "12 Aug 2026" — a release is a day, not an instant. Unparseable → omitted. */
 /** "Version 4.53.0 · Released 23 Oct 2026", the date only when it is known. */
 function installedSubtitle(installed: { version: string; publishedAt: string | null }): string {
   const releasedAt =
@@ -463,6 +462,7 @@ function installedSubtitle(installed: { version: string; publishedAt: string | n
     : `Version ${installed.version} · Released ${releasedAt}`;
 }
 
+/** "12 Aug 2026" — a release is a day, not an instant. Unparseable → omitted. */
 function formatReleaseDate(iso: string): string | undefined {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return undefined;
