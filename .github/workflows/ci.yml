@@ -71,11 +71,13 @@ jobs:
           node-version: '26.12.1'
       # Merged release PRs are authored by the release app, whose `<slug>[bot]`
       # login the barrier must trust next to github-actions[bot]. The slug is an
-      # output of minting a token, so mint one that can only read metadata; a
-      # fork PR has no secrets and keeps the GitHub Actions default.
+      # output of minting a token, so mint one that can only read metadata.
+      # Fork and Dependabot PRs get no secrets and keep the GitHub Actions
+      # default; a failed mint degrades the same way instead of failing CI.
       - name: Resolve release app identity
         id: app-token
-        if: github.event_name != 'push' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'push' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
         # renovate: datasource=github-actions depName=actions/create-github-app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
