@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { PlanEntry, SessionUpdate, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk';
+import type { PlanEntry, SessionUpdate, ToolCall, ToolCallUpdate } from '@agentclientprotocol/sdk/unstable';
 import { parseAutomationProposal, parseChoicesBlock, type AgentEvent } from '@verity/events';
 import {
   lifecycleSignalsFromMeta,
