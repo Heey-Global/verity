@@ -247,6 +247,24 @@ describe('new project — code hosts', () => {
     }
   });
 
+  it('reloads code hosts after returning from connection setup', async () => {
+    const connections = jest.fn().mockResolvedValue(null);
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: forgejoRepositories,
+      }),
+    );
+    render(<NewProjectScreen />);
+    fireEvent.press(await screen.findByText('Connect a code host'));
+    connections.mockResolvedValue(forgejo);
+    act(() => {
+      for (const callback of mockFocusCallbacks) callback();
+    });
+    expect(await screen.findByRole('radio', { name: /^Forgejo,/ })).toBeOnTheScreen();
+  });
+
   it('creates a Forgejo project with its connection and skips archived repositories', async () => {
     const fake = client({
       listAvailableRepositories: jest.fn().mockResolvedValue([project]),

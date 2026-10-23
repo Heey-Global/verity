@@ -133,6 +133,23 @@ export function createGitHubRepositoryOperations(options: {
         return row ? pullView(row) : null;
       }
       const head = encodeURIComponent(`${project.owner}:${selector.head}`);
+      const own = (row: GitHubPullRow) =>
+        row.head.ref === selector.head && row.head.repo?.full_name?.toLowerCase() === fullName;
+      // Closed history must not hide an older open PR when a branch is reused.
+      // Only a complete open scan can justify creating another pull request.
+      for (let page = 1; ; page++) {
+        if (page > 100)
+          throw new ForgeOperationError('too many open pull requests to search on GitHub', 502);
+        const batch = await request<GitHubPullRow[]>(
+          'pull request',
+          `${repoPath}/pulls?state=open&head=${head}&sort=updated&direction=desc&per_page=50&page=${page}`,
+        );
+        if (!Array.isArray(batch))
+          throw new ForgeOperationError('GitHub returned an unexpected pull request list', 502);
+        const match = batch.find(own);
+        if (match) return pullView(match);
+        if (batch.length < 50) break;
+      }
       const rows = await request<GitHubPullRow[]>(
         'pull request',
         `${repoPath}/pulls?state=all&head=${head}&sort=updated&direction=desc&per_page=50`,

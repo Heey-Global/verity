@@ -13,7 +13,7 @@ import {
   type ProjectRecord,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -177,20 +177,22 @@ function LinkRepositorySection({
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
-  useEffect(() => {
-    let active = true;
-    void loadCodeHosts(client, { forProjects: true })
-      .catch(() => ({ hosts: [], githubRepositories: [] }))
-      .then((loaded) => {
-        if (!active) return;
-        setHosts(loaded.hosts);
-        setGithubRepositories(loaded.githubRepositories);
-        setHostId((current) => current ?? loaded.hosts[0]?.id ?? null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [client]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void loadCodeHosts(client, { forProjects: true })
+        .catch(() => ({ hosts: [], githubRepositories: [] }))
+        .then((loaded) => {
+          if (!active) return;
+          setHosts(loaded.hosts);
+          setGithubRepositories(loaded.githubRepositories);
+          setHostId((current) => current ?? loaded.hosts[0]?.id ?? null);
+        });
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
 
   const host = hosts?.find((candidate) => candidate.id === hostId);
 

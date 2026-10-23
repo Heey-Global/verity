@@ -1054,6 +1054,26 @@ describe('project settings — repository', () => {
     expect(screen.queryByLabelText(/^GitHub, github\.com/)).toBeNull();
   });
 
+  it('reloads repository hosts after returning from connection setup', async () => {
+    const connections = jest
+      .fn()
+      .mockResolvedValue({ connections: [], forgejoProjectsAvailable: true });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByText('Open Connections'));
+    connections.mockResolvedValue(forgejoConnections());
+    act(() => refocus());
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+  });
+
   it('sends a local project without any code host to Connections', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({

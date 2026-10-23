@@ -67,24 +67,27 @@ function NewProject({ client }: { client: VerityClient }) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
-  useEffect(() => {
-    let active = true;
-    void Promise.all([
-      loadCodeHosts(client, { forProjects: true }).catch(() => ({
-        hosts: [],
-        githubRepositories: [],
-      })),
-      readLastCodeHost(),
-    ]).then(([loaded, remembered]) => {
-      if (!active) return;
-      setHosts(loaded.hosts);
-      setGithubRepositories(loaded.githubRepositories);
-      if (!choiceMade.current) setChoice(preferredCodeHost(loaded.hosts, remembered)?.id ?? LOCAL);
-    });
-    return () => {
-      active = false;
-    };
-  }, [client]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void Promise.all([
+        loadCodeHosts(client, { forProjects: true }).catch(() => ({
+          hosts: [],
+          githubRepositories: [],
+        })),
+        readLastCodeHost(),
+      ]).then(([loaded, remembered]) => {
+        if (!active) return;
+        setHosts(loaded.hosts);
+        setGithubRepositories(loaded.githubRepositories);
+        if (!choiceMade.current)
+          setChoice(preferredCodeHost(loaded.hosts, remembered)?.id ?? LOCAL);
+      });
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
 
   const host = hosts?.find((candidate) => candidate.id === choice);
 

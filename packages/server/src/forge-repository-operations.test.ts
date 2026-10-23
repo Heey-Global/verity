@@ -216,7 +216,13 @@ function githubFake(forge: Forge): ForgeRepositoryOperations {
     if (path.startsWith(`${base}/pulls?`)) {
       // GitHub filters by `owner:branch` itself; the fake leaves forks in to
       // prove the client does not trust that filter alone.
-      return respond(200, forge.pulls.map(row));
+      const query = new URL(`https://api.github.com${path}`).searchParams;
+      const page = Number(query.get('page') ?? 1);
+      const limit = Number(query.get('per_page') ?? 50);
+      const pulls = forge.pulls
+        .filter((pull) => query.get('state') === 'all' || pull.state === query.get('state'))
+        .sort((a, b) => b.updated.localeCompare(a.updated));
+      return respond(200, pulls.slice((page - 1) * limit, page * limit).map(row));
     }
     const pullMatch = /\/pulls\/(\d+)$/u.exec(path);
     if (pullMatch) {
@@ -346,4 +352,30 @@ it.each([
   const lookup = operations.findPullRequest({ head: 'feat/7-search' });
   if (outcome === 'rejects') await expect(lookup).rejects.toThrow(message);
   else await expect(lookup).resolves.toBeNull();
+});
+
+it('finds an older open GitHub PR beyond closed history and foreign-head pages', async () => {
+  const forge = emptyForge();
+  const original = forge.pulls[0]!;
+  forge.pulls.push(
+    ...Array.from({ length: 50 }, (_, i) => ({
+      ...original,
+      number: 100 + i,
+      updated: '2026-05-01T00:00:00Z',
+    })),
+  );
+  forge.pulls.push(
+    ...Array.from({ length: 50 }, (_, i) => ({
+      ...original,
+      number: 200 + i,
+      state: 'open' as const,
+      headRepo: 'fork/site',
+      updated: '2026-04-01T00:00:00Z',
+    })),
+  );
+  forge.pulls.push({ ...original, number: 300, state: 'open', updated: '2026-02-01T00:00:00Z' });
+  expect(await githubFake(forge).findPullRequest({ head: original.head })).toMatchObject({
+    number: 300,
+    state: 'open',
+  });
 });
