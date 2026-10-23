@@ -344,6 +344,9 @@ describe('server update screen', () => {
     expect(
       tag({ operation: operation({ state: 'activating', phase: 'switching-gateway' }) }),
     ).toEqual({ label: 'Updating', intent: 'transient' });
+    expect(
+      tag({ operation: operation({ state: 'rolling-back', phase: 'rollback-activating-old' }) }),
+    ).toEqual({ label: 'Rolling back', intent: 'transient' });
     expect(describeServerUpdatePanel(stuck()).tag).toEqual({
       label: 'Stuck',
       intent: 'needsSetup',

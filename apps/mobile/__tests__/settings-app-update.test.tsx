@@ -23,7 +23,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import * as Updates from 'expo-updates';
 
 import { AppUpdateSection } from '../components/settings/AppUpdateSection';
-import { resetAppStoreLookupForTests } from '../lib/appUpdateFacts';
+import { Text } from 'react-native';
+import { resetAppStoreLookupForTests, useAppStoreUpdateVersion } from '../lib/appUpdateFacts';
+
+/** What the Settings row reads, rendered as plain text. */
+function StoreVersion() {
+  return <Text>{`store: ${useAppStoreUpdateVersion(true) ?? 'none'}`}</Text>;
+}
 
 const useUpdates = Updates.useUpdates as jest.Mock;
 const STORE_PAGE = 'https://apps.apple.com/de/app/verity/id6807746931';
@@ -85,6 +91,19 @@ describe('app box on the update screen', () => {
     fetchMock.mockResolvedValue(lookup('1.76.0'));
     fireEvent.press(screen.getByText('Check for updates'));
     expect(await screen.findByText('Version 1.76.0 is available')).toBeOnTheScreen();
+  });
+
+  it('tells every mounted reader about a newer listing', async () => {
+    render(
+      <>
+        <AppUpdateSection />
+        <StoreVersion />
+      </>,
+    );
+    expect(await screen.findByText('store: none')).toBeOnTheScreen();
+    fetchMock.mockResolvedValue(lookup('1.76.0'));
+    fireEvent.press(screen.getByText('Check for updates'));
+    expect(await screen.findByText('store: 1.76.0')).toBeOnTheScreen();
   });
 
   it('restarts into a downloaded update on request', async () => {

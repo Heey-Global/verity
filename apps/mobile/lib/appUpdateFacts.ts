@@ -30,6 +30,7 @@ const APP_VARIANT: AppUpdateFacts['variant'] =
   Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production';
 
 let lookup: Promise<AppStoreRelease | null> | undefined;
+const listeners = new Set<(release: AppStoreRelease | null) => void>();
 
 /** The App Store listing of this app, or null when it was not or could not be asked. */
 function lookUpAppStoreRelease(): Promise<AppStoreRelease | null> {
@@ -42,7 +43,11 @@ function lookUpAppStoreRelease(): Promise<AppStoreRelease | null> {
   const pending: Promise<AppStoreRelease | null> = requestAppStoreRelease(bundleId).then(
     (release) => {
       // Only this request's own entry: an explicit check may have replaced it.
-      if (release === null && lookup === pending) lookup = undefined;
+      if (lookup !== pending) return release;
+      if (release === null) lookup = undefined;
+      // Every reader hears the newest answer — the Settings row stays mounted
+      // behind the update screen and would otherwise keep the one it read first.
+      for (const listener of listeners) listener(release);
       return release;
     },
   );
@@ -79,11 +84,13 @@ function useAppStoreRelease(enabled: boolean, revision = 0): AppStoreRelease | n
   useEffect(() => {
     if (!enabled) return undefined;
     let active = true;
+    listeners.add(setRelease);
     void lookUpAppStoreRelease().then((next) => {
       if (active) setRelease(next);
     });
     return () => {
       active = false;
+      listeners.delete(setRelease);
     };
   }, [enabled, revision]);
   return release;
@@ -135,6 +142,7 @@ export function useAppUpdateFacts(): { facts: AppUpdateFacts; check: () => void 
     // doing is interrupted; the downloaded update shows up as ready.
     void downloadAppUpdate()
       .then((result) => setCheckFailed(typeof result === 'object' && result.status === 'failed'))
+      .catch(() => setCheckFailed(true))
       .finally(() => setChecking(false));
   }, []);
   return {
