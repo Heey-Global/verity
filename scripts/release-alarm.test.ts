@@ -80,6 +80,29 @@ describe('release stall alarm', () => {
     ).toEqual({ action: 'none' });
   });
 
+  it('keeps known problems when crashes join them', () => {
+    const issue = issueFor([draft]);
+    const plan = planAlarm({
+      ...base,
+      result: 'failure',
+      problems: undefined,
+      issue,
+      recentConclusions: Array(crashThreshold - 1).fill('failure'),
+    });
+    expect(plan.action).toBe('update');
+    if (plan.action !== 'update') return;
+    expect(plan.body).toContain(`- ${draft}`);
+    expect(plan.comment).toContain('nothing is watching releases');
+    expect(plan.comment).not.toContain(draft);
+  });
+
+  it('survives a hand-edited marker', () => {
+    const issue = { number: 12, body: '<!-- release-stall: [not json] -->' };
+    expect(planAlarm({ ...base, result: 'failure', problems: [draft], issue })).toMatchObject({
+      action: 'update',
+    });
+  });
+
   it('raises the alarm when the sweep keeps crashing', () => {
     const plan = planAlarm({
       ...base,

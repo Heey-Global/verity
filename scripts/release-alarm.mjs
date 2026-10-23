@@ -37,6 +37,7 @@ export function planAlarm({ result, problems, recentConclusions, issue, runUrl, 
     if (crashes.length < crashThreshold || crashes.some((conclusion) => conclusion === 'success'))
       return { action: 'none' };
     current = [
+      ...(issue ? previousProblems(issue.body) : []),
       `The reconciliation sweep has crashed ${crashThreshold} times in a row without a verdict, so nothing is watching releases.`,
     ];
   }
@@ -77,7 +78,14 @@ export function planAlarm({ result, problems, recentConclusions, issue, runUrl, 
 function previousProblems(body) {
   const match = markerPattern.exec(body);
   if (!match) return [];
-  const parsed = /** @type {unknown} */ (JSON.parse(match[1] ?? '[]'));
+  /** @type {unknown} */
+  let parsed;
+  try {
+    parsed = JSON.parse(match[1] ?? '[]');
+  } catch {
+    // A hand-edited marker must not stop the alarm; it reports afresh.
+    return [];
+  }
   return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === 'string') : [];
 }
 
