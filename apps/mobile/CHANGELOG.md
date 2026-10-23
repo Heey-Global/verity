@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.77.0](https://github.com/Heey-Global/verity/compare/mobile-v1.76.0...mobile-v1.77.0) (2026-10-23)
+
+
+### Features
+
+* **forgejo:** integrate connections and mobile repository workflows ([#1805](https://github.com/Heey-Global/verity/issues/1805)) ([5ebd077](https://github.com/Heey-Global/verity/commit/5ebd0778c995deb3be62dc424b7e980381fa6886))
+* **mobile:** let the update banner be dismissed until the next version ([#1807](https://github.com/Heey-Global/verity/issues/1807)) ([2b33ccd](https://github.com/Heey-Global/verity/commit/2b33ccda610b3849379025979990e0e39480f6dd))
+* **mobile:** show app updates next to server updates ([#1806](https://github.com/Heey-Global/verity/issues/1806)) ([ea7fdf0](https://github.com/Heey-Global/verity/commit/ea7fdf07d401298c1801c2eb25f5ac237741bea2))
+* **security:** scan session changes and surface vulnerability diffs ([#1819](https://github.com/Heey-Global/verity/issues/1819)) ([6275bce](https://github.com/Heey-Global/verity/commit/6275bce4878566b2816e7f3a2b63bc5bf5dab32a))
+
+
+### Bug Fixes
+
+* **mobile:** adapt split view to narrower iPad windows ([#1811](https://github.com/Heey-Global/verity/issues/1811)) ([eee498d](https://github.com/Heey-Global/verity/commit/eee498d2545b6c4a45c33bc810a8395656f78386))
+* **mobile:** highlight the entire pull request bar on press ([#1812](https://github.com/Heey-Global/verity/issues/1812)) ([ec5e1b9](https://github.com/Heey-Global/verity/commit/ec5e1b95e94e0cf6daa4e6bb3c52245110106fda))
+* **mobile:** show up to date on the installed row and drop the generation counter ([#1804](https://github.com/Heey-Global/verity/issues/1804)) ([19e5a33](https://github.com/Heey-Global/verity/commit/19e5a33dbb661aeb85bc08fcd45ebe5b6e16c366))
+
 ## [1.76.0](https://github.com/Heey-Global/verity/compare/mobile-v1.75.0...mobile-v1.76.0) (2026-10-22)
 
 
