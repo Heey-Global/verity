@@ -1,3 +1,5 @@
+import { sessionLayout } from '../lib/sessionLayout';
+import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
 import { DeferredSessionPane } from '../components/DeferredSessionPane';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
@@ -155,7 +157,7 @@ function SessionList({ client }: { client: VerityClient }) {
   usePushNotifications(client, baseUrl);
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const { wide, sidebarWidth } = sessionLayout(width);
   // A `selected` route param preselects a session into the right pane — this is how
   // a freshly-started session (new.tsx → /session/[id] → Redirect on wide) and any
   // deep link land in the unified split layout instead of the old per-route sidebar.
@@ -168,6 +170,11 @@ function SessionList({ client }: { client: VerityClient }) {
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
+  useSessionLayoutNavigation(wide, selectedId, {
+    targetMessageId: selected === selectedId ? targetMessageId : undefined,
+    targetSearchQuery: selected === selectedId ? targetSearchQuery : undefined,
+    retrySecret: selected === selectedId ? retrySecret : undefined,
+  });
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -784,7 +791,9 @@ function SessionList({ client }: { client: VerityClient }) {
       ) : null}
       {/* Pinned above the list, not rendered as its header: the usage meters are
           the one thing on this screen that must not scroll, drag or fold away. */}
-      {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
+      {providerLimitRows.length > 0 ? (
+        <ProviderLimitMeters rows={providerLimitRows} compact={wide && sidebarWidth < 380} />
+      ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
           ref={reorder.hostRef}
@@ -947,7 +956,7 @@ function SessionList({ client }: { client: VerityClient }) {
 
   return (
     <View style={styles.splitRow}>
-      <View style={styles.leftPane}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane
@@ -1495,7 +1504,13 @@ function isVerityControlPlaneProject(project: ProjectRecord): boolean {
 
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
-function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
+function ProviderLimitMeters({ rows, compact }: { rows: ProviderLimitRow[]; compact: boolean }) {
+  const segments = (row: ProviderLimitRow) => (
+    <>
+      <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} compact={compact} />
+      <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} compact={compact} />
+    </>
+  );
   return (
     <View style={styles.limitMeters}>
       {rows.map((row) => (
@@ -1503,8 +1518,11 @@ function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
           <Text style={styles.limitProvider} numberOfLines={1}>
             {row.providerLabel}
           </Text>
-          <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} />
-          <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} />
+          {compact ? (
+            <View style={styles.limitSegmentsCompact}>{segments(row)}</View>
+          ) : (
+            segments(row)
+          )}
         </View>
       ))}
     </View>
@@ -1515,14 +1533,16 @@ function ProviderLimitSegment({
   label,
   window,
   limit,
+  compact,
 }: {
   label: string;
   window: 'five_hour' | 'weekly';
   limit: ProviderLimitState | null;
+  compact: boolean;
 }) {
   const { theme } = useUnistyles();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const usesWideSpacing = screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
+  const usesWideSpacing = !compact && screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
   const chartRef = useRef<View>(null);
   const [showPaceInfo, setShowPaceInfo] = useState(false);
   const [paceInfoAnchor, setPaceInfoAnchor] = useState<{
@@ -1630,6 +1650,7 @@ function ProviderLimitSegment({
     <View
       style={[
         styles.limitSegment,
+        compact ? styles.limitSegmentCompact : null,
         usesWideSpacing
           ? window === 'weekly'
             ? styles.limitWeeklySegmentWide
@@ -2082,6 +2103,10 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
+  limitSegmentsCompact: {
+    flex: 1,
+    gap: theme.spacing.xs,
+  },
   limitProvider: {
     width: 48,
     color: theme.colors.text,
@@ -2094,6 +2119,10 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     columnGap: 7,
+  },
+  limitSegmentCompact: {
+    flex: 0,
+    minHeight: 26,
   },
   // The phone layout fits both segments evenly. On wider iPad/desktop layouts a
   // weekly reset includes a weekday plus its clock time, so shift WEEK left and
@@ -2324,7 +2353,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
   },
   leftPane: {
-    width: 380,
     backgroundColor: theme.colors.background,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: theme.colors.border,

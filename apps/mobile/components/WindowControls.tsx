@@ -32,12 +32,10 @@ if (
 
 /**
  * Reports how much room iPadOS 26's window controls take out of the top of the
- * window (see lib/windowControls.ts). The measurement is of the window, not of
- * this view — placing the probe elsewhere would not scope it to that part of the
- * screen, it would only change when it re-measures. Which is why it renders an
- * invisible view filling its parent rather than nothing at all: being laid out
- * with the row it reports for is what makes a window resize re-measure. It takes
- * no touches — the native view turns its own interaction off.
+ * header row (see lib/windowControls.ts). Place it inside the row, below any
+ * status-bar padding, so UIKit evaluates the margins at the buttons' height.
+ * The invisible view fills the row and remeasures on resize. It takes no touches
+ * — the native view turns its own interaction off.
  */
 export function WindowControlsProbe({
   onInset,
