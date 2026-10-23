@@ -21,6 +21,7 @@ const mockAppStoreVersion = jest.fn((_enabled: boolean): string | null => null);
 jest.mock('../lib/appUpdateFacts', () => ({
   useAppStoreUpdateVersion: (enabled: boolean) => mockAppStoreVersion(enabled),
 }));
+beforeEach(() => mockAppStoreVersion.mockReturnValue(null));
 jest.mock('../lib/automaticUpdates', () =>
   require('./support/settingsHarness').automaticUpdatesMock(),
 );

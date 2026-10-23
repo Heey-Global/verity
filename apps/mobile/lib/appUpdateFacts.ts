@@ -123,7 +123,7 @@ export function useAppUpdateFacts(): { facts: AppUpdateFacts; check: () => void 
     // Downloads only. A restart is the person's call, so nothing they are
     // doing is interrupted; the downloaded update shows up as ready.
     void downloadAppUpdate()
-      .then((result) => setCheckFailed(typeof result === 'object'))
+      .then((result) => setCheckFailed(typeof result === 'object' && result.status === 'failed'))
       .finally(() => setChecking(false));
   }, []);
   return {
