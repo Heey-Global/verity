@@ -140,7 +140,7 @@ replace a newer plan with an older source snapshot.
 GitHub delivers a push event at most once, not exactly once. A merge whose
 push never produced a run leaves a merged release PR, or an approved OTA
 candidate, with nothing scheduled to publish it and nothing failing.
-`release-reconcile.yml` runs every twenty minutes as the backstop for that
+`release-reconcile.yml` runs every five minutes as the backstop for that
 case. It publishes nothing itself: for a train whose merged release PR is still
 pending and whose version has no release yet, it dispatches
 `release-dispatch.yml` with `reconcile=true`, which replays the push lifecycle
@@ -152,9 +152,18 @@ re-plan input, and a re-plan accepts no reconcile flag.
 The sweep does not retry what already ran and failed. A pending release PR
 whose draft already exists, a published tag whose PR still carries the pending
 label, or a promotion run that ended in failure each fail the sweep with the
-exact state, so that every twenty minutes there is a red run naming what a
-human has to finish. Recovery paths are unchanged: the draft recovery inputs on
+exact state, so that there is a red run naming what a human has to finish.
+Recovery paths are unchanged: the draft recovery inputs on
 `release-dispatch.yml` and a manual run of `mobile-ota-promote.yml`.
+
+A red cron run notifies nobody, so the sweep's `alarm` job turns its verdict
+into one issue labelled `release-stall` (`scripts/release-alarm.mjs`). The issue
+mentions the owner when it opens and again only when a new problem appears;
+an unchanged state stays quiet. The first clean sweep closes it, so the closed
+issues are the record of what was stuck and for how long. A sweep that crashes
+before reporting says nothing about the releases: it never closes the issue,
+and it raises one only after three failed sweeps in a row, when nothing is
+watching releases anymore.
 
 Server changes are collected from its configured root package. Website
 changes are collected from `docs/website`; its `concept.md` and `landing-copy.md`

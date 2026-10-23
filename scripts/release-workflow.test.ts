@@ -1688,15 +1688,16 @@ describe('publication reconciliation', () => {
     const [minutes, hours] = crons[0]!.split(' ');
     expect(hours).toBe('*');
     const fires = minutes!.split(',').map(Number);
-    expect(fires.length).toBeGreaterThanOrEqual(2);
+    expect(fires.length).toBeGreaterThanOrEqual(12);
     expect(fires).not.toContain(0);
     expect(fires).not.toContain(30);
     expect(sweep.on.workflow_dispatch).toBeDefined();
     expect(sweep.permissions).toBe('read-all');
     expect(sweep.concurrency?.['cancel-in-progress']).toBe(false);
-    const jobs = Object.values(sweep.jobs);
-    expect(jobs).toHaveLength(1);
-    const [job] = jobs;
+    // The sweep plus the alarm that reports its verdict; release-alarm.test.ts
+    // pins the alarm job.
+    expect(Object.keys(sweep.jobs).sort()).toEqual(['alarm', 'reconcile']);
+    const job = sweep.jobs.reconcile;
     // Drafts are listed to push access only; with read access a draft that
     // manual recovery owns reads as a release that does not exist yet.
     expect(job?.permissions).toEqual({

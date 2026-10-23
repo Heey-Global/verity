@@ -588,5 +588,8 @@ const summary = lines.length ? lines.join('\n') : '- nothing to reconcile';
 console.log(summary);
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Release reconciliation\n\n${summary}\n`);
+// release-alarm.mjs reads the verdict; a missing output means the sweep crashed.
+if (process.env.GITHUB_OUTPUT)
+  appendFileSync(process.env.GITHUB_OUTPUT, `problems=${JSON.stringify(problems)}\n`);
 for (const problem of problems) console.log(`::error::${problem}`);
 if (problems.length) process.exitCode = 1;
