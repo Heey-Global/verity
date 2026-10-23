@@ -74,7 +74,8 @@ export function SettingsScaffold({
       <Stack.Screen
         options={{
           title,
-          headerRight: headerAction === undefined ? undefined : () => headerAction,
+          // Only when set: an explicit `undefined` would override a layout's own.
+          ...(headerAction !== undefined && { headerRight: () => headerAction }),
         }}
       />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
