@@ -37,8 +37,10 @@ export function planAlarm({ result, problems, recentConclusions, issue, runUrl, 
     if (crashes.length < crashThreshold || crashes.some((conclusion) => conclusion === 'success'))
       return { action: 'none' };
     current = [
-      ...(issue ? previousProblems(issue.body) : []),
-      `The reconciliation sweep has crashed ${crashThreshold} times in a row without a verdict, so nothing is watching releases.`,
+      ...new Set([
+        ...(issue ? previousProblems(issue.body) : []),
+        `The reconciliation sweep has crashed ${crashThreshold} times in a row without a verdict, so nothing is watching releases.`,
+      ]),
     ];
   }
   if (!current.length) {

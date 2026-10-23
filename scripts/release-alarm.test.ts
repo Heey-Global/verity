@@ -96,6 +96,27 @@ describe('release stall alarm', () => {
     expect(plan.comment).not.toContain(draft);
   });
 
+  it('does not grow or re-mention while the sweep keeps crashing', () => {
+    const crashes = Array(crashThreshold - 1).fill('failure');
+    const first = planAlarm({
+      ...base,
+      result: 'failure',
+      problems: undefined,
+      recentConclusions: crashes,
+    });
+    if (first.action !== 'open') throw new Error('expected an open plan');
+    const issue = { number: 12, body: first.body };
+    expect(
+      planAlarm({
+        ...base,
+        result: 'failure',
+        problems: undefined,
+        issue,
+        recentConclusions: crashes,
+      }),
+    ).toEqual({ action: 'none' });
+  });
+
   it('survives a hand-edited marker', () => {
     const issue = { number: 12, body: '<!-- release-stall: [not json] -->' };
     expect(planAlarm({ ...base, result: 'failure', problems: [draft], issue })).toMatchObject({
