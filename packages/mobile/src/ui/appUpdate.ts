@@ -113,6 +113,11 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+/** "1.75.4" → "1.75": the native line a version belongs to. */
+function nativeLine(version: string): string {
+  return version.split('.').slice(0, 2).join('.');
+}
+
 /**
  * The store version this app should be updated to, or null. Compared with the
  * binary, not with the running JavaScript: an over-the-air 1.75.4 still runs in
@@ -131,7 +136,11 @@ export function appStoreUpdate(facts: AppUpdateFacts): AppStoreRelease | null {
     facts.nativeVersion === null
   )
     return null;
-  return compareVersions(facts.store.version, facts.nativeVersion) > 0 ? facts.store : null;
+  // Each native X.Y.0 release owns the X.Y.x line, and everything on that line
+  // arrives over the air. Only a store release on a newer line needs the store.
+  return compareVersions(nativeLine(facts.store.version), nativeLine(facts.nativeVersion)) > 0
+    ? facts.store
+    : null;
 }
 
 export function describeAppUpdate(facts: AppUpdateFacts): AppUpdateBox {

@@ -34,13 +34,20 @@ let lookup: Promise<AppStoreRelease | null> | undefined;
 /** The App Store listing of this app, or null when it was not or could not be asked. */
 function lookUpAppStoreRelease(): Promise<AppStoreRelease | null> {
   const bundleId = Application.applicationId;
-  if (APP_VARIANT !== 'production' || Platform.OS !== 'ios' || bundleId === null)
+  // A build without over-the-air updates is a development build, which the
+  // store did not install and the box shows as "Off".
+  if (APP_VARIANT !== 'production' || Platform.OS !== 'ios' || !Updates.isEnabled || !bundleId)
     return Promise.resolve(null);
-  lookup ??= requestAppStoreRelease(bundleId).then((release) => {
-    if (release === null) lookup = undefined;
-    return release;
-  });
-  return lookup;
+  if (lookup !== undefined) return lookup;
+  const pending: Promise<AppStoreRelease | null> = requestAppStoreRelease(bundleId).then(
+    (release) => {
+      // Only this request's own entry: an explicit check may have replaced it.
+      if (release === null && lookup === pending) lookup = undefined;
+      return release;
+    },
+  );
+  lookup = pending;
+  return pending;
 }
 
 async function requestAppStoreRelease(bundleId: string): Promise<AppStoreRelease | null> {

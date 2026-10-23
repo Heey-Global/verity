@@ -61,12 +61,14 @@ describe('app update box', () => {
     });
   });
 
-  // The running 1.75.4 arrived over the air into a 1.75.0 binary. Comparing the
-  // store with it would hide a 1.75.x store build and, worse, compare a binary
-  // with JavaScript; only a store release above the binary is an update.
+  // The running 1.75.4 arrived over the air into a 1.75.0 binary. Only a store
+  // release on a newer native line than that binary is something to install.
   it('compares the store with the binary, not with the running JavaScript', () => {
     expect(appStoreUpdate(facts({ store: store('1.75.0') }))).toBeNull();
-    expect(appStoreUpdate(facts({ store: store('1.75.2') }))?.version).toBe('1.75.2');
+    expect(appStoreUpdate(facts({ store: store('1.76.0') }))?.version).toBe('1.76.0');
+    // Same native line: it arrives over the air, and offering the store would
+    // name a version below the 1.75.4 already running.
+    expect(appStoreUpdate(facts({ store: store('1.75.2') }))).toBeNull();
     expect(appStoreUpdate(facts({ nativeVersion: '1.77.0', store: store('1.76.0') }))).toBeNull();
   });
 
