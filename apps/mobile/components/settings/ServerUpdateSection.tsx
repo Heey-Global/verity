@@ -359,7 +359,6 @@ function UpdateBlock({
   onInstall: (targetDigest: string, idempotencyKey: string) => void;
   onRetry: (updateId: string) => void;
 }) {
-  const { theme } = useUnistyles();
   const action = card.action;
   const releasedAt =
     card.release === null ? undefined : formatReleaseDate(card.release.publishedAt);
@@ -374,13 +373,10 @@ function UpdateBlock({
         ) : null}
       </View>
       {card.progress !== null ? (
-        <View style={styles.updateProgressRow}>
-          <ActivityIndicator size="small" color={theme.colors.text} />
-          <UiText variant="bodySmall">{card.progress.phase}</UiText>
-          <UiText variant="bodySmall" tone="muted" accessibilityLiveRegion="polite">
-            {`Step ${String(card.progress.step)} of ${String(card.progress.total)}`}
-          </UiText>
-        </View>
+        // The head tag already spins; a second spinner here said the same thing twice.
+        <UiText variant="bodySmall" accessibilityLiveRegion="polite">
+          {`${card.progress.phase} · step ${String(card.progress.step)} of ${String(card.progress.total)}`}
+        </UiText>
       ) : null}
       {card.stalled !== null ? (
         <View>
