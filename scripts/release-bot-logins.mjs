@@ -7,7 +7,7 @@
 // so a human branch under a release name stays untrusted.
 import process from 'node:process';
 
-export const releaseBotLoginsVariable = 'RELEASE_BOT_LOGINS';
+const releaseBotLoginsVariable = 'RELEASE_BOT_LOGINS';
 const defaultLogins = ['github-actions[bot]'];
 const loginPattern = /^[\w.-]+\[bot\]$/u;
 
