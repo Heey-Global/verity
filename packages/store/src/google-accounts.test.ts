@@ -250,28 +250,16 @@ describe('Google account migration', () => {
         google_drive_refresh_token) values ('global', 'Legacy@example.com', 'client', ${encrypted})`.execute(
         legacy.db,
       );
-      await legacy.store.createSession({
-        sessionId: 'legacy-match',
-        worktree: '/legacy-match',
-        model: 'test',
-      });
-      await legacy.store.createSession({
-        sessionId: 'legacy-stale',
-        worktree: '/legacy-stale',
-        model: 'test',
-      });
+      // Seed the historical schema directly: current store writers require later columns.
+      await sql`insert into projects(id, owner, repo, container_name, state)
+        values ('legacy-project', 'local', 'legacy', 'legacy', 'active')`.execute(legacy.db);
+      await sql`insert into sessions(session_id, worktree, model, project_id) values
+        ('legacy-match', '/legacy-match', 'test', 'legacy-project'),
+        ('legacy-stale', '/legacy-stale', 'test', null)`.execute(legacy.db);
       await sql`insert into session_gmail_connections(session_id, account_email) values
         ('legacy-match', 'legacy@example.com'), ('legacy-stale', 'other@example.com')`.execute(
         legacy.db,
       );
-      await legacy.store.upsertProject({
-        id: 'legacy-project',
-        owner: 'local',
-        repo: 'legacy',
-        containerName: 'legacy',
-        state: 'active',
-      });
-      await legacy.store.setSessionProject('legacy-match', 'legacy-project');
       await sql`insert into project_settings(project_id, google_drive_folder_id, google_drive_folder_name, google_drive_access_mode)
         values ('legacy-project', 'legacy-folder', 'Legacy folder', 'read-only')`.execute(
         legacy.db,

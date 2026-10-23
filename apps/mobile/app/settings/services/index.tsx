@@ -1,11 +1,16 @@
 import {
+  codeHostFromConnection,
+  forgejoConnection,
   githubRepositoryAccessReady,
   selectedOpenCodeModels,
+  type ForgeConnectionList,
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Text } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+import { CodeHostIcon } from '../../../components/CodeHostIcon';
 import {
   SettingsGroup,
   SettingsListPanel,
@@ -24,7 +29,7 @@ import { useLoadVeritySettings, useVeritySettings } from '../../../lib/settingsS
 type Usage = Awaited<ReturnType<VerityClient['getConnectionUsage']>>;
 
 type Connection = {
-  usageKey: keyof Usage;
+  usageKey: Exclude<keyof Usage, 'forgejo'>;
   title: string;
   group: string;
   icon: IconName;
@@ -48,6 +53,77 @@ export default function ConnectionsScreen() {
   );
 }
 
+function usedIn(count: number): string {
+  return `Used in ${count} ${count === 1 ? 'project' : 'projects'}`;
+}
+
+/**
+ * GitHub and Forgejo as rows of the same kind, so neither reads as the primary
+ * code host. All four setups render: GitHub only, Forgejo only, both, or neither
+ * (both rows then offer "Connect").
+ */
+function CodeHostRows({
+  githubConnected,
+  githubStatus,
+  forge,
+  usage,
+}: {
+  githubConnected: boolean;
+  githubStatus: { intent: StatusIntent; label: string } | undefined;
+  forge: ForgeConnectionList | null;
+  usage: Usage | null;
+}) {
+  const { theme } = useUnistyles();
+  const mark = (provider: 'github' | 'forgejo') => ({
+    element: <CodeHostIcon provider={provider} color={theme.colors.action} />,
+  });
+  const forgejo = forgejoConnection(forge);
+  const forgejoHost = forgejo ? codeHostFromConnection(forgejo) : undefined;
+  const githubSubtitle = 'Repository access, commit author, signing key';
+  return (
+    <SettingsListPanel>
+      <SettingsNavRow
+        icon={mark('github')}
+        title="GitHub"
+        subtitle={
+          usage && githubConnected ? `${githubSubtitle} · ${usedIn(usage.github)}` : githubSubtitle
+        }
+        status={
+          githubStatus ?? {
+            intent: githubConnected ? 'ready' : 'optional',
+            label: githubConnected ? 'Connected' : 'Connect',
+          }
+        }
+        onPress={() => router.push('/settings/github')}
+      />
+      {forgejo && forgejoHost ? (
+        <SettingsNavRow
+          icon={mark('forgejo')}
+          title={forgejoHost.title}
+          subtitle={
+            usage
+              ? `${forgejoHost.host} · ${usedIn(usage.forgejo[forgejo.id] ?? 0)}`
+              : forgejoHost.host
+          }
+          status={{ intent: 'ready', label: 'Connected' }}
+          onPress={() =>
+            router.push({ pathname: '/settings/forgejo/[id]', params: { id: forgejo.id } })
+          }
+        />
+      ) : forge !== null ? (
+        // Without /connections (older server, non-admin) Forgejo cannot be added.
+        <SettingsNavRow
+          icon={mark('forgejo')}
+          title="Forgejo"
+          subtitle="Self-hosted Git server"
+          status={{ intent: 'optional', label: 'Connect' }}
+          onPress={() => router.push('/settings/forgejo/new')}
+        />
+      ) : null}
+    </SettingsListPanel>
+  );
+}
+
 function ConnectionsView({ client }: { client: VerityClient }) {
   const reload = useLoadVeritySettings(client);
   const { settings } = useVeritySettings();
@@ -57,6 +133,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     connected: false,
   });
   const [mcpCount, setMcpCount] = useState(0);
+  const [forge, setForge] = useState<ForgeConnectionList | null>(null);
   const [usage, setUsage] = useState<Awaited<
     ReturnType<VerityClient['getConnectionUsage']>
   > | null>(null);
@@ -73,8 +150,10 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         client.listHttpMcpConnections(),
         Promise.resolve().then(() => client.getGoogleConnection()),
         Promise.resolve().then(() => client.getConnectionUsage()),
-      ]).then(([integrations, mcp, googleAccount, connectionUsage]) => {
+        Promise.resolve().then(() => client.listConnections()),
+      ]).then(([integrations, mcp, googleAccount, connectionUsage, forgeConnections]) => {
         if (!active) return;
+        if (forgeConnections.status === 'fulfilled') setForge(forgeConnections.value);
         setError(
           integrations.status === 'rejected' ||
             mcp.status === 'rejected' ||
@@ -98,18 +177,6 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     }, [client, retry]),
   );
   const rows: Connection[] = [
-    {
-      title: 'GitHub',
-      usageKey: 'github',
-      group: 'Code',
-      icon: 'github',
-      subtitle: 'Repository access, commit author, signing key',
-      route: '/settings/github',
-      connected: githubConnected,
-      ...(githubConnected && githubActionNeeded(githubPermission)
-        ? { status: 'Action needed', statusIntent: 'needsSetup' as const }
-        : {}),
-    },
     {
       title: 'Claude',
       usageKey: 'claude',
@@ -233,9 +300,22 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       {['Agents', 'Code', 'Files & documents', 'Communication', 'Secrets', 'Advanced'].map(
         (group) => (
           <SettingsGroup key={group} title={group}>
-            {renderRows(
-              rows.filter((item) => item.group === group),
-              group === 'Communication',
+            {group === 'Code' ? (
+              <CodeHostRows
+                githubConnected={githubConnected}
+                githubStatus={
+                  githubConnected && githubActionNeeded(githubPermission)
+                    ? { intent: 'needsSetup', label: 'Action needed' }
+                    : undefined
+                }
+                forge={forge}
+                usage={usage}
+              />
+            ) : (
+              renderRows(
+                rows.filter((item) => item.group === group),
+                group === 'Communication',
+              )
             )}
           </SettingsGroup>
         ),

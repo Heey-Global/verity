@@ -19,6 +19,28 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+// An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
+// the chips would otherwise open an unrelated github.com repository.
+it('drops the repository identity for a code host this client does not know', () => {
+  const parsed = branchListSchema.parse({
+    current: 'feat/1-x',
+    switchable: [],
+    owner: 'team',
+    repo: 'site',
+    codeHost: { provider: 'gitlab', baseUrl: 'https://gitlab.example' },
+  });
+  expect(parsed).toEqual({ current: 'feat/1-x', switchable: [] });
+  expect(
+    branchListSchema.parse({
+      current: 'feat/1-x',
+      switchable: [],
+      owner: 'team',
+      repo: 'site',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+    }),
+  ).toMatchObject({ owner: 'team', codeHost: { provider: 'forgejo' } });
+});
+
 it('retains the same full PR snapshot in overview and branch responses', () => {
   const pullRequest = {
     number: 42,
@@ -3625,7 +3647,8 @@ describe('connection catalog and project Google access contracts', () => {
     const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getGoogleConnection()).toEqual(account);
-    expect(await client.getConnectionUsage()).toEqual(usage);
+    // A server predating Forgejo omits per-connection counts; the client defaults them.
+    expect(await client.getConnectionUsage()).toEqual({ ...usage, forgejo: {} });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/google/connection',
       '/connections/usage',

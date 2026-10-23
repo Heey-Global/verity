@@ -566,6 +566,16 @@ export interface ProvisionerOptions {
   defaultImageRef: ProjectImageRefSource;
   /** GitHub App token minter for server-side repository operations. */
   projectTokenMint?: GitHubProjectTokenMint | undefined;
+  forgeRepositoryAccess?:
+    | ((target: {
+        owner: string;
+        repo: string;
+        forgeConnectionId?: string | null;
+      }) => Promise<
+        | { url: string; token: string; authorization: string; customCaPem?: string | null }
+        | undefined
+      >)
+    | undefined;
   /** Bind-mount root (`/data/dev`). The provisioner joins `<root>/<slug>`. */
   hostCloneRoot: string;
   /** Host-visible agent-seed directory mounted into sandboxes at /opt/agent-seed. */
@@ -587,7 +597,7 @@ export interface ProvisionerOptions {
    *  the operator opens it (see {@link LinkCloneToGitHubResult.pullRequestError}). */
   openPullRequest?:
     | ((
-        target: { owner: string; repo: string },
+        target: { owner: string; repo: string; forgeConnectionId?: string | null },
         token: string,
         pr: { head: string; base: string; title: string; body: string },
       ) => Promise<{ number: number; url: string }>)
@@ -629,7 +639,13 @@ export interface ProvisionerOptions {
    *  wrapper redeem the capability at `POST /internal/github/token` for a
    *  repo-scoped token minted on demand — so no GitHub token lives at rest. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
-  forgeProxy?: { caCertPem: string; enabled(projectId: string): boolean } | undefined;
+  forgeProxy?:
+    | {
+        caCertPem: string;
+        enabled(projectId: string): boolean;
+        urlFor?(project: ProjectRecord): Promise<string | undefined>;
+      }
+    | undefined;
   /** Claude-egress mTLS projection (ADR 0006 D10). When set together with
    *  {@link claudeEgressGatewayUrl}, {@link claudeConnectorPort} and
    *  {@link gitSecretRoot}, the provisioner issues this project's client identity
@@ -1587,7 +1603,7 @@ export interface Provisioner {
    * Leaves the clone DIRECTORY where it is — session worktrees live under it. */
   linkCloneToGitHub?(
     project: ProjectRecord,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
@@ -3527,6 +3543,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
       containerGeneration,
@@ -4188,12 +4205,16 @@ export class ProvisionerImpl implements Provisioner {
       await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
       return;
     }
-    const token = await this.resolveProjectToken(project);
-    const authHeader = gitAuthHeader(token);
-    const url = `https://github.com/${project.owner}/${project.repo}`;
+    const access = await this.opts.forgeRepositoryAccess?.(project);
+    if (project.kind === 'forgejo' && !access)
+      throw new ProvisioningError('Forgejo connection unavailable');
+    const token = access?.token ?? (await this.resolveProjectToken(project));
+    const authHeader = access?.authorization ?? gitAuthHeader(token);
+    const url = access?.url ?? `https://github.com/${project.owner}/${project.repo}`;
+    const git = this.forgeGitRunner(access, project.forgeConnectionId ?? project.id);
     let remoteIsEmpty: boolean;
     try {
-      const remoteHeads = await this.git([
+      const remoteHeads = await git([
         '-c',
         `http.extraheader=${authHeader}`,
         'ls-remote',
@@ -4218,7 +4239,7 @@ export class ProvisionerImpl implements Provisioner {
           defaultBranch = 'main';
         } else {
           try {
-            const remoteHead = await this.git([
+            const remoteHead = await git([
               '-C',
               dirs.clonePath,
               'symbolic-ref',
@@ -4237,11 +4258,12 @@ export class ProvisionerImpl implements Provisioner {
           defaultBranch ?? 'main',
           token,
           authHeader,
+          git,
         );
         return;
       }
       try {
-        await this.git([
+        await git([
           '-C',
           dirs.clonePath,
           '-c',
@@ -4256,7 +4278,7 @@ export class ProvisionerImpl implements Provisioner {
         // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
         throw new Error(safeCause.message, { cause: safeCause });
       }
-      await this.git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
+      await git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
     } else {
       try {
         const cloneArgs = [
@@ -4269,7 +4291,7 @@ export class ProvisionerImpl implements Provisioner {
           url,
           dirs.clonePath,
         ];
-        await this.git(cloneArgs);
+        await git(cloneArgs);
       } catch (cause) {
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4277,13 +4299,14 @@ export class ProvisionerImpl implements Provisioner {
         // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
         throw new Error(safeCause.message, { cause: safeCause });
       }
-      await this.git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
+      await git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
       if (remoteIsEmpty) {
         await this.bootstrapEmptyGitHubRepo(
           dirs.clonePath,
           configuredDefaultBranch ?? 'main',
           token,
           authHeader,
+          git,
         );
       }
     }
@@ -4295,12 +4318,11 @@ export class ProvisionerImpl implements Provisioner {
     defaultBranch: string,
     token: string | undefined,
     authHeader: string,
+    git: GitRunner = this.git,
   ): Promise<void> {
     let existingHead: string | undefined;
     try {
-      existingHead = (
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-      ).stdout.trim();
+      existingHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
     } catch {
       // The clone is genuinely unborn; create the first commit below.
     }
@@ -4308,11 +4330,11 @@ export class ProvisionerImpl implements Provisioner {
       // A retry may find the bootstrap commit on a different local branch (for
       // example after the configured default changed). Preserve that history
       // before repointing HEAD; symbolic-ref alone would make it unreachable.
-      await this.git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
+      await git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
     }
-    await this.git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
+    await git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
     if (existingHead === undefined || existingHead.length === 0) {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4328,7 +4350,7 @@ export class ProvisionerImpl implements Provisioner {
       ]);
     }
     try {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4464,26 +4486,25 @@ export class ProvisionerImpl implements Provisioner {
    */
   async linkCloneToGitHub(
     project: ProjectRecord,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult> {
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
     if (!this.isDir(clonePath) || !this.isRepoDir(clonePath)) {
       throw new ProvisioningError('project clone is missing; repair the project first');
     }
-    const url = `https://github.com/${target.owner}/${target.repo}`;
-    const authHeader = gitAuthHeader(token);
-    const branch = (
-      await this.git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])
-    ).stdout.trim();
-    const localHead = (
-      await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-    ).stdout.trim();
+    const access = await this.opts.forgeRepositoryAccess?.(target);
+    token = access?.token ?? token;
+    const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
+    const authHeader = access?.authorization ?? gitAuthHeader(token);
+    const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
+    const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
+    const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
     let originMatchesTarget = false;
     let originExists = false;
     try {
       const existingOrigin = (
-        await this.git(['-C', clonePath, 'remote', 'get-url', 'origin'])
+        await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
       ).stdout.trim();
       originExists = true;
       originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
@@ -4497,7 +4518,7 @@ export class ProvisionerImpl implements Provisioner {
     }
     let remoteRefs: Awaited<ReturnType<GitRunner>>;
     try {
-      remoteRefs = await this.git([
+      remoteRefs = await git([
         '-c',
         `http.extraheader=${authHeader}`,
         'ls-remote',
@@ -4534,7 +4555,7 @@ export class ProvisionerImpl implements Provisioner {
       }
     }
     if (!originExists) {
-      await this.git(['-C', clonePath, 'remote', 'add', 'origin', url]);
+      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
     }
     if (remoteHeads.length > 0) {
       let localStatus: string;
@@ -4546,11 +4567,11 @@ export class ProvisionerImpl implements Provisioner {
         // ones not at risk below — `git merge` refuses on its own rather than
         // clobbering an untracked file, and the `reset --merge` rollback ignores them.
         localStatus = (
-          await this.git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
+          await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
         ).stdout.trim();
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4559,7 +4580,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       if (localStatus !== '') {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         throw new ProvisioningError(
           'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
@@ -4567,7 +4588,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       let remoteBranch: string | undefined;
       try {
-        const remoteHead = await this.git([
+        const remoteHead = await git([
           '-c',
           `http.extraheader=${authHeader}`,
           'ls-remote',
@@ -4581,7 +4602,7 @@ export class ProvisionerImpl implements Provisioner {
           .find((candidate) => candidate !== undefined);
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4597,13 +4618,13 @@ export class ProvisionerImpl implements Provisioner {
         ?.replace(/^refs\/heads\//, '');
       if (remoteBranch === undefined) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         throw new ProvisioningError('the GitHub repository default branch could not be determined');
       }
       destinationBranch = remoteBranch;
       try {
-        await this.git([
+        await git([
           '-C',
           clonePath,
           '-c',
@@ -4614,7 +4635,7 @@ export class ProvisionerImpl implements Provisioner {
         ]);
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4630,7 +4651,7 @@ export class ProvisionerImpl implements Provisioner {
         // no `user.email`, and an unset one aborts this merge commit outright, while
         // an inherited `commit.gpgsign=true` would route Verity's own merge through a
         // signing path that holds no key for it.
-        await this.git([
+        await git([
           '-C',
           clonePath,
           '-c',
@@ -4654,14 +4675,14 @@ export class ProvisionerImpl implements Provisioner {
         // send the operator to repair a clone that was never modified.
         let midMerge = true;
         try {
-          await this.git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+          await git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
         } catch {
           midMerge = false;
         }
         let abortCause: unknown;
         if (midMerge) {
           try {
-            await this.git(['-C', clonePath, 'merge', '--abort']);
+            await git(['-C', clonePath, 'merge', '--abort']);
           } catch (error) {
             abortCause = error;
           }
@@ -4675,7 +4696,7 @@ export class ProvisionerImpl implements Provisioner {
           );
         }
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4737,7 +4758,7 @@ export class ProvisionerImpl implements Provisioner {
     let importBranch: string | undefined;
     if (mergedExistingHistory) {
       const mergedHead = (
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+        await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
       ).stdout.trim();
       const remoteShaByBranch = new Map(
         remoteHeads
@@ -4768,7 +4789,7 @@ export class ProvisionerImpl implements Provisioner {
           : `${branch}:${destinationBranch}`
         : `HEAD:refs/heads/${importBranch}`;
     try {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4789,7 +4810,7 @@ export class ProvisionerImpl implements Provisioner {
       let rollbackCause: unknown;
       if (mergedExistingHistory) {
         try {
-          await this.git(['-C', clonePath, 'reset', '--merge', localHead]);
+          await git(['-C', clonePath, 'reset', '--merge', localHead]);
         } catch (error) {
           rollbackCause = error;
         }
@@ -5212,9 +5233,15 @@ export class ProvisionerImpl implements Provisioner {
     }
     const forgeProxy =
       this.opts.forgeProxy?.enabled(project.id) === true &&
-      (project.kind === undefined || project.kind === 'github')
+      (project.kind === undefined || project.kind === 'github' || project.kind === 'forgejo')
         ? this.opts.forgeProxy
         : undefined;
+    const forgeUrl =
+      project.kind === 'forgejo' ? await forgeProxy?.urlFor?.(project) : 'https://github.com';
+    if (project.kind === 'forgejo' && (!forgeProxy || !forgeUrl))
+      throw new Error('Forgejo sandbox proxy unavailable');
+    const forgeOrigin = new URL(forgeUrl ?? 'https://github.com').origin;
+    const forgeAuthority = new URL(forgeOrigin).host;
     if (forgeProxy !== undefined && ghTokenCapabilityPath === undefined) {
       throw new Error('forge proxy test mode requires a project-bound GitHub capability');
     }
@@ -5235,6 +5262,7 @@ export class ProvisionerImpl implements Provisioner {
         ? []
         : [
             'VERITY_FORGE_MODE=proxy-test',
+            `VERITY_FORGE_AUTHORITY=${forgeAuthority}`,
             `VERITY_FORGE_PROXY_URL=${forgeProxyUrl}`,
             `VERITY_FORGE_PROXY_CA_FILE=${FORGE_PROXY_CA_FILE}`,
             'GIT_TERMINAL_PROMPT=0',
@@ -5256,6 +5284,9 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            // `verity-repo`: pull requests and issues through the project's code host,
+            // executed server-side with the same capability (POST /internal/project/repo).
+            `VERITY_PROJECT_REPO_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/repo`,
             // Managed dev servers (concept 2.6): `verity-dev-server` add/start/stop/....
             `VERITY_DEV_SERVER_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/dev-servers`,
           ]
@@ -5392,17 +5423,17 @@ export class ProvisionerImpl implements Provisioner {
       // the helper here makes every git invocation in agent sessions work
       // immediately, including `docker exec` turns and interactive shells.
       if (forgeProxyUrl !== undefined)
-        gitRuntimeConfig.push({ key: 'credential.https://github.com.helper', value: '' });
+        gitRuntimeConfig.push({ key: `credential.${forgeOrigin}.helper`, value: '' });
       gitRuntimeConfig.push({
-        key: 'credential.https://github.com.helper',
+        key: `credential.${forgeOrigin}.helper`,
         value: '/opt/agent-seed/bin/verity-gh-cred',
       });
     }
     if (forgeProxyUrl !== undefined) {
       gitRuntimeConfig.push(
-        { key: 'http.https://github.com.proxy', value: forgeProxyUrl },
-        { key: 'http.https://github.com.sslCAInfo', value: FORGE_PROXY_CA_FILE },
-        { key: 'http.https://github.com.sslVerify', value: 'true' },
+        { key: `http.${forgeOrigin}.proxy`, value: forgeProxyUrl },
+        { key: `http.${forgeOrigin}.sslCAInfo`, value: FORGE_PROXY_CA_FILE },
+        { key: `http.${forgeOrigin}.sslVerify`, value: 'true' },
         { key: 'credential.interactive', value: 'false' },
       );
     }
@@ -6193,6 +6224,37 @@ export class ProvisionerImpl implements Provisioner {
   /** The token for a SERVER-SIDE clone/fetch. It is used only for this server-side
    *  git operation and is NEVER written into the sandbox — the sandbox authenticates
    *  to GitHub via the token broker. */
+  private forgeGitRunner(
+    access: { url: string; customCaPem?: string | null } | undefined,
+    id: string,
+  ): GitRunner {
+    if (!access) return this.git;
+    const config = ['-c', 'http.followRedirects=false'];
+    if (access.customCaPem) {
+      if (!this.opts.gitSecretRoot) throw new ProvisioningError('Forgejo CA storage unavailable');
+      const path = writeSecretFile(
+        this.opts.gitSecretRoot,
+        `forge_ca.${id}`,
+        access.customCaPem,
+        'git',
+        0o600,
+      );
+      config.push('-c', `http.${access.url}.sslCAInfo=${path}`);
+    }
+    return (args, options) =>
+      this.git(
+        [
+          ...config,
+          ...args.map((arg) =>
+            arg.startsWith('http.extraheader=')
+              ? arg.replace('http.extraheader=', `http.${access.url}.extraheader=`)
+              : arg,
+          ),
+        ],
+        options,
+      );
+  }
+
   private async resolveProjectToken(project: ProjectRecord): Promise<string | undefined> {
     return this.opts.projectTokenMint?.(project);
   }

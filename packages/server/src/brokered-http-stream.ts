@@ -13,6 +13,9 @@ import {
 /** Shared broker transport: callers authorize the destination before credentials reach it. */
 export type BrokeredHttpStreamTransport = (input: {
   hostname: string;
+  port?: number;
+  ca?: string;
+  allowPrivateAddress?: boolean;
   path: string;
   method: string;
   headers: Record<string, string>;
@@ -25,7 +28,8 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
     const outgoing = httpsRequest(
       {
         hostname: input.hostname,
-        port: 443,
+        port: input.port ?? 443,
+        ca: input.ca,
         servername: input.hostname,
         method: input.method,
         path: input.path,
@@ -37,7 +41,8 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
             (addresses) => {
               if (
                 !addresses.length ||
-                addresses.some(({ address }) => isForbiddenAddress(address))
+                (input.allowPrivateAddress !== true &&
+                  addresses.some(({ address }) => isForbiddenAddress(address)))
               ) {
                 callback(new Error('broker destination rejected'), '', 4);
                 return;

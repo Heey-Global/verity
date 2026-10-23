@@ -27,6 +27,7 @@ export type ForgeAction =
   | 'packages-read';
 interface ForgeBinding {
   projectId: string;
+  forgeConnectionId?: string | null;
   owner: string;
   repo: string;
   containerGeneration?: string | undefined;
@@ -38,6 +39,7 @@ export interface ForgeRequest {
   body?: Buffer;
 }
 interface ForgeAuthorization {
+  upstream?: { hostname: string; port: number; ca?: string; allowPrivateAddress?: boolean };
   registryTokenResponse?: boolean;
   verifyRelatedIssues?: boolean;
   action: ForgeAction;

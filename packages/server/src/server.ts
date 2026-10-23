@@ -265,6 +265,7 @@ import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-pr
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
@@ -297,6 +298,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerProjectRepoRoute, type ProjectRepository } from './project-repo-route.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import {
   appendProjectOverview,
@@ -364,7 +366,7 @@ import {
   type ProjectRecord,
   type SessionAutomationStatus,
 } from '@verity/store';
-import { parseOwnerRepo } from './canonical.js';
+import { parseOwnerRepo, parseForgejoRepository } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import {
@@ -1400,6 +1402,7 @@ export interface ServerDeps {
    * making the overview look like every repo has been created.
    */
   listAvailableRepositories?: () => Promise<ProjectRecord[]>;
+  forgejoEnabled?: boolean;
   listProjectGitHubIssues?: (project: ProjectRecord) => Promise<ProjectGitHubIssues>;
   /**
    * Provisioning worker (concept §19.3, #174). When `POST /sessions { project }`
@@ -1516,6 +1519,9 @@ export interface ServerDeps {
    *  together with {@link ServerDeps.ghTokenMint}, the route is registered +
    *  pre-auth-allowlisted; otherwise no token-broker route is exposed. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** The code host behind a repository project, for the sandbox `verity-repo` tool. */
+  projectRepository?:
+    ((project: ProjectRecord) => Promise<ProjectRepository | undefined>) | undefined;
   /** Check live Drive ancestry before granting automatic document URL reads. */
   googleDriveDocumentIsWithinProject?: (input: {
     projectId: string;
@@ -2756,14 +2762,24 @@ function buildPullRequestCiFailureDisplayPrompt(number: number): string {
   return `Fix failing CI for PR #${String(number)}`;
 }
 
-function buildPullRequestCiFailurePrompt(pr: PullRequestStatus): string {
+/** Only GitHub sessions can read check runs and their logs (`gh`); `verity-repo`
+ * exposes none, so a repair turn on another host that asks for them sends the
+ * agent improvising with tools that have no credentials there. */
+function readsCheckLogs(host: string): boolean {
+  return host === 'GitHub';
+}
+
+const LOCAL_CHECKS_INSTRUCTION =
+  "Check logs cannot be read from this sandbox, so find the failing jobs in the repository's CI workflow files and reproduce them locally.";
+
+function buildPullRequestCiFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
   return appendExternalPromptData(
-    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks${readsCheckLogs(host) ? '' : ` (${LOCAL_CHECKS_INSTRUCTION})`}, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2785,18 +2801,18 @@ function buildPostMergeActionsFailureDisplayPrompt(number: number): string {
  * surprising and may target the wrong branch, so this turn is deliberately
  * diagnostic: collect the concrete failed runs and logs once, then put an actionable
  * decision back in the chat. */
-function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus): string {
+function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
-    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : 'GitHub Actions failed';
+    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : `${host} Actions failed`;
   return appendExternalPromptData(
     `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. ${readsCheckLogs(host) ? `Inspect the concrete failed ${host} Actions runs and their logs with one-time REST reads;` : `${LOCAL_CHECKS_INSTRUCTION} Run them against the merged base branch;`} do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
 Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2821,11 +2837,11 @@ function buildPullRequestConflictDisplayPrompt(number: number): string {
  * `pull_request` workflows never start and CI reports nothing to react to. The prompt
  * therefore names the conflict explicitly — the session cannot infer it from a check
  * run, because there is none. */
-function buildPullRequestConflictPrompt(pr: PullRequestStatus): string {
+function buildPullRequestConflictPrompt(pr: PullRequestStatus, host: string): string {
   const base = pr.baseRef ?? 'the base branch';
   return appendExternalPromptData(
-    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so GitHub cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so ${host} cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title, baseRef: base },
   );
 }
@@ -3894,7 +3910,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
      * again against the freshly re-read status before the turn is dispatched. */
     applies(pr: PullRequestStatus): boolean;
     key(sessionId: string, pr: PullRequestStatus): string;
-    prompt(pr: PullRequestStatus): string;
+    /** `host` names the project's code host (`GitHub`, `Forgejo`) in the turn. */
+    prompt(pr: PullRequestStatus, host: string): string;
     displayPrompt(number: number): string;
   }
   const CI_FAILURE_REPAIR: PullRequestRepairKind = {
@@ -3917,6 +3934,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     key: postMergeActionsFailureKey,
     prompt: buildPostMergeActionsFailurePrompt,
     displayPrompt: buildPostMergeActionsFailureDisplayPrompt,
+  };
+  // Repair turns name the code host the agent has to act on; a Forgejo PR
+  // described as a GitHub one sends the agent to the wrong tools.
+  const codeHostName = async (session: SessionRecord): Promise<string> => {
+    if (session.projectId === null) return 'GitHub';
+    const project = await deps.eventStore.getProject(session.projectId).catch(() => undefined);
+    return project?.kind === 'forgejo' ? 'Forgejo' : 'GitHub';
   };
   const scheduledPrRepairTurns = new Set<string>();
   const maybeDispatchPrRepairTurn = async (
@@ -3957,7 +3981,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (!fresh) return;
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
-            repair.prompt(latest),
+            repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
@@ -5487,6 +5511,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerForgeConnectionRoutes(
+    app,
+    deps.eventStore,
+    async () => {
+      const projects = deps.listAvailableRepositories
+        ? await deps.listAvailableRepositories()
+        : await deps.eventStore.listProjects({ includeHidden: true });
+      return projects
+        .filter((project) => project.kind === 'github')
+        .map((project) => ({ owner: project.owner, repo: project.repo }));
+    },
+    deps.forgejoEnabled === true,
+  );
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
@@ -5594,6 +5631,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  if (deps.ghTokenCapabilities !== undefined && deps.projectRepository !== undefined) {
+    registerProjectRepoRoute(app, {
+      capabilities: deps.ghTokenCapabilities,
+      getProject: (projectId) => deps.eventStore.getProject(projectId),
+      repositoryFor: deps.projectRepository,
+    });
+  }
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
       ? {}
@@ -6831,7 +6875,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
     // Neither the control-plane workspace nor a project without a GitHub
     // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project)) {
+    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
       return { project, release: null };
     }
     // Trigger the in-memory release refresh + read its freshest SETTLED value.
@@ -7074,6 +7118,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.invalidateProjectList?.();
       return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
     },
+    forgejoEnabled: deps.forgejoEnabled === true,
     listAvailableRepositories: async () =>
       deps.listAvailableRepositories
         ? deps.listAvailableRepositories()
@@ -7661,7 +7706,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
   registerProjectGitHubLinkRoute(app, {
     isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
-    link: async (request, reply, id, repository) => {
+    link: async (request, reply, id, repository, connectionId) => {
       const provisioner = deps.provisioner!;
       const project = await deps.eventStore.getProject(id);
       if (project === undefined || project.hiddenAt !== null) {
@@ -7672,10 +7717,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'this project is already backed by a GitHub repository' };
       }
-      const target = parseOwnerRepo(repository);
-      if (target === undefined || target.owner === LOCAL_PROJECT_OWNER) {
+      let parsedTarget = parseOwnerRepo(repository);
+      if (connectionId) {
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (connection?.provider === 'forgejo')
+          parsedTarget = parseForgejoRepository(repository, connection.baseUrl);
+      }
+      if (parsedTarget === undefined || parsedTarget.owner === LOCAL_PROJECT_OWNER) {
         reply.code(400);
         return { error: 'invalid repository' };
+      }
+      const target: {
+        owner: string;
+        repo: string;
+        forgeConnectionId?: string | null;
+        kind?: 'github' | 'forgejo';
+      } = { ...parsedTarget };
+      if (connectionId) {
+        if (
+          !request.localUserId ||
+          !(await deps.eventStore.isActiveAdministrator(request.localUserId))
+        )
+          return reply.code(403).send({ error: 'administrator required' });
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (!connection) return reply.code(404).send({ error: 'connection not found' });
+        if (connection.provider === 'github' && connection.id !== 'legacy-github')
+          return reply
+            .code(400)
+            .send({ error: 'only the existing GitHub App connection is supported' });
+        if (connection.provider === 'forgejo' && !deps.forgejoEnabled)
+          return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
+        target.forgeConnectionId = connection.id;
+        target.kind = connection.provider;
       }
       // `(owner, repo)` is UNIQUE, so a taken pair would surface as an opaque DB
       // error AFTER the push already happened. Check first and fail clean.
@@ -7690,6 +7763,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const conflict = (await deps.eventStore.listProjects({ includeHidden: true })).find(
         (candidate) =>
           candidate.id !== project.id &&
+          (candidate.forgeConnectionId ?? 'legacy-github') ===
+            (target.forgeConnectionId ?? 'legacy-github') &&
           candidate.owner === target.owner &&
           candidate.repo === target.repo &&
           !isInstallationPlaceholder(candidate),
@@ -7795,7 +7870,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const reservation = Symbol(localIdentityKey);
       localIdentityLinkReservations.set(localIdentityKey, reservation);
-      const targetKey = `${target.owner}/${target.repo}`;
+      const targetKey = `${target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github' ? `${target.forgeConnectionId}:` : ''}${target.owner}/${target.repo}`;
       if (githubTargetLinkReservations.has(targetKey)) {
         localIdentityLinkReservations.delete(localIdentityKey);
         reply.code(409);
@@ -9642,6 +9717,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
   // sibling worktree is developing (#122). 404 unknown session; 503 when no
   // project repo is configured (scratch deployments).
+  /** Null for a project not on Forgejo; 'unknown' for a Forgejo project whose
+   *  connection is gone, so the caller never falls back to the broker remote. */
+  const forgejoWebHost = async (
+    projectId: string | null,
+  ): Promise<{ baseUrl: string; identity: { owner: string; repo: string } } | 'unknown' | null> => {
+    if (projectId === null) return null;
+    const project = await deps.eventStore.getProject(projectId);
+    if (project?.kind !== 'forgejo') return null;
+    if (!project.forgeConnectionId) return 'unknown';
+    const connection = await deps.eventStore.forgeConnections.get(project.forgeConnectionId);
+    if (connection?.provider !== 'forgejo') return 'unknown';
+    return {
+      baseUrl: connection.baseUrl,
+      identity: { owner: project.owner, repo: project.repo },
+    };
+  };
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
@@ -9718,9 +9809,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
       // chips then stay non-tappable rather than failing the branch list.
-      const identity = deps.repoIdentity
+      const remoteIdentity = deps.repoIdentity
         ? await deps.repoIdentity(session.worktree).catch(() => null)
         : null;
+      // A Forgejo project's chips link to its own instance; its origin remote is
+      // the sandbox broker, so the identity comes from the project record.
+      const forgeHost = await forgejoWebHost(session.projectId).catch(() => 'unknown' as const);
+      // Without its connection a Forgejo project's remote is still the broker;
+      // unlinked chips beat links to an unrelated GitHub repository.
+      const identity =
+        forgeHost === 'unknown' ? null : forgeHost === null ? remoteIdentity : forgeHost.identity;
       // A `local` project has no PR strip to merge from, so the cockpit needs to know
       // that merging into the project's base branch is possible here at all, and what
       // that base is called. File changes determine strip visibility; the merge
@@ -9764,6 +9862,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
+        ...(forgeHost !== null && forgeHost !== 'unknown'
+          ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
+          : {}),
         ...(localBase !== null ? { localMerge: { base: localBase, hasChanges } } : {}),
       };
     },

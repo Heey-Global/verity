@@ -8,8 +8,11 @@ import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
+import { createForgejoForgeAdapter } from './brokered-forge-forgejo.js';
+import { ForgejoTransport } from './forgejo-transport.js';
 import { createGitHubForgeAdapter } from './brokered-forge-github.js';
 import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { issueGatewayServerCertificate } from './claude-egress-ca.js';
 import { loadForgeProxyIdentity } from './brokered-forge-identity.js';
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import { previewSharingCapability } from './preview-capability.js';
@@ -112,6 +115,7 @@ import {
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
 import { type GitHubInstallationService } from './github.js';
+import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
@@ -2415,6 +2419,43 @@ export async function buildEmbeddedServer(
     },
     prStatusTtlMs: 2_000,
   });
+  const forgeRepositoryAccess = async (target: {
+    owner: string;
+    repo: string;
+    forgeConnectionId?: string | null;
+  }) => {
+    if (!target.forgeConnectionId || target.forgeConnectionId === 'legacy-github') return undefined;
+    const connection = await eventStore.forgeConnections.get(target.forgeConnectionId);
+    if (!connection || connection.provider !== 'forgejo')
+      throw new Error('Forgejo connection unavailable');
+    const token = (await eventStore.forgeConnections.credentials(connection.id))?.personalToken;
+    if (!token) throw new Error('Forgejo credentials unavailable');
+    const transport = new ForgejoTransport(
+      connection.baseUrl,
+      () => Promise.resolve(token),
+      connection.customCaPem,
+    );
+    return {
+      url: `${transport.baseUrl}/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}.git`,
+      token,
+      authorization: `Authorization: Basic ${Buffer.from(`oauth2:${token}`).toString('base64')}`,
+      customCaPem: connection.customCaPem ?? null,
+    };
+  };
+  const forgeForWorktree = async (worktree: string) => {
+    if (config.hostCloneRoot) {
+      for (const project of await eventStore.listProjects({ includeHidden: true })) {
+        const suffix = relative(projectClonePath(config.hostCloneRoot, project), worktree);
+        if (
+          suffix === '' ||
+          (suffix !== '..' && !suffix.startsWith(`..${sep}`) && !suffix.startsWith(sep))
+        ) {
+          return projectForgeProvider(eventStore, githubForge, project);
+        }
+      }
+    }
+    return githubForge;
+  };
   const installationService: GitHubInstallationService = {
     listInstallationRepos: () => githubForge.listRepositories(),
   };
@@ -3139,6 +3180,10 @@ export async function buildEmbeddedServer(
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
   const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  const forgeCertificates = new Map<
+    string,
+    { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
+  >();
   const forgePackageMap = projectRelayEnabled
     ? await loadForgePackageMap(secretRoot)
     : new Map<string, readonly string[]>();
@@ -3171,14 +3216,68 @@ export async function buildEmbeddedServer(
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
+          allowsHost: async (authority) =>
+            githubForgeAdapter.hosts.has(authority) ||
+            ghcrForgeAdapter.hosts.has(authority) ||
+            (await eventStore.forgeConnections.list()).some(
+              (connection) =>
+                connection.provider === 'forgejo' && new URL(connection.baseUrl).host === authority,
+            ),
+          certificateFor: async (authority) => {
+            if (githubForgeAdapter.hosts.has(authority) || ghcrForgeAdapter.hosts.has(authority))
+              return forgeIdentity.certificate;
+            const hostname = new URL(`https://${authority}`).hostname.replace(/^\[|\]$/gu, '');
+            const cached = forgeCertificates.get(hostname);
+            if (cached && cached.expires > Date.now()) return cached.certificate;
+            const certificate = issueGatewayServerCertificate(forgeIdentity.ca, {
+              serverName: hostname,
+            }).catch((error) => {
+              forgeCertificates.delete(hostname);
+              throw error;
+            });
+            forgeCertificates.set(hostname, {
+              expires: Date.now() + 24 * 60 * 60_000,
+              certificate,
+            });
+            return certificate;
+          },
           adapter: {
             hosts: new Set([...githubForgeAdapter.hosts, ...ghcrForgeAdapter.hosts]),
-            streams: (request) => githubForgeAdapter.streams(request),
-            authorize: (request, ...args) =>
-              (request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter).authorize(
-                request,
-                ...args,
-              ),
+            streams: (request) =>
+              githubForgeAdapter.hosts.has(request.hostname) ||
+              ghcrForgeAdapter.hosts.has(request.hostname)
+                ? githubForgeAdapter.streams(request)
+                : !request.path.includes('/api/v1/'),
+            authorize: async (request, binding, actions, signal) => {
+              const project = await eventStore.getProject(binding.projectId);
+              if (
+                !project ||
+                project.owner !== binding.owner ||
+                project.repo !== binding.repo ||
+                (project.forgeConnectionId ?? 'legacy-github') !==
+                  (binding.forgeConnectionId ?? 'legacy-github')
+              )
+                throw new Error('forge binding changed');
+              if (project.kind !== 'forgejo')
+                return (
+                  request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter
+                ).authorize(request, binding, actions, signal);
+              if (!binding.forgeConnectionId) throw new Error('forge binding missing');
+              const connection = await eventStore.forgeConnections.get(binding.forgeConnectionId);
+              if (!connection || connection.provider !== 'forgejo')
+                throw new Error('forge connection unavailable');
+              return createForgejoForgeAdapter({
+                connectionId: connection.id,
+                baseUrl: connection.baseUrl,
+                customCaPem: connection.customCaPem ?? null,
+                credentials: async () => {
+                  const token = (await eventStore.forgeConnections.credentials(connection.id))
+                    ?.personalToken;
+                  if (!token) return undefined;
+                  return { token, login: 'oauth2' };
+                },
+              }).authorize(request, binding, actions, signal);
+            },
           },
           enabled: forgeProxyEnabled,
         });
@@ -3568,11 +3667,22 @@ export async function buildEmbeddedServer(
       docker,
       defaultImageRef: defaultProjectImage,
       projectTokenMint,
+      forgeRepositoryAccess,
       veritySettings: () => eventStore.getVeritySettings(),
       // Linking a local project to a repository that already has history publishes an
       // import branch and opens the pull request that carries it onto the default
       // branch — the token is the one-shot, target-scoped mint the link route made.
-      openPullRequest: (target, token, pr) => githubForge.openPullRequest(target, token, pr),
+      openPullRequest: async (target, token, pr) => {
+        const provider = await projectForgeProvider(eventStore, githubForge, {
+          ...target,
+          kind:
+            target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github'
+              ? 'forgejo'
+              : 'github',
+        });
+        if (!provider) throw new Error('Forge provider unavailable');
+        return provider.openPullRequest(target, token, pr);
+      },
       gitSecretRoot: secretRoot,
       // GitHub-token broker: the SAME registry the /internal/github/token endpoint
       // resolves against. The provisioner issues a per-container capability into it
@@ -3581,7 +3691,14 @@ export async function buildEmbeddedServer(
       forgeProxy:
         forgeIdentity === undefined
           ? undefined
-          : { caCertPem: forgeIdentity.ca.caCertPem, enabled: forgeProxyEnabled },
+          : {
+              caCertPem: forgeIdentity.ca.caCertPem,
+              enabled: forgeProxyEnabled,
+              urlFor: async (project: ProjectRecord) =>
+                project.forgeConnectionId
+                  ? (await eventStore.forgeConnections.get(project.forgeConnectionId))?.baseUrl
+                  : undefined,
+            },
       projectRelay: projectRelayControl!,
       claudeEgressGatewayUrl: config.claudeEgressGatewayUrl!,
       codexEgressGatewayUrl: config.codexEgressGatewayUrl!,
@@ -4501,20 +4618,37 @@ export async function buildEmbeddedServer(
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
     ...(branches !== undefined ? { branches } : {}),
-    branchPr: (b: string, wt: string) => githubForge.prServiceFor(wt).prForBranch(b),
-    branchPrStatus: (b: string, wt: string) => githubForge.prServiceFor(wt).prStatusForBranch(b),
-    branchPrStatusForBranches: (bs: readonly string[], wt: string) =>
-      githubForge.prServiceFor(wt).prStatusForBranches(bs),
-    mergePr: (n: number, wt: string, expectedHeadSha?: string) =>
-      githubForge.prServiceFor(wt).mergePr(n, expectedHeadSha),
-    repoIdentity: (wt: string) => githubForge.identityFor(wt)(),
+    forgejoEnabled: projectRelayEnabled && provisioner !== undefined,
+    branchPr: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
+    branchPrStatus: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranch(b) ?? null,
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranches(bs) ?? null,
+    mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
+    repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
     // Live GitHub-App credential validation for the onboarding wizard (#320). The
     // route reads + decrypts the stored creds itself (unsealed-only) and hands them
     // here; this just performs the redaction-safe test-mint against GitHub.
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
-    ghTokenMint: (project) => githubForge.mintProjectToken(project),
+    // `verity-repo`: the project's code host executes pull request and issue actions.
+    projectRepository: async (project: ProjectRecord) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider === undefined) return undefined;
+      return {
+        hostName: provider.id === 'forgejo' ? 'Forgejo' : 'GitHub',
+        operations: provider.repositoryOperations(project),
+        listIssues: () => provider.listIssues(project),
+      };
+    },
+    ghTokenMint: async (project: {
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string | null;
+    }) => (await forgeRepositoryAccess(project))?.token ?? githubForge.mintProjectToken(project),
     // Loopback MCP gateway for ACP sessions (ADR 0014 D1). The approval seam is
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
@@ -4549,7 +4683,12 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: (project: ProjectRecord) => githubForge.listIssues(project),
+    listProjectGitHubIssues: async (project: ProjectRecord) =>
+      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
+        connected: false,
+        viewerLogin: null,
+        issues: [],
+      },
     latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
     refreshLatestRelease: (owner: string, repo: string) =>
       githubForge.refreshLatestRelease({ owner, repo }),
@@ -5458,6 +5597,17 @@ export async function buildEmbeddedServer(
       githubCapabilities: ghTokenCapabilities,
       forgeProxy,
       forgeProxyEnabled,
+      forgeAuthorities: async (projectId) => {
+        const project = await eventStore.getProject(projectId);
+        if (project?.kind !== 'forgejo')
+          return ['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'];
+        const connection = project.forgeConnectionId
+          ? await eventStore.forgeConnections.get(project.forgeConnectionId)
+          : undefined;
+        if (!connection || connection.provider !== 'forgejo') return [];
+        const url = new URL(connection.baseUrl);
+        return [`${url.hostname}:${url.port || '443'}`];
+      },
       image: config.projectRelayImage!,
       dataVolume: config.dataVolume,
       dataVolumeRoot: config.dataVolumeRoot,
@@ -5588,10 +5738,13 @@ export async function syncProjectsFromInstallation(
   // Repeated overview polls must not acquire the global knowledge lifecycle
   // lock and rewrite every unchanged repository, starving unrelated reads.
   const existing = new Map(
-    (await eventStore.listProjects({ includeHidden: true })).map((project) => [
-      `${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`,
-      project,
-    ]),
+    (await eventStore.listProjects({ includeHidden: true }))
+      .filter(
+        (project) =>
+          (project.kind === undefined || project.kind === 'github') &&
+          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
+      )
+      .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
   );
 
   // The container_name is the canonical hyphen-slug form derived from the

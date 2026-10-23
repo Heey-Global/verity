@@ -6282,14 +6282,37 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
-  it.each([false, true])(
+  it.each([false, true, 'forgejo'] as const)(
     'issues a per-project capability + mounts it (proxy test mode: %s)',
     async (proxyTest) => {
       const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
       const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
       try {
-        const id = await seedProject('absent');
-        const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+        const forgejo = proxyTest === 'forgejo';
+        const origin = forgejo ? 'https://forge.test:8443' : 'https://github.com';
+        const id = forgejo ? randomUUID() : await seedProject('absent');
+        if (forgejo) {
+          await ctx.store.forgeConnections.upsert({
+            id: 'forge',
+            provider: 'forgejo',
+            baseUrl: `${origin}/prefix`,
+            label: 'Forge',
+            personalToken: 'server-side-token',
+            githubAppId: null,
+            githubAppInstallationId: null,
+            githubAppPrivateKey: null,
+          });
+          await ctx.store.createProject({
+            id,
+            ...baseInput,
+            kind: 'forgejo',
+            forgeConnectionId: 'forge',
+          });
+        }
+        const { runner: git, calls: gitCalls } = fakeGit([
+          { match: /\bclone\b/ },
+          { match: /remote set-url/ },
+        ]);
         const { client: docker, calls: dockerCalls } = fakeDocker({
           inspectContainer: vi.fn(async (container: string) => ({
             id: container,
@@ -6307,12 +6330,26 @@ describe('ProvisionerImpl (#174)', () => {
           gitSecretRoot: secretRoot,
           ghTokenCapabilities: capabilities,
           forgeProxy: proxyTest
-            ? { caCertPem: 'public-forge-ca', enabled: (projectId) => projectId === id }
+            ? {
+                caCertPem: 'public-forge-ca',
+                enabled: (projectId) => projectId === id,
+                urlFor: () => Promise.resolve(`${origin}/prefix`),
+              }
+            : undefined,
+          forgeRepositoryAccess: forgejo
+            ? () =>
+                Promise.resolve({
+                  url: `${origin}/prefix/example-org/example-repo.git`,
+                  token: 'server-side-token',
+                  authorization: gitAuthHeader('server-side-token'),
+                  customCaPem: 'upstream-ca',
+                })
             : undefined,
           projectRelay: {
             async start(binding) {
               const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                forgeConnectionId: binding.forgeConnectionId ?? null,
                 owner: 'example-org',
                 repo: 'example-repo',
                 containerGeneration: binding.containerGeneration,
@@ -6355,6 +6392,9 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
         );
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
+        );
         expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
@@ -6366,19 +6406,34 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain('GIT_TERMINAL_PROMPT=0');
           expect(spec.env).toContain('NO_PROXY=');
           expect(spec.env).toContain('no_proxy=');
-          expect(spec.env).toContain('GIT_CONFIG_KEY_2=http.https://github.com.proxy');
+          expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
-        expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
+        expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
         expect(spec.env).toContain(
           `GIT_CONFIG_VALUE_${proxyTest ? 1 : 0}=/opt/agent-seed/bin/verity-gh-cred`,
         );
         expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
+        if (forgejo) {
+          expect(spec.env).toContain('VERITY_FORGE_AUTHORITY=forge.test:8443');
+          expect(JSON.stringify(spec)).not.toContain('server-side-token');
+          expect(gitCalls.some((call) => call.args.includes('http.followRedirects=false'))).toBe(
+            true,
+          );
+          expect(
+            gitCalls.some((call) =>
+              call.args.some((arg) =>
+                arg.startsWith(`http.${origin}/prefix/example-org/example-repo.git.sslCAInfo=`),
+              ),
+            ),
+          ).toBe(true);
+        }
         // The materialized capability resolves back to THIS project's binding.
         expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
           projectId: id,
+          ...(forgejo ? { forgeConnectionId: 'forge' } : {}),
           owner: 'example-org',
           repo: 'example-repo',
           containerGeneration: expect.any(String),

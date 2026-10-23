@@ -14,7 +14,7 @@ freedom across every deployment backend.
 
 ## Staging rollout
 
-The brokered transport is enabled by default for GitHub project sandboxes. There
+The brokered transport is enabled by default for GitHub and configured Forgejo project sandboxes. There
 is no project opt-in setting or Docker Compose environment switch. The internal
 `proxy-test` mode identifies this migration stage; it is not a user toggle.
 
@@ -30,7 +30,10 @@ is no project opt-in setting or Docker Compose environment switch. The internal
 4. Test clone/fetch/push and the supported issue/PR workflows on staging before
    rolling out the images to production. A proxy error must remain visible.
 
-Non-GitHub projects and trusted host-side operations retain their existing paths.
+Local projects and trusted host-side operations retain their existing paths. Forgejo
+relays receive their connection authority in `VERITY_FORGE_AUTHORITIES`; sandbox Git
+uses `VERITY_FORGE_AUTHORITY` for its credential helper. Deploy updated relay and
+toolkit images together before enabling Forgejo project creation.
 To roll back a staging failure, deploy the previous images and recreate affected
 sandbox generations. This restores the previous security boundary as well;
 there is no configuration switch back to token redemption.

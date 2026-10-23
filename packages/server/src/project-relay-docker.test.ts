@@ -26,6 +26,7 @@ function harness(
     log?: { warn: (obj: unknown, msg?: string) => void };
     relayGid?: number;
     forgeProxyEnabled?: (projectId: string) => boolean;
+    forgeAuthorities?: (projectId: string) => Promise<readonly string[]>;
   } = {},
 ) {
   const createContainer = vi.fn(async (spec: ContainerSpec) => {
@@ -52,6 +53,7 @@ function harness(
   const start = createDockerProjectRelayStarter({
     docker,
     forgeProxyEnabled: options.forgeProxyEnabled,
+    forgeAuthorities: options.forgeAuthorities,
     ...(options.log === undefined ? {} : { log: options.log }),
     image: `ghcr.io/heey-global/verity/verity-project-relay@sha256:${'a'.repeat(64)}`,
     dataVolume: 'verity-data',
@@ -84,6 +86,16 @@ const context = {
 };
 
 describe('Docker project relay adapter', () => {
+  it('projects only the selected connection authority into a Forgejo relay', async () => {
+    const h = harness({
+      forgeProxyEnabled: () => true,
+      forgeAuthorities: () => Promise.resolve(['forge.test:8443']),
+    });
+    await h.start(context);
+    expect(h.createContainer.mock.calls[0]?.[0].env).toContain(
+      'VERITY_FORGE_AUTHORITIES=["forge.test:8443"]',
+    );
+  });
   it('enables forge CONNECT only for explicitly selected projects', async () => {
     const selected = harness({
       forgeProxyEnabled: (projectId) => projectId === identity.projectId,

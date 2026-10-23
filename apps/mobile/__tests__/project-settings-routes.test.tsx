@@ -8,7 +8,7 @@
 // the one action that answers it, and that a choice made on a screen lands on
 // the server as exactly the PATCH the server expects.
 import { subscribeProjectStatusMutations, type ProjectDetail } from '@verity/mobile';
-import { Alert } from 'react-native';
+import { Alert, Linking } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
@@ -18,9 +18,14 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
 import ProjectServicesScreen from '../app/project/[id]/settings/services';
-import ProjectGitHubScreen from '../app/project/[id]/settings/github';
+import ProjectRepositoryScreen from '../app/project/[id]/settings/repository';
 import ProjectModelScreen from '../app/project/[id]/settings/model';
-import { healthWithRebuild, makeClient, makeDetail } from './support/projectHarness';
+import {
+  forgejoConnections,
+  healthWithRebuild,
+  makeClient,
+  makeDetail,
+} from './support/projectHarness';
 import {
   mockCreateVerityClient,
   mockDismissTo,
@@ -108,13 +113,13 @@ describe('project settings index — destinations', () => {
     expect(screen.getByText('Codex only')).toBeOnTheScreen();
   });
 
-  it('keeps the GitHub connection action for local projects', async () => {
+  it('keeps the repository connection action for local projects', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail({ kind: 'local' }) }));
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Connect GitHub(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Connect repository, GitHub(,|$)/));
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings/github',
+      pathname: '/project/[id]/settings/repository',
       params: { id: 'p/1' },
     });
     expect(screen.getByText('Automatic')).toBeOnTheScreen();
@@ -966,10 +971,10 @@ describe('project settings — agents', () => {
   });
 });
 
-describe('project settings — GitHub', () => {
+describe('project settings — repository', () => {
   it('shows the bound repository for a GitHub project', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
     expect(await screen.findByText('heey-global/verity')).toBeOnTheScreen();
     expect(screen.getByText('No published release')).toBeOnTheScreen();
@@ -989,12 +994,154 @@ describe('project settings — GitHub', () => {
         linkProjectToGitHub,
       }),
     );
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Connect project to GitHub(,|$)/));
+    // Linking pushes history, so nothing is preselected for a single tap.
+    expect(await screen.findByLabelText(/^Connect project to GitHub(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to GitHub(,|$)/));
     expect(linkProjectToGitHub).not.toHaveBeenCalled();
     fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(linkProjectToGitHub).toHaveBeenCalledWith('p/1', 'acme/site'));
+  });
+
+  // Linking through the GitHub route would bind a Forgejo repository to the
+  // wrong host; the Forgejo choice must carry its connection id.
+  it('connects a local project to a Forgejo repository through its connection', async () => {
+    const linkProject = jest
+      .fn()
+      .mockResolvedValue({ project: { ...makeDetail({ kind: 'forgejo' }).project } });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        listAvailableRepositories: jest
+          .fn()
+          .mockResolvedValue([{ ...makeDetail().project, id: 'r/1', owner: 'acme', repo: 'site' }]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest
+          .fn()
+          .mockResolvedValue([{ owner: 'team', repo: 'website', archived: false }]),
+        linkProject,
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(await screen.findByLabelText(/^Forgejo, git\.example\.org/));
+    // The GitHub choice must not travel with the Forgejo connection.
+    expect(screen.getByLabelText(/^Connect project to Forgejo(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('team/website'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to Forgejo(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() =>
+      expect(linkProject).toHaveBeenCalledWith('p/1', 'team/website', 'forgejo-1'),
+    );
+  });
+
+  it('offers only the connected code host when GitHub is not connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^GitHub, github\.com/)).toBeNull();
+  });
+
+  it('reloads repository hosts after returning from connection setup', async () => {
+    const connections = jest
+      .fn()
+      .mockResolvedValue({ connections: [], forgejoProjectsAvailable: true });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByText('Open Connections'));
+    connections.mockResolvedValue(forgejoConnections());
+    act(() => refocus());
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+  });
+
+  it('sends a local project without any code host to Connections', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('Open Connections'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services');
+  });
+
+  it('shows a Forgejo project with its instance and opens it there', async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByText('Forgejo (git.example.org)')).toBeOnTheScreen();
+    expect(screen.queryByText('Latest release')).toBeNull();
+    fireEvent.press(screen.getByText('Open in browser'));
+    expect(openURL).toHaveBeenCalledWith('https://git.example.org/heey-global/verity');
+  });
+});
+
+describe('project settings index — code hosts', () => {
+  it('offers Forgejo for a local project when only Forgejo is connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Connect repository, Forgejo(,|$)/)).toBeOnTheScreen();
+  });
+
+  it('hides the action when Forgejo cannot run projects on this server', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections(false)),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Google Drive,/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Connect repository/)).toBeNull();
+  });
+
+  it('names a Forgejo project by its host', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(
+      await screen.findByLabelText(/^Forgejo repository, heey-global\/verity · git\.example\.org/),
+    ).toBeOnTheScreen();
   });
 });
 

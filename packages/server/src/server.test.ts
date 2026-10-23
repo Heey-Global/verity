@@ -3796,6 +3796,70 @@ describe('GET /sessions', () => {
     }
   });
 
+  // A Forgejo PR described as a GitHub one sends the agent to `gh` and GitHub
+  // Actions, which cannot see it; the repair turn must name the real host.
+  it('names the Forgejo code host in the CI repair turn of a Forgejo project', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'repair-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'repair-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'repair-forgejo',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'forgejo-team-site',
+      state: 'active',
+    });
+    const branchPrStatus = vi.fn(async () => ({
+      number: 7,
+      title: 'feat: x',
+      url: 'https://git.example.org/team/site/pulls/7',
+      phase: 'open' as const,
+      headSha: 'abc123',
+      pipeline: 'failure' as const,
+      checks: { completed: 2, total: 2, successful: 1, failed: 1, pending: 0 },
+      mergeable: false,
+    }));
+    const prApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: {
+        current: vi.fn(async () => 'feat/x'),
+        switchable: vi.fn(async () => [] as string[]),
+        previewable: vi.fn(async () => [] as string[]),
+        switch: vi.fn(),
+      } as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        projectId: 'repair-forgejo-project',
+      });
+      await prApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalled());
+      const prompt = String(dispatchTurnWhenIdle.mock.calls.at(-1)?.[1]);
+      expect(prompt).toContain('Forgejo pull request #7');
+      expect(prompt).not.toContain('GitHub');
+      // verity-repo reads no check logs, so the turn must not send the agent after them.
+      expect(prompt).toContain('reproduce them locally');
+    } finally {
+      await prApp.close();
+    }
+  });
+
   it('resolves the `pr` marker across a multi-branch session, not just the worktree HEAD', async () => {
     // Repro (k8s "Audit" session): the worktree HEAD (agent/x) has no PR, but a
     // branch the session pushed does. The overview must still mark the session, so the
@@ -9497,6 +9561,90 @@ describe('GET /sessions/:id/branches', () => {
     await withId.close();
   });
 
+  // A Forgejo checkout's origin is the sandbox broker, so the remote parse is
+  // wrong for links; the chips must use the project and its instance instead.
+  it('links Forgejo project chips to the configured instance', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'branches-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org/forge',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'branches-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'branches-forgejo',
+      owner: 'team',
+      repo: 'website',
+      containerName: 'forgejo-team-website',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'forgejo-'));
+    await ctx.store.createSession({
+      sessionId: 'forgejo-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-forgejo-project',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/forgejo-session/branches' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      owner: 'team',
+      repo: 'website',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org/forge' },
+    });
+    await withId.close();
+  });
+
+  it('keeps Forgejo chips unlinked when the project connection is gone', async () => {
+    await ctx.store.upsertProject({
+      id: 'branches-orphan-forgejo',
+      kind: 'forgejo',
+      owner: 'team',
+      repo: 'orphan',
+      containerName: 'forgejo-team-orphan',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'orphan-'));
+    await ctx.store.createSession({
+      sessionId: 'orphan-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-orphan-forgejo',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      // The broker remote parses as a repository but names nothing real.
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/orphan-session/branches' });
+    expect(res.statusCode).toBe(200);
+    const body: { owner?: string; codeHost?: unknown } = res.json();
+    expect(body.owner).toBeUndefined();
+    expect(body.codeHost).toBeUndefined();
+    await withId.close();
+  });
+
   it('omits owner/repo when the identity resolves to null (no GitHub remote, #161)', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/161-x');
@@ -12710,6 +12858,72 @@ describe('POST /projects/:id/link-github', () => {
       ...overrides,
     };
   }
+
+  it('links through the selected Forgejo connection without adopting another connection repository', async () => {
+    await createLocal('p-forge-link');
+    for (const id of ['forge-first', 'forge-second'])
+      await ctx.store.forgeConnections.upsert({
+        id,
+        provider: 'forgejo',
+        baseUrl: 'https://forge.test/prefix',
+        label: id,
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+    await ctx.store.createProject({
+      id: 'other-forge-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'forge-second',
+      owner: 'owner',
+      repo: 'repo',
+      containerName: 'other-forge',
+      state: 'active',
+    });
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('forge-admin');
+    const provisioner = fakeProvisioner();
+    const ghTokenMint = vi.fn(() => Promise.resolve('server-only-fixture'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner,
+      ghTokenMint,
+      authRegistry: registry,
+      forgejoEnabled: true,
+    });
+    try {
+      const response = await a.inject({
+        method: 'POST',
+        url: '/projects/p-forge-link/link',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { repo: 'https://forge.test/prefix/owner/repo.git', connectionId: 'forge-first' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        project: {
+          kind: 'forgejo',
+          forgeConnectionId: 'forge-first',
+          owner: 'owner',
+          repo: 'repo',
+          cloneDir: 'local-my-project',
+        },
+      });
+      expect(ghTokenMint).toHaveBeenCalledWith({
+        owner: 'owner',
+        repo: 'repo',
+        forgeConnectionId: 'forge-first',
+        kind: 'forgejo',
+      });
+      expect((await ctx.store.getProject('other-forge-project'))?.forgeConnectionId).toBe(
+        'forge-second',
+      );
+    } finally {
+      await a.close();
+    }
+  });
 
   it('503s when the provisioner cannot link', async () => {
     const res = await app.inject({
