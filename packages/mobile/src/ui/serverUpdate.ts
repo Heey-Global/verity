@@ -290,8 +290,16 @@ export interface ServerUpdateCard {
 }
 
 export interface ServerUpdatePanel {
-  /** What is running now; null only for a server that reports neither. */
-  readonly installed: { readonly version: string; readonly generation: number | null } | null;
+  /**
+   * What is running now; null only for a server that reports neither. The
+   * release date is known only when the channel's release is the running one,
+   * and `upToDate` replaces a separate "up to date" card that would repeat it.
+   */
+  readonly installed: {
+    readonly version: string;
+    readonly publishedAt: string | null;
+    readonly upToDate: boolean;
+  } | null;
   readonly cards: readonly ServerUpdateCard[];
 }
 
@@ -421,17 +429,30 @@ function availabilityCard(status: ServerUpdateStatus, key: string | null): Serve
  */
 export function describeServerUpdatePanel(status: ServerUpdateStatus): ServerUpdatePanel {
   const operation = status.operation;
+  const running =
+    status.installed?.version ?? (status.state === 'current' ? status.release.version : null);
+  // An unfinished operation is the news, even when the channel has nothing newer.
+  const upToDate =
+    status.state === 'current' && (operation === null || operation.state === 'completed');
   const installed =
-    status.installed ??
-    (status.state === 'current' ? { version: status.release.version, generation: null } : null);
+    running === null
+      ? null
+      : {
+          version: running,
+          publishedAt: upToDate ? status.release.publishedAt : null,
+          upToDate,
+        };
   const view = describeServerUpdate(status);
   const offer =
     status.state === 'available' && view.targetDigest !== null && view.idempotencyKey !== null
       ? view.idempotencyKey
       : null;
 
-  if (operation === null || operation.state === 'completed')
+  if (operation === null || operation.state === 'completed') {
+    // Nothing to do: the installed row already says so.
+    if (upToDate) return { installed, cards: [] };
     return { installed, cards: [availabilityCard(status, offer ?? attemptKeyFor(status))] };
+  }
 
   const target = operationVersion(status, operation);
   const named = target?.version ?? 'the new version';

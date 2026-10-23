@@ -313,12 +313,12 @@ export function ServerUpdateSection({
           <Card flush>
             <Row
               title="Verity Server"
-              subtitle={
-                panel.installed.generation === null
-                  ? 'Running'
-                  : `Generation ${String(panel.installed.generation)} · running`
+              subtitle={installedSubtitle(panel.installed)}
+              trailing={
+                panel.installed.upToDate ? (
+                  <StatusTag intent="ready" label="Up to date" />
+                ) : undefined
               }
-              trailing={<UiText variant="row">{panel.installed.version}</UiText>}
             />
           </Card>
         </SettingsGroup>
@@ -454,6 +454,15 @@ function formatStallSince(iso: string): string {
 }
 
 /** "12 Aug 2026" — a release is a day, not an instant. Unparseable → omitted. */
+/** "Version 4.53.0 · Released 23 Oct 2026", the date only when it is known. */
+function installedSubtitle(installed: { version: string; publishedAt: string | null }): string {
+  const releasedAt =
+    installed.publishedAt === null ? undefined : formatReleaseDate(installed.publishedAt);
+  return releasedAt === undefined
+    ? `Version ${installed.version}`
+    : `Version ${installed.version} · Released ${releasedAt}`;
+}
+
 function formatReleaseDate(iso: string): string | undefined {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return undefined;
