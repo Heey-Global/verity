@@ -159,6 +159,10 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   (settings navigation, diagnostics).
 - **Card:** a single item with its own state or control stands alone (subscription,
   each feature switch). Cards of one group are 8 apart.
+- **Sectioned card:** a stacked card about one thing whose head (`CardHead`: title,
+  subtitle, status) is followed by blocks that belong to it — a server and its pending
+  update. `divided` separates the sections with the same 1 px divider as a grouped list,
+  so a block can never be mistaken for a separate item.
 - **Row anatomy** (minimum height 52):
   - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral

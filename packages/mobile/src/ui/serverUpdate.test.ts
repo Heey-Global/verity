@@ -286,6 +286,7 @@ describe('server update screen', () => {
     );
     expect(panel).toEqual({
       installed: { version: '1.4.0', publishedAt: release.publishedAt, upToDate: true },
+      tag: { label: 'Up to date', intent: 'ready' },
       cards: [],
     });
   });
@@ -331,11 +332,33 @@ describe('server update screen', () => {
     ]);
   });
 
+  // The head of the server's box is the one place the screen says how the server
+  // is doing; a stuck operation hidden behind "Update" would read as routine.
+  it('names the state of the server on the head of its box', () => {
+    const tag = (over: Partial<ServerUpdateStatus>) => describeServerUpdatePanel(status(over)).tag;
+    expect(tag({ state: 'current', installed: { version: '1.4.0', generation: 7 } })).toEqual({
+      label: 'Up to date',
+      intent: 'ready',
+    });
+    expect(tag({})).toEqual({ label: 'Update', intent: 'needsSetup' });
+    expect(
+      tag({ operation: operation({ state: 'activating', phase: 'switching-gateway' }) }),
+    ).toEqual({ label: 'Updating', intent: 'transient' });
+    expect(describeServerUpdatePanel(stuck()).tag).toEqual({
+      label: 'Stuck',
+      intent: 'needsSetup',
+    });
+    expect(
+      tag({
+        operation: operation({ state: 'failed', phase: 'failed', failureCode: 'pulling-failed' }),
+      }),
+    ).toEqual({ label: 'Failed', intent: 'needsSetup' });
+  });
+
   it('splits a stuck operation and a newer release into two actionable cards', () => {
     const [stuckCard, offer, ...rest] = describeServerUpdatePanel(stuck()).cards;
     expect(rest).toEqual([]);
     expect(stuckCard).toMatchObject({
-      section: 'Unfinished update',
       status: { label: 'Stuck', tone: 'problem' },
       title: 'Update to 4.52.0 did not finish',
       stalled: {
@@ -350,7 +373,6 @@ describe('server update screen', () => {
       notesVersion: null,
     });
     expect(offer).toMatchObject({
-      section: 'Available',
       status: { label: 'New version' },
       title: 'Version 4.52.1 available',
       action: {
@@ -437,7 +459,7 @@ describe('server update screen', () => {
     });
     const cards = describeServerUpdatePanel(status({ operation: failed })).cards;
     expect(cards.map((card) => card.action?.kind ?? null)).toEqual([null, 'install']);
-    expect(cards[1]).toMatchObject({ section: 'Available', notesVersion: '1.4.0' });
+    expect(cards[1]).toMatchObject({ notesVersion: '1.4.0' });
   });
 
   it('lights the badge for a stuck operation a newer release may replace', () => {

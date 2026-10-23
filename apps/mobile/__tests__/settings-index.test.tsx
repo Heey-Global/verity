@@ -17,6 +17,10 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 );
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+const mockAppStoreVersion = jest.fn((_enabled: boolean): string | null => null);
+jest.mock('../lib/appUpdateFacts', () => ({
+  useAppStoreUpdateVersion: (enabled: boolean) => mockAppStoreVersion(enabled),
+}));
 jest.mock('../lib/automaticUpdates', () =>
   require('./support/settingsHarness').automaticUpdatesMock(),
 );
@@ -102,7 +106,7 @@ describe('settings index — destinations', () => {
     ['Diagnostics', '/settings/diagnostics'],
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
-    ['Server update', '/settings/server-update'],
+    ['Updates', '/settings/server-update'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage devices and web browsers', '/devices'],
   ])('routes %s to %s', async (label, href) => {
@@ -116,7 +120,7 @@ describe('settings index — destinations', () => {
   it('keeps update channel preferences inside server update', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
-    await screen.findByLabelText(/^Server update(,|$)/);
+    await screen.findByLabelText(/^Updates(,|$)/);
     expect(screen.queryByLabelText(/^Update channel(,|$)/)).toBeNull();
   });
 
@@ -182,14 +186,28 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    expect(await screen.findByText('Version 1.4.0 available')).toBeOnTheScreen();
+    expect(await screen.findByText('Server version 1.4.0 available')).toBeOnTheScreen();
   });
 
-  it('does not badge Server update on a deployment Verity does not manage', async () => {
+  // One row leads to both, so a new App Store release has to surface on it too;
+  // a smaller update that applies on its own does not, which the hook decides.
+  it('names a new App Store version on the same row', async () => {
+    mockAppStoreVersion.mockReturnValue('1.76.0');
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText(/^Server update(,|$)/);
+    expect(await screen.findByText('App version 1.76.0 available')).toBeOnTheScreen();
+    expect(
+      screen.getByLabelText(/^Updates, App version 1\.76\.0 available, Update$/),
+    ).toBeOnTheScreen();
+    mockAppStoreVersion.mockReturnValue(null);
+  });
+
+  it('does not badge Updates on a deployment Verity does not manage', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+
+    await screen.findByLabelText(/^Updates, Server and app$/);
     expect(screen.queryByText(/available$/)).toBeNull();
   });
 });

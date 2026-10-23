@@ -293,7 +293,7 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
-              <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
+              <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}

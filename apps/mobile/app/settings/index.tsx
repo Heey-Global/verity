@@ -29,6 +29,7 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
+import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { runningReleaseVersion } from '../../lib/buildInfo';
@@ -84,6 +85,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
+  const appStoreVersion = useAppStoreUpdateVersion(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
@@ -210,9 +212,21 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         <SettingsListPanel>
           <SettingsNavRow
             icon="download"
-            title="Server update"
-            subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
-            status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
+            title="Updates"
+            subtitle={
+              updateVersion !== null
+                ? `Server version ${updateVersion} available`
+                : appStoreVersion !== null
+                  ? `App version ${appStoreVersion} available`
+                  : 'Server and app'
+            }
+            // Only what needs a tap: a downloaded smaller app update applies on
+            // its own the next time the app starts.
+            status={
+              updateVersion !== null || appStoreVersion !== null
+                ? { intent: 'needsSetup', label: 'Update' }
+                : undefined
+            }
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
