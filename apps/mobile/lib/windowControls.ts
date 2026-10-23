@@ -9,17 +9,17 @@
 // native/VerityWindowControls.swift. That module deliberately sends the raw
 // numbers rather than a finished padding, because turning them into one rests on
 // an assumption Apple has not documented — that the adapted margins are the
-// window's ordinary layout margins, widened where a corner intrudes. If that
+// measured view's ordinary layout margins, widened where a corner intrudes. If that
 // turns out to be wrong on a device, the arithmetic below is a JS change that
 // ships as an OTA update; a rule baked into Swift would need a native build.
 
 /** Raw margins reported by the native module, in points. */
 export interface WindowControlMargins {
-  /** Corner-adapted leading margin of the window (includes `baseLeft`). */
+  /** Corner-adapted leading margin of the header row (includes `baseLeft`). */
   left: number;
-  /** Corner-adapted trailing margin of the window (includes `baseRight`). */
+  /** Corner-adapted trailing margin of the header row (includes `baseRight`). */
   right: number;
-  /** The window's plain layout margin, i.e. the same value with no corner intruding. */
+  /** The probe's plain layout margin, i.e. the same value with no corner intruding. */
   baseLeft: number;
   baseRight: number;
 }
@@ -59,7 +59,7 @@ function extra(adapted: number, base: number): number {
  * The padding a top-of-window row needs so the system's window controls stay off
  * its content. Zero wherever nothing claims that corner — a full-screen iPad,
  * any iOS before 26 — because the adapted margins come back equal to the plain
- * ones. Both are read from the same window, so a shared safe area (a landscape
+ * ones. Both are read from the same view, so a shared safe area (a landscape
  * notch, say) sits in both and cancels; and if the assumption behind the
  * subtraction is ever wrong, it goes wrong toward zero, which is the padding the
  * header had before any of this.
