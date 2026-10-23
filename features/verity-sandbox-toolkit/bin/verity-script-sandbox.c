@@ -301,9 +301,9 @@ static void enter_pid_namespace(void) {
 
 /* gVisor does not implement Landlock, but does implement unprivileged user and
    mount namespaces. Build a new root containing only the paths the Landlock
-   policy allows, then pivot into it. The namespace root maps to the caller's
-   uid outside, so it gains mount/pivot capability without gaining host or
-   container privilege. */
+   policy allows, then pivot into it. As the namespace's creator the helper
+   holds mount/pivot capability there without gaining host or container
+   privilege. */
 static void isolate_with_mounts(const char *root, const char *dynamic_root, char **secret_paths,
                                 int secret_count, int isolate_writes) {
   uid_t uid = getuid();
@@ -330,9 +330,14 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
     if (write(setgroups, "deny\n", 5) != 5) fail("disable setgroups");
     close(setgroups);
   }
-  write_mapping("/proc/self/uid_map", 0, (unsigned int)uid);
-  write_mapping("/proc/self/gid_map", 0, (unsigned int)gid);
-  if (setresgid(0, 0, 0) < 0 || setresuid(0, 0, 0) < 0) fail("enter user namespace");
+  /* Keep the caller's own ids rather than mapping them to root. A nested user
+     namespace may map its parent's uid 0 only if its creator held CAP_SETFCAP,
+     which the confined process never does, so a root mapping here broke every
+     nested sandbox an agent starts (Linux 5.12+ and gVisor alike). */
+  write_mapping("/proc/self/uid_map", (unsigned int)uid, (unsigned int)uid);
+  write_mapping("/proc/self/gid_map", (unsigned int)gid, (unsigned int)gid);
+  if (setresgid(gid, gid, gid) < 0 || setresuid(uid, uid, uid) < 0)
+    fail("enter user namespace");
   if (unshare(CLONE_NEWNS) < 0) fail("unshare mount namespace");
   /* pivot_root rejects shared propagation, and none of these mounts may leak out. */
   if (mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) < 0) fail("make mounts slave");
@@ -364,16 +369,18 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   if (mount("proc", proc, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) < 0)
     fail("mount proc");
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
-  /* Tools that bind the standard temporary directory into a nested sandbox
-     (Codex's bubblewrap) abort with ENOENT when it is missing; their own scratch
-     files follow TMPDIR. Like the rest of this private root it lives on the
-     sandbox tmpfs, which its owner could make writable; it exposes nothing. */
+  /* A private, size-limited /tmp. Codex creates its daemon rendezvous
+     directory there regardless of TMPDIR, and its bubblewrap binds /tmp, so
+     nested sandboxes need it present and writable. It is this sandbox's own
+     tmpfs: nothing from the container's /tmp is visible, and nothing persists. */
   char tmp[PATH_MAX];
   if (snprintf(tmp, sizeof(tmp), "%s/tmp", sandbox) >= (int)sizeof(tmp)) {
     errno = ENAMETOOLONG;
     fail("tmp path");
   }
-  if (mkdir(tmp, 0555) < 0 && errno != EEXIST) fail("create tmp");
+  if (mkdir(tmp, 0700) < 0 && errno != EEXIST) fail("create tmp");
+  if (mount("tmpfs", tmp, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0700,size=16m") < 0)
+    fail("mount tmp");
 
   bind_into(sandbox, root, isolate_writes != 2);
   if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, 1);
