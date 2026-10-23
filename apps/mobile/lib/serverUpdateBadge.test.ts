@@ -13,7 +13,7 @@ jest.mock('./liveConnection', () => ({
 import { type VerityClient, type ServerUpdateStatus } from '@verity/mobile';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { createVerityClient, getVerityBaseUrl } from './client';
-import { useServerUpdateBadge } from './serverUpdateBadge';
+import { useServerUpdateBadge, useServerUpdateNotice } from './serverUpdateBadge';
 
 jest.mock('./client', () => ({
   createVerityClient: jest.fn(),
@@ -195,5 +195,41 @@ describe('when the server changes underneath it', () => {
     createClient.mockReturnValue(null);
     rerender({ on: true });
     expect(result.current).toBeNull();
+  });
+});
+
+describe('useServerUpdateNotice', () => {
+  // The banner may be put away for a version, but not while an earlier update
+  // on that server failed or is stuck; the notice is what tells the two apart.
+  it('marks a release offered next to an unfinished operation as a problem', async () => {
+    const getServerUpdates = jest.fn().mockResolvedValue(available);
+    createClient.mockReturnValue(fakeClient(getServerUpdates));
+    const { result, unmount } = renderHook(() => useServerUpdateNotice(true));
+    await waitFor(() =>
+      expect(result.current).toEqual({
+        baseUrl: 'http://server-a',
+        version: 'v11.1.0',
+        problem: false,
+      }),
+    );
+    unmount();
+
+    const failed = {
+      ...available,
+      operation: { state: 'failed', phase: 'failed' },
+    } as unknown as ServerUpdateStatus;
+    createClient.mockReturnValue(fakeClient(jest.fn().mockResolvedValue(failed)));
+    const again = renderHook(() => useServerUpdateNotice(true));
+    await waitFor(() => expect(again.result.current).toMatchObject({ problem: true }));
+    again.unmount();
+
+    // A finished earlier update is history: that banner can still be put away.
+    const completed = {
+      ...available,
+      operation: { state: 'completed', phase: 'completed' },
+    } as unknown as ServerUpdateStatus;
+    createClient.mockReturnValue(fakeClient(jest.fn().mockResolvedValue(completed)));
+    const later = renderHook(() => useServerUpdateNotice(true));
+    await waitFor(() => expect(later.result.current).toMatchObject({ problem: false }));
   });
 });
