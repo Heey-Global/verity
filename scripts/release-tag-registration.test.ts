@@ -356,6 +356,7 @@ it('reproduces earlier version content and a later empty trusted merge using rea
     git(['commit', '--allow-empty', '-qm', 'trusted mobile merge identity']);
     const current = git(['rev-parse', 'HEAD']);
     git(['remote', 'add', 'origin', cwd]);
+    git(['update-ref', 'refs/tags/v4.55.0', old]);
     const run = (command: string, args: string[]) => {
       if (command === 'git')
         return execFileSync('git', args, {
@@ -382,7 +383,7 @@ it('reproduces earlier version content and a later empty trusted merge using rea
     expect(
       registerReleaseTags('register', old, { repository: 'example/repo', run, train: 'mobile' }),
     ).toEqual([{ tag: 'mobile-v1.77.0', status: 'superseded', head: current }]);
-    expect(git(['tag', '--list'])).toBe('');
+    expect(git(['tag', '--list', 'mobile-*'])).toBe('');
     expect(
       registerReleaseTags('register', current, {
         repository: 'example/repo',

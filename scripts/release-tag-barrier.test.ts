@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 
 type Step = { name?: string; run?: string; if?: string; with?: Record<string, unknown> };
 type Job = {
+  uses?: string;
+  secrets?: string;
+  with?: Record<string, unknown>;
   needs?: unknown;
   concurrency?: unknown;
   if?: string;
@@ -35,6 +38,10 @@ describe('release tag ordering', () => {
       expect(registration.if).toBeUndefined();
       const publisher = dispatch.jobs[train === 'backend' ? 'release-train' : `release-${train}`];
       expect(publisher.needs).toBe(`register-${train}-tags`);
+      expect(publisher.uses).toBe('./.github/workflows/release.yml');
+      expect(publisher.secrets).toBe('inherit');
+      expect(publisher.with).toEqual(dispatch.jobs['release-train'].with);
+      expect(publisher.permissions).toEqual(dispatch.jobs['release-train'].permissions);
       expect(publisher.if).toBe(`needs.register-${train}-tags.outputs.status != 'superseded'`);
       expect(registration.permissions).toEqual({ contents: 'write', 'pull-requests': 'read' });
       const reserve = registration.steps?.find((step) =>
