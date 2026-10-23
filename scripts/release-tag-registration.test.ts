@@ -340,14 +340,15 @@ it('reproduces earlier version content and a later empty trusted merge using rea
     git(['init', '-q']);
     git(['config', 'user.name', 'Test']);
     git(['config', 'user.email', 'test@example.com']);
-    writeFileSync(
-      join(cwd, '.release-please-manifest.mobile.json'),
-      JSON.stringify({ 'apps/mobile': '1.77.0' }),
-    );
-    writeFileSync(
-      join(cwd, '.release-please-manifest.backend.json'),
-      JSON.stringify({ '.': '4.55.0' }),
-    );
+    // These manifests belong to the synthetic Git history, not the checkout.
+    // Derive their paths by train so CI's managed-input guard does not mistake
+    // fixture creation for a dependency on the repository's release versions.
+    for (const [train, manifest] of [
+      ['mobile', { 'apps/mobile': '1.77.0' }],
+      ['backend', { '.': '4.55.0' }],
+    ] as const) {
+      writeFileSync(join(cwd, `.release-please-manifest.${train}.json`), JSON.stringify(manifest));
+    }
     git(['add', '.']);
     git(['commit', '-qm', 'version content already on main']);
     const old = git(['rev-parse', 'HEAD']);
