@@ -4550,6 +4550,32 @@ migrations['0162_vulnerability_scan'] = {
   },
 };
 
+migrations['0163_vulnerability_actions'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vuln_ignores (
+        id text primary key, project_id text not null references projects(id) on delete cascade,
+        advisory_id text not null, aliases text not null, package text not null, ecosystem text not null,
+        severity text not null, until_fix boolean not null, expires_at timestamptz not null,
+        reason text not null, created_at timestamptz not null default now()
+      )`.execute(db);
+    await sql`create index vuln_ignores_project on vuln_ignores(project_id)`.execute(db);
+    await sql`create table vuln_digests (user_id text not null references users(id) on delete cascade, day text not null, primary key(user_id, day))`.execute(
+      db,
+    );
+    await sql`create table vuln_notifications (
+        id text primary key, user_id text not null references users(id) on delete cascade,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text references sessions(session_id) on delete cascade,
+        package text not null, created_at timestamptz not null default now(), sent_at timestamptz
+      )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vuln_notifications`.execute(db);
+    await sql`drop table vuln_digests`.execute(db);
+    await sql`drop table vuln_ignores`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);
