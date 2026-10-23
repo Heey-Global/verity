@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.54.0](https://github.com/Heey-Global/verity/compare/v4.53.0...v4.54.0) (2026-10-23)
+
+
+### Features
+
+* **forgejo:** integrate connections and mobile repository workflows ([#1805](https://github.com/Heey-Global/verity/issues/1805)) ([5ebd077](https://github.com/Heey-Global/verity/commit/5ebd0778c995deb3be62dc424b7e980381fa6886))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1800](https://github.com/Heey-Global/verity/issues/1800)) ([ad920df](https://github.com/Heey-Global/verity/commit/ad920dff37bd82e9b3dc5e2016c35d8dabe9f511))
+* **release:** refresh stale staging release proposals ([#1791](https://github.com/Heey-Global/verity/issues/1791)) ([aa58b8d](https://github.com/Heey-Global/verity/commit/aa58b8d91a072d3c794336a4af9535cc4c0ebd87))
+
 ## [4.53.0](https://github.com/Heey-Global/verity/compare/v4.52.1...v4.53.0) (2026-10-22)
 
 
