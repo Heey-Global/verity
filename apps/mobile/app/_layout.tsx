@@ -30,7 +30,11 @@ import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
-import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
+import { useServerUpdateNotice } from '../lib/serverUpdateBadge';
+import {
+  serverUpdateBannerFor,
+  useServerUpdateBannerDismissal,
+} from '../lib/serverUpdateBannerDismissal';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
@@ -390,7 +394,12 @@ function AppHeader({
   // Only the overview carries the update banner, and every screen renders this
   // header — so the screen tells the hook whether to poll at all rather than
   // filtering its answer afterwards.
-  const pendingServerUpdate = useServerUpdateBadge(isHome);
+  const pendingServerUpdate = useServerUpdateNotice(isHome);
+  const bannerDismissal = useServerUpdateBannerDismissal(
+    pendingServerUpdate?.baseUrl ?? null,
+    pendingServerUpdate?.version ?? null,
+  );
+  const serverUpdateBanner = serverUpdateBannerFor(pendingServerUpdate, bannerDismissal.dismissed);
   const showMessageSearch = showsMessageSearch(route.name);
   const title = options.title ?? (isHome ? 'Verity' : route.name);
   const routeParams = route.params as { id?: unknown; selected?: unknown } | undefined;
@@ -492,8 +501,12 @@ function AppHeader({
           ) : null}
         </View>
       </View>
-      {isHome && pendingServerUpdate !== null ? (
-        <ServerUpdateBanner version={pendingServerUpdate} />
+      {isHome && serverUpdateBanner !== null ? (
+        <ServerUpdateBanner
+          version={serverUpdateBanner.version}
+          problem={serverUpdateBanner.problem}
+          onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
+        />
       ) : null}
     </View>
   );
