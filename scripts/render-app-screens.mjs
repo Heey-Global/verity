@@ -12,8 +12,9 @@
 // .cache/app-store by default. --base-url renders against an already running
 // demo export instead of serving --dist locally.
 //
-// Each scene writes `app-<name>.png` at twice the CSS resolution unless it is
-// only there for its crops; a crop writes one PNG per component, cut to the
+// Each scene writes `app-<name>.png` at its device scale factor (twice the CSS
+// resolution unless the scene sets another) unless it is only there for its
+// crops; a crop writes one PNG per component, cut to the
 // smallest element containing all of the crop's text markers. The files sit
 // directly in the website's assets folder because the website's checks and
 // Dockerfile list every asset by its flat `assets/<file>` path.
@@ -274,7 +275,7 @@ async function render(browser, base, scene, out) {
 }
 
 const dist = resolve(args.dist ?? '');
-if (!existsSync(join(dist, 'index.html')))
+if (!args['base-url'] && !existsSync(join(dist, 'index.html')))
   throw new Error(
     `No browser export in ${dist}. Run: npm run build:web --workspace @verity/mobile-app -- --max-workers 1`,
   );
