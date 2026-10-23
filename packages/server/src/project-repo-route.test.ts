@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 
@@ -163,7 +164,32 @@ describe('POST /internal/project/repo', () => {
     );
   });
 
-  it.each([['-x'], ['feat branch'], ['']])('rejects the branch %j', async (head) => {
+  it.each(['release+next', 'feature@next', 'feat/überprüfung'])(
+    'accepts the existing Git branch %s',
+    async (head) => {
+      // Git is the authority for names a code host can already contain.
+      execFileSync('git', ['check-ref-format', '--branch', head]);
+      const { call, ops } = setup({});
+      expect((await call({ action: 'pr.create', title: 'Existing branch', head })).statusCode).toBe(
+        200,
+      );
+      expect(ops.findPullRequest).toHaveBeenCalledWith({ head });
+      expect(ops.createPullRequest).toHaveBeenCalledWith(expect.objectContaining({ head }));
+    },
+  );
+
+  it.each([
+    ['-x'],
+    ['feat branch'],
+    [''],
+    ['a..b'],
+    ['a.lock'],
+    ['a//b'],
+    ['a/.b'],
+    ['a@{b'],
+    ['a.'],
+    ['a:b'],
+  ])('rejects the branch %j', async (head) => {
     const { call, ops } = setup({});
     const response = await call({ action: 'pr.create', title: 'x', head });
     expect(response.statusCode).toBe(400);

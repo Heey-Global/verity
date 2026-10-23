@@ -84,7 +84,8 @@ connection with `POST /connections`, rotate its token or update its label and
 CA bundle with `PATCH /connections/:id`, and remove an unused connection with
 `DELETE /connections/:id`. Creation accepts `label`, an HTTPS `baseUrl`, a
 personal access `token`, and an optional PEM `customCaPem` bundle. The server
-validates credentials against `/api/v1/user` before persisting them. Responses
+validates credentials with `/api/v1/repos/search` and verifies that invalid tokens
+are rejected before persisting them. No user-read scope is required. Responses
 contain metadata only; tokens remain encrypted in the server store.
 
 Connection origins cannot be changed. A reverse-proxy path prefix and a custom

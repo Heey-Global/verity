@@ -399,7 +399,7 @@ export function isValidBranchName(name: string): boolean {
  * branch name, so it cannot reject a ref that arrived from there, and it keeps an
  * absurd argument out of argv.
  */
-function isSafeRefName(name: string): boolean {
+export function isSafeRefName(name: string): boolean {
   if (name.length === 0 || name.length > 255) return false;
   if (name.startsWith('-')) return false;
   // Control characters, space, DEL, and the characters git itself forbids in a ref.

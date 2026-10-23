@@ -2,6 +2,7 @@ import type { ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { bearerToken } from './auth.js';
+import { isSafeRefName } from './branches.js';
 import {
   ForgeOperationError,
   type ForgeIssueList,
@@ -29,8 +30,8 @@ const branch = z
   .string()
   .min(1)
   .max(255)
-  // A ref name, not an option or a path a forge could misread.
-  .regex(/^(?!-)[\w./-]+$/u);
+  // Existing forge branches follow Git's grammar, rather than our naming policy.
+  .refine(isSafeRefName, 'invalid branch name');
 const number = z.number().int().positive();
 const text = (max: number) => z.string().max(max);
 
