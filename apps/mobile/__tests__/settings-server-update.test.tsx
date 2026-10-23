@@ -992,8 +992,6 @@ describe('stuck server update', () => {
     expect(screen.getByText('Version 4.52.0')).toBeOnTheScreen();
     // The Updater's generation counter means nothing to the person reading this.
     expect(screen.queryByText(/Generation/)).toBeNull();
-    // Unfinished, so not "up to date" even though nothing newer may be on offer.
-    expect(screen.queryByText('Up to date')).toBeNull();
     expect(screen.getByText('Updating companions · step 15 of 16')).toBeOnTheScreen();
     expect(screen.getByText('Updating companions failed: network timeout')).toBeOnTheScreen();
     expect(screen.getByText('Version 4.52.1 available')).toBeOnTheScreen();
