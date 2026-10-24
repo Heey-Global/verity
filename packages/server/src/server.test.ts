@@ -9923,6 +9923,56 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
+  it.each([
+    { pipeline: 'unknown', mergeable: true, expected: 200 },
+    { pipeline: 'success', mergeable: true, expected: 200 },
+    { pipeline: 'failure', mergeable: true, mergeState: 'unstable', expected: 200 },
+    { pipeline: 'failure', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, expected: 409 },
+    { pipeline: 'running', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: false, expected: 409 },
+    { pipeline: 'unknown', mergeable: null, expected: 409 },
+    { pipeline: 'failure', mergeable: false, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, mergeState: 'dirty', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, phase: 'closed', expected: 409 },
+  ] as const)('rechecks merge eligibility at action time: %j', async ({ expected, ...status }) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feat/119-ready');
+    const mergePr = vi
+      .fn<(number: number, wt: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn().mockResolvedValue(
+        prStatus({
+          ...status,
+          checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 },
+        }),
+      ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(expected);
+      if (expected === 200) {
+        expect(response.json()).toMatchObject({ merged: true });
+        expect(mergePr).toHaveBeenCalledWith(119, '/wt/s1');
+      } else {
+        expect(mergePr).not.toHaveBeenCalled();
+      }
+    } finally {
+      await withMerge.close();
+    }
+  });
+
   it('rejects a stale or forged notification before calling GitHub merge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     branchSvc.current.mockResolvedValue('feat/119-ready');
