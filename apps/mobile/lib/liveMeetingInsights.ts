@@ -17,6 +17,12 @@ export function meetingRequestId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** When a request was made, read back from its id; `null` for ids from elsewhere. */
+export function meetingRequestTime(requestId: string | undefined): number | null {
+  const match = /^(\d{13})-/u.exec(requestId ?? '');
+  return match ? Number(match[1]) : null;
+}
+
 // Meeting turns share a general-purpose agent; without a bounded instruction it
 // can turn a quick fact check into a full research project before answering.
 const meetingAnswerInstructions = [

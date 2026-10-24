@@ -1,4 +1,10 @@
-import { meetingResearchModel } from '../../lib/meetingResearchModel';
+import {
+  meetingModelChoice,
+  meetingResearchModel,
+  type MeetingModelChoice,
+  setMeetingModel,
+} from '../../lib/meetingResearchModel';
+import { setMeetingTranscriptVisible, useMeetingPreferences } from '../../lib/meetingPreferences';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -48,12 +54,14 @@ import {
   meetingQuestionKey,
   meetingRequestId,
   meetingRequestPrompt,
+  meetingRequestTime,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
 import {
   meetingAnswerCards,
   distinctMeetingAnswers,
   meetingAnswerSource,
+  meetingAnswerSourceUrl,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   type MeetingAnswerCard,
@@ -66,6 +74,7 @@ import {
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
 import { MeetingWave } from '../../components/meeting/MeetingWave';
+import { AskVerityField, MeetingModelSheet, VerityPane } from '../../components/meeting/VerityPane';
 import {
   type CardAction,
   MeetingAnswerText,
@@ -80,10 +89,12 @@ import {
   Card,
   Group,
   HintBox,
+  IconButton,
   Row,
   SectionHeader,
   Text as UiText,
   TextField,
+  Toggle,
 } from '../../components/ui';
 import { tint } from '../../components/ui/tint';
 
@@ -563,6 +574,34 @@ export default function MeetingScreen() {
   useEffect(() => {
     if (responseMs !== undefined) console.debug('Meeting answer timing', { responseMs });
   }, [newestReady, responseMs]);
+  const { transcript: showTranscript } = useMeetingPreferences();
+  // The model chip and picker live in Verity's pane, which only the wide layout shows.
+  const [modelChoice, setModelChoice] = useState<MeetingModelChoice | null>(null);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const liveMeetingId = meeting?.id;
+  const meetingActive = meeting?.state === 'active';
+  useEffect(() => {
+    setModelChoice(null);
+    if (!wide || !meetingActive || !sessionId || !liveMeetingId) return;
+    const client = createVerityClient();
+    if (!client) return;
+    let current = true;
+    void meetingModelChoice(client, sessionId, liveMeetingId).then((choice) => {
+      if (current) setModelChoice(choice);
+    });
+    return () => {
+      current = false;
+    };
+  }, [wide, meetingActive, sessionId, liveMeetingId]);
+  const pickMeetingModel = (model: string) => {
+    setModelSheetOpen(false);
+    if (!liveMeetingId) return;
+    setMeetingModel(liveMeetingId, model);
+    setModelChoice((current) => (current ? { ...current, model, effective: model } : current));
+  };
+  const transcriptEnd = useRef<ScrollView>(null);
+  // New words follow the reader only while they are at the end; reading back stays put.
+  const wideTranscriptAtEnd = useRef(true);
   const speakerLabel = (speaker: number | null) =>
     speaker === null
       ? 'Unknown speaker'
@@ -741,7 +780,7 @@ export default function MeetingScreen() {
     setLocalAnswers((current) => [...current, local]);
     try {
       const server = getActiveMeetingServerId();
-      const model = await meetingResearchModel(client, sessionId);
+      const model = await meetingResearchModel(client, sessionId, meeting.id);
       if (getActiveMeetingServerId() !== server) throw new Error('Meeting server changed.');
       await client.sendTurn(sessionId, {
         ...(model ? { model } : {}),
@@ -1095,7 +1134,6 @@ export default function MeetingScreen() {
             .map((suggestion) => (
               <NoticedCard
                 key={`name-${String(suggestion.speaker)}`}
-                label="NAME SUGGESTION"
                 tone={speakerTone(colors, suggestion.speaker)}
                 quote={`“${suggestion.quote}”`}
                 title={`${speakerLabel(suggestion.speaker)} is ${suggestion.name}?`}
@@ -1125,6 +1163,8 @@ export default function MeetingScreen() {
         : [];
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
+      const sourceUrl = source ? meetingAnswerSourceUrl(card.answer) : null;
+      const askedAt = meetingRequestTime(card.requestId);
       const note = card.status === 'ready' ? asNote(card.answer) : null;
       const compact =
         card.answer
@@ -1137,14 +1177,14 @@ export default function MeetingScreen() {
           key={card.id}
           label={
             card.status === 'ready'
-              ? 'ANSWER'
+              ? undefined
               : card.status === 'failed'
                 ? card.combined
                   ? 'NOT ANSWERED SEPARATELY'
                   : 'REQUEST INTERRUPTED'
                 : card.kind === 'research'
-                  ? 'RESEARCHING'
-                  : 'VERITY IS WORKING'
+                  ? 'Researching…'
+                  : 'Working on it…'
           }
           tone={
             card.status === 'ready'
@@ -1154,7 +1194,8 @@ export default function MeetingScreen() {
                 : colors.action
           }
           working={card.status === 'working'}
-          prominent
+          fresh={live && card.id === newestReady}
+          time={askedAt === null ? undefined : timeOfDay(askedAt)}
           title={card.questionTitle ?? card.request}
           onDismiss={() =>
             setDismissed((current) => [
@@ -1175,7 +1216,8 @@ export default function MeetingScreen() {
                 : 'Verity stopped before answering.'
               : undefined
           }
-          source={expanded && source ? `Source: ${source}` : null}
+          source={source}
+          sourceUrl={sourceUrl}
           actions={
             card.status === 'ready'
               ? [
@@ -1998,7 +2040,39 @@ export default function MeetingScreen() {
     </View>
   );
 
-  if (wide)
+  if (wide) {
+    const stateWord = voiceSending
+      ? 'Sending request…'
+      : paused
+        ? 'Paused'
+        : meeting.captureStatus === 'downloading'
+          ? 'Preparing language model…'
+          : preparing
+            ? 'Preparing microphone…'
+            : 'Recording';
+    const statusLine = [
+      stateWord,
+      paused || preparing ? null : elapsed(meeting.startedAt, now),
+      meeting.engine === 'attendee' ? 'Online meeting' : 'In this room',
+      meeting.serverId === null ? 'Saved only on this device' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    // Consecutive lines of one speaker read as one turn; words the diarizer has not
+    // reached yet trail the latest turn in a muted tone.
+    const turns: { speaker: number | null; start: number; parts: TranscriptRow[] }[] = [];
+    for (const line of chunks.slice(-12)) {
+      const last = turns.at(-1);
+      if ('speaker' in line && !line.pending && last?.speaker !== line.speaker)
+        turns.push({ speaker: line.speaker, start: line.start, parts: [line] });
+      else if (last) last.parts.push(line);
+      else
+        turns.push({
+          speaker: 'speaker' in line && !line.pending ? line.speaker : null,
+          start: 'start' in line ? line.start : (now - meeting.startedAt) / 1000,
+          parts: [line],
+        });
+    }
     return (
       <KeyboardAvoidingView
         behavior="padding"
@@ -2006,54 +2080,212 @@ export default function MeetingScreen() {
       >
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.page}>
-          {transcriptExpanded ? null : header}
+          {transcriptExpanded ? null : (
+            <View style={styles.header}>
+              <IconButton
+                icon="chevron-down"
+                accessibilityLabel="Minimize meeting"
+                onPress={minimize}
+              />
+              <View style={styles.fill}>
+                <Text style={styles.wideTitle} numberOfLines={1}>
+                  {meeting.title || 'Live meeting'}
+                </Text>
+                <View style={styles.wideStatus}>
+                  {liveProblem === null ? (
+                    <BreathingDot
+                      color={paused || preparing ? colors.textFaint : colors.success}
+                      breathing={!paused && !preparing}
+                    />
+                  ) : null}
+                  <Text
+                    testID="meeting-live-status"
+                    numberOfLines={1}
+                    style={[styles.wideStatusText, liveProblem !== null && styles.statusError]}
+                  >
+                    {liveProblem ?? statusLine}
+                  </Text>
+                </View>
+              </View>
+              <IconButton
+                icon={paused ? 'play' : 'pause'}
+                accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
+                disabled={
+                  busy ||
+                  meeting.engine === 'attendee' ||
+                  !!pendingCommand ||
+                  (!paused && meeting.captureStatus !== 'listening')
+                }
+                onPress={togglePause}
+              />
+              <Button
+                label="End"
+                accessibilityLabel="End meeting"
+                variant="secondary"
+                size="compact"
+                disabled={busy || pendingCommand === 'stop'}
+                onPress={end}
+              />
+            </View>
+          )}
           <View style={styles.columns}>
             <View style={styles.column}>
-              <MeetingWave active={!paused && !preparing} addressed={voiceSending} />
-              {speakerRow(true)}
-              <SectionLabel>TRANSCRIPT</SectionLabel>
-              <ScrollView style={{ maxHeight: 240 }} keyboardShouldPersistTaps="handled">
-                {chunks.slice(-6).map((line, index) => (
-                  <Text
-                    key={index}
-                    style={[styles.transcriptText, line.pending && styles.transcriptPending]}
-                  >
-                    {'start' in line ? (
-                      <Text style={styles.hint}>{elapsed(0, line.start * 1000)} </Text>
-                    ) : null}
-                    {'speaker' in line && !line.pending ? (
-                      <Text style={{ color: speakerTone(colors, line.speaker ?? 0) }}>
-                        {speakerLabel(line.speaker)}{' '}
-                      </Text>
-                    ) : null}
-                    {line.text}
-                  </Text>
-                ))}
-              </ScrollView>
-              <SectionLabel>{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              <View style={styles.roomHead}>
+                <Text style={styles.roomLabel}>IN THE ROOM</Text>
+                <Pressable
+                  accessibilityRole="switch"
+                  accessibilityLabel="Transcript"
+                  accessibilityState={{ checked: showTranscript }}
+                  onPress={() => {
+                    // Shown again, the transcript starts at the newest words and follows them.
+                    wideTranscriptAtEnd.current = true;
+                    setMeetingTranscriptVisible(!showTranscript);
+                  }}
+                  style={styles.transcriptSwitch}
+                >
+                  <Text style={styles.wideStatusText}>Transcript</Text>
+                  <Toggle value={showTranscript} />
+                </Pressable>
+              </View>
+              {speakers.length ? (
+                <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
+              ) : (
+                <Text style={styles.hint}>{speakerStatus}</Text>
+              )}
+              {restoreMerged}
+              {showTranscript ? (
+                <ScrollView
+                  ref={transcriptEnd}
+                  testID="meeting-transcript"
+                  style={styles.transcriptPane}
+                  contentContainerStyle={styles.transcriptTurns}
+                  scrollEventThrottle={100}
+                  onScroll={({ nativeEvent }) => {
+                    wideTranscriptAtEnd.current =
+                      nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height >=
+                      nativeEvent.contentSize.height - 24;
+                  }}
+                  onContentSizeChange={() => {
+                    if (wideTranscriptAtEnd.current)
+                      transcriptEnd.current?.scrollToEnd({ animated: false });
+                  }}
+                >
+                  {turns.length ? (
+                    turns.map((turn, index) => (
+                      <View key={index} style={styles.turn}>
+                        <SpeakerAvatar
+                          initial={turn.speaker === null ? '?' : speakerInitial(turn.speaker)}
+                          tone={
+                            turn.speaker === null
+                              ? colors.textFaint
+                              : speakerTone(colors, turn.speaker)
+                          }
+                          dashed={turn.speaker === null}
+                          size={28}
+                        />
+                        <View style={styles.fill}>
+                          <Text>
+                            <Text style={styles.turnName}>{speakerLabel(turn.speaker)}</Text>
+                            <Text style={styles.turnTime}>
+                              {'  '}
+                              {noteClockTime(meeting.startedAt, turn.start)}
+                            </Text>
+                          </Text>
+                          <Text style={styles.transcriptText}>
+                            {turn.parts.map((part, partIndex) => (
+                              <Text
+                                key={partIndex}
+                                style={part.pending ? styles.transcriptPending : undefined}
+                              >
+                                {partIndex ? ' ' : ''}
+                                {part.text}
+                              </Text>
+                            ))}
+                          </Text>
+                        </View>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.hint}>Listening…</Text>
+                  )}
+                </ScrollView>
+              ) : null}
+              <Text style={styles.roomLabel}>NOTES</Text>
               <View style={styles.notesCard}>
                 <ScrollView style={styles.fill} keyboardShouldPersistTaps="handled">
-                  {noteRows(finalizedNotes)}
+                  {finalizedNotes.map((note, index) => (
+                    <View
+                      key={note.id}
+                      testID="meeting-note"
+                      style={[styles.noteRow, index > 0 && styles.noteRowDivided]}
+                    >
+                      <Text style={styles.noteRowTime}>
+                        {noteClockTime(meeting.startedAt, note.atSeconds)}
+                      </Text>
+                      <Text style={styles.noteRowText}>{note.text}</Text>
+                    </View>
+                  ))}
                 </ScrollView>
+                <View style={styles.noteField}>
+                  <TextInput
+                    accessibilityLabel="Add a meeting note"
+                    maxLength={10_000}
+                    placeholder="Add a note…"
+                    placeholderTextColor={colors.textFaint}
+                    multiline
+                    submitBehavior="submit"
+                    value={draft?.text ?? ''}
+                    onChangeText={editNote}
+                    onSubmitEditing={submitNote}
+                    style={styles.noteInput}
+                  />
+                  <Pressable
+                    onPress={submitNote}
+                    accessibilityRole="button"
+                    accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
+                    style={styles.noteAdd}
+                  >
+                    <Icon
+                      name={noteUnsaved ? 'rotate-cw' : 'plus'}
+                      size={18}
+                      color={noteUnsaved ? colors.attention : colors.action}
+                    />
+                  </Pressable>
+                </View>
               </View>
-              {noteComposer(false)}
             </View>
-            <View style={styles.divider} />
             <View style={styles.column}>
-              <ScrollView
-                style={styles.fill}
-                contentContainerStyle={styles.content}
-                keyboardShouldPersistTaps="handled"
+              <VerityPane
+                footer={
+                  <AskVerityField
+                    value={insightQuestion}
+                    onChangeText={(text) => {
+                      askClearedAfterSend.current = false;
+                      setInsightQuestion(text);
+                    }}
+                    onSubmit={() => void openResearch(insightQuestion, 'request')}
+                    sending={sendingInsight}
+                    model={modelChoice?.effective}
+                    onPickModel={() => setModelSheetOpen(true)}
+                  />
+                }
               >
-                {noticed}
-              </ScrollView>
-              {askComposer(false)}
+                {cards}
+              </VerityPane>
             </View>
           </View>
         </View>
+        <MeetingModelSheet
+          visible={modelSheetOpen}
+          models={modelChoice?.models ?? []}
+          selected={modelChoice?.effective}
+          onPick={pickMeetingModel}
+          onClose={() => setModelSheetOpen(false)}
+        />
         {transcriptSheet}
       </KeyboardAvoidingView>
     );
+  }
 
   const lastNote = finalizedNotes.at(-1);
   return (
@@ -2366,8 +2598,57 @@ const styles = StyleSheet.create((theme) => {
       fontFamily: theme.fonts.bold,
     },
     columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
+    wideTitle: { ...theme.typography.title, color: colors.text },
+    wideStatus: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    wideStatusText: { ...theme.typography.subtitle, flexShrink: 1, color: colors.textMuted },
+    roomHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    roomLabel: { ...theme.typography.label, color: colors.textMuted },
+    transcriptSwitch: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    transcriptPane: { flexGrow: 0, maxHeight: '45%' },
+    transcriptTurns: { gap: theme.spacing.lg },
+    turn: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
+    turnName: { ...theme.typography.row, color: colors.text },
+    turnTime: { ...theme.typography.footnote, color: colors.textFaint },
+    noteRow: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: theme.spacing.lg,
+      paddingVertical: theme.spacing.md,
+    },
+    noteRowDivided: { borderTopWidth: 1, borderTopColor: colors.border },
+    noteRowTime: { ...theme.typography.footnote, width: 44, color: colors.textFaint },
+    noteRowText: { ...theme.typography.body, flex: 1, color: colors.text },
+    noteField: {
+      minHeight: 48,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      paddingLeft: theme.spacing.md,
+      paddingRight: theme.spacing.xs,
+      paddingVertical: theme.spacing.xs,
+      borderRadius: theme.radius.control,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+    },
+    noteInput: {
+      ...theme.typography.body,
+      flex: 1,
+      maxHeight: 120,
+      color: colors.text,
+      paddingVertical: theme.spacing.sm,
+    },
+    noteAdd: {
+      width: 40,
+      height: 40,
+      borderRadius: theme.radius.control,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: tint(colors.action, 'fill'),
+      borderWidth: 1,
+      borderColor: tint(colors.action, 'border'),
+    },
     column: { flex: 1, gap: theme.spacing.md },
-    divider: { width: 1, backgroundColor: colors.border },
     setupSection: { gap: theme.spacing.sm },
     setupCard: { flex: 1, gap: theme.spacing.sm },
     setupInline: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
