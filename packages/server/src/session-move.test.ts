@@ -251,3 +251,82 @@ it('discards retired configured-server restart work during startup', async () =>
     await app.close();
   }
 });
+it('moves pending Documents without Git and retains the source working copy on retry', async () => {
+  const { documentWorkspace } = await import('./document-workspace.js');
+  const dataRoot = join(root, 'document-data');
+  const source = await ctx.store.upsertProject({
+    id: 'docs-source',
+    owner: '__local__',
+    repo: 'source',
+    kind: 'local',
+    state: 'active',
+    containerName: 'docs-source',
+  });
+  const target = await ctx.store.upsertProject({
+    id: 'docs-target',
+    owner: '__local__',
+    repo: 'target',
+    kind: 'local',
+    state: 'active',
+    containerName: 'docs-target',
+  });
+  const canonical = join(dataRoot, 'knowledge', source.id, 'insights');
+  await mkdir(canonical, { recursive: true });
+  await writeFile(join(canonical, 'published.md'), 'Stays in source');
+  const view = join(projectClonePath(root, source), '.verity-document-sessions', 'original');
+  await documentWorkspace(dataRoot, source.id, view).prepare();
+  await writeFile(join(view, 'draft.md'), 'Pending draft');
+  await ctx.store.createSession({
+    sessionId: 'docs-moved',
+    projectId: source.id,
+    worktree: view,
+    model: 'm',
+  });
+  const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
+  const app = buildServer({
+    eventStore: ctx.store,
+    conductor,
+    bus: new InMemoryEventBus(),
+    dataRoot,
+    projectCloneRoot: root,
+    provisioner: {
+      withProjectExclusiveMutation: async <T>(_id: string, fn: () => Promise<T>) => fn(),
+    } as unknown as Provisioner,
+  });
+  try {
+    const operationId = randomUUID();
+    const request = {
+      method: 'POST' as const,
+      url: '/sessions/docs-moved/project',
+      payload: { project: target.id, operationId, onCommits: 'leave' },
+    };
+    const moved = await app.inject(request);
+    expect(moved.statusCode).toBe(200);
+    expect((await ctx.store.getSession('docs-moved'))?.worktree).toContain(
+      '.verity-document-sessions/document-move-',
+    );
+    expect(
+      await readFile(
+        join(
+          dataRoot,
+          'knowledge',
+          target.id,
+          'insights',
+          'Transferred edits',
+          operationId,
+          'draft.md',
+        ),
+        'utf8',
+      ),
+    ).toBe('Pending draft');
+    await expect(
+      readFile(join(dataRoot, 'knowledge', target.id, 'insights', 'published.md')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(view, 'draft.md'), 'utf8')).toBe('Pending draft');
+    const retry = await app.inject(request);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toEqual(moved.json());
+  } finally {
+    await app.close();
+  }
+});

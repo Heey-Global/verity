@@ -650,6 +650,9 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
   knowledge: KNOWLEDGE_ICON,
   shared: KNOWLEDGE_ICON,
+  documents: 'folder',
+  sources: KNOWLEDGE_ICON,
+  drafts: 'folder',
 };
 
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
@@ -5098,7 +5101,9 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
-  const compactRootLabels = Platform.OS === 'ios' && !Platform.isPad;
+  const [documentSession, setDocumentSession] = useState(false);
+  const [documentStatus, setDocumentStatus] = useState<{ pending: boolean; running: boolean }>();
+  const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
@@ -5199,6 +5204,20 @@ function SessionFilesSheet({
       .listSessionFiles(sessionId, path, root)
       .then((dir) => {
         if (!active) return;
+        setDocumentStatus(dir.documentStatus);
+        if (dir.workspaceKind) {
+          setDocumentSession(dir.workspaceKind === 'documents');
+          if (
+            !workspaceClassified.current &&
+            dir.workspaceKind === 'documents' &&
+            !initialFilePath &&
+            initialRoot === 'worktree'
+          ) {
+            setRoot('documents');
+            setPath('');
+          }
+          workspaceClassified.current = true;
+        }
         setEntries(dir.entries);
         setTruncated(dir.truncated);
       })
@@ -5214,7 +5233,7 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, driveActive, sessionId, path, root, reloadKey]);
+  }, [client, driveActive, sessionId, path, root, reloadKey, initialFilePath, initialRoot]);
 
   useEffect(() => {
     if (!driveActive || !projectId) return;
@@ -6046,6 +6065,7 @@ function SessionFilesSheet({
                     busy={uploading}
                     disabled={
                       mutating ||
+                      root === 'drafts' ||
                       error !== null ||
                       (driveActive && (driveUnconfigured || !driveCanWrite))
                     }
@@ -6068,54 +6088,76 @@ function SessionFilesSheet({
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', compactRootLabels ? 'Repo' : 'Repository'],
-                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge'],
-                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge'],
+                ['worktree', documentSession ? 'My edits' : 'Code'],
+                ['sources', 'Sources'],
+                ['documents', 'Documents'],
+                ['shared', 'Global'],
               ] as const
-            ).map(([candidate, label]) => (
-              <Pressable
-                key={candidate}
-                disabled={mutating}
-                onPress={() => {
-                  if (mutating || (!driveActive && candidate === root && path === '')) return;
-                  previewRequest.current += 1;
-                  endSelection();
-                  setDriveActive(false);
-                  setRoot(candidate);
-                  setPath('');
-                  setEntries([]);
-                  setTruncated(false);
-                  setLoading(true);
-                  setPreview(null);
-                  setPreviewLoading(false);
-                  setError(null);
-                }}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: !driveActive && root === candidate }}
-                accessibilityLabel={label}
-                style={[
-                  styles.filesRootButton,
-                  !driveActive && root === candidate ? styles.filesRootButtonActive : null,
-                ]}
-              >
-                <Icon
-                  name={FILE_ROOT_ICON[candidate]}
-                  size={14}
-                  color={
-                    !driveActive && root === candidate ? theme.colors.text : theme.colors.textMuted
-                  }
-                />
-                <Text
-                  style={
-                    !driveActive && root === candidate
-                      ? styles.filesRootLabelActive
-                      : styles.filesRootLabel
-                  }
+            )
+              .filter(([candidate]) => !(documentSession && candidate === 'worktree'))
+              .map(([candidate, label]) => (
+                <Pressable
+                  key={candidate}
+                  disabled={mutating}
+                  onPress={() => {
+                    if (mutating || (!driveActive && candidate === root && path === '')) return;
+                    previewRequest.current += 1;
+                    endSelection();
+                    setDriveActive(false);
+                    setRoot(candidate);
+                    setPath('');
+                    setEntries([]);
+                    setTruncated(false);
+                    setLoading(true);
+                    setPreview(null);
+                    setPreviewLoading(false);
+                    setError(null);
+                  }}
+                  accessibilityRole="tab"
+                  accessibilityState={{
+                    selected:
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree')))),
+                  }}
+                  accessibilityLabel={label}
+                  style={[
+                    styles.filesRootButton,
+                    !driveActive &&
+                    (root === candidate ||
+                      (candidate === 'documents' &&
+                        (root === 'drafts' || (documentSession && root === 'worktree'))))
+                      ? styles.filesRootButtonActive
+                      : null,
+                  ]}
                 >
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
+                  <Icon
+                    name={FILE_ROOT_ICON[candidate]}
+                    size={14}
+                    color={
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree'))))
+                        ? theme.colors.text
+                        : theme.colors.textMuted
+                    }
+                  />
+                  <Text
+                    style={
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree'))))
+                        ? styles.filesRootLabelActive
+                        : styles.filesRootLabel
+                    }
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
             {projectId ? (
               <Pressable
                 disabled={mutating}
@@ -6168,10 +6210,18 @@ function SessionFilesSheet({
             rootIcon={FILE_ROOT_ICON[root]}
             rootLabel={
               root === 'worktree'
-                ? 'Repository'
-                : root === 'knowledge'
-                  ? 'Project Knowledge'
-                  : 'Global Knowledge'
+                ? documentSession
+                  ? 'My edits'
+                  : 'Code'
+                : root === 'sources'
+                  ? 'Sources'
+                  : root === 'documents'
+                    ? 'Documents'
+                    : root === 'drafts'
+                      ? 'Session edits'
+                      : root === 'knowledge'
+                        ? 'Project'
+                        : 'Global'
             }
             segments={breadcrumbSegments(path).map((segment) => ({
               key: segment.path,
@@ -6179,6 +6229,36 @@ function SessionFilesSheet({
             }))}
             disabled={mutating || selecting}
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
+          />
+        ) : null}
+        {!driveActive && documentSession && (root === 'documents' || root === 'worktree') ? (
+          <HeaderTextButton
+            label={
+              root === 'worktree'
+                ? 'Back to Documents'
+                : documentStatus?.running
+                  ? 'My working copy (session running)'
+                  : documentStatus?.pending
+                    ? 'My edits (not yet published)'
+                    : 'My working copy (published)'
+            }
+            onPress={() => {
+              setRoot(root === 'worktree' ? 'documents' : 'worktree');
+              setPath('');
+            }}
+          />
+        ) : null}
+        {!driveActive && (root === 'documents' || root === 'drafts') ? (
+          <HeaderTextButton
+            label={
+              root === 'drafts'
+                ? 'Back to Documents'
+                : 'Session edits (including retained sessions)'
+            }
+            onPress={() => {
+              setRoot(root === 'drafts' ? 'documents' : 'drafts');
+              setPath('');
+            }}
           />
         ) : null}
         {driveActive ? (
@@ -6329,7 +6409,7 @@ function SessionFilesSheet({
             ) : (
               <DropZone
                 style={styles.filesDropZone}
-                enabled={!uploading}
+                enabled={!uploading && root !== 'drafts'}
                 maxFiles={MAX_DROPPED_UPLOADS}
                 maxFileBytes={MAX_DROPPED_UPLOAD_BYTES}
                 maxTotalBytes={MAX_DROPPED_UPLOAD_TOTAL_BYTES}
@@ -6476,7 +6556,7 @@ function SessionFilesSheet({
                 <HeaderTextButton
                   label="Delete…"
                   emphasis="destructive"
-                  disabled={mutating || selected.length === 0}
+                  disabled={root === 'drafts' || mutating || selected.length === 0}
                   accessibilityLabel="Delete selected files"
                   onPress={deleteSelectedFiles}
                 />
@@ -6487,7 +6567,13 @@ function SessionFilesSheet({
         {menuFor ? (
           <FileActionMenu
             title={fileNameFromPath(menuFor.path)}
-            actions={menuActions}
+            actions={menuActions.filter((action) =>
+              root === 'drafts'
+                ? !['edit', 'rename', 'delete'].includes(action.key)
+                : root === 'sources'
+                  ? action.key !== 'edit'
+                  : true,
+            )}
             onDismiss={() => setMenuFor(null)}
           />
         ) : null}
@@ -6496,12 +6582,16 @@ function SessionFilesSheet({
             title="Add files"
             onDismiss={() => setAdding(false)}
             actions={[
-              {
-                key: 'create',
-                label: 'New Markdown file…',
-                icon: 'file-plus',
-                onPress: () => setCreating(true),
-              },
+              ...(root === 'sources'
+                ? []
+                : [
+                    {
+                      key: 'create',
+                      label: 'New Markdown file…',
+                      icon: 'file-plus' as const,
+                      onPress: () => setCreating(true),
+                    },
+                  ]),
               { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
             ]}
           />

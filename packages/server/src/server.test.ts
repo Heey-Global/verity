@@ -12450,6 +12450,7 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'verity-__local__--my-project',
       state: 'active',
     });
+    const dataRoot = mkdtempSync(join(worktreeRoot, 'local-documents-'));
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/__local__-my-project/.verity-sessions/agent-local',
@@ -12459,7 +12460,8 @@ describe('POST /sessions with project field (#174)', () => {
       bus,
       conductor,
       provisioner: fakeProvisioner(),
-      projectCloneRoot: '/data/dev',
+      dataRoot,
+      projectCloneRoot: join(dataRoot, 'workspaces'),
       projectBackend: fakeProjectBackend,
       projectWorktrees: () => projectWorktrees,
     });
@@ -12471,11 +12473,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
+      expect(projectWorktrees.add).not.toHaveBeenCalled();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
+        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
       });
     } finally {
       await a.close();

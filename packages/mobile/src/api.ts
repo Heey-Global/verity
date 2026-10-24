@@ -1711,10 +1711,13 @@ export const sessionFileEntrySchema = z.object({
   modifiedAt: z.string().nullable(),
 });
 export type SessionFileEntry = z.infer<typeof sessionFileEntrySchema>;
-export type SessionFileRoot = 'worktree' | 'knowledge' | 'shared';
+export type SessionFileRoot =
+  'worktree' | 'knowledge' | 'shared' | 'sources' | 'documents' | 'drafts';
 
 export const sessionDirectorySchema = z.object({
-  root: z.enum(['worktree', 'knowledge', 'shared']).optional(),
+  documentStatus: z.object({ pending: z.boolean(), running: z.boolean() }).optional(),
+  workspaceKind: z.enum(['documents', 'code']).optional(),
+  root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
   entries: z.array(sessionFileEntrySchema),
   truncated: z.boolean(),

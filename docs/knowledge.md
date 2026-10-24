@@ -1,8 +1,8 @@
 # Knowledge folders
 
 Each project has a durable Knowledge folder on the Verity server. Open a
-session's file explorer and choose **📚 Knowledge** to browse it, or **📚 Shared**
-for files every project may read. Replacing a Sandbox does not remove these
+session's file explorer and choose **Sources** for reference material,
+**Documents** for project outputs, or **Global** for files every project may read. Replacing a Sandbox does not remove these
 files.
 
 Verity creates this layout automatically:
@@ -28,8 +28,9 @@ insights/
   Nested destination paths create missing subfolders automatically. Agents can
   create an empty subfolder with `create_source_folder` and move an existing
   project Sources file into one with `move_source`; conflicting files are preserved.
-- `insights/` contains knowledge distilled from those sources. Agents may create and
-  revise Markdown here with ordinary filesystem tools.
+- `insights/` is the internal storage path for Documents, including notes, drafts,
+  reports and distilled knowledge. Agents edit their session Documents working
+  copy with ordinary filesystem tools; Verity publishes it automatically.
 
 The assignment is determined by the entry point; no folder choice is required.
 The attachment checkbox remains off by default. Meeting recordings are retained
@@ -38,13 +39,15 @@ automatically.
 ## Agent access and extracted text
 
 The project folder is mounted at `/knowledge` in every project Sandbox. The mount is
-read-only except for `/knowledge/insights`. Shared files are available read-only at
+read-only for project agents. Each session receives its own durable Documents
+working copy; local sessions start in it, and Code sessions receive its path in
+their instructions. Global files are available read-only at
 `/knowledge/shared`, with the same `sources/` and `insights/` organization. Agents use ordinary
 file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
 or Wiki maintenance flow.
 
 Verity Control receives the Knowledge folder of its built-in `verity-control` project,
-plus Shared Knowledge, with the same permissions. It does not mount other projects'
+plus Global knowledge. Control retains a writable `/knowledge/insights` mount. It does not mount other projects'
 Knowledge. `verity-memory append` saves explicitly requested notes to Control's own
 project overview through its authenticated turn broker. Managed updates reconcile
 these mounts; legacy Compose deployments receive them when the updated stack is applied.
@@ -68,8 +71,8 @@ as originals with an extraction note.
 
 ## Managing scope
 
-Upload, delete, and move files from the explorer. Moving a file to Shared makes
-it readable by every project; moving it back to Knowledge limits it to the
+Upload, delete, and move files from the explorer. Moving a file to Global makes
+it readable by every project; moving it back to Documents limits it to the
 current project. The hidden extracted text follows its source file.
 
 Agents publish a finished project insight to `shared/insights/` with the
@@ -86,10 +89,26 @@ There is no Wiki, folder grant screen, overview approval, or Knowledge model
 setting. Retrieval indexing and semantic search may be added later on top of the
 same files; the folder remains the source of truth.
 
+## Parallel sessions and automatic publication
+
+Local projects use Documents without Git or a manual Save to project action.
+Before each turn, unchanged working-copy files refresh from canonical Documents.
+After the turn, Verity compares edits with their base versions and publishes each
+file atomically. Explorer edits use the same server-side lock and version checks.
+Concurrent edits, deletions and binary changes preserve the canonical version and
+put proposals under Documents → Conflicts. Inspect both versions before resolving
+a conflict by editing the canonical document.
+
+The Documents tab also opens session working copies and marks whether the current
+session is running or has unpublished edits. Deleting a session retains its working
+copy so unresolved or late edits remain reachable. Code connections fetch repository
+files without exporting Documents or archived local Git history.
+
 ## Explorer editing and versions
 
-The explorer can edit UTF-8 text files up to 1 MB in Repository, Project Knowledge,
-and Global Knowledge. Markdown files can also be created from the New menu.
+The explorer can edit UTF-8 text files up to 1 MB in Code, Documents, and Global.
+Markdown files can also be created from the New menu. Sources and retained session
+working copies are read-only in the text editor.
 Saving checks the version opened by the editor; a conflict offers reload,
 conditional overwrite, or saving a new copy.
 
