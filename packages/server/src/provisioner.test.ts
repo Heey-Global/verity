@@ -33,7 +33,6 @@ import {
   ProvisionerImpl,
   DeprovisionerImpl,
   ProvisioningError,
-  AmbiguousGitPushError,
   gitAuthHeader,
   resolveImage,
   devcontainerContentHash,
@@ -415,6 +414,7 @@ function createProvisioner(
   return new ProvisionerImpl({
     // No real supervisor runs here; tests that care pass their own.
     supervisorReachable: async () => undefined,
+    prepareLocalWorkspace: async () => undefined,
     // A host larger than any quota asserted here, so CPU expectations do not depend
     // on the machine running the suite. The clamp itself is tested on its own.
     hostCpuCount: () => 64,
@@ -1457,7 +1457,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
 
-  it('initializes a local project with an empty first commit instead of cloning', async () => {
+  it('allocates a local document workspace without initializing Git', async () => {
     const id = randomUUID();
     await ctx.store.upsertProject({
       id,
@@ -1488,15 +1488,7 @@ describe('ProvisionerImpl (#174)', () => {
 
     expect(result.state).toBe('active');
     expect(gitCalls.some((call) => call.args.includes('clone'))).toBe(false);
-    expect(gitCalls[0]?.args).toEqual([
-      'init',
-      '-b',
-      'main',
-      '/var/lib/verity-dev/local-my-project',
-    ]);
-    expect(gitCalls[1]?.args).toEqual(
-      expect.arrayContaining(['commit', '--allow-empty', '-m', 'chore: initialize project']),
-    );
+    expect(gitCalls).toEqual([]);
     const created = dockerCalls.find((call) => call.method === 'createContainer');
     expect((created?.payload as ContainerSpec).binds).toContain(
       '/var/lib/verity-dev/local-my-project:/work',
@@ -1852,7 +1844,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect((spec?.binds ?? []).some((bind) => bind.includes('.git/config'))).toBe(false);
   });
 
-  it('finishes the bootstrap commit after an interrupted local initialization', async () => {
+  it('does not bootstrap a legacy local repository without document storage', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-local-init-'));
     mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
     const id = randomUUID();
@@ -1884,36 +1876,26 @@ describe('ProvisionerImpl (#174)', () => {
       await provisioner.provision(id);
 
       expect(calls.some((call) => call.args[0] === 'init')).toBe(false);
-      expect(calls.some((call) => call.args.includes('--allow-empty'))).toBe(true);
+      expect(calls.some((call) => call.args.includes('--allow-empty'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('links a local clone to GitHub with an authenticated non-force push', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-link-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = {
-      ...(await ctx.store.upsertProject({
-        id: randomUUID(),
+  it.each(['local', 'github'] as const)(
+    'mounts canonical Documents read-only for %s project agents',
+    async (kind) => {
+      const root = mkdtempSync(join(tmpdir(), 'document-mount-'));
+      const id = randomUUID();
+      await ctx.store.upsertProject({
+        id,
         ...baseInput,
-        owner: 'local',
-        repo: 'my-project',
-        containerName: 'verity-local--my-project',
-        kind: 'local',
-        cloneDir: 'local-my-project',
-      })),
-    };
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: '' },
-        { match: /remote add origin/ },
-        { match: /push -u origin main$/ },
-      ]);
-      const { client: docker } = fakeDocker();
+        kind,
+        owner: kind === 'local' ? '__local__' : 'acme',
+        repo: 'project',
+        cloneDir: 'project',
+      });
+      const { client: docker, calls } = fakeDocker();
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
@@ -1921,781 +1903,82 @@ describe('ProvisionerImpl (#174)', () => {
         projectTokenMint: async () => undefined,
         defaultImageRef: 'image:test',
         hostCloneRoot: root,
-        git,
+        dataVolumeRoot: root,
+        git: async () => ({ stdout: 'abc refs/heads/main\n', stderr: '' }),
+        isDirectory: () => false,
       });
-
-      await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok');
-
-      const addOrigin = calls.find((call) => call.args.includes('add'));
-      expect(addOrigin?.args).toEqual([
-        '-C',
-        join(root, 'local-my-project'),
-        'remote',
-        'add',
-        'origin',
-        'https://github.com/acme/published',
-      ]);
-      const push = calls.find((call) => call.args.includes('push'))?.args ?? [];
-      expect(push).toEqual(expect.arrayContaining(['push', '-u', 'origin', 'main']));
-      expect(push).not.toContain('--force');
-      expect(push.join(' ')).toContain('http.extraheader=Authorization: Basic');
-      expect(push.join(' ')).not.toContain('tok');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('merges a non-empty GitHub target with local conflict resolution before pushing', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-nonempty-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-sha\trefs/heads/other\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/other\tHEAD\n' },
-        { match: /fetch origin \+refs\/heads\/other:refs\/remotes\/origin\/other/ },
-        {
-          match: /merge --allow-unrelated-histories --no-edit -X ours refs\/remotes\/origin\/other/,
-        },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main$/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const openPullRequest = vi.fn(async () => ({ number: 7, url: 'https://gh/pull/7' }));
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-        openPullRequest,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).resolves.toEqual({
-        importBranch: 'verity/import-main',
-        pullRequest: { number: 7, url: 'https://gh/pull/7' },
-      });
-      expect(calls.find((call) => call.args.includes('merge'))?.args).toEqual(
-        expect.arrayContaining([
-          '--allow-unrelated-histories',
-          '-X',
-          'ours',
-          'user.email=verity@localhost',
-          'commit.gpgsign=false',
-        ]),
-      );
-      // The default branch is never written directly: an operator's protection rule
-      // on it would reject the push, and there would be no review to route through.
-      expect(calls.some((call) => call.args.includes('main:other'))).toBe(false);
-      expect(calls.find((call) => call.args.includes('push'))?.args).not.toContain('-u');
-      expect(openPullRequest).toHaveBeenCalledWith(
-        { owner: 'acme', repo: 'published' },
-        'tok',
-        expect.objectContaining({ head: 'verity/import-main', base: 'other' }),
-      );
-      expect(calls.some((call) => call.args.includes('--force'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reuses an import branch that already carries this merge, and steps aside otherwise', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-import-reuse-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    const link = async (
-      remoteImportSha: string,
-    ): Promise<{ branch: string | undefined; pushed: string | undefined }> => {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'merged-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        {
-          match: /ls-remote --heads --tags/,
-          stdout: `remote-head\trefs/heads/main\n${remoteImportSha}\trefs/heads/verity/import-main\n`,
-        },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin/ },
-        { match: /merge --allow-unrelated-histories/ },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-        openPullRequest: async () => ({ number: 1, url: 'https://gh/pull/1' }),
-      });
-      const result = await provisioner.linkCloneToGitHub(
-        project,
-        { owner: 'acme', repo: 'published' },
-        'tok',
-      );
-      return {
-        branch: result.importBranch,
-        pushed: calls.find((call) => call.args.includes('push'))?.args.at(-1),
-      };
-    };
-    try {
-      // Same merge already on the branch: a retry after a pull request that failed to
-      // open reuses it instead of littering the repository with copies.
-      expect(await link('merged-head')).toEqual({
-        branch: 'verity/import-main',
-        pushed: 'HEAD:refs/heads/verity/import-main',
-      });
-      // Someone else's branch of that name: step aside rather than overwrite it.
-      expect((await link('other-work')).branch).toBe('verity/import-main-2');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('reports a pull request it could not open instead of stranding the branch', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-pr-failure-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'merged-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin/ },
-        { match: /merge --allow-unrelated-histories/ },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-        openPullRequest: async () => {
-          throw new Error('GitHub declined to open the pull request: tok is not allowed');
-        },
-      });
-
-      // The branch is on GitHub. Failing the link here would strand it behind a
-      // project that still believes it is local, so the link stands and says why.
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).resolves.toEqual({
-        importBranch: 'verity/import-main',
-        pullRequestError: expect.stringContaining('GitHub declined'),
-      });
-      expect(calls.some((call) => call.args.includes('reset'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('redacts the token from a pull-request failure it reports', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-pr-redact-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'merged-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin/ },
-        { match: /merge --allow-unrelated-histories/ },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-        openPullRequest: async () => {
-          throw new Error('upstream said ghs_supersecret is not allowed');
-        },
-      });
-
-      const result = await provisioner.linkCloneToGitHub(
-        project,
-        { owner: 'acme', repo: 'published' },
-        'ghs_supersecret',
-      );
-      expect(result.pullRequestError).not.toContain('ghs_supersecret');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('signs the history before pushing, excluding what the remote already published', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-sign-link-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    // The rewrite itself is covered against real git in sign-history.test.ts;
-    // what only this level can show is that the link path runs it at all, before
-    // the push, and hands it the ref whose ancestry the remote already has.
-    const link = async (signStep: { match: RegExp; stdout?: string; reject?: boolean }) => {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'merged-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin/ },
-        { match: /merge --allow-unrelated-histories/ },
-        signStep,
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        veritySettings: async () =>
-          ({
-            gitSshPrivateKey: 'private-key',
-            gitUserName: 'Fleet',
-            gitUserEmail: 'fleet@example.test',
-          }) as unknown as VeritySettingsRecord,
-        git,
-        openPullRequest: async () => ({ number: 1, url: 'https://gh/pull/1' }),
-      });
-      const result = await provisioner.linkCloneToGitHub(
-        project,
-        { owner: 'acme', repo: 'published' },
-        'tok',
-      );
-      return { result, calls };
-    };
-    try {
-      const { result, calls } = await link({ match: /rev-list --topo-order/, stdout: '' });
-      const revList = calls.findIndex((call) => call.args.includes('rev-list'));
-      expect(revList).toBeGreaterThanOrEqual(0);
-      // Whatever the remote published keeps its object ids: excluded by ref, so
-      // the import branch still shares the ancestry its pull request targets.
-      expect(calls[revList]!.args.join(' ')).toContain('--not refs/remotes/origin/main');
-      // Before the push, or it would have signed nothing that got pushed.
-      expect(revList).toBeLessThan(calls.findIndex((call) => call.args.includes('push')));
-      expect(result.pullRequest?.url).toBe('https://gh/pull/1');
-
-      // Best-effort: a rewrite that fails must not fail the link. GitHub is the
-      // authority on whether the signatures were needed — the push either goes
-      // through or reports what the ruleset actually objected to.
-      const failed = await link({ match: /rev-list --topo-order/, reject: true });
-      expect(failed.result.pullRequest?.url).toBe('https://gh/pull/1');
-      expect(failed.calls.some((call) => call.args.includes('push'))).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('does not merge or push staged local changes', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-dirty-link-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'local-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: 'M  staged.txt\n' },
-        { match: /remote remove origin/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).rejects.toThrow(/uncommitted changes/);
-      expect(calls.some((call) => call.args.includes('merge'))).toBe(false);
-      expect(calls.some((call) => call.args.includes('push'))).toBe(false);
-      expect(calls.find((call) => call.args.includes('remove'))?.args).toEqual(
-        expect.arrayContaining(['remote', 'remove', 'origin']),
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('links a clone whose only untracked entry is its .verity-sessions directory', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-sessions-link-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'local-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        // Only reachable if the flag is dropped again: every project that has run a
-        // session carries this entry, and it must not read as a dirty working tree.
-        { match: /status --porcelain$/, stdout: '?? .verity-sessions/\n' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin \+refs\/heads\/main:refs\/remotes\/origin\/main/ },
-        {
-          match: /merge --allow-unrelated-histories --no-edit -X ours refs\/remotes\/origin\/main/,
-        },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main$/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).resolves.toEqual({
-        importBranch: 'verity/import-main',
-        pullRequestError: 'opening pull requests is not configured',
-      });
-      expect(calls.find((call) => call.args.includes('status'))?.args).toEqual(
-        expect.arrayContaining(['--untracked-files=no']),
-      );
-      expect(calls.some((call) => call.args.includes('push'))).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('restores the local clone when merging existing GitHub history fails', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-merge-failure-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'local-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin \+refs\/heads\/main:refs\/remotes\/origin\/main/ },
-        { match: /merge --allow-unrelated-histories/, reject: true },
-        { match: /rev-parse --verify --quiet MERGE_HEAD$/, stdout: 'merge-head\n' },
-        { match: /merge --abort/ },
-        { match: /remote remove origin/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).rejects.toThrow(/merging the existing GitHub repository/);
-      expect(calls.some((call) => call.args.includes('--abort'))).toBe(true);
-      expect(calls.some((call) => call.args.includes('reset'))).toBe(false);
-      expect(calls.find((call) => call.args.includes('remove'))?.args).toEqual(
-        expect.arrayContaining(['remote', 'remove', 'origin']),
-      );
-      expect(calls.some((call) => call.args.includes('push'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('does not call for repair when the merge never started', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-merge-unstarted-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'local-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin \+refs\/heads\/main:refs\/remotes\/origin\/main/ },
-        { match: /merge --allow-unrelated-histories/, reject: true },
-        // No MERGE_HEAD: the merge was refused before it touched the tree, so
-        // `git merge --abort` would fail too — and that is not damage.
-        { match: /rev-parse --verify --quiet MERGE_HEAD$/, reject: true },
-        { match: /remote remove origin/ },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      const rejection = provisioner
-        .linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok')
-        .catch((error: unknown) => error);
-      const error = await rejection;
-      expect(error).toBeInstanceOf(ProvisioningError);
-      expect(error).not.toBeInstanceOf(AmbiguousGitPushError);
-      expect((error as Error).message).toMatch(/merging the existing GitHub repository/);
-      expect(calls.some((call) => call.args.includes('--abort'))).toBe(false);
-      expect(calls.find((call) => call.args.includes('remove'))?.args).toEqual(
-        expect.arrayContaining(['remote', 'remove', 'origin']),
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps push ambiguity when restoring a merged local branch also fails', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-merged-push-failure-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'local-head\n' },
-        { match: /remote get-url origin/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: 'remote-head\trefs/heads/main\n' },
-        { match: /remote add origin/ },
-        { match: /status --porcelain --untracked-files=no$/, stdout: '' },
-        { match: /ls-remote --symref .* HEAD$/, stdout: 'ref: refs/heads/main\tHEAD\n' },
-        { match: /fetch origin \+refs\/heads\/main:refs\/remotes\/origin\/main/ },
-        { match: /merge --allow-unrelated-histories/ },
-        { match: /push origin HEAD:refs\/heads\/verity\/import-main$/, reject: true },
-        { match: /reset --merge local-head/, reject: true },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).rejects.toBeInstanceOf(AmbiguousGitPushError);
-      expect(calls.find((call) => call.args.includes('reset'))?.args).toEqual(
-        expect.arrayContaining(['reset', '--merge', 'local-head']),
-      );
-      expect(calls.some((call) => call.args.includes('remove'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('redacts credentials when the authenticated remote probe fails', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-probe-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const token = 'secret-token-value';
-      const header = gitAuthHeader(token);
-      const { runner: git } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc\n' },
-        { match: /remote get-url origin/, reject: true },
-        {
-          match: /ls-remote --heads --tags/,
-          reject: true,
-        },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git: async (args) => {
-          try {
-            return await git(args);
-          } catch {
-            throw new Error(`failed ${header} ${token}`);
-          }
-        },
-      });
-
-      let caught: unknown;
       try {
-        await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, token);
-      } catch (error) {
-        caught = error;
+        await provisioner.provision(id);
+        const spec = calls.find((call) => call.method === 'createContainer')
+          ?.payload as ContainerSpec;
+        expect(spec.binds).toContain(`${root}/knowledge/${id}:/knowledge:ro`);
+        expect((spec.binds ?? []).some((bind) => bind.includes(':/knowledge/insights'))).toBe(
+          false,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
-      expect(caught).toBeInstanceOf(ProvisioningError);
-      expect(String((caught as Error & { cause?: unknown }).cause)).not.toContain(token);
-      expect(String((caught as Error & { cause?: unknown }).cause)).not.toContain(header);
+    },
+  );
+
+  it('resumes an incomplete migration without Git and skips completed migrations', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'document-migration-resume-'));
+    const id = randomUUID();
+    const project = await ctx.store.upsertProject({
+      id,
+      ...baseInput,
+      kind: 'local',
+      owner: '__local__',
+      repo: 'documents',
+      cloneDir: 'documents',
+    });
+    const state = join(root, 'document-migrations', id);
+    mkdirSync(state, { recursive: true });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: root,
+      dataVolumeRoot: root,
+    });
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
+    try {
+      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'archived' }));
+      await provisioner.prepareLocalDocuments(id);
+      expect(recreate).toHaveBeenCalledOnce();
+      writeFileSync(join(state, 'manifest.json'), JSON.stringify({ stage: 'complete' }));
+      await provisioner.prepareLocalDocuments(id);
+      expect(recreate).toHaveBeenCalledOnce();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('preserves an origin that points somewhere else', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-origin-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
+  it('refuses Code connection without document storage instead of publishing local history', async () => {
     const project = await ctx.store.upsertProject({
       id: randomUUID(),
       ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
       kind: 'local',
-      cloneDir: 'local-my-project',
-    });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc\n' },
-        {
-          match: /remote get-url origin$/,
-          stdout: 'https://secret-password@github.com/acme/other\n',
-        },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      let message = '';
-      try {
-        await provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok');
-      } catch (error) {
-        message = String(error);
-      }
-      expect(message).toMatch(/origin already points/);
-      expect(message).not.toContain('secret-password');
-      expect(calls.some((call) => call.args.includes('remove'))).toBe(false);
-      expect(calls.some((call) => call.args.includes('set-url'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('resumes after a crash that pushed the exact local branch before persistence', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-resume-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
       owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
+      repo: 'local-project',
+      cloneDir: 'local-project',
     });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc123\n' },
-        { match: /remote get-url origin$/, stdout: 'https://github.com/acme/published\n' },
-        { match: /ls-remote --heads --tags/, stdout: 'abc123\trefs/heads/main\n' },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).resolves.toEqual({});
-      expect(calls.some((call) => call.args.includes('push'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps origin when push completion is ambiguous so a retry can recover', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-local-ambiguous-'));
-    mkdirSync(join(root, 'local-my-project', '.git'), { recursive: true });
-    const project = await ctx.store.upsertProject({
-      id: randomUUID(),
-      ...baseInput,
-      owner: '__local__',
-      repo: 'my-project',
-      containerName: 'verity-__local__--my-project',
-      kind: 'local',
-      cloneDir: 'local-my-project',
+    const { runner: git, calls } = fakeGit([]);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: fakeDocker().client,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'image:test',
+      hostCloneRoot: '/var/lib/verity-dev',
+      git,
     });
-    try {
-      const { runner: git, calls } = fakeGit([
-        { match: /symbolic-ref --short HEAD$/, stdout: 'main\n' },
-        { match: /rev-parse --verify HEAD$/, stdout: 'abc123\n' },
-        { match: /remote get-url origin$/, reject: true },
-        { match: /ls-remote --heads --tags/, stdout: '' },
-        { match: /remote add origin/ },
-        { match: /push -u origin main$/, reject: true },
-      ]);
-      const { client: docker } = fakeDocker();
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => undefined,
-        defaultImageRef: 'image:test',
-        hostCloneRoot: root,
-        git,
-      });
-
-      await expect(
-        provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'published' }, 'tok'),
-      ).rejects.toThrow(/pushing main/);
-      expect(calls.some((call) => call.args.includes('remove'))).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    await expect(
+      provisioner.linkCloneToGitHub(project, { owner: 'acme', repo: 'code' }, undefined),
+    ).rejects.toThrow('requires configured document storage');
+    expect(calls).toEqual([]);
   });
 
   it('holds the turn admission barrier for an exclusive project mutation', async () => {
