@@ -3887,9 +3887,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
   });
   void vulnerabilitySessions.rebuild();
-  void vulnerabilitySessions
-    .rescanMissingBaselines()
-    .catch((err: unknown) => app.log.warn({ err }, 'Vulnerability baseline refresh failed'));
   const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
     if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
   });
@@ -7742,6 +7739,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // that scan's own wake is still in flight: it joins the wake and marks activity,
         // so the scan does not put the sandbox back to sleep afterwards.
         try {
+          if (project.state === 'active') {
+            // Only the activity mark matters here; an already running sandbox stays a 200.
+            await deps.provisioner.ensureProjectSandboxAwake?.(id).catch((error: unknown) => {
+              request.log.warn({ err: error, projectId: id }, 'verity: wake activity mark failed');
+            });
+            return {
+              code: 200,
+              project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+            };
+          }
           const awake = (await deps.provisioner.ensureProjectSandboxAwake?.(id)) ?? project;
           return {
             code: 200,
