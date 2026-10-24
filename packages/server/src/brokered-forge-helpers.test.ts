@@ -61,16 +61,11 @@ describe.each(roots)('%s forge test mode', (seed) => {
         },
       ).spawnOptions.env!;
       expect(launched.VERITY_PROJECT_REPO_URL).toBe('http://relay:8080/internal/project/repo');
-      const result = await exec(
-        'bash',
-        [
-          '-c',
-          'printf "protocol=https\\nhost=192.0.2.10:3000\\npath=owner/repo.git\\n\\n" | "$1" get',
-          'helper-test',
-          resolve(seed, 'verity-gh-cred'),
-        ],
-        { env: { ...launched, PATH: env.PATH } },
-      );
+      const execution = exec(resolve(seed, 'verity-gh-cred'), ['get'], {
+        env: { ...launched, PATH: env.PATH },
+      });
+      execution.child.stdin!.end('protocol=https\nhost=192.0.2.10:3000\npath=owner/repo.git\n\n');
+      const result = await execution;
       expect(result.stdout).toBe(
         'username=x-access-token\npassword=verity-broker-' + 'c'.repeat(43) + '\n',
       );
@@ -78,18 +73,9 @@ describe.each(roots)('%s forge test mode', (seed) => {
   );
   it('reports a mismatched authority without revealing credentials', async () => {
     const { env } = await fixture(seed);
-    await expect(
-      exec(
-        'bash',
-        [
-          '-c',
-          'printf "protocol=https\\nhost=unrelated.example\\n\\n" | "$1" get',
-          'helper-test',
-          resolve(seed, 'verity-gh-cred'),
-        ],
-        { env },
-      ),
-    ).rejects.toMatchObject({
+    const execution = exec(resolve(seed, 'verity-gh-cred'), ['get'], { env });
+    execution.child.stdin!.end('protocol=https\nhost=unrelated.example\n\n');
+    await expect(execution).rejects.toMatchObject({
       code: 1,
       stdout: '',
       stderr: expect.stringContaining('configured HTTPS forge authority'),
