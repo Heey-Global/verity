@@ -23,7 +23,7 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.304",
+      "default": "2.1.306",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
@@ -53,7 +53,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "2.0.32",
+      "default": "2.1.2",
       "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {
