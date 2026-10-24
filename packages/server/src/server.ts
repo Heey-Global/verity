@@ -10173,6 +10173,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const projectIds = [source.id, target.id].sort();
       if (projectIds.some((projectId) => projectsBeingDeleted.has(projectId)))
         throw new SessionMoveError('busy', 'A project is being deleted.');
+      if (deps.dataRoot && !isDocumentWorkspace(session.worktree))
+        throw new SessionMoveError(
+          'unsupported_session',
+          'Migrate this legacy repository session to Documents before moving it to a document project.',
+        );
       await deps.provisioner?.prepareLocalDocuments?.(target.id);
       const releases = projectIds.map(beginProjectSpawn);
       try {

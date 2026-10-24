@@ -330,3 +330,57 @@ it('moves pending Documents without Git and retains the source working copy on r
     await app.close();
   }
 });
+
+it('rejects an unmigrated repository session before preparing a move into Documents', async () => {
+  const source = await ctx.store.upsertProject({
+    id: 'unmigrated-source',
+    owner: '__local__',
+    repo: 'legacy',
+    kind: 'local',
+    state: 'active',
+    containerName: 'unmigrated-source',
+  });
+  const target = await ctx.store.upsertProject({
+    id: 'plain-target',
+    owner: '__local__',
+    repo: 'documents',
+    kind: 'local',
+    state: 'active',
+    containerName: 'plain-target',
+  });
+  const worktree = join(projectClonePath(root, source), '.verity-sessions', 'legacy');
+  await mkdir(worktree, { recursive: true });
+  await writeFile(join(worktree, 'code.ts'), 'retained code');
+  await ctx.store.createSession({
+    sessionId: 'unmigrated',
+    projectId: source.id,
+    worktree,
+    model: 'm',
+  });
+  const prepare = vi.spyOn(ctx.store, 'prepareSessionMove');
+  const app = buildServer({
+    eventStore: ctx.store,
+    conductor: new Conductor({ store: ctx.store }),
+    bus: new InMemoryEventBus(),
+    dataRoot: join(root, 'document-data'),
+    projectCloneRoot: root,
+    provisioner: {
+      withProjectExclusiveMutation: async <T>(_id: string, fn: () => Promise<T>) => fn(),
+    } as unknown as Provisioner,
+  });
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/sessions/unmigrated/project',
+      payload: { project: target.id, operationId: randomUUID(), onCommits: 'leave' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ code: 'unsupported_session' });
+    expect(prepare).not.toHaveBeenCalled();
+    expect((await ctx.store.getSession('unmigrated'))?.worktree).toBe(worktree);
+    expect(await readFile(join(worktree, 'code.ts'), 'utf8')).toBe('retained code');
+  } finally {
+    prepare.mockRestore();
+    await app.close();
+  }
+});
