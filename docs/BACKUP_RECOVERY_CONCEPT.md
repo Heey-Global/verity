@@ -158,8 +158,9 @@ Restore, per remote-dependent repository, after the master password has unlocked
 the secret store so the code host connection credentials are usable:
 
 1. Restore `.git` without objects and the working files from the snapshot. Move
-   the restored `config` and `hooks` into `.git/verity-restore/` next to the
-   project, where they persist across failed attempts and retries, and write a
+   the restored `config`, every `worktrees/<name>/config.worktree` and `hooks`
+   into `.git/verity-restore/` next to the project, where they persist across
+   failed attempts and retries, and write a
    sanitized `config` that contains the remote URL from the manifest plus the
    repository-format keys copied from the original: `core.repositoryformatversion`,
    `core.bare`, and every `extensions.*` key such as `objectFormat` and
@@ -170,10 +171,16 @@ the secret store so the code host connection credentials are usable:
    can edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
    `credential.helper`, `url.*.insteadOf` or a `reference-transaction` hook
    would otherwise execute during restore or redirect the fetch credential.
-2. `git fetch origin` through the restored connection, which refills
-   `.git/objects` with everything reachable from the remote.
-3. Check each prerequisite with `git cat-file -e`, then `git index-pack` the
-   local-only packfile into `.git/objects`.
+2. `git index-pack` the local-only packfile into `.git/objects` first; it has
+   no prerequisites of its own.
+3. `git fetch --refetch origin` through the restored connection, which refills
+   `.git/objects` with everything reachable from the remote. `--refetch` makes
+   the negotiation ignore local refs, which at this point still name objects
+   that are not present and would otherwise break or mislead a normal fetch.
+   Then check the prerequisite with `git cat-file -e`. A repository without
+   `origin/HEAD` at capture time was already classified self-contained and does
+   not reach this step; a tampered remote-tracking ref can only enlarge the pack
+   at capture or fail this check at restore.
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
    `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
@@ -376,8 +383,13 @@ over the private control socket. The hook adds two requests to that sequence:
 Both snapshots use the ordinary capture path: incremental, encrypted to the
 public recovery key, no secret needed for host-path and NAS destinations. Capture
 always runs; for a Drive destination only delivery waits for an unlocked secret
-store, so a sealed server leaves the pre-update snapshot in the local spool and
-the Updater records the update as "backed up locally only". The final snapshot is tagged
+store. One rule decides whether the Updater continues: the final snapshot is
+durably committed at a configured destination, or, when every configured
+destination needs the unlocked store and the store is sealed, durably in the
+local spool with the update recorded as "backed up locally only". A sealed
+server at this point is possible: an update may run sealed, and the promoted
+Server then starts sealed as well. Everything else, including a full spool,
+aborts. The final snapshot is tagged
 `pre-update` with previous and target digest, and retention keeps at least the
 last two pre-update snapshots regardless of the schedule's policy.
 
@@ -387,7 +399,8 @@ update history (#1045) shows it ran without a backup; the administrator setting
 "require a backup before updates" turns that into a refusal with a clear reason.
 Only a snapshot durably committed at a configured destination satisfies that
 setting; "backed up locally only" through the Drive spool does not, and the
-refusal names the destination that blocked.
+refusal names the destination that blocked. Without the setting the spool-only
+case proceeds, as stated above.
 Rollback of a committed update that went wrong is the installer's restore path
 fed with the pre-update snapshot; the Updater's own rollback phases stay the
 first line because they only switch containers.
@@ -509,7 +522,11 @@ Verification covers active/sleeping/paused projects, all worktrees and local-onl
 Git history rehydrated against GitHub and against Forgejo, repositories without
 a remote restored offline, unreachable and revoked code hosts, deleted
 repositories and rewritten history, knowledge originals/revisions, settings and
-usable integration secrets after master-password unlock. For updates, prove that
+usable integration secrets after master-password unlock. Cover a session worktree
+with staged-only blobs, a branch deleted on the host after a squash merge, a
+missing `origin/HEAD`, a tampered remote-tracking ref, a malicious
+`config.worktree` and a fetch into a repository whose refs still dangle. For
+updates, prove that
 the final snapshot is taken after quiescing and before the candidate migrates,
 that a failed snapshot aborts before the key hand-off, that the default records
 an unbacked update, and that "require backup" refuses an update whose snapshot

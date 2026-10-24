@@ -172,10 +172,11 @@ prerequisite commits. Restore rehydrates a remote-dependent repository by
 restoring `.git` without objects, fetching from the code host through the
 restored connection, importing the local-only packfile and running `git fsck`.
 Rehydration runs in the backup execution identity with hooks disabled, with the
-restored `config` and `hooks` set aside durably next to the project and a
+restored `config`, per-worktree `config.worktree` files and `hooks` set aside
+durably next to the project and a
 sanitized configuration in its place that carries only the remote URL from the
 manifest and the repository-format keys (`core.repositoryformatversion`,
-`extensions.*`), which do not execute code but without which Git misreads
+`core.bare`, `extensions.*`), which do not execute code but without which Git misreads
 SHA-256 and worktree-config repositories. Users and
 agents can edit `config` and `hooks`, and settings such as `core.sshCommand`,
 `core.fsmonitor`, `credential.helper` or `url.*.insteadOf` would otherwise run
@@ -341,11 +342,16 @@ Server to serving through the journal's existing rollback path from
 release and is retained by a separate rule, at least the last two pre-update
 snapshots, independent of the ordinary schedule's retention.
 
-"Require a backup" is satisfied only by a snapshot durably committed at a
-configured destination. A snapshot that reached the local spool because the
-Drive destination needs an unlocked secret store does not satisfy it; the
-Updater reports which destination blocked. A failed or timed-out snapshot
-aborts the update before any irreversible step, never after it. The snapshot is
+One rule decides whether the Updater continues after the final snapshot. It
+continues when the snapshot is durably committed at a configured destination.
+If every configured destination needs the unlocked secret store and the store is
+sealed, which can happen because an update may run sealed and the promoted
+Server then starts sealed too, the Updater continues once the snapshot is
+durably in the local spool and records the update as "backed up locally only".
+Anything else, a failed or timed-out snapshot or a spool that is full, aborts the
+update before any irreversible step, never after it. "Require a backup" tightens
+the rule: only a destination commit satisfies it, a spool-only snapshot is a
+refusal, and the refusal names the destination that blocked. The snapshot is
 written through the same code path as scheduled backups, so it is incremental,
 encrypted to the public recovery key and works with a sealed secret store for
 destinations that do not need it. Rolling back an update uses the pre-update
@@ -501,8 +507,11 @@ project equals the original after rehydration from GitHub and from Forgejo, that
 an unreachable or revoked code host, a deleted repository and rewritten history
 each leave the project suspended and flagged rather than silently truncated,
 that a session worktree with staged-only blobs and a branch deleted on the host
-after a squash merge both restore intact, and that a repository without a
-remote restores without any network. Prove that an
+after a squash merge both restore intact, that a missing `origin/HEAD` falls
+back to a self-contained copy, that a tampered remote-tracking ref can only
+enlarge the pack or fail the prerequisite check, that a malicious
+`config.worktree` never executes during restore, and that a repository without
+a remote restores without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
 candidate runs migrations, that a failed snapshot aborts the update before the
 key hand-off, that the default records an unbacked update, and that the
