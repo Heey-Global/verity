@@ -13781,6 +13781,36 @@ describe('POST /projects/:id/sleep and /wake', () => {
     }
   });
 
+  it('keeps a stuck waking project a conflict when no wake is in flight', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-stuck-waking',
+      owner: 'heey-global',
+      repo: 'stuck-waking',
+      containerName: 'dev-heey-global-stuck-waking',
+      state: 'waking',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: vi.fn(),
+      wakeProject: vi.fn(),
+      // The real provisioner refuses a `waking` row it has no attempt for, e.g. after a restart.
+      ensureProjectSandboxAwake: vi.fn(async (id: string) => {
+        throw new ProvisioningError(`project ${id} is waking`);
+      }),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-stuck-waking/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.ensureProjectSandboxAwake).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('rejects a transition from the wrong lifecycle state', async () => {
     await ctx.store.upsertProject({
       id: 'p-failed-sleep-route',

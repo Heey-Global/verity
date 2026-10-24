@@ -7748,6 +7748,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
           };
         } catch (error) {
+          // A row left in `waking` without a wake in flight (after a restart) stays a conflict.
+          if (project.state === 'waking' && error instanceof ProvisioningError)
+            return { code: 409, error: `project ${id} is ${project.state}` };
           request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
           throw error;
         }
