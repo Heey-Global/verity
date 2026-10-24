@@ -59,6 +59,13 @@ Do not support the master password, another passphrase or account recovery as
 alternative decryption paths. Neither Verity's hosted service nor a Uplink
 account can recover a lost key.
 
+Encrypting to a public key does not prove who wrote a manifest, so the public
+recipient key is confidential host state that never reaches a destination, and
+every manifest is signed with a host-local signing key whose verification key is
+part of the recovery kit. Restore refuses an unsigned or wrongly signed manifest.
+A compromised host can forge both, which is the accepted host-compromise case; a
+destination cannot.
+
 The recovery kit shows the key as text with a checksum and as a QR code. Setup
 requires a successful re-entry check. Restore accepts QR scan, clipboard paste
 and typed entry with checksum validation; a 256-bit key must never have to be
@@ -191,8 +198,12 @@ are not repeated here, so that one text stays authoritative.
   only" state.
 - Pending state is captured by later snapshots under its own
   `pending-rehydration` class, carrying the original remote URL, connection and
-  trusted tip forward, so a later restore can still rehydrate it. No pin on the
-  source snapshot is attempted, because it could not be enforced.
+  trusted tip forward, so a later restore can still rehydrate it; that restore
+  strips and stages the renamed directory like any other, because the project
+  may have been resumed in the meantime. No pin on the source snapshot is
+  attempted, because it could not be enforced. A repository whose frozen copy
+  lost objects to a concurrent `git gc` is re-frozen with bounded retries and
+  otherwise captured as plain files with an `unstable` flag.
 
 This makes the backup of a code project complete only together with the code
 host. The ADR accepts that: the host already is the system of record for pushed
@@ -275,8 +286,9 @@ destination and usually takes only the delta since the last scheduled backup.
 After `quiescing-old`, when no turn is writing anymore and before
 `handing-off-key` and `activating-candidate`, the Updater requests a final
 incremental snapshot. That second pass contains seconds of changes and is the
-exact pre-migration state. The Updater continues only after the destination has
-durably acknowledged that final snapshot, because it is the rollback point; the
+exact pre-migration state. The Updater continues only after that final snapshot
+is durable under the rule below, normally acknowledged by the destination,
+because it is the rollback point; the
 warm pass exists so this wait is short, and the update status shows it as its
 own phase. Quiescing must therefore leave the old Server's control socket and
 database connection usable, and a failed or timed-out snapshot returns the old

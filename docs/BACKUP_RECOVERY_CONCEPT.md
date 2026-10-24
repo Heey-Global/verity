@@ -153,8 +153,14 @@ set to that copy and reads nothing from the live repository, so there is no
 window between a check
 and the pack in which the sandbox can change what Git sees. The copy is what
 the snapshot stores as the repository's metadata and, for self-contained
-repositories, as its objects, so refs, objects and pack come from one moment;
-only working files are copied live. The linked worktrees' `HEAD`, index and
+repositories, as its objects, so refs, objects and pack are read from one copy.
+The copy itself is live and not atomic: a `git gc` running in the sandbox can
+delete a pack after its refs were copied, so the frozen copy can name objects it
+does not hold. The tip `fsck`, `rev-list` and `pack-objects` detect that as
+missing objects; the response is a re-freeze with bounded retries, and after the
+last attempt the repository is captured from its latest copy as plain files with
+an `unstable` flag, never silently without its local-only history. Only working
+files are copied live. The linked worktrees' `HEAD`, index and
 reflogs live under `.git/worktrees/<name>` and travel with the copy. Where
 classification needs the original `config`, for example to detect a promisor
 remote or a partial clone, it is read as data with
@@ -162,9 +168,9 @@ remote or a partial clone, it is read as data with
 and follows no include. At restore, step 1 below sets the user's `config`,
 `config.worktree` and `hooks` aside before any command runs, for
 self-contained and remote-dependent repositories alike. The lifecycle lock is
-held only while the freeze copies `.git`; verification and packing run on the
-frozen copy after it is released, so a large history does not block sleep, wake
-or provisioning.
+held while repositories are frozen and working files are copied, as capture
+step 2 states; verification and packing run on the frozen copy after it is
+released, so a large history does not block sleep, wake or provisioning.
 
 On top of that, every command uses one hardened invocation as defense in depth:
 the backup execution identity (in the first release the server process, which
@@ -349,13 +355,21 @@ unlocked the secret store so the code host connection credentials are usable:
    repository without a trusted tip at capture time was already classified
    self-contained and does not reach this step. Remote-tracking refs restored
    from the snapshot are untrusted and are overwritten here.
-4. `git fsck --connectivity-only` and `git worktree repair`, the latter on the
-   pointers already validated in step 1. Only after `fsck` passes, put the original `config`, the main and
-   every per-worktree `config.worktree`, `hooks`, and the `shallow`, graft and
-   replace files back from the staging area and remove the staging copy; they
-   are user content, not restore input. On failure they stay in staging, and a
-   retry starts again from the
-   sanitized state without overwriting them. A default branch renamed on the
+4. Reinstate `shallow`, `info/grafts` and `refs/replace/*` from staging first:
+   they are data, not executable configuration, and `GIT_NO_REPLACE_OBJECTS=1`
+   in the hardened invocation keeps replace refs from steering traversal; a
+   shallow or grafted repository cannot pass a connectivity check without them.
+   Then `git fsck --connectivity-only` and `git worktree repair`, the latter on
+   the pointers already validated in step 1. What `fsck` decides depends on the
+   class. For a remote-dependent or pending-rehydration repository a failure
+   means rehydration failed and the project stays pending. For a self-contained
+   repository a failure is recorded and the project is marked "Code incomplete";
+   for one flagged `alternates-dropped` that failure is the expected terminal
+   outcome, not something a retry can change. In every case the user's
+   `config`, the main and every per-worktree `config.worktree` and `hooks` are
+   put back from staging once the last Git command of the restore has run,
+   because nothing in the restore executes them afterwards and they are user
+   content, not restore input; the staging copy is removed only then. A default branch renamed on the
    host since capture needs no handling: the rename keeps the commit, the fetch
    brings it under its new name, and the prerequisite check is by OID.
 
@@ -376,11 +390,15 @@ local-only packfile and the set-aside user config, and, copied forward
 unchanged from the original manifest, the remote URL, connection id, trusted
 tip and branch. A later restore treats a `pending-rehydration` project like a
 remote-dependent one whose rehydration has not happened yet, with two
-differences spelled out: it renames `.git.verity-incomplete` back to `.git`
-before step 1, and the user `config`, `config.worktree` files and `hooks`
-carried in the staging directory are the authoritative copies, so step 1 does
-not set anything aside again and the sanitized `config` found inside the
-renamed directory is discarded. The local-only commits therefore stay
+differences spelled out. It renames `.git.verity-incomplete` back to `.git`
+before step 1, and step 1 then runs in full on that directory: the project may
+have been resumed in "working files only" state, so everything inside it is
+sandbox-written and is stripped and staged like any other restored `.git`, and
+a fresh sanitized `config` is written. The user `config`, `config.worktree`
+files and `hooks` carried forward from the first restore's staging directory
+are the authoritative copies that step 4 reinstates; the versions stripped from
+the renamed directory are kept beside them for the user and are never
+reinstated automatically. The local-only commits therefore stay
 recoverable through the new installation's own unattended backups for as long
 as they are retained there. No pin on the source
 snapshot is attempted: it could not be enforced when the new installation
@@ -421,7 +439,19 @@ streaming-encryption construction for objects and manifests, with per-chunk
 ordering, an explicit end-of-stream marker and completeness checks, so
 truncation, reordering and splicing are detected before any byte is acted on.
 Encrypt project names, file names, secret values and detailed metadata, not
-only content; a destination still observes sizes, counts and timing. Bound the
+only content; a destination still observes sizes, counts and timing.
+
+Recipient encryption alone does not authenticate the writer: anyone holding the
+public recipient key can mint objects and manifests that decrypt cleanly, and a
+forged manifest would feed `index-pack`, path restore and the remote URL of the
+credentialed fetch. Two measures close that. The public recipient key is treated
+as confidential host state, never written to a destination, a manifest or hosted
+metadata. And every manifest is signed with a host-local signing key (Ed25519)
+kept in the same restricted storage as the fingerprint key; its verification key
+is part of the recovery kit and the restore refuses a manifest whose signature
+does not verify against the kit. A compromised host can forge signatures, which
+is already the accepted host-compromise case; a destination or an attacker who
+only obtained the public recipient key cannot. Bound the
 resources every parser may consume (manifest size, path count and length, link
 depth, object count) and validate archive paths and links against the staging
 root before writing, so a malicious manifest cannot exhaust memory or escape
@@ -598,8 +628,10 @@ over the private control socket. The hook adds two requests to that sequence:
 2. After `quiescing-old`, before `handing-off-key`: request a final incremental
    snapshot. No turn writes anymore, so it captures the exact pre-migration state
    and transfers seconds of change. The Updater continues only after the
-   destination has durably acknowledged this snapshot, not after local capture,
-   because it is the rollback point. This extends the quiesced window by the
+   snapshot is durable in the sense of the three-case rule below, normally the
+   destination's acknowledgement and, for a sealed server whose only
+   destinations need the unlocked store, the local spool, not after bare local
+   capture, because it is the rollback point. This extends the quiesced window by the
    upload of that delta; the warm pass keeps it short, and the update status
    shows the wait as its own phase. Two requirements on the Updater follow:
    quiescing must leave the old Server's control socket and database connection
@@ -772,7 +804,11 @@ missing trusted tip, a remote-tracking ref moved onto a local-only commit from
 inside the sandbox, a symlink under `.git` pointing at another project, a
 `gitdir` or `commondir` entry pointing outside the project before freeze and
 before `worktree repair`, a planted object under the trusted tip's OID with forged
-parents, a renamed default branch, a malicious `config.worktree` in
+parents, a renamed default branch, a repository renamed or transferred on the
+host so that the recorded URL now redirects (the restore reports the redirect
+target instead of following it and asks the administrator to update the project
+record), a `git gc` in the sandbox during the freeze, a forged manifest encrypted
+to the recipient key but unsigned, a malicious `config.worktree` in
 the main and in a linked worktree, a sandbox-written commit-graph, replace ref,
 graft or shallow file added between classification and pack, a repository with
 alternates or submodules, and a fetch into a repository whose refs still dangle. For
