@@ -261,7 +261,11 @@ it('stops consent and DATA after native start failure', async () => {
 });
 it('reports cleanup failure rather than returning a successful attempt', async () => {
   mockStop.mockRejectedValue(new Error('stop failed'));
-  await expect(selectedRecordingAttempt(options)).rejects.toThrow('cleanup failed');
+  const onResponse = jest.fn();
+  await expect(selectedRecordingAttempt({ ...options, onResponse })).rejects.toThrow(
+    'cleanup failed',
+  );
+  expect(onResponse).toHaveBeenCalledWith(200);
 });
 it('does not retry a failed warmup', async () => {
   mockRequest.mockResolvedValue({ status: 503 });

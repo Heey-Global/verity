@@ -37,6 +37,8 @@ export interface SelectedRecordingAttemptOptions extends Omit<
   getToken: () => string | null | undefined;
   runId: string;
   installationFingerprint: string;
+  /** Observed response only; successful cleanup is reported by resolution. */
+  onResponse?: (status: number) => void;
 }
 let occupied = false;
 
@@ -256,6 +258,7 @@ export async function selectedRecordingAttempt(
         ),
       );
       check();
+      options.onResponse?.(result.status);
       if (result.status !== 200) throw new Error('Selected warmup failed');
       return { status: result.status };
     } finally {
