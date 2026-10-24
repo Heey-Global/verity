@@ -9,6 +9,8 @@ import {
   symlink,
   open,
   appendFile,
+  truncate,
+  stat,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -238,3 +240,36 @@ it.each(['path', 'ancestor'] as const)(
     });
   },
 );
+
+it('retains an oversized local edit without deleting its base or blocking other files', async () => {
+  const { documents, a } = await fixture();
+  await writeFile(join(documents, 'large.bin'), 'base');
+  await a.prepare();
+  await truncate(join(a.view, 'large.bin'), 65 * 1024 * 1024);
+  await writeFile(join(a.view, 'note.md'), 'publish me');
+  await a.prepare();
+  const result = await a.publish();
+  expect(result.changed).toEqual(['note.md']);
+  expect(await readFile(join(documents, 'large.bin'), 'utf8')).toBe('base');
+  expect((await stat(join(a.view, 'large.bin'))).size).toBe(65 * 1024 * 1024);
+  expect(await a.hasPendingChanges()).toBe(true);
+});
+it('skips oversized canonical files during refresh, recovery and publication', async () => {
+  const { documents, a, b } = await fixture();
+  await writeFile(join(documents, 'large.bin'), 'base');
+  await a.prepare();
+  await writeFile(join(a.view, 'large.bin'), 'local edit');
+  const state = JSON.parse(await readFile(join(a.stateRoot, 'state.json'), 'utf8'));
+  await writeFile(
+    join(a.stateRoot, 'intent.json'),
+    JSON.stringify({ path: 'large.bin', before: state.files['large.bin'], after: 'interrupted' }),
+  );
+  await truncate(join(documents, 'large.bin'), 65 * 1024 * 1024);
+  await writeFile(join(documents, 'note.md'), 'canonical');
+  await Promise.all([a.prepare(), b.prepare()]);
+  expect(await readFile(join(b.view, 'note.md'), 'utf8')).toBe('canonical');
+  await writeFile(join(a.view, 'note.md'), 'updated');
+  expect((await a.publish()).changed).toEqual(['note.md']);
+  expect((await stat(join(documents, 'large.bin'))).size).toBe(65 * 1024 * 1024);
+  expect(await readFile(join(a.view, 'large.bin'), 'utf8')).toBe('local edit');
+});

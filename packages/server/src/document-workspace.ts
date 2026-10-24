@@ -20,6 +20,9 @@ interface Intent {
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 const ignored = new Set([FILE_HISTORY_DIR, '.git']);
+const oversizedVersion = 'snapshot-too-large';
+const isOversized = (error: unknown) =>
+  (error as NodeJS.ErrnoException).code === 'DOCUMENT_SNAPSHOT_TOO_LARGE';
 
 async function durableWrite(path: string, bytes: string | Buffer): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -92,7 +95,9 @@ async function readDocument(root: string, path: string): Promise<Buffer | undefi
       // Bound one snapshot; large files stay visible in the view rather than
       // allowing an agent to exhaust the server's memory during publication.
       if (before.size > 64 * 1024 * 1024)
-        throw new Error(`document exceeds snapshot limit: ${path}`);
+        throw Object.assign(new Error(`document exceeds snapshot limit: ${path}`), {
+          code: 'DOCUMENT_SNAPSHOT_TOO_LARGE',
+        });
       // Read at most the observed size plus one byte. A growing file must never
       // make readFile allocate beyond the snapshot limit before we can reject it.
       const buffer = Buffer.alloc(before.size + 1);
@@ -138,8 +143,14 @@ async function inventory(root: string): Promise<Versions> {
         if (entry.isSymbolicLink()) throw new Error(`document symlinks are not supported: ${rel}`);
         if (entry.isDirectory()) await walk(rel);
         else {
-          const bytes = await readDocument(root, rel);
-          if (bytes) result[rel] = digest(bytes);
+          try {
+            const bytes = await readDocument(root, rel);
+            if (bytes) result[rel] = digest(bytes);
+          } catch (error) {
+            if (!isOversized(error)) throw error;
+            // Keep an entry: omission would misinterpret an oversized edit as deletion.
+            result[rel] = oversizedVersion;
+          }
         }
       }
     } finally {
@@ -228,7 +239,11 @@ export class DocumentWorkspace {
     try {
       current = await readDocument(this.documents, intent.path);
     } catch (error) {
-      if (!['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      if (
+        !isOversized(error) &&
+        !['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+      )
+        throw error;
       // Another writer replaced the path or an ancestor after the intent was
       // recorded. Keep the old base so publication can retain a conflict.
       await unlink(join(this.stateRoot, 'intent.json'));
@@ -264,6 +279,7 @@ export class DocumentWorkspace {
       const local = await inventory(this.view);
       const current = await inventory(this.documents);
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(current)])) {
+        if (local[path] === oversizedVersion || current[path] === oversizedVersion) continue;
         if ((local[path] ?? null) !== (state.files[path] ?? null)) continue;
         if ((local[path] ?? null) === (current[path] ?? null)) continue;
         try {
@@ -275,7 +291,10 @@ export class DocumentWorkspace {
           else state.files[path] = digest(bytes);
           await this.save(state);
         } catch (error) {
-          if (!['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+          if (
+            !isOversized(error) &&
+            !['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+          )
             throw error;
           // Retain both trees and their bases on a structural collision. Refresh
           // must not recursively erase a working directory or block future turns.
@@ -320,7 +339,7 @@ export class DocumentWorkspace {
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(local)])) {
         const base = state.files[path] ?? null;
         const next = local[path] ?? null;
-        if (base === next) continue;
+        if (next === oversizedVersion || base === next) continue;
         const bytes = await readDocument(this.view, path);
         if ((bytes === undefined ? null : digest(bytes)) !== next)
           throw new Error(`document changed during publication: ${path}`);
@@ -328,6 +347,7 @@ export class DocumentWorkspace {
         try {
           current = await readDocument(this.documents, path);
         } catch (error) {
+          if (isOversized(error)) continue;
           if (!['ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
             throw error;
           // File/directory collisions are conflicts, never recursive replacements.
