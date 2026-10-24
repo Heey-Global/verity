@@ -93,7 +93,7 @@ even with a valid archive and recovery key.
 ### Scope
 
 From the first release, create complete logical snapshots in an incremental
-encrypted repository, with self-contained exports available for portability.
+encrypted repository; self-contained portable exports follow in a later step.
 Every snapshot includes:
 
 - the complete application database (settings, projects, memberships, sessions,
@@ -158,9 +158,9 @@ paths that run outside the sandbox. Remote-tracking refs are not trusted for
 this, because everything under `.git` is writable from the sandbox and a ref
 moved onto a local-only commit would silently drop history from the pack. The
 objects behind the tip are sandbox-writable too, so capture verifies them with
-`git fsck <trusted-tip>` before the pack and falls back to a self-contained copy
-on any mismatch; the full read of pushed history per snapshot is the accepted
-price. Only
+`git fsck <trusted-tip>` on the frozen copy before the pack and falls back to a
+self-contained copy on any mismatch; the full read of pushed history per
+snapshot, outside the lifecycle lock, is the accepted price. Only
 the default branch is excluded, not every remote branch: feature branches are
 routinely squash-merged and deleted on the host, and a stale tip for a deleted
 branch would exclude commits the host no longer holds. Without a recorded tip
@@ -184,20 +184,25 @@ from the code host through the restored connection into a fresh bare repository,
 moving the packs over, checking the prerequisite and running `git fsck`. The credential travels as an in-memory `http.extraheader` for that
 one command, as the provisioner does today, passed through the child's
 `GIT_CONFIG_*` environment rather than argv, never through a helper or a file.
-No Git command the backup runs reads a sandbox-written `config` or `hooks`:
-capture works on a sanitized metadata copy of `.git` in server-owned staging
-with `GIT_OBJECT_DIRECTORY` pointing at the live objects, and restore sets the
-user's `config`, `config.worktree` and `hooks` aside before the first command,
-for every repository. A denylist of dangerous keys cannot be complete, so this
-is the primary protection. On top of it, every command uses one hardened
+No Git command the backup runs reads a sandbox-written file: capture first
+freezes the repository by copying the whole `.git`, objects included, into
+server-owned staging, strips `config`, every `config.worktree`, `hooks`,
+alternates, shallow, grafts and replace refs from the copy, and runs every
+command against the copy alone; restore sets the user's `config`,
+`config.worktree` and `hooks` aside before the first command, for every
+repository. A denylist of dangerous keys cannot be complete, so this is the
+primary protection, and because check and pack read one frozen copy there is
+no window for the sandbox to change what Git sees. The Git floor on server and
+installer images is 2.39. On top of it, every command uses one hardened
 invocation: the backup execution identity, no system or global config, and
 command-line overrides for the keys known to execute or redirect in the commands
 used (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
 `credential.helper`, `core.askPass`, `core.alternateRefsCommand`,
 `protocol.allow`, `gc.auto`, `maintenance.auto`, `core.commitGraph`,
 `safe.directory`, plus `GIT_NO_REPLACE_OBJECTS`). Shallow, graft and replace
-files are checked before and after the pack and force a self-contained copy.
-Alternates are never honored: the pack excludes borrowed objects, restore
+files present at the freeze force a self-contained copy.
+Alternates are never honored: the freeze drops the file, the copy holds only the
+repository's own objects, restore
 removes the file, and the repository is flagged incomplete. The one
 credentialed fetch never runs against the restored repository: it fetches into
 a fresh bare repository with an allowlisted configuration written by Verity, and
@@ -211,7 +216,7 @@ Rehydration additionally sets the restored `config`, the main and per-worktree
 sandbox-writable tree and puts a sanitized configuration in its place that
 carries only the remote URL from the project record, the repository-format keys
 (`core.repositoryformatversion`, `core.bare`, and the explicit extensions
-`objectFormat`, `worktreeConfig`, `refStorage`) and the standard
+`objectFormat` and `worktreeConfig`) and the standard
 `remote.origin.fetch` refspec. Users and agents can edit `config` and `hooks`,
 and settings such as `core.sshCommand`, `core.fsmonitor`, `credential.helper`
 or `url.*.insteadOf` would otherwise run code or redirect the fetch credential
@@ -222,10 +227,10 @@ live there, and it needs the code host reachable. When the host is unreachable,
 the connection is revoked, or the prerequisites no longer exist because history
 was rewritten or the repository was deleted, the project stays suspended with a
 "Code incomplete" warning, its working files on disk and its local commits
-preserved as the unimported packfile. That pending state is included in later
-snapshots and the source snapshot is pinned against retention until the project
-has rehydrated or been captured once more, so the new installation's own
-backups never lose those commits. The user can retry rehydration after
+preserved as the unimported packfile. That pending state is captured in later
+snapshots under its own `pending-rehydration` class, carrying the original
+remote URL, connection and trusted tip forward, so a later restore can still
+rehydrate it and the new installation's own backups never lose those commits. The user can retry rehydration after
 reconnecting, or resume the project in a defined "working files only" state in
 which the unusable `.git` is renamed aside and Code shows no history. The restore never reports such a
 project as recovered.
@@ -339,9 +344,10 @@ hours and would turn a nightly backup into a maintenance window. Instead:
 
 - Take one transaction-consistent logical snapshot of PostgreSQL (repeatable-read
   segmented logical export). This is the authoritative state.
-- Hold a lifecycle lock during local capture (not remote upload) that refuses provision, deprovision,
-  sleep, wake, mount changes and project deletion. Turns, file edits and commits
-  continue.
+- Hold a lifecycle lock only while repositories are frozen and working files
+  copied, not during verification, packing or upload; it refuses provision,
+  deprovision, sleep, wake, mount changes and project deletion. Turns, file
+  edits and commits continue.
 - Copy worktrees live with before/after change detection and bounded retries.
   This is not an atomic filesystem snapshot: Git validation cannot recover
   missing objects or guarantee coherent application files. Flag unstable paths

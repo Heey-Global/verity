@@ -119,27 +119,41 @@ No Git command the backup runs ever reads a sandbox-written `config` or
 sandbox and its `config` can name programs to run, and no denylist of keys is
 complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
 `includeIf` are examples of what a list tends to miss). At capture, the backup
-first copies `.git` without `objects` into the server-owned capture staging
-area (`<VERITY_ROOT>/capture/<runId>/<projectId>/`, a sibling of `workspaces`
-that no sandbox bind mount contains; the sandbox sees only volume subpaths
-under `workspaces/<repo>` and `secrets`; each run has its own directory and a
-lock, so a scheduled run, the warm pre-update run and a restore in progress
-never share a path), replaces `config` there with a sanitized file holding only
-the repository-format keys, drops `hooks`, and runs `rev-list` and
-`pack-objects` with `GIT_DIR` set to that copy and `GIT_OBJECT_DIRECTORY` set to
-the live `.git/objects`. That same copy, not a second read of the live `.git`,
-is what the snapshot stores as the repository's metadata, so the refs in the
-backup and the pack built for them come from one moment; only working files
-are copied live. The linked worktrees' `HEAD`, index and reflogs live under
-`.git/worktrees/<name>` and travel with the copy. Where classification needs
-`.git/config` content, for example to detect a promisor remote or a partial
-clone, it is read as data with `git config --file <copy> --no-includes`, which
-parses and executes nothing and follows no include. At restore, step 1 below sets the user's `config`, `config.worktree`
-and `hooks` aside before any command runs, for self-contained and
-remote-dependent repositories alike.
+first freezes the repository: it copies the whole `.git`, objects included,
+into the server-owned capture staging area
+(`<VERITY_ROOT>/capture/<runId>/<projectId>/`, a sibling of `workspaces` that
+no sandbox bind mount contains; the sandbox sees only volume subpaths under
+`workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
+a scheduled run, the warm pre-update run and a restore in progress never share
+a path, and the directory is removed on every exit path of the run because it
+holds plaintext refs, index and user `config`). The copy uses reflinks where the
+filesystem offers them and a plain copy otherwise, never hardlinks, which would
+still share the sandbox-writable inode. In the copy, `config` is replaced by a
+sanitized file holding only the repository-format keys; the main and every
+per-worktree `config.worktree`, `hooks`, `objects/info/alternates`, `shallow`,
+`info/grafts` and `refs/replace/*` are removed, and their presence is recorded
+in the manifest. Every Git command then runs with `GIT_DIR` set to that copy and
+reads nothing from the live repository, so there is no window between a check
+and the pack in which the sandbox can change what Git sees. The copy is what
+the snapshot stores as the repository's metadata and, for self-contained
+repositories, as its objects, so refs, objects and pack come from one moment;
+only working files are copied live. The linked worktrees' `HEAD`, index and
+reflogs live under `.git/worktrees/<name>` and travel with the copy. Where
+classification needs the original `config`, for example to detect a promisor
+remote or a partial clone, it is read as data with
+`git config --file <original> --no-includes`, which parses and executes nothing
+and follows no include. At restore, step 1 below sets the user's `config`,
+`config.worktree` and `hooks` aside before any command runs, for
+self-contained and remote-dependent repositories alike. The lifecycle lock is
+held only while the freeze copies `.git`; verification and packing run on the
+frozen copy after it is released, so a large history does not block sleep, wake
+or provisioning.
 
 On top of that, every command uses one hardened invocation as defense in depth:
-the backup execution identity without network except for the one fetch;
+the backup execution identity (in the first release the server process, which
+has network, so the isolation is `protocol.allow=never` on every capture
+command plus the absence of any credential in capture, not a network
+namespace);
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`,
 `GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`; and command-line overrides for the
 keys known to execute or redirect in the commands used (`rev-list`,
@@ -159,14 +173,21 @@ step 3. Classification and the remote URL come from the server's project record
 in the database, never from `.git/config`, so the sandbox cannot choose the host
 that receives the connection credential or confuse the qualification check with
 a look-alike URL. The server and installer images check their Git version at
-startup against the floors this design relies on (2.15 for worktree-aware
-`--all`, `--reflog` and `--indexed-objects`).
+startup against the floor this design relies on: 2.39, the version Debian
+bookworm ships and the server image inherits, which covers worktree-aware
+`--all`, `--reflog` and `--indexed-objects` (2.15), `GIT_CONFIG_COUNT` (2.31,
+below which the credential header would be silently ignored) and `-c
+safe.directory` as protected configuration (2.38). Reftable repositories
+(`extensions.refStorage`) and any other extension the floor does not know are
+copied as files without running Git on them and flagged "not validated".
 
 Capture, per repository that the project record ties to the connected code host:
 
-1. Exclude `.git/objects` (loose objects and packs) from the file copy. Keep the
-   rest of `.git`: `HEAD`, `refs`, `packed-refs`, `index`, `logs`, `config`,
-   `hooks`, `info`, `worktrees/*` and the stash. Verity never writes a token
+1. Exclude `objects/` (loose objects and packs) of the frozen copy from the
+   snapshot. Keep the rest: `HEAD`, `refs`, `packed-refs`, `index`, `logs`,
+   `info`, `worktrees/*` and the stash, plus the user's original `config`,
+   `config.worktree` files and `hooks` taken from the live repository as plain
+   user files. Verity never writes a token
    into `config`; the provisioner passes credentials as an in-memory
    `http.extraheader` (`packages/server/src/provisioner.ts:37`). Users and
    agents can still put secrets there, so `config` is user content encrypted
@@ -197,11 +218,14 @@ Capture, per repository that the project record ties to the connected code host:
    forged parents or trees that name local-only commits or blobs would make the
    `--not <trusted-tip>` walk mark them uninteresting and drop them from the
    pack. Capture therefore runs `git fsck --no-dangling --no-reflogs
-   <trusted-tip>` before the pack, which re-hashes every object reachable from
-   the tip and fails on a mismatch; a failure classifies the repository
-   self-contained and raises a warning. This costs a full read of the pushed
-   history per snapshot, which is accepted: an incremental check cannot be made
-   safe, because a planted object can sit anywhere in that history. Only the default branch is excluded, not every remote
+   <trusted-tip>` on the frozen copy before the pack, which re-hashes every
+   object reachable from the tip and fails on a mismatch; a failure classifies
+   the repository self-contained and raises a warning. Because check and pack
+   read the same frozen copy, nothing can be planted between them. This costs a
+   full read of the pushed history per snapshot, outside the lifecycle lock,
+   which is accepted: an incremental check cannot be made safe, because a
+   planted object can sit anywhere in that history. Acceptance measures this
+   duration on a large repository and the pre-update quiesced window with it. Only the default branch is excluded, not every remote
    branch: feature branches are routinely squash-merged and deleted on the host,
    so a stale tip for `<branch>` would exclude commits the host no longer has.
    Pushed but unmerged branches are therefore included; they are small, and they
@@ -223,12 +247,12 @@ shallow or partial clone with a promisor remote, or submodules under
 restore like the main one. Alternates are never honored: the provisioner does
 not create shared clones, so an `objects/info/alternates` file is either a
 user's `clone --shared` or an attempt to pull another server-readable
-repository into this project's backup. The repository is captured
-self-contained with `--local`, which excludes the borrowed objects; restore
-removes the alternates file before any command runs, so `fsck` never follows a
-host path into another project, and the repository is flagged "Code
-incomplete" because the borrowed objects are missing. The manifest records that
-the file existed. Today's local projects, which
+repository into this project's backup. The freeze removes the alternates file
+from the copy, so the copy holds only the repository's own objects and no
+command follows a host path into another project; the repository is captured
+self-contained as a file copy of those objects and flagged "Code incomplete"
+because the borrowed objects are missing. The manifest records that the file
+existed. Today's local projects, which
 still start from an empty initial commit, fall under this; after the "project
 files without a repository" concept lands they have no Git at all and nothing
 changes here.
@@ -252,12 +276,12 @@ the secret store so the code host connection credentials are usable:
    across failed attempts and retries and nothing in the sandbox can alter them,
    and write a sanitized `config` that contains the repository-format keys
    copied from the original, `core.repositoryformatversion`, `core.bare` and an
-   explicit list of extensions, `extensions.objectFormat`,
-   `extensions.worktreeConfig` and `extensions.refStorage`, without which
-   `index-pack` and `fsck` misbehave on SHA-256, worktree-config or reftable
-   repositories. Other `extensions.*` keys are not copied; `partialClone` in
-   particular would make the restored repository lazy-fetch, and a repository
-   that had it was classified self-contained anyway. Then the remote URL from
+   explicit list of extensions, `extensions.objectFormat` and
+   `extensions.worktreeConfig`, without which `index-pack` and `fsck` misbehave
+   on SHA-256 or worktree-config repositories. Other `extensions.*` keys are not
+   copied; `partialClone` in particular would make the restored repository
+   lazy-fetch, and a repository that had it was classified self-contained
+   anyway; `refStorage` repositories were copied as files without validation. Then the remote URL from
    the project record and the standard
    refspec `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*`. Every
    command in this list uses the hardened invocation described above. Users and
@@ -308,16 +332,21 @@ config stay next to it, and the project screen shows that Code has no history
 until the code host is reconnected and rehydration is retried. Nothing local is
 discarded by that choice; it is not a self-contained repository.
 
-Pending state is itself backed up. A project in "Code incomplete" or "working
-files only" state is captured self-contained: its working files, the renamed
-`.git.verity-incomplete`, and its `<VERITY_ROOT>/restore/<projectId>/` staging
-directory with the unimported local-only packfile and the set-aside user config
-all go into every later snapshot, so the new installation's own unattended
-backups carry the local-only commits forward. In addition, the snapshot a
-restore was taken from is pinned against retention until every project from it
-has either rehydrated or been resumed and captured once in the new repository.
-Without both, retention on the new installation would eventually prune the only
-copy of those commits.
+Pending state is itself backed up, under its own manifest class. A project in
+"Code incomplete" or "working files only" state is captured as
+`pending-rehydration`, not as self-contained: the snapshot carries its working
+files, the renamed `.git.verity-incomplete`, its
+`<VERITY_ROOT>/restore/<projectId>/` staging directory with the unimported
+local-only packfile and the set-aside user config, and, copied forward
+unchanged from the original manifest, the remote URL, connection id, trusted
+tip and branch. A later restore treats a `pending-rehydration` project exactly
+like a remote-dependent one whose rehydration has not happened yet, so the
+local-only commits stay recoverable through the new installation's own
+unattended backups for as long as they are retained there. No pin on the source
+snapshot is attempted: it could not be enforced when the new installation
+starts a fresh repository, when the source was a portable bundle, or when the
+old host is still alive and running its own retention against the same
+destination.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -346,6 +375,17 @@ requires the private key; a compromised host can read current source data and
 its local deduplication index. Verification requires a restore probe with the
 private key. Rotation starts a new repository generation; retain older private
 keys for older snapshots.
+
+Do not invent cryptography: use a maintained, reviewed authenticated
+streaming-encryption construction for objects and manifests, with per-chunk
+ordering, an explicit end-of-stream marker and completeness checks, so
+truncation, reordering and splicing are detected before any byte is acted on.
+Encrypt project names, file names, secret values and detailed metadata, not
+only content; a destination still observes sizes, counts and timing. Bound the
+resources every parser may consume (manifest size, path count and length, link
+depth, object count) and validate archive paths and links against the staging
+root before writing, so a malicious manifest cannot exhaust memory or escape
+the restore directory. Version the format and keep cross-version fixtures.
 
 Recovery kit: key as text with checksum and as QR code, printable. Setup requires
 a successful re-entry check. Restore accepts QR scan, clipboard paste and typed
@@ -475,8 +515,9 @@ coupling and retention dependencies; they are not silently added to version one.
 1. Inventory scope, data locations, capacity and uncovered storage before work;
    write the warnings into the manifest up front.
 2. Acquire the lifecycle lock: refuse provision, deprovision, sleep, wake, mount
-   changes and project deletion during local capture, not remote upload. Turns, edits and commits keep
-   running. There is no global drain.
+   changes and project deletion while repositories are frozen and working files
+   copied, not during verification, packing or upload. Turns, edits and commits
+   keep running. There is no global drain.
 3. Take one transaction-consistent logical PostgreSQL snapshot (repeatable-read
    deterministically segmented logical export through the read-only backup role,
    whose credential is provisioned by compose like the server's own
