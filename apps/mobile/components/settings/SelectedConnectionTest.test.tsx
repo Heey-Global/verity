@@ -232,3 +232,22 @@ it('reports direct verification failure locally without trying server export', a
     runId,
   });
 });
+it('copies only local evidence after the bounded attempt fails and retains the run', async () => {
+  mockAttempt.mockRejectedValue(
+    Object.assign(new Error('secret admission ticket'), { status: 502 }),
+  );
+  await ready();
+  fireEvent.press(screen.getByText('Run bounded connection test'));
+  await screen.findByText('Copy local test failure');
+  fireEvent.press(screen.getByText('Copy local test failure'));
+  await screen.findByText('Local failure copied. This does not confirm server recording or Stop.');
+  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
+    kind: 'selected-test-local-failure',
+    stage: 'bounded-attempt',
+    httpStatus: 502,
+    runId,
+  });
+  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
+  expect(mockExport).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
+});
