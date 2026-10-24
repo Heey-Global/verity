@@ -19,6 +19,28 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+// An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
+// the chips would otherwise open an unrelated github.com repository.
+it('drops the repository identity for a code host this client does not know', () => {
+  const parsed = branchListSchema.parse({
+    current: 'feat/1-x',
+    switchable: [],
+    owner: 'team',
+    repo: 'site',
+    codeHost: { provider: 'gitlab', baseUrl: 'https://gitlab.example' },
+  });
+  expect(parsed).toEqual({ current: 'feat/1-x', switchable: [] });
+  expect(
+    branchListSchema.parse({
+      current: 'feat/1-x',
+      switchable: [],
+      owner: 'team',
+      repo: 'site',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+    }),
+  ).toMatchObject({ owner: 'team', codeHost: { provider: 'forgejo' } });
+});
+
 it('retains the same full PR snapshot in overview and branch responses', () => {
   const pullRequest = {
     number: 42,
@@ -412,7 +434,7 @@ describe('VerityClient Google Drive browser', () => {
 });
 
 describe('VerityClient Gmail session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -421,7 +443,6 @@ describe('VerityClient Gmail session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -431,27 +452,20 @@ describe('VerityClient Gmail session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectGmail({ code: 'code', codeVerifier: 'verifier', redirectUri: 'verity:/' });
     await expect(client.enableSessionGmail('session/1')).resolves.toEqual(connection);
     await client.disableSessionGmail('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/gmail',
-      'http://host/gmail/connect',
       'http://host/sessions/session%2F1/gmail',
       'http://host/sessions/session%2F1/gmail',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
 describe('VerityClient Calendar session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -460,7 +474,6 @@ describe('VerityClient Calendar session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -470,31 +483,20 @@ describe('VerityClient Calendar session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectCalendar({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
     await expect(client.enableSessionCalendar('session/1')).resolves.toEqual(connection);
     await client.disableSessionCalendar('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/calendar',
-      'http://host/calendar/connect',
       'http://host/sessions/session%2F1/calendar',
       'http://host/sessions/session%2F1/calendar',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
 describe('VerityClient Contacts session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -503,7 +505,6 @@ describe('VerityClient Contacts session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -513,26 +514,15 @@ describe('VerityClient Contacts session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectContacts({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
     await expect(client.enableSessionContacts('session/1')).resolves.toEqual(connection);
     await client.disableSessionContacts('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/contacts',
-      'http://host/contacts/connect',
       'http://host/sessions/session%2F1/contacts',
       'http://host/sessions/session%2F1/contacts',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
@@ -1407,6 +1397,19 @@ describe('VerityClient.settings', () => {
     expect(await client.getVeritySettings()).toEqual(settings);
     expect(calls[0]?.url).toBe('http://host/settings');
     expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('parses safe Claude resolution status while accepting servers without it', async () => {
+    const claudeCredentialStatus = { state: 'relogin_required', code: 'refresh_rejected' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, claudeCredentialStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toEqual(
+      claudeCredentialStatus,
+    );
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toBeUndefined();
   });
 
   it('treats a server that predates the external-configured flag as not configured', async () => {
@@ -2913,6 +2916,16 @@ describe('VerityClient.secret store', () => {
 });
 
 describe('VerityClient.validateGithubApp (#320)', () => {
+  it('preserves the permission diagnosis and GitHub action URL', async () => {
+    const commitStatusPermission = {
+      state: 'approval_required',
+      url: 'https://github.com/settings/installations/123',
+    };
+    const { fetch } = fakeFetch(json({ ok: true, commitStatusPermission }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.validateGithubApp()).toEqual({ ok: true, commitStatusPermission });
+  });
+
   it('POSTs to /github/app/validate and parses a success result', async () => {
     const { fetch, calls } = fakeFetch(json({ ok: true, accountLogin: 'acme-org' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -3634,7 +3647,8 @@ describe('connection catalog and project Google access contracts', () => {
     const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getGoogleConnection()).toEqual(account);
-    expect(await client.getConnectionUsage()).toEqual(usage);
+    // A server predating Forgejo omits per-connection counts; the client defaults them.
+    expect(await client.getConnectionUsage()).toEqual({ ...usage, forgejo: {} });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/google/connection',
       '/connections/usage',
@@ -4144,4 +4158,46 @@ it('sends explicit replay and retry options to the welcome endpoint', async () =
   expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
   expect(calls[0]?.init?.method).toBe('POST');
   expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
+});
+
+it('keeps account selection and session exceptions in account-aware requests', async () => {
+  const status = {
+    connected: true,
+    enabled: true,
+    clientId: 'client',
+    accountId: 'work',
+    accountEmail: 'work@example.test',
+    accountName: null,
+    source: 'session',
+    mode: 'account',
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(status),
+    json({ ...status, enabled: false, mode: 'disabled' }),
+    json({ ...status, mode: 'inherit', source: 'project' }),
+    json({ connected: true, accountEmail: 'work@example.test', accountId: 'work', scopes: [] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'account', accountId: 'work' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'disabled' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'inherit' });
+  expect(
+    await client.connectGoogleAccount({
+      accountId: 'work',
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'app:/oauth',
+    }),
+  ).toMatchObject({ accountId: 'work' });
+  expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/google/gmail');
+  expect(jsonBody(calls[0])).toEqual({ mode: 'account', accountId: 'work' });
+  expect(jsonBody(calls[1])).toEqual({ mode: 'disabled' });
+  expect(jsonBody(calls[2])).toEqual({ mode: 'inherit' });
+  expect(calls[3]?.url).toBe('http://host/google/connect');
+  expect(jsonBody(calls[3])).toEqual({
+    accountId: 'work',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'app:/oauth',
+  });
 });

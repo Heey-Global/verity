@@ -4,10 +4,10 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
-  "packageManager": "npm@12.2.0",
+  "packageManager": "npm@12.2.1",
   "description": "Open-core, self-hosted mobile control plane for steering coding agents across a development fleet",
   "engines": {
-    "node": "^26.11.1",
+    "node": "^26.12.1",
     "npm": ">=11.15.0"
   },
   "workspaces": [
@@ -15,6 +15,9 @@
     "apps/*"
   ],
   "overrides": {
+    "@expo/cli": {
+      "zod": "$zod"
+    },
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -42,37 +45,40 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts"
+    "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts",
+    "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.89.0",
+    "@agentclientprotocol/claude-agent-acp": "0.94.0",
     "@agentclientprotocol/codex-acp": "2.2.2",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@openai/codex": "0.162.1",
+    "@openai/codex": "0.163.0",
     "@types/node": "26.6.5",
     "@types/semver": "7.8.0",
-    "@vitest/coverage-v8": "5.0.3",
+    "@vitest/coverage-v8": "5.0.5",
     "esbuild": "0.28.2",
-    "eslint": "10.12.0",
-    "ignore": "7.0.12",
-    "knip": "6.41.0",
+    "eslint": "10.13.0",
+    "ignore": "7.0.13",
+    "knip": "6.42.1",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.1",
-    "prettier": "3.9.9",
+    "playwright": "1.64.1",
+    "prettier": "3.9.10",
+    "query-string": "file:vendor/expo-router-query-string",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "release-please": "17.11.2",
     "semver": "7.8.5",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.71.1",
+    "typescript-eslint": "8.72.0",
     "uuid": "14.0.3",
-    "vitest": "5.0.3",
-    "xcode": "3.0.1",
-    "zod": "4.6.5",
-    "query-string": "file:vendor/expo-router-query-string"
+    "vitest": "5.0.5",
+    "ws": "8.22.0",
+    "xcode": "4.0.0",
+    "zod": "4.6.7"
   }
 }

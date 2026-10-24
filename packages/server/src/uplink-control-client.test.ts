@@ -1,3 +1,4 @@
+import { readFileSync as readEvidenceFixture } from 'node:fs';
 import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 import { EventEmitter } from 'node:events';
 import type { VeritySettingsPatch, EventStore } from '@verity/store';
@@ -377,6 +378,8 @@ describe('UplinkControlClient', () => {
     expect(hello.capabilities).toEqual([
       'remote-control-v1',
       'remote-diagnostics-v1',
+      'remote-diagnostics-v2',
+      'remote-diagnostics-v3',
       'webhook-v1',
     ]);
     expect(hello.channels).toEqual(['http', 'ws', 'remote']);
@@ -3217,8 +3220,15 @@ describe('Uplink connection demand', () => {
 
 describe('coordinated Uplink recordings', () => {
   const runId = '11111111-1111-4111-8111-111111111111';
-  async function ready(capability = true) {
-    const fixture = setup({ offerRemoteControl: true, reserveRemoteConnector: vi.fn() });
+  async function ready(capability: boolean | 2 | 3 = true) {
+    const fixture = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: vi.fn(async () => ({
+        diagnosticId: runId,
+        attach: async () => {},
+        release: () => {},
+      })),
+    });
     fixture.client.start();
     await flush();
     fixture.socket.open();
@@ -3228,7 +3238,12 @@ describe('coordinated Uplink recordings', () => {
       handle: Buffer.alloc(16, 7).toString('base64url'),
       features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60000).toISOString(),
-      capabilities: ['remote-control-v1', ...(capability ? ['remote-diagnostics-v1'] : [])],
+      capabilities: [
+        'remote-control-v1',
+        ...(capability ? ['remote-diagnostics-v1'] : []),
+        ...(capability === 2 ? ['remote-diagnostics-v2'] : []),
+        ...(capability === 3 ? ['remote-diagnostics-v3'] : []),
+      ],
       channels: ['http', 'ws', 'remote'],
     });
     await flush();
@@ -3355,6 +3370,182 @@ describe('coordinated Uplink recordings', () => {
       records: [],
     });
     await expect(stalled).rejects.toThrow('invalid_diagnostics_cursor');
+    await client.stop();
+  });
+  it('pins v2, verifies a paginated golden export and rejects modified evidence', async () => {
+    const fixture = JSON.parse(
+      readEvidenceFixture(
+        new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      document: { runId: string; records: unknown[] } & Record<string, unknown>;
+      exportHash: string;
+    };
+    const { client, socket } = await ready(2);
+    const id = fixture.document.runId;
+    const start = client.startRecording(id, 120000, 2);
+    const request = reply(socket, {
+      ...fixture.document,
+      records: undefined,
+      runId: id,
+      state: 'recording',
+      endedAt: null,
+      stopReason: null,
+      exportHash: null,
+      expiresAt: new Date(Date.now() + 120000).toISOString(),
+    });
+    expect(request.diagnosticsVersion).toBe(2);
+    await start;
+    const sendPage = (cursor: number, nextCursor: number | null, exportHash = fixture.exportHash) =>
+      reply(socket, {
+        ...fixture.document,
+        type: 'diagnostics.exported',
+        exportHash,
+        cursor,
+        nextCursor,
+        records: fixture.document.records.slice(cursor, cursor + 1),
+      });
+    const pending = client.exportRecording(id);
+    sendPage(0, 1);
+    await flush();
+    sendPage(1, null);
+    await expect(pending).resolves.toEqual({ ...fixture.document, exportHash: fixture.exportHash });
+    const corrupted = client.exportRecording(id);
+    sendPage(0, 1, '0'.repeat(64));
+    await flush();
+    sendPage(1, null, '0'.repeat(64));
+    await expect(corrupted).rejects.toThrow('invalid_diagnostics_hash');
+    const mutated = client.exportRecording(id);
+    const first = fixture.document.records[0] as Record<string, unknown>;
+    reply(socket, {
+      ...fixture.document,
+      type: 'diagnostics.exported',
+      exportHash: fixture.exportHash,
+      cursor: 0,
+      nextCursor: 1,
+      records: [{ ...first, lagMs: 1 }],
+    });
+    await flush();
+    sendPage(1, null);
+    await expect(mutated).rejects.toThrow('invalid_diagnostics_hash');
+    const changed = client.exportRecording(id);
+    sendPage(0, 1);
+    await flush();
+    sendPage(1, null, '0'.repeat(64));
+    await expect(changed).rejects.toThrow('diagnostics_export_changed');
+    await expect(client.startRecording(id, 120000, 1)).rejects.toThrow(
+      'diagnostics_version_conflict',
+    );
+    await client.stop();
+  });
+  it('pins v3 selection, returns authoritative status and rejects changed paginated metadata', async () => {
+    const { createHash } = await import('node:crypto');
+    const { canonicalEvidenceJson } = await import('@verity/events');
+    const fixture = JSON.parse(
+      readEvidenceFixture(
+        new URL('../../events/src/fixtures/socket-evidence-v3.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      document: { runId: string; records: Record<string, unknown>[] } & Record<string, unknown>;
+      preparing: Record<string, unknown>;
+      ready: Record<string, unknown>;
+    };
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse(fixture.preparing.startedAt as string));
+    const { client, socket } = await ready(3);
+    const target = 'selected-session';
+    const targetSession = createHash('sha256').update(target).digest('hex').slice(0, 16);
+    const document = {
+      ...fixture.document,
+      targetSession,
+      records: fixture.document.records.map((record) => ({ ...record, session: targetSession })),
+    };
+    const exportHash = createHash('sha256').update(canonicalEvidenceJson(document)).digest('hex');
+    const id = document.runId;
+    socket.message({
+      type: 'session.request',
+      requestId: 'selected_request',
+      sessionId: target,
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15000,
+    });
+    await flush();
+    socket.message({
+      type: 'session.ticket',
+      sessionId: target,
+      ticket: 'ticket',
+      expiresAt: Date.now() + 15000,
+      capability: 'remote-control-v1',
+    });
+    await flush();
+    const start = client.startRecording(id, 30000, 3, target);
+    const request = reply(socket, {
+      ...fixture.preparing,
+      requestId: JSON.parse(socket.sent.at(-1)!).requestId,
+      targetSession,
+    });
+    expect(request).toMatchObject({
+      diagnosticsVersion: 3,
+      targetSessionId: target,
+      durationMs: 30000,
+    });
+    await start;
+    const status = client.recordingStatus(id);
+    reply(socket, {
+      ...fixture.ready,
+      requestId: JSON.parse(socket.sent.at(-1)!).requestId,
+      targetSession,
+    });
+    await expect(status).resolves.toMatchObject({
+      version: 3,
+      targetSession,
+      readiness: { ready: true },
+    });
+    const page = (cursor: number, changed = false) =>
+      reply(socket, {
+        ...document,
+        type: 'diagnostics.exported',
+        exportHash,
+        cursor,
+        nextCursor: cursor === 0 ? 3 : null,
+        records: document.records.slice(cursor, cursor + 3),
+        ...(changed ? { burstStartedAt: fixture.document.startedAt } : {}),
+      });
+    const exported = client.exportRecording(id);
+    page(0);
+    await flush();
+    page(3);
+    await expect(exported).resolves.toEqual({ ...document, exportHash });
+    const changed = client.exportRecording(id);
+    page(0);
+    await flush();
+    page(3, true);
+    await expect(changed).rejects.toThrow('diagnostics_export_changed');
+    const wrong = client.recordingStatus(id);
+    reply(socket, { ...fixture.ready, requestId: JSON.parse(socket.sent.at(-1)!).requestId });
+    await expect(wrong).rejects.toThrow('diagnostics_selection_mismatch');
+    await expect(client.startRecording(id, 30000, 3, 'other-target')).rejects.toThrow(
+      'diagnostics_version_conflict',
+    );
+    await client.stop();
+    vi.useRealTimers();
+  });
+  it('does not silently downgrade v3 on a v2 peer', async () => {
+    const { client, socket } = await ready(2);
+    await expect(client.startRecording(runId, 30000, 3, 'target')).rejects.toThrow(
+      'diagnostics_version_unavailable',
+    );
+    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
+    await client.stop();
+  });
+  it('does not silently downgrade an explicit v2 request on an old Uplink', async () => {
+    const { client, socket } = await ready();
+    await expect(client.startRecording(runId, 120000, 2)).rejects.toThrow(
+      'diagnostics_version_unavailable',
+    );
+    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
     await client.stop();
   });
 });

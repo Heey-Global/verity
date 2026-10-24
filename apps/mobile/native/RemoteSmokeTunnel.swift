@@ -7,6 +7,7 @@ enum RemoteSmokeError: Error {
   case invalidFrame
   case closed
   case limitReached
+  case sendStalled
 }
 
 func matchesIP(_ bytes: Data, host: String, family: Int32) -> Bool {

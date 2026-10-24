@@ -98,6 +98,21 @@ const verifiedNodeVersion = readFileSync(
   'utf8',
 ).trim();
 
+/** The start failure runsc reports for a filestore left by an unclean teardown,
+ *  as worded in runsc/container/container.go (createGoferFilestoreInSelf) of the
+ *  release pinned in deploy/gvisor/versions.env, wrapped the way dockerd relays it. */
+function staleFilestoreError(containerId: string): DockerError {
+  const filestore = `/proc/4242/root/var/lib/docker/overlay2/layer/merged/.gvisor.filestore.${containerId}`;
+  return new DockerError({
+    kind: 'other',
+    status: 500,
+    message:
+      `failed to create task for container: OCI runtime create failed: runsc-project: ` +
+      `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
+      `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
+  });
+}
+
 describe('openCodeSettingsConfig', () => {
   it('builds a provider config only from complete settings', () => {
     expect(openCodeSettingsConfig(undefined)).toBeUndefined();
@@ -114,6 +129,7 @@ describe('openCodeSettingsConfig', () => {
       },
       provider: {
         verity: {
+          npm: '@opencode/ai/providers/openai-compatible',
           options: {
             baseURL: 'http://127.0.0.1:47821/opencode',
             apiKey: 'verity-opencode-gateway-placeholder-v1',
@@ -603,6 +619,48 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
+  it('cancels temporary scan sleep when activity changes during Docker inspection', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => ({
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      })),
+    });
+    const relay = defaultProjectRelay();
+    relay.sleep = async () => undefined;
+    const p = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+    p.tryBeginProjectSandboxActivity(id);
+    p.endProjectSandboxActivity(id);
+    const expected = p.projectSandboxLastActivityAt(id);
+    vi.spyOn(docker, 'inspectContainer').mockImplementation(async () => {
+      const result = {
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await p.ensureProjectSandboxAwake(id);
+      return result;
+    });
+    expect(
+      await p.sleepProject(id, {
+        shouldRestore: () => p.projectSandboxLastActivityAt(id) === expected,
+      }),
+    ).toMatchObject({ state: 'active' });
+    expect(calls.find((c) => c.method === 'stopContainer')).toBeUndefined();
+  });
+
   it('refuses to sleep while a Sandbox activity lease is held', async () => {
     const id = await seedProject('active');
     const { client: docker, calls } = fakeDocker();
@@ -811,6 +869,7 @@ describe('ProvisionerImpl (#174)', () => {
       id: 'container-1',
       running: false,
       image: 'verity-devc-test:latest',
+      networks: { 'project-network': {} },
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
       mounts: [
         { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
@@ -821,7 +880,11 @@ describe('ProvisionerImpl (#174)', () => {
       securityOpt: ['no-new-privileges:true'],
     };
     await ctx.store.updateProjectSleepState(id, 'sleeping', {
-      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
+        ...retained,
+        running: true,
+        networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+      }),
       sleepingSince: new Date(),
       wakeStartedAt: null,
     });
@@ -879,6 +942,84 @@ describe('ProvisionerImpl (#174)', () => {
     expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
   });
 
+  it.each([false, true])(
+    'restores a retained runner-only key safely (symlink: %s)',
+    async (symlink) => {
+      const runnerGid = process.getgid?.();
+      if (runnerGid === undefined) return;
+      const id = await seedProject('active');
+      const secretRoot = mkdtempSync(join(tmpdir(), 'verity-wake-key-'));
+      const keyDir = join(secretRoot, 'claude-egress');
+      mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+      const keyPath = join(keyDir, `egress_client.${id}.key`);
+      const targetPath = symlink ? join(keyDir, 'other.key') : keyPath;
+      writeFileSync(targetPath, 'OLD-KEY\n', { mode: 0o600 });
+      chmodSync(targetPath, 0o040);
+      if (symlink) symlinkSync(targetPath, keyPath);
+      const before = statSync(targetPath);
+      writeFileSync(join(keyDir, `egress_ca.${id}.crt`), 'OLD-CA');
+      writeFileSync(join(keyDir, `egress_client.${id}.crt`), 'OLD-CERT');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+        mounts: [
+          {
+            source: keyPath,
+            destination: '/run/verity/claude-egress/client.key',
+            readWrite: false,
+          },
+        ],
+      };
+      try {
+        await ctx.store.updateProjectSleepState(id, 'sleeping', {
+          sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+          sleepingSince: new Date(),
+          wakeStartedAt: null,
+        });
+        const { client: docker, calls } = fakeDocker({
+          inspectContainer: vi
+            .fn()
+            .mockResolvedValueOnce(retained)
+            .mockResolvedValue({ ...retained, running: true }),
+        });
+        const relay = defaultProjectRelay();
+        relay.reactivate = relay.start.bind(relay);
+        relay.sleep = async () => {};
+        const { service } = fakeEgressIdentity();
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => undefined,
+          defaultImageRef: 'sandbox:test',
+          hostCloneRoot: '/work',
+          projectRelay: relay,
+          gitSecretRoot: secretRoot,
+          claudeEgressIdentity: service,
+          runnerRuntimeGid: runnerGid,
+        });
+        if (symlink) {
+          await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+            'not a regular file',
+          );
+          expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+        } else {
+          // Root bypasses owner write permissions; non-root runs catch a wake that
+          // tries to truncate the 0040 key before restoring its owner's access.
+          expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+          expect(statSync(keyPath).ino).toBe(before.ino);
+        }
+        expect(statSync(targetPath).mode & 0o777).toBe(0o040);
+        chmodSync(targetPath, 0o600);
+        expect(readFileSync(targetPath, 'utf8')).toBe(symlink ? 'OLD-KEY\n' : 'CLIENT-KEY-PEM\n');
+      } finally {
+        rmSync(secretRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('keeps a retained sleeping Sandbox when Docker inspection fails transiently', async () => {
     const id = await seedProject('active');
     const retained = {
@@ -919,6 +1060,122 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
     expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('replaces a retained sleeping Sandbox whose stale gVisor filestore blocks its start', async () => {
+    // Returning it to sleep would fail every later wake the same way.
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      createdContainerId: 'container-2',
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
+      startContainer: vi.fn(async (containerId: string) => {
+        if (containerId === 'container-1') throw staleFilestoreError('container-1');
+      }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = vi.fn(async () => ({
+      identity: { projectId: id, containerGeneration: 'generation-1' },
+      signingCapability: 'fresh-signing',
+      githubCapability: 'fresh-github',
+    }));
+    const fallback = vi.fn();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      onSandboxWakeFallback: fallback,
+    });
+
+    expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+    expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'stale_runtime_state' });
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
+  });
+
+  it('marks no activity after a scan wake but on every joining wake', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker } = fakeDocker({
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, running: true }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const relay = defaultProjectRelay();
+    const reactivate = vi.fn(async () => {
+      await gate;
+      return {
+        identity: { projectId: id, containerGeneration: 'generation-1' },
+        signingCapability: 'fresh-signing',
+        githubCapability: 'fresh-github',
+      };
+    });
+    relay.reactivate = reactivate;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+
+    // The scan lease puts a sandbox back to sleep only while the activity mark it saw
+    // after waking is unchanged. A wake that marks activity later would keep every
+    // scanned sandbox awake; a joining wake that marks none would be put to sleep.
+    const solo = provisioner.wakeProjectForScan(id);
+    release();
+    const woken = await solo;
+    expect(woken.owned).toBe(true);
+    expect(provisioner.projectSandboxLastActivityAt(id)).toBe(woken.activityAt);
+    // Wake on the now running project: the route's activity mark the lease reads as takeover.
+    expect(provisioner.tryBeginProjectSandboxActivity(id)).toBe(true);
+    provisioner.endProjectSandboxActivity(id);
+    expect(provisioner.projectSandboxLastActivityAt(id)).toBeGreaterThan(woken.activityAt!);
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const scan = provisioner.wakeProjectForScan(id);
+    // An explicit wake arriving while the project still reads as sleeping starts the
+    // wake itself, so the scan does not own it and never restores sleep.
+    const explicit = provisioner.wakeProject(id);
+    const joined = await scan;
+    await explicit;
+    expect(joined.owned).toBe(false);
   });
 
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {
@@ -964,7 +1221,7 @@ describe('ProvisionerImpl (#174)', () => {
       projectRelay: relay,
     });
 
-    const first = provisioner.ensureProjectSandboxAwake(id);
+    const first = provisioner.wakeProjectForScan(id);
     await vi.waitFor(() => expect(reactivate).toHaveBeenCalledOnce());
     await expect(ctx.store.getProject(id)).resolves.toMatchObject({ state: 'waking' });
     // The overview reconciles on its polling path while the retained container
@@ -974,14 +1231,94 @@ describe('ProvisionerImpl (#174)', () => {
       state: 'waking',
     });
     const second = provisioner.ensureProjectSandboxAwake(id);
+    const scanJoin = provisioner.wakeProjectForScan(id);
     release();
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      expect.objectContaining({ state: 'active' }),
+      expect.objectContaining({
+        project: expect.objectContaining({ state: 'active' }),
+        owned: true,
+      }),
       expect.objectContaining({ state: 'active' }),
     ]);
+    await expect(scanJoin).resolves.toMatchObject({ owned: false, project: { state: 'active' } });
     expect(reactivate).toHaveBeenCalledOnce();
+    // A wake joining the scan's own wake marks activity, which the lease reads as takeover.
+    const owned = await first;
+    expect(provisioner.projectSandboxLastActivityAt(id)).toBeGreaterThan(owned.activityAt!);
   });
+
+  it.each([false, true])(
+    'settles failed cold wake preparation (Sandbox still running: %s)',
+    async (stillRunning) => {
+      const id = await seedProject('active');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:old',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'old-contract',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      let rejectPull!: (error: Error) => void;
+      const pull = new Promise<void>((_resolve, reject) => {
+        rejectPull = reject;
+      });
+      const pullImage = vi
+        .fn()
+        .mockReturnValueOnce(pull)
+        .mockRejectedValue(new Error('registry down'));
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi.fn(async () => retained),
+        pullImage,
+      });
+      const relay = defaultProjectRelay();
+      relay.reactivate = vi.fn();
+      const sleepRelay = vi.fn(async () => {});
+      relay.sleep = sleepRelay;
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+      });
+
+      const first = provisioner.ensureProjectSandboxAwake(id);
+      const failure = expect(first).rejects.toThrow(
+        stillRunning ? 'project cold wake rollback failed' : 'replacement image preparation failed',
+      );
+      await vi.waitFor(() => expect(pullImage).toHaveBeenCalledOnce());
+      expect(provisioner.isProjectProvisioning(id)).toBe(true);
+      await expect(provisioner.recoverInterruptedWake(id)).resolves.toMatchObject({
+        state: 'waking',
+      });
+      retained.running = stillRunning;
+      rejectPull(new Error('registry down'));
+      await failure;
+
+      expect(provisioner.isProjectProvisioning(id)).toBe(false);
+      await expect(ctx.store.getProject(id)).resolves.toMatchObject({
+        state: stillRunning ? 'failed' : 'sleeping',
+        ...(stillRunning
+          ? { provisionError: expect.stringContaining('Docker still reports') }
+          : { wakeStartedAt: null }),
+      });
+      if (!stillRunning) {
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'replacement image preparation failed',
+        );
+        expect(pullImage).toHaveBeenCalledTimes(2);
+      }
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+      expect(sleepRelay).toHaveBeenCalledTimes(stillRunning ? 1 : 2);
+    },
+  );
 
   it('marks a wake failed when rollback cannot confirm the Sandbox stopped', async () => {
     const id = await seedProject('active');
@@ -5905,6 +6242,91 @@ describe('ProvisionerImpl (#174)', () => {
     expect(startMock).toHaveBeenCalledWith('existing-cid');
   });
 
+  it('replaces a retained container whose stale gVisor filestore blocks every start', async () => {
+    // Repair reaches the conflict path below and used to `docker start` the same
+    // container again. Its id is the gVisor sandbox id, so a filestore left by a
+    // teardown without `runsc delete` failed every Repair identically.
+    const id = await seedProject('active');
+    const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const createContainer = vi
+      .fn()
+      .mockRejectedValueOnce(new DockerError({ kind: 'conflict', message: 'name already in use' }))
+      .mockResolvedValueOnce({ id: 'fresh-cid' });
+    const startMock = vi.fn(async (containerId: string) => {
+      if (containerId === 'stale-cid') throw staleFilestoreError('stale-cid');
+    });
+    const removeMock = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      createContainer,
+      inspectContainer: vi.fn(async () => ({
+        id: 'stale-cid',
+        running: false,
+        labels: { 'verity.project-id': id },
+      })),
+      startContainer: startMock,
+      removeContainer: removeMock,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:2026.06',
+      hostCloneRoot: '/var/lib/verity-dev',
+      claudeConfigVolume: 'claude-config-verity',
+      codexConfigVolume: 'codex-config-verity',
+      git,
+      isDirectory: () => true,
+    });
+
+    const result = await provisioner.recreateContainer(id);
+
+    expect(result.state).toBe('active');
+    expect(removeMock).toHaveBeenCalledWith('stale-cid');
+    expect(createContainer).toHaveBeenCalledTimes(2);
+    expect(startMock.mock.calls.map(([containerId]) => containerId)).toEqual([
+      'stale-cid',
+      'fresh-cid',
+    ]);
+  });
+
+  it('keeps a retained container when its start fails for any other reason', async () => {
+    // Replacement discards the container's writable layer, so it is reserved for
+    // the one failure that only a new container id can clear.
+    const id = await seedProject('active');
+    const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const removeMock = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      createContainer: vi.fn(async () => {
+        throw new DockerError({ kind: 'conflict', message: 'name already in use' });
+      }),
+      inspectContainer: vi.fn(async () => ({
+        id: 'existing-cid',
+        running: false,
+        labels: { 'verity.project-id': id },
+      })),
+      startContainer: vi.fn(async () => {
+        throw new DockerError({ kind: 'other', status: 500, message: 'port is already allocated' });
+      }),
+      removeContainer: removeMock,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:2026.06',
+      hostCloneRoot: '/var/lib/verity-dev',
+      claudeConfigVolume: 'claude-config-verity',
+      codexConfigVolume: 'codex-config-verity',
+      git,
+      isDirectory: () => true,
+    });
+
+    await expect(provisioner.recreateContainer(id)).rejects.toThrow(/port is already allocated/);
+    expect(removeMock).not.toHaveBeenCalledWith('existing-cid');
+  });
+
   it('degrades to the lazy create path on recreate when no pull capability is wired (ADR 0004 soft fallback)', async () => {
     const id = await seedProject('active');
     const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
@@ -5979,14 +6401,37 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
-  it.each([false, true])(
+  it.each([false, true, 'forgejo'] as const)(
     'issues a per-project capability + mounts it (proxy test mode: %s)',
     async (proxyTest) => {
       const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
       const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
       try {
-        const id = await seedProject('absent');
-        const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+        const forgejo = proxyTest === 'forgejo';
+        const origin = forgejo ? 'https://forge.test:8443' : 'https://github.com';
+        const id = forgejo ? randomUUID() : await seedProject('absent');
+        if (forgejo) {
+          await ctx.store.forgeConnections.upsert({
+            id: 'forge',
+            provider: 'forgejo',
+            baseUrl: `${origin}/prefix`,
+            label: 'Forge',
+            personalToken: 'server-side-token',
+            githubAppId: null,
+            githubAppInstallationId: null,
+            githubAppPrivateKey: null,
+          });
+          await ctx.store.createProject({
+            id,
+            ...baseInput,
+            kind: 'forgejo',
+            forgeConnectionId: 'forge',
+          });
+        }
+        const { runner: git, calls: gitCalls } = fakeGit([
+          { match: /\bclone\b/ },
+          { match: /remote set-url/ },
+        ]);
         const { client: docker, calls: dockerCalls } = fakeDocker({
           inspectContainer: vi.fn(async (container: string) => ({
             id: container,
@@ -6004,12 +6449,26 @@ describe('ProvisionerImpl (#174)', () => {
           gitSecretRoot: secretRoot,
           ghTokenCapabilities: capabilities,
           forgeProxy: proxyTest
-            ? { caCertPem: 'public-forge-ca', enabled: (projectId) => projectId === id }
+            ? {
+                caCertPem: 'public-forge-ca',
+                enabled: (projectId) => projectId === id,
+                urlFor: () => Promise.resolve(`${origin}/prefix`),
+              }
+            : undefined,
+          forgeRepositoryAccess: forgejo
+            ? () =>
+                Promise.resolve({
+                  url: `${origin}/prefix/example-org/example-repo.git`,
+                  token: 'server-side-token',
+                  authorization: gitAuthHeader('server-side-token'),
+                  customCaPem: 'upstream-ca',
+                })
             : undefined,
           projectRelay: {
             async start(binding) {
               const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                forgeConnectionId: binding.forgeConnectionId ?? null,
                 owner: 'example-org',
                 repo: 'example-repo',
                 containerGeneration: binding.containerGeneration,
@@ -6052,6 +6511,9 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
         );
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
+        );
         expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
@@ -6063,19 +6525,34 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain('GIT_TERMINAL_PROMPT=0');
           expect(spec.env).toContain('NO_PROXY=');
           expect(spec.env).toContain('no_proxy=');
-          expect(spec.env).toContain('GIT_CONFIG_KEY_2=http.https://github.com.proxy');
+          expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
-        expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
+        expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
         expect(spec.env).toContain(
           `GIT_CONFIG_VALUE_${proxyTest ? 1 : 0}=/opt/agent-seed/bin/verity-gh-cred`,
         );
         expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
+        if (forgejo) {
+          expect(spec.env).toContain('VERITY_FORGE_AUTHORITY=forge.test:8443');
+          expect(JSON.stringify(spec)).not.toContain('server-side-token');
+          expect(gitCalls.some((call) => call.args.includes('http.followRedirects=false'))).toBe(
+            true,
+          );
+          expect(
+            gitCalls.some((call) =>
+              call.args.some((arg) =>
+                arg.startsWith(`http.${origin}/prefix/example-org/example-repo.git.sslCAInfo=`),
+              ),
+            ),
+          ).toBe(true);
+        }
         // The materialized capability resolves back to THIS project's binding.
         expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
           projectId: id,
+          ...(forgejo ? { forgeConnectionId: 'forge' } : {}),
           owner: 'example-org',
           repo: 'example-repo',
           containerGeneration: expect.any(String),

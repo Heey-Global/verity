@@ -6,14 +6,18 @@
 // connection definitions live in Verity settings.
 import {
   allowedAgentsSummary,
+  codeHostForProject,
+  forgejoConnection,
   githubRepositoryAccessReady,
+  providerName,
+  type ForgeConnection,
   modelDisplayName,
   projectBadge,
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -23,11 +27,13 @@ import {
   SettingsNavRow,
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
+import { CodeHostIcon } from '../../../../components/CodeHostIcon';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { useDeleteProject } from '../../../../lib/projectDelete';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { Button } from '../../../../components/ui';
 
 export default function ProjectSettingsIndexScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -56,14 +62,17 @@ function ProjectSettingsIndexView({
   const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
   const [connectionRefresh, setConnectionRefresh] = useState(0);
   const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
+  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
   const [available, setAvailable] = useState({
     github: false,
+    forgejo: false,
     doppler: false,
     drive: false,
     google: false,
     mcp: false,
     matrix: false,
   });
+  const [driveFolderNames, setDriveFolderNames] = useState<string[] | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -76,9 +85,27 @@ function ProjectSettingsIndexView({
         Promise.resolve().then(() => client.listHttpMcpConnections()),
         Promise.resolve().then(() => client.listIntegrations()),
         Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
+        Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
+        Promise.resolve().then(() => client.listConnections()),
       ]).then((results) => {
         if (!active) return;
-        const [settings, drive, gmail, calendar, contacts, mcp, integrations, bindings] = results;
+        const [
+          settings,
+          drive,
+          gmail,
+          calendar,
+          contacts,
+          mcp,
+          integrations,
+          bindings,
+          folders,
+          forge,
+        ] = results;
+        const forgeList = forge.status === 'fulfilled' ? forge.value : null;
+        setForgeConnections(forgeList?.connections ?? null);
+        setDriveFolderNames(
+          folders.status === 'fulfilled' ? folders.value.map((folder) => folder.name) : null,
+        );
         setUsage({
           google: [gmail, calendar, contacts].filter(
             (item) => item.status === 'fulfilled' && item.value.enabled,
@@ -94,6 +121,9 @@ function ProjectSettingsIndexView({
         });
         setAvailable({
           github: settings.status === 'fulfilled' && githubRepositoryAccessReady(settings.value),
+          forgejo:
+            forgeList?.forgejoProjectsAvailable === true &&
+            forgejoConnection(forgeList) !== undefined,
           doppler:
             settings.status === 'fulfilled' &&
             Boolean(settings.value?.dopplerServiceTokenConfigured),
@@ -117,7 +147,7 @@ function ProjectSettingsIndexView({
   if (loading && detail === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
@@ -147,7 +177,7 @@ function ProjectSettingsIndexView({
         : 'optional';
   const to = (
     pathname:
-      | '/project/[id]/settings/github'
+      | '/project/[id]/settings/repository'
       | '/project/[id]/settings/sandbox'
       | '/project/[id]/settings/model',
   ) => router.push({ pathname, params: { id: projectId } });
@@ -168,22 +198,35 @@ function ProjectSettingsIndexView({
     >
       <SettingsGroup title="Connections">
         <SettingsListPanel>
-          {project.kind === 'local' && available.github ? (
+          {project.kind === 'local' && (available.github || available.forgejo) ? (
             <SettingsNavRow
-              icon="github"
-              title="Connect GitHub"
-              subtitle="Link this local project to a repository"
+              icon="link"
+              title="Connect repository"
+              subtitle={
+                available.github && available.forgejo
+                  ? 'GitHub or Forgejo'
+                  : available.github
+                    ? 'GitHub'
+                    : 'Forgejo'
+              }
               status={{ intent: 'optional', label: 'Not selected' }}
-              onPress={() => to('/project/[id]/settings/github')}
+              onPress={() => to('/project/[id]/settings/repository')}
             />
           ) : null}
-          {project.kind === 'github' ? (
+          {project.kind === 'github' || project.kind === 'forgejo' ? (
             <SettingsNavRow
-              icon="github"
-              title="GitHub repository"
-              subtitle={`${project.owner}/${project.repo}`}
+              icon={{
+                element: <CodeHostIcon provider={project.kind} color={theme.colors.action} />,
+              }}
+              title={`${providerName(project.kind)} repository`}
+              subtitle={[
+                `${project.owner}/${project.repo}`,
+                codeHostForProject(project, forgeConnections)?.host,
+              ]
+                .filter((part) => part !== undefined && part !== 'github.com')
+                .join(' · ')}
               status={{ intent: 'ready', label: 'Connected' }}
-              onPress={() => to('/project/[id]/settings/github')}
+              onPress={() => to('/project/[id]/settings/repository')}
             />
           ) : null}
           {available.doppler ? (
@@ -202,10 +245,20 @@ function ProjectSettingsIndexView({
             <SettingsNavRow
               icon="folder"
               title="Google Drive"
-              subtitle="Choose the project folder"
+              subtitle="Choose the project folders"
               status={{
-                intent: detail.settings?.googleDriveFolderId ? 'ready' : 'optional',
-                label: detail.settings?.googleDriveFolderName ?? 'Not selected',
+                intent: (
+                  driveFolderNames
+                    ? driveFolderNames.length > 0
+                    : detail.settings?.googleDriveFolderId
+                )
+                  ? 'ready'
+                  : 'optional',
+                label: driveFolderNames
+                  ? driveFolderNames.length
+                    ? driveFolderNames.join(', ')
+                    : 'Not selected'
+                  : (detail.settings?.googleDriveFolderName ?? 'Not selected'),
               }}
               onPress={() => toService('drive')}
             />
@@ -255,6 +308,21 @@ function ProjectSettingsIndexView({
         </SettingsListPanel>
       </SettingsGroup>
 
+      <SettingsGroup title="Security">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Main branch and session findings"
+            onPress={() =>
+              router.push({
+                pathname: '/project/[id]/vulnerability-scan',
+                params: { id: projectId },
+              })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Sandbox">
         <SettingsListPanel>
           <SettingsNavRow
@@ -280,19 +348,14 @@ function ProjectSettingsIndexView({
       </SettingsGroup>
 
       <View style={styles.settingsGroup}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.dangerButton,
-            deleting ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={() => remove(project)}
-          disabled={deleting}
-          accessibilityRole="button"
-          accessibilityLabel="Delete project"
-        >
-          <Text style={styles.dangerButtonLabel}>{deleting ? 'Deleting…' : 'Delete project'}</Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label="Delete project"
+            variant="destructive"
+            loading={deleting}
+            onPress={() => remove(project)}
+          />
+        </View>
         <Text style={styles.footnote}>
           Removes the project from Verity, stops its secure workspace, and deletes the local clone
           and the project's sessions.

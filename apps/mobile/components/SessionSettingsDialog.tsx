@@ -18,6 +18,7 @@ import { Icon } from './Icon';
 import { randomUUID } from 'expo-crypto';
 import { useUnistyles } from 'react-native-unistyles';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
+import { tint } from './ui/tint';
 
 type MoveInput = Parameters<VerityClient['moveSession']>[1];
 // Keep ambiguous requests through dialog unmounts, scoped to the connected client.
@@ -327,7 +328,7 @@ export function SessionSettingsDialog({
       onPress={onDelete}
       style={[styles.button, styles.deleteButton, (busy || unresolved) && styles.disabled]}
     >
-      <Icon name="trash-2" size={16} color={theme.colors.tone.danger} />
+      <Icon name="trash-2" size={16} color={theme.colors.attention} />
       <Text style={styles.deleteText}>Delete</Text>
     </Pressable>
   );
@@ -357,7 +358,7 @@ export function SessionSettingsDialog({
       }
       style={[styles.button, styles.primary, !result && !canSave && styles.disabled]}
     >
-      {busy && <ActivityIndicator size="small" color={theme.colors.onPrimary} />}
+      {busy && <ActivityIndicator size="small" color={theme.colors.onAction} />}
       <Text style={styles.primaryText}>
         {result
           ? 'Done'
@@ -518,7 +519,7 @@ export function SessionSettingsDialog({
                 <Icon
                   name={leaveCommits ? 'check-square' : 'square'}
                   size={20}
-                  color={theme.colors.accent}
+                  color={theme.colors.signature}
                 />
                 <Text style={styles.optionText}>Leave committed changes in the source project</Text>
               </Pressable>
@@ -549,7 +550,7 @@ export function SessionSettingsDialog({
                 <Icon
                   name="info"
                   size={16}
-                  color={linkInfoOpen ? theme.colors.accent : theme.colors.textFaint}
+                  color={linkInfoOpen ? theme.colors.signature : theme.colors.textFaint}
                 />
               </Pressable>
             </View>
@@ -569,7 +570,7 @@ export function SessionSettingsDialog({
                 return (
                   <View key={link.sessionId} style={styles.groupRow}>
                     <View style={[styles.rowIcon, styles.rowIconLinked]}>
-                      <Icon name="link" size={15} color={theme.colors.primary} />
+                      <Icon name="link" size={15} color={theme.colors.action} />
                     </View>
                     <View style={styles.linkLabel}>
                       <Text style={styles.rowTitle} numberOfLines={1}>
@@ -604,7 +605,7 @@ export function SessionSettingsDialog({
                 ]}
               >
                 <View style={[styles.rowIcon, styles.rowIconAction]}>
-                  <Icon name="plus" size={16} color={theme.colors.accent} />
+                  <Icon name="plus" size={16} color={theme.colors.signature} />
                 </View>
                 <View style={styles.linkLabel}>
                   <Text style={styles.linkActionText}>
@@ -764,12 +765,12 @@ export function SessionSettingsDialog({
                   </View>
                   {linked ? (
                     <View style={styles.linkedBadge}>
-                      <Icon name="check" size={14} color={theme.colors.tone.done} />
+                      <Icon name="check" size={14} color={theme.colors.success} />
                       <Text style={styles.linkedText}>Linked</Text>
                     </View>
                   ) : (
                     <View style={styles.addButton}>
-                      <Icon name="plus" size={16} color={theme.colors.primary} />
+                      <Icon name="plus" size={16} color={theme.colors.action} />
                     </View>
                   )}
                 </Pressable>
@@ -909,7 +910,7 @@ export function SessionSettingsDialog({
                         <Icon name="folder" size={16} color={theme.colors.textMuted} />
                         <Text style={styles.optionText}>{project.name}</Text>
                         {target === project.id && (
-                          <Icon name="check" size={16} color={theme.colors.accent} />
+                          <Icon name="check" size={16} color={theme.colors.signature} />
                         )}
                       </Pressable>
                     ))}
@@ -953,7 +954,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       justifyContent: 'center',
       alignItems: 'center',
       padding: 24,
-      backgroundColor: 'rgba(3,2,10,0.72)',
+      backgroundColor: theme.colors.scrim,
     },
     card: {
       width: '100%',
@@ -962,11 +963,11 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 20,
       backgroundColor: theme.colors.surface,
       borderWidth: 1,
-      borderColor: `${theme.colors.accent}33`,
+      borderColor: tint(theme.colors.signature, 'ring'),
       overflow: 'hidden',
       // A faint accent halo lifts the card off the dimmed app (iOS; Android has no
       // coloured shadow and keeps the border alone).
-      shadowColor: theme.colors.accent,
+      shadowColor: theme.colors.signature,
       shadowOpacity: 0.16,
       shadowRadius: 28,
       shadowOffset: { width: 0, height: 8 },
@@ -975,8 +976,16 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     paneFill: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', padding: 20, paddingBottom: 16, gap: 12 },
     heading: { flex: 1, gap: 3 },
-    title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-    subtitle: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+    title: {
+      color: theme.colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    subtitle: {
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
     iconButton: {
       width: 36,
       height: 36,
@@ -989,19 +998,21 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     content: { paddingHorizontal: 20, paddingBottom: 20, gap: 14 },
     description: {
       color: theme.colors.textMuted,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       lineHeight: 20 * theme.fontScale,
     },
     hint: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.xs,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
       lineHeight: 18 * theme.fontScale,
     },
     field: { gap: 8 },
     overline: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.xs,
-      fontWeight: '700',
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
       letterSpacing: 1,
       textTransform: 'uppercase',
     },
@@ -1032,17 +1043,25 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       alignItems: 'center',
       justifyContent: 'center',
     },
-    rowIconLinked: { backgroundColor: `${theme.colors.primary}26` },
-    rowIconAction: { backgroundColor: `${theme.colors.accent}1f` },
-    rowTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+    rowIconLinked: { backgroundColor: tint(theme.colors.action, 'fill') },
+    rowIconAction: { backgroundColor: tint(theme.colors.signature, 'fill') },
+    rowTitle: {
+      color: theme.colors.text,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     rowTitleMuted: { color: theme.colors.textMuted },
-    rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+    rowDetail: {
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     linkLabel: { flex: 1, gap: 2 },
     linkRemove: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
     linkActionText: {
-      color: theme.colors.accent,
-      fontSize: theme.text.sm,
-      fontWeight: '600',
+      color: theme.colors.signature,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
     },
     linkTools: { paddingHorizontal: 20, paddingBottom: 12, gap: 12 },
     search: {
@@ -1058,7 +1077,8 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       flex: 1,
       paddingVertical: 10,
       color: theme.colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
     },
     chips: { gap: 8 },
     chip: {
@@ -1071,11 +1091,15 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       backgroundColor: theme.colors.surfaceAlt,
     },
     chipActive: {
-      backgroundColor: `${theme.colors.accent}1f`,
-      borderColor: `${theme.colors.accent}80`,
+      backgroundColor: tint(theme.colors.signature, 'fill'),
+      borderColor: tint(theme.colors.signature, 'border'),
     },
-    chipText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-    chipTextActive: { color: theme.colors.accent },
+    chipText: {
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    chipTextActive: { color: theme.colors.signature },
     linkList: {
       flex: 1,
       borderTopWidth: StyleSheet.hairlineWidth,
@@ -1100,13 +1124,18 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       alignItems: 'center',
       justifyContent: 'center',
       borderWidth: 1.5,
-      borderColor: `${theme.colors.primary}b3`,
+      borderColor: theme.colors.action,
     },
     linkedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingRight: 4 },
-    linkedText: { color: theme.colors.tone.done, fontSize: theme.text.xs, fontWeight: '600' },
+    linkedText: {
+      color: theme.colors.success,
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     emptyText: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       textAlign: 'center',
       paddingVertical: 24,
     },
@@ -1119,9 +1148,10 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       paddingVertical: 10,
       backgroundColor: theme.colors.surfaceAlt,
       color: theme.colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
     },
-    inputFocused: { borderColor: `${theme.colors.accent}cc` },
+    inputFocused: { borderColor: theme.colors.action },
     compactFooter: { flexDirection: 'column', alignItems: 'stretch', flexWrap: 'nowrap' },
     compactActions: { flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between' },
     footerRight: {
@@ -1134,8 +1164,16 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     },
     footerEnd: { justifyContent: 'flex-end' },
     deleteButton: { paddingHorizontal: 6, gap: 6 },
-    deleteText: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
-    label: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+    deleteText: {
+      color: theme.colors.attention,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    label: {
+      color: theme.colors.text,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     select: {
       minHeight: 48,
       flexDirection: 'row',
@@ -1146,7 +1184,12 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 12,
       backgroundColor: theme.colors.surfaceAlt,
     },
-    selectText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
+    selectText: {
+      flex: 1,
+      color: theme.colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
     placeholder: { color: theme.colors.textFaint },
     options: {
       position: 'absolute',
@@ -1156,7 +1199,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       backgroundColor: theme.colors.surfaceAlt,
       paddingVertical: 4,
       // No overflow clipping here: on iOS it would mask the shadow.
-      shadowColor: '#000',
+      shadowColor: theme.elevation.floating.shadowColor,
       shadowOpacity: 0.45,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 8 },
@@ -1170,12 +1213,18 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       gap: 10,
       padding: 12,
     },
-    selected: { backgroundColor: `${theme.colors.accent}14` },
-    optionText: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
-    errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.tone.danger, paddingLeft: 12 },
+    selected: { backgroundColor: tint(theme.colors.signature, 'neutral') },
+    optionText: {
+      flex: 1,
+      color: theme.colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.attention, paddingLeft: 12 },
     error: {
-      color: theme.colors.tone.danger,
-      fontSize: theme.text.sm,
+      color: theme.colors.attention,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       lineHeight: 21 * theme.fontScale,
     },
     confirm: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 },
@@ -1203,11 +1252,23 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     primary: {
       minWidth: 96,
       borderRadius: theme.radius.md,
-      backgroundColor: theme.colors.primary,
+      backgroundColor: theme.colors.action,
     },
-    primaryText: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '700' },
+    primaryText: {
+      color: theme.colors.onAction,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     secondary: { minWidth: 96, backgroundColor: theme.colors.surfaceAlt },
-    secondaryText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
-    cancelText: { color: theme.colors.textMuted, fontSize: theme.text.md, fontWeight: '600' },
+    secondaryText: {
+      color: theme.colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    cancelText: {
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     disabled: { opacity: 0.45 },
   });

@@ -1,10 +1,19 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 
-import { Button, ConfirmSheet, Row, StatusDot, StatusTag, TextField, ToggleRow } from './index';
-import { darkTheme, lightTheme } from '../../theme/tokens';
+import {
+  Button,
+  ConfirmSheet,
+  Row,
+  useConfirm,
+  StatusDot,
+  StatusTag,
+  TextField,
+  ToggleRow,
+} from './index';
+import { darkTheme, lightTheme, toneColor } from '../../theme/tokens';
 import { tint } from './tint';
 
 describe('Button', () => {
@@ -41,6 +50,31 @@ describe('Row', () => {
     expect(chevrons()).toHaveLength(0);
     rerender(<Row title="Diagnostics" onPress={jest.fn()} navigates />);
     expect(chevrons()).toHaveLength(1);
+  });
+
+  it('retains attention and success icon colors on navigable status rows', () => {
+    const { rerender } = render(
+      <Row
+        title="Finding"
+        leading={{ icon: 'shield', intent: 'needsSetup' }}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    const icon = () =>
+      screen
+        .UNSAFE_getAllByProps({ name: 'shield' })
+        .find((node) => (node.type as unknown) === 'Feather')!;
+    expect(icon().props.color).toBe(lightTheme.colors.attention);
+    rerender(
+      <Row
+        title="Fixed"
+        leading={{ icon: 'shield', intent: 'ready' }}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    expect(icon().props.color).toBe(lightTheme.colors.success);
   });
 
   // VoiceOver hears a pressable row as one element; a status left out of its
@@ -126,6 +160,21 @@ describe('Row', () => {
     expect(role('action')).toContain(iconColor('activity'));
     expect(role('textMuted')).toContain(iconColor('info'));
     expect(role('signature')).toContain(iconColor('zap'));
+  });
+
+  // A long status ("Starting secure workspace…") once took the whole row and left
+  // the title as a column of single letters.
+  it.each([
+    ['transient', <StatusDot key="t" intent="transient" label="Starting secure workspace…" />],
+    ['ready', <StatusDot key="r" intent="ready" label="Starting secure workspace…" />],
+    ['tag', <StatusTag key="g" intent="needsSetup" label="Starting secure workspace…" />],
+  ])('keeps a long %s status from crowding out the title', (_, status) => {
+    render(<Row title="Sandbox" trailing={status} onPress={jest.fn()} navigates />);
+    expect(screen.getByText('Starting secure workspace…').props.numberOfLines).toBe(1);
+    const trailing = screen
+      .UNSAFE_getAllByType(View)
+      .find((node) => StyleSheet.flatten(node.props.style)?.maxWidth === '45%');
+    expect(trailing).toBeDefined();
   });
 
   it('renders a plain trailing value as muted text', () => {
@@ -310,6 +359,62 @@ describe('ConfirmSheet', () => {
   });
 });
 
+describe('useConfirm', () => {
+  function Screen({ onConfirm }: { onConfirm: () => void | Promise<void> }) {
+    const [confirm, sheet] = useConfirm();
+    return (
+      <>
+        <Button
+          label="Remove device"
+          onPress={() =>
+            confirm({
+              title: 'Remove paired device?',
+              message: 'This device will lose access to Verity.',
+              confirmLabel: 'Remove',
+              destructive: true,
+              onConfirm,
+            })
+          }
+        />
+        {sheet}
+      </>
+    );
+  }
+
+  // Asking is not doing: the action runs only from the sheet's own button.
+  it('runs the action only after it is confirmed, then closes', async () => {
+    const onConfirm = jest.fn();
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    expect(screen.getByText('Remove paired device?')).toBeOnTheScreen();
+    expect(onConfirm).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
+  it('never runs the action when cancelled', () => {
+    const onConfirm = jest.fn();
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  // A failed action keeps the question open for another try.
+  it('stays open when the action fails', async () => {
+    const onConfirm = jest.fn().mockRejectedValue(new Error('offline'));
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
+    });
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
+  });
+});
+
 describe('tint', () => {
   // A role that is not six-digit hex would turn `${color}24` into an invalid color.
   // Components tint roles inside StyleSheet.create; a role that cannot be
@@ -368,5 +473,21 @@ describe('tint', () => {
     'var(--x) trailing',
   ])('rejects unsupported color %s', (color) => {
     expect(() => tint(color, 'fill')).toThrow(/six-digit hex role color or CSS variable reference/);
+  });
+});
+
+describe('toneColor', () => {
+  // Session rows, tools and events are coloured from data tones; a tone that
+  // resolved to undefined would draw an invisible dot without any error.
+  it.each([
+    ['dark', darkTheme],
+    ['light', lightTheme],
+  ])('draws every data tone in a role of the %s theme', (_, theme) => {
+    const roles = Object.values(theme.colors);
+    for (const tone of ['idle', 'active', 'attention', 'done', 'danger'] as const) {
+      expect(roles).toContain(toneColor(theme.colors, tone));
+    }
+    expect(toneColor(theme.colors, 'danger')).toBe(theme.colors.attention);
+    expect(toneColor(theme.colors, 'done')).toBe(theme.colors.success);
   });
 });

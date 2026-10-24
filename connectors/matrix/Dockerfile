@@ -1,4 +1,4 @@
-FROM rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS builder
+FROM rust:1.99.1-slim-bookworm@sha256:86234e857a413004348b471d11a4ebe1aa92d2eae2b6b143cac68fd1ac3c48be AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -17,7 +17,7 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
 COPY connectors/matrix/src ./src
 RUN cargo build --locked --release -j 3
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home-dir /data verity \

@@ -240,7 +240,7 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   ...(request.mcpGatewayToken !== undefined && mcpGatewayUrl !== undefined
     ? { mcpGateway: { url: mcpGatewayUrl, token: request.mcpGatewayToken } }
     : {}),
-  spawner: createBrokerSpawner(brokerSocket),
+  spawner: createBrokerSpawner(brokerSocket, true),
 });
 const result = await turn.result;
 process.exitCode = result.exitCode;

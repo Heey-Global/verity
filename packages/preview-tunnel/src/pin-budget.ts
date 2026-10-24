@@ -39,7 +39,10 @@ export function createPreviewPinBudget(
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
       });
-      if (!response.ok || !response.body) return { state: 'unavailable' };
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        return { state: 'unavailable' };
+      }
       const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
       let size = 0;
       const chunks: Uint8Array[] = [];

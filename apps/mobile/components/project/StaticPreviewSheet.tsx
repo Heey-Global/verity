@@ -40,6 +40,7 @@ import { StatusPill } from '../StatusPill';
 import { FileBreadcrumb } from '../files/FileBreadcrumb';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
+import { tint } from '../ui/tint';
 
 // The sheet asks two questions, one per step. Step one: what to preview, picked
 // on one of two tabs because the two kinds behave differently — a dev server
@@ -1009,13 +1010,13 @@ export function StaticPreviewSheet({
       <View style={styles.badges}>
         {local ? (
           <View style={[styles.badge, styles.badgeLocal]}>
-            <Icon name="wifi" size={11} color={theme.colors.tone.done} />
+            <Icon name="wifi" size={11} color={theme.colors.success} />
             <Text style={styles.badgeText}>On network</Text>
           </View>
         ) : null}
         {pub ? (
           <View style={[styles.badge, styles.badgePublic]}>
-            <Icon name="globe" size={11} color={theme.colors.tone.done} />
+            <Icon name="globe" size={11} color={theme.colors.success} />
             <Text style={styles.badgeText}>{`Online ${expiryLabel(pub.expiresAt)}`}</Text>
           </View>
         ) : null}
@@ -1229,7 +1230,7 @@ export function StaticPreviewSheet({
               accessibilityLabel={`Save ${server.name} as an entry`}
               style={styles.saveEntry}
             >
-              <Icon name="bookmark" size={14} color={theme.colors.primary} />
+              <Icon name="bookmark" size={14} color={theme.colors.action} />
               <Text style={styles.saveEntryText}>Save as entry</Text>
             </Pressable>
           ) : null}
@@ -1337,7 +1338,7 @@ export function StaticPreviewSheet({
               <Icon
                 name={name === 'index.html' ? 'globe' : 'file'}
                 size={18}
-                color={name === 'index.html' ? theme.colors.primary : theme.colors.textFaint}
+                color={name === 'index.html' ? theme.colors.action : theme.colors.textFaint}
               />
               <Text
                 style={[styles.fileName, name === 'index.html' ? styles.fileNameEntry : null]}
@@ -1425,9 +1426,9 @@ export function StaticPreviewSheet({
             style={[styles.primaryButton, styles.actionButton]}
           >
             {working ? (
-              <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+              <ActivityIndicator size="small" color={theme.colors.onAction} />
             ) : (
-              <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
+              <Icon name="external-link" size={16} color={theme.colors.onAction} />
             )}
             <Text style={styles.actionPrimaryText}>{working ? 'Opening…' : 'Open in browser'}</Text>
           </Pressable>
@@ -1460,7 +1461,7 @@ export function StaticPreviewSheet({
               accessibilityLabel="Turn off local access"
               style={styles.dangerButton}
             >
-              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+              <Icon name="slash" size={16} color={theme.colors.attention} />
               <Text style={styles.dangerText}>
                 {busy === 'stop-local' ? 'Turning off…' : 'Turn off'}
               </Text>
@@ -1545,7 +1546,7 @@ export function StaticPreviewSheet({
                   <Icon
                     name={copied === 'public-link' ? 'check' : 'copy'}
                     size={18}
-                    color={theme.colors.primary}
+                    color={theme.colors.action}
                   />
                 </Pressable>
               </View>
@@ -1575,7 +1576,7 @@ export function StaticPreviewSheet({
                     <Icon
                       name={copied === 'pin' ? 'check' : 'copy'}
                       size={18}
-                      color={theme.colors.primary}
+                      color={theme.colors.action}
                     />
                   </Pressable>
                 </View>
@@ -1595,7 +1596,7 @@ export function StaticPreviewSheet({
                 accessibilityRole="button"
                 accessibilityLabel="Share link and PIN"
               >
-                <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                <Icon name="share" size={16} color={theme.colors.onAction} />
                 <Text style={styles.actionPrimaryText}>Send link and PIN</Text>
               </Pressable>
             </View>
@@ -1609,9 +1610,9 @@ export function StaticPreviewSheet({
             style={styles.dangerButton}
           >
             {stopping ? (
-              <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+              <ActivityIndicator size="small" color={theme.colors.attention} />
             ) : (
-              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+              <Icon name="slash" size={16} color={theme.colors.attention} />
             )}
             <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop sharing'}</Text>
           </Pressable>
@@ -1850,7 +1851,7 @@ export function StaticPreviewSheet({
           <Icon
             name="wifi"
             size={20}
-            color={local ? theme.colors.tone.done : theme.colors.textMuted}
+            color={local ? theme.colors.success : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
             <Text style={styles.cardTitle}>Local</Text>
@@ -1881,7 +1882,7 @@ export function StaticPreviewSheet({
               <Icon
                 name={copied === 'local-link' ? 'check' : 'copy'}
                 size={20}
-                color={theme.colors.primary}
+                color={theme.colors.action}
               />
             </Pressable>
           ) : null}
@@ -1904,7 +1905,7 @@ export function StaticPreviewSheet({
           <Icon
             name="globe"
             size={20}
-            color={online ? theme.colors.tone.done : theme.colors.textMuted}
+            color={online ? theme.colors.success : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
             <Text style={styles.cardTitle}>{ONLINE_SHARING}</Text>
@@ -1958,7 +1959,7 @@ export function StaticPreviewSheet({
                       <Icon
                         name={copied === 'pin' ? 'check' : 'copy'}
                         size={14}
-                        color={theme.colors.primary}
+                        color={theme.colors.action}
                       />
                     </Text>
                   </Pressable>
@@ -1976,7 +1977,7 @@ export function StaticPreviewSheet({
               accessibilityLabel="Share link and PIN"
               hitSlop={12}
             >
-              <Icon name="share" size={20} color={theme.colors.primary} />
+              <Icon name="share" size={20} color={theme.colors.action} />
             </Pressable>
           ) : null}
           {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !online ? (
@@ -2121,7 +2122,7 @@ const SHEET_CONTENT_MAX_WIDTH = 640;
 
 const styles = StyleSheet.create((theme) => ({
   overlay: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.scrim },
   sheet: {
     height: '86%',
     minHeight: 0,
@@ -2158,7 +2159,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  title: {
+    color: theme.colors.text,
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
   content: {
     flex: 1,
     minHeight: 0,
@@ -2170,9 +2175,17 @@ const styles = StyleSheet.create((theme) => ({
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
   footer: { gap: theme.spacing.md },
-  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  label: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  sectionHint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  sectionHint: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   unmanaged: { gap: 4 },
   saveEntry: {
     flexDirection: 'row',
@@ -2181,13 +2194,34 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: 'flex-end',
     paddingVertical: theme.spacing.xs,
   },
-  saveEntryText: { color: theme.colors.primary, fontSize: theme.text.xs, fontWeight: '600' },
-  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
-  body: { color: theme.colors.text, fontSize: theme.text.sm },
+  saveEntryText: {
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  caption: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  body: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   centered: { textAlign: 'center' },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
+  error: {
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   loading: { padding: theme.spacing.md },
-  empty: { color: theme.colors.textMuted, padding: theme.spacing.sm, fontSize: theme.text.sm },
+  empty: {
+    color: theme.colors.textMuted,
+    padding: theme.spacing.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   sectionLabel: { marginTop: theme.spacing.md },
   emptyCard: {
     alignItems: 'center',
@@ -2199,7 +2233,11 @@ const styles = StyleSheet.create((theme) => ({
     borderStyle: 'dashed',
     borderColor: theme.colors.border,
   },
-  emptyTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  emptyTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   tabs: {
     flexDirection: 'row',
     gap: 4,
@@ -2219,9 +2257,17 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.sm,
   },
   tabActive: { backgroundColor: theme.colors.surface },
-  tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
-  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  tabText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  tabTextActive: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.success },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2234,12 +2280,20 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  rowPressed: { borderColor: theme.colors.primary },
+  rowPressed: { borderColor: theme.colors.action },
   rowIcon: { width: 22, alignItems: 'center' },
   rowText: { flex: 1, minWidth: 0, gap: 2 },
-  rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  rowPort: { color: theme.colors.textMuted, fontWeight: '500' },
-  rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  rowTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  rowPort: { color: theme.colors.textMuted, fontFamily: theme.fonts.regular },
+  rowDetail: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   serverDot: {
     position: 'absolute',
     right: -2,
@@ -2247,9 +2301,9 @@ const styles = StyleSheet.create((theme) => ({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
   },
-  serverDotLoopback: { backgroundColor: theme.colors.tone.attention },
+  serverDotLoopback: { backgroundColor: theme.colors.attention },
   badges: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs, marginTop: 4 },
   badge: {
     flexDirection: 'row',
@@ -2261,25 +2315,36 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   badgeLocal: {
-    borderColor: theme.colors.tone.done,
-    backgroundColor: `${theme.colors.tone.done}22`,
+    borderColor: theme.colors.success,
+    backgroundColor: tint(theme.colors.success, 'fill'),
   },
   // Shared is green whether on the network or online; the icon and text tell them apart.
   badgePublic: {
-    borderColor: theme.colors.tone.done,
-    backgroundColor: `${theme.colors.tone.done}22`,
+    borderColor: theme.colors.success,
+    backgroundColor: tint(theme.colors.success, 'fill'),
   },
-  badgePremium: { borderColor: theme.colors.accent, backgroundColor: `${theme.colors.accent}22` },
+  badgePremium: {
+    borderColor: theme.colors.signature,
+    backgroundColor: tint(theme.colors.signature, 'fill'),
+  },
   badgeMuted: { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
   badgeDot: { width: 7, height: 7, borderRadius: 4 },
-  badgeDotLocal: { backgroundColor: theme.colors.tone.done },
-  badgeDotPublic: { backgroundColor: theme.colors.tone.done },
-  badgeDotPending: { backgroundColor: theme.colors.tone.attention },
-  badgeDotPremium: { backgroundColor: theme.colors.accent },
+  badgeDotLocal: { backgroundColor: theme.colors.success },
+  badgeDotPublic: { backgroundColor: theme.colors.success },
+  badgeDotPending: { backgroundColor: theme.colors.attention },
+  badgeDotPremium: { backgroundColor: theme.colors.signature },
   badgeDotMuted: { backgroundColor: theme.colors.textFaint },
-  badgeText: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
+  badgeText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   inlineAction: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
-  inlineActionText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  inlineActionText: {
+    color: theme.colors.action,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   browserList: { paddingBottom: theme.spacing.md },
   fileRow: {
     flexDirection: 'row',
@@ -2288,7 +2353,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.xs,
   },
-  fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
+  fileName: {
+    flex: 1,
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
   fileNameEntry: { color: theme.colors.text },
   card: {
     gap: theme.spacing.md,
@@ -2306,7 +2376,11 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 64,
   },
   accessSwitch: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
-  accessLink: { color: theme.colors.primary, fontSize: theme.text.sm },
+  accessLink: {
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   cardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
   cardIcon: {
     width: 36,
@@ -2325,15 +2399,23 @@ const styles = StyleSheet.create((theme) => ({
     flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
-  cardTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  cardLocalActive: { borderColor: theme.colors.tone.done },
-  cardPublicActive: { borderColor: theme.colors.tone.done },
+  cardTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  cardLocalActive: { borderColor: theme.colors.success },
+  cardPublicActive: { borderColor: theme.colors.success },
   cardDimmed: { opacity: 0.7 },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
   // Buttons in a card row share the width evenly and use one text size, so the
   // filled one stands out by colour rather than by being larger.
   actionButton: { flex: 1, gap: theme.spacing.xs, paddingHorizontal: theme.spacing.sm },
-  actionPrimaryText: { color: theme.colors.onPrimary, fontWeight: '600', fontSize: theme.text.sm },
+  actionPrimaryText: {
+    color: theme.colors.onAction,
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   dangerButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2343,7 +2425,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surface,
   },
   primaryButton: {
@@ -2354,10 +2436,14 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   primaryButtonDisabled: { opacity: 0.45 },
-  primaryText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
+  primaryText: {
+    color: theme.colors.onAction,
+    fontFamily: theme.fonts.bold,
+    fontSize: theme.typography.row.fontSize,
+  },
   secondaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2370,9 +2456,21 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
-  linkMuted: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  secondaryText: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  dangerText: {
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.bold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  linkMuted: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   linkBox: {
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
@@ -2383,8 +2481,8 @@ const styles = StyleSheet.create((theme) => ({
   linkLabel: {
     width: 36,
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Link and PIN share one row layout: label column, value, copy icon. The
   // value text has the same size in both rows so neither looks like an add-on.
@@ -2397,11 +2495,15 @@ const styles = StyleSheet.create((theme) => ({
   credentialDivider: { borderTopWidth: 1, borderTopColor: theme.colors.border },
   credentialValue: { flex: 1, minWidth: 0 },
   lockedNote: { paddingVertical: theme.spacing.md },
-  linkValue: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  linkValue: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   pinValue: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
@@ -2421,7 +2523,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.sm,
   },
-  durationActive: { backgroundColor: theme.colors.primary },
-  durationText: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
-  durationTextActive: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  durationActive: { backgroundColor: theme.colors.action },
+  durationText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  durationTextActive: {
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
 }));

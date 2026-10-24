@@ -103,6 +103,7 @@ export class DockerExecBackend implements Backend {
         ...AGENT_EXEC_BASE_ENV,
         VERITY_SIGNING_DOCKER_CONTAINER: opts.containerName,
         ...opts.containerEnv,
+        VERITY_SESSION_WORKTREE: cwd,
         ...(spawnOpts.env?.VERITY_SESSION_ID
           ? { VERITY_SESSION_ID: spawnOpts.env.VERITY_SESSION_ID }
           : {}),

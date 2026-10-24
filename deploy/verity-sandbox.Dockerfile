@@ -6,23 +6,23 @@
 # and per-user builds (ADR migration #299, PR-A).
 #
 # Layout mirrors the legacy dev-server dev-base: Node Bookworm runtime with
-# Python 3.14 multi-stage-copied from python:3.14-bookworm (both debian-bookworm,
+# Python 3.15 multi-stage-copied from python:3.15-bookworm (both debian-bookworm,
 # so OS-level shared libs match and Python's C extensions link without rebuild).
 #
 # Built for linux/amd64 (the pinned gh/doppler tarballs are amd64-only).
 
 # Digest-pinned (audit M12) so the Python runtime copied wholesale into every
-# sandbox is reproducible, not whatever `python:3.14-bookworm` currently resolves
+# sandbox is reproducible, not whatever `python:3.15-bookworm` currently resolves
 # to. Renovate (docker:pinDigests) bumps tag+digest together.
 # renovate: datasource=docker depName=python
-ARG PYTHON_VERSION=3.14-bookworm@sha256:7ee7e4d4fb42c3ad45b8fdc473b64ec69c3cf6e80ae5d52f6fa55f77fac29027
+ARG PYTHON_VERSION=3.15-bookworm@sha256:2734c1683bd937b316f31b18972026302f155f0ffd932b329811d2e3a8450775
 FROM python:${PYTHON_VERSION} AS python-source
 
 # Digest-pinned alongside the tag so the runtime base is reproducible and
 # Renovate's stock docker manager (parses FROM natively) bumps tag+digest
 # together. Digest reused from the legacy dev-base pin.
 # renovate: datasource=docker depName=node
-FROM node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404
+FROM node:26.12.1-bookworm@sha256:5c4012d11d9857c42713ba511fbc19645cac1706bb710d51d42b0d301dff7f88
 
 # Build-time RUN shell with pipefail so `cmd1 | cmd2` failures aren't masked by
 # a successful cmd2 exit code. (Hadolint DL4006.)
@@ -42,19 +42,19 @@ RUN apt-get update \
       tk libuuid1 zlib1g \
  && rm -rf /var/lib/apt/lists/*
 
-# Python 3.14 — copied wholesale from python:3.14-bookworm. Placed under
-# /usr/local/ to match python:3.14-bookworm's own layout so sys.prefix and
+# Python 3.15 — copied wholesale from python:3.15-bookworm. Placed under
+# /usr/local/ to match python:3.15-bookworm's own layout so sys.prefix and
 # shared-lib search paths resolve without env-var hacks. Symlink python3/pip3.
-COPY --from=python-source /usr/local/bin/python3.14   /usr/local/bin/python3.14
-COPY --from=python-source /usr/local/bin/pip3.14      /usr/local/bin/pip3.14
-COPY --from=python-source /usr/local/lib/python3.14   /usr/local/lib/python3.14
-COPY --from=python-source /usr/local/lib/libpython3.14.so.1.0 /usr/local/lib/libpython3.14.so.1.0
-COPY --from=python-source /usr/local/include/python3.14 /usr/local/include/python3.14
+COPY --from=python-source /usr/local/bin/python3.15   /usr/local/bin/python3.15
+COPY --from=python-source /usr/local/bin/pip3.15      /usr/local/bin/pip3.15
+COPY --from=python-source /usr/local/lib/python3.15   /usr/local/lib/python3.15
+COPY --from=python-source /usr/local/lib/libpython3.15.so.1.0 /usr/local/lib/libpython3.15.so.1.0
+COPY --from=python-source /usr/local/include/python3.15 /usr/local/include/python3.15
 RUN ldconfig \
- && ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3 \
- && ln -sf /usr/local/bin/python3.14 /usr/local/bin/python \
- && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip3 \
- && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip \
+ && ln -sf /usr/local/bin/python3.15 /usr/local/bin/python3 \
+ && ln -sf /usr/local/bin/python3.15 /usr/local/bin/python \
+ && ln -sf /usr/local/bin/pip3.15    /usr/local/bin/pip3 \
+ && ln -sf /usr/local/bin/pip3.15    /usr/local/bin/pip \
  && python3 --version && pip3 --version \
  && python3 -c 'import bz2, ctypes, lzma, readline, sqlite3, ssl, tkinter, uuid'
 

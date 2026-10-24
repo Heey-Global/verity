@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createGmailTool,
@@ -24,6 +28,7 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     ...overrides,
   };
   const gmail = {
+    downloadAttachment: vi.fn().mockResolvedValue({ encoding: 'base64', content: 'AP8=' }),
     search: vi.fn().mockResolvedValue({ messages: [] }),
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
@@ -77,6 +82,26 @@ describe('Gmail session tool', () => {
     expect(gmailHasStandingAuthorization({ action: 'create_draft' })).toBe(true);
     expect(gmailHasStandingAuthorization({ action: 'prepare_draft_send' })).toBe(true);
     expect(gmailHasStandingAuthorization({ action: 'send_draft' })).toBe(false);
+  });
+
+  it('downloads attachments only with session access and unchanged credentials', async () => {
+    const request = { action: 'download_attachment', messageId: 'm1', partId: '1' };
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup();
+    expect(gmailHasStandingAuthorization(request)).toBe(true);
+    await expect(tool.invoke(input(request))).resolves.toMatchObject({ content: 'AP8=' });
+    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1');
+    expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
+    const denied = setup({ getSessionGmailConnection: vi.fn().mockResolvedValue(undefined) });
+    await expect(denied.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
+    expect(denied.gmail.downloadAttachment).not.toHaveBeenCalled();
+    const changed = setup({
+      getSessionGmailConnection: vi
+        .fn()
+        .mockResolvedValueOnce({ accountEmail: 'me@example.test' })
+        .mockResolvedValue(undefined),
+    });
+    await expect(changed.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
+    expect(changed.gmail.downloadAttachment).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown send action', async () => {
@@ -274,5 +299,93 @@ describe('Gmail sender selection in the session tool', () => {
     ).rejects.toThrow('verified');
     expect(gmail.createDraft).not.toHaveBeenCalled();
     expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
+  });
+});
+
+describe('Gmail draft attachments from the session workspace', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+  async function workspace() {
+    const root = await mkdtemp(join(tmpdir(), 'gmail-attach-'));
+    roots.push(root);
+    const worktree = join(root, 'worktree');
+    await mkdir(join(worktree, 'out'), { recursive: true });
+    await writeFile(join(worktree, 'out', 'report.pdf'), Buffer.from([0x25, 0x50, 0x00, 0xff]));
+    await writeFile(join(root, 'secret.txt'), 'outside');
+    return { root, worktree };
+  }
+  const draft = (attachments: unknown, action = 'create_draft') => ({
+    action,
+    ...(action === 'create_draft'
+      ? { to: ['a@example.test'], subject: 'Report' }
+      : { threadId: 't1' }),
+    body: 'See attached',
+    attachments,
+  });
+
+  it.each(['create_draft', 'create_reply_draft'])(
+    '%s attaches exact workspace bytes with an inferred type',
+    async (action) => {
+      const { worktree } = await workspace();
+      const { tool, gmail } = setup({
+        getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree }),
+      });
+      await tool.invoke(
+        input(
+          draft([{ path: 'out/report.pdf' }, { path: 'out/report.pdf', filename: 'Q3' }], action),
+        ),
+      );
+      const created = gmail.createDraft.mock.calls[0]?.[1] as {
+        attachments: { filename: string; mimeType: string; content: Buffer }[];
+      };
+      expect(created.attachments).toEqual([
+        {
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          content: Buffer.from([0x25, 0x50, 0x00, 0xff]),
+        },
+        {
+          filename: 'Q3',
+          mimeType: 'application/octet-stream',
+          content: Buffer.from([0x25, 0x50, 0x00, 0xff]),
+        },
+      ]);
+    },
+  );
+
+  // Mail is the one place an agent could exfiltrate host files; confinement must hold.
+  it.each([
+    ['../secret.txt', 'must stay inside the session worktree'],
+    ['out/link.txt', 'does not exist'],
+    ['/etc/passwd', 'must be relative'],
+    ['out', 'must name a file'],
+  ])('refuses %s without creating a draft', async (path, message) => {
+    const { root, worktree } = await workspace();
+    await symlink(join(root, 'secret.txt'), join(worktree, 'out', 'link.txt'));
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup({
+      getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree }),
+    });
+    await expect(tool.invoke(input(draft([{ path }])))).rejects.toThrow(message);
+    expect(gmail.createDraft).not.toHaveBeenCalled();
+    expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
+  });
+
+  // A name that merely starts with two dots is still inside the worktree.
+  it('accepts a worktree file whose name starts with two dots', async () => {
+    const { worktree } = await workspace();
+    await writeFile(join(worktree, '..notes.txt'), 'notes');
+    const { tool, gmail } = setup({
+      getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree }),
+    });
+    await tool.invoke(input(draft([{ path: '..notes.txt' }])));
+    expect(gmail.createDraft).toHaveBeenCalledOnce();
+  });
+
+  it('refuses attachments for a session without a workspace', async () => {
+    const { tool, gmail } = setup();
+    await expect(tool.invoke(input(draft([{ path: 'a.pdf' }])))).rejects.toThrow('no workspace');
+    expect(gmail.createDraft).not.toHaveBeenCalled();
   });
 });

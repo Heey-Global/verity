@@ -75,6 +75,17 @@ import {
   SpeakerAvatar,
   speakerTone,
 } from '../../components/meeting/MeetingUI';
+import {
+  Button,
+  Card,
+  Group,
+  HintBox,
+  Row,
+  SectionHeader,
+  Text as UiText,
+  TextField,
+} from '../../components/ui';
+import { tint } from '../../components/ui/tint';
 
 type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
 
@@ -1137,10 +1148,10 @@ export default function MeetingScreen() {
           }
           tone={
             card.status === 'ready'
-              ? colors.tone.done
+              ? colors.success
               : card.status === 'failed'
-                ? colors.tone.danger
-                : colors.primary
+                ? colors.attention
+                : colors.action
           }
           working={card.status === 'working'}
           prominent
@@ -1169,7 +1180,7 @@ export default function MeetingScreen() {
             card.status === 'ready'
               ? [
                   {
-                    label: 'Open in chat ›',
+                    label: 'Open in chat',
                     accessibilityLabel: 'Open answer in chat',
                     primary: true,
                     onPress: () =>
@@ -1250,7 +1261,7 @@ export default function MeetingScreen() {
                 ? 'OPEN QUESTION'
                 : 'WORTH CHECKING'
           }
-          tone={contradiction ? colors.accent : colors.primary}
+          tone={contradiction ? colors.signature : colors.action}
           time={timeOfDay(insight.createdAt)}
           quote={`“${insight.evidenceA}”${insight.evidenceB ? ` · “${insight.evidenceB}”` : ''}`}
           title={insight.summary}
@@ -1395,7 +1406,7 @@ export default function MeetingScreen() {
                 style={[
                   styles.segmentText,
                   mode === value && {
-                    color: value === 'note' ? colors.tone.done : colors.accent,
+                    color: colors.actionLabel,
                   },
                 ]}
               >
@@ -1456,7 +1467,7 @@ export default function MeetingScreen() {
     <View style={styles.composerPanel}>
       {composerMode('ask')}
       <View style={styles.composer}>
-        <Text style={[styles.composerTime, { color: colors.accent }]}>✦</Text>
+        <Text style={[styles.composerTime, { color: colors.signature }]}>✦</Text>
         <TextInput
           accessibilityLabel="Ask Verity about this meeting"
           autoFocus={autoFocus}
@@ -1580,204 +1591,167 @@ export default function MeetingScreen() {
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>New meeting</Text>
-            <Pressable
-              accessibilityRole="button"
+            <Button
+              label="Cancel"
+              variant="text"
               onPress={() => (meeting ? setShowNewMeeting(false) : router.back())}
-            >
-              <Text style={styles.link}>Cancel</Text>
-            </Pressable>
+            />
           </View>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <HintBox title="Could not start the meeting" message={error} /> : null}
           {noteUnsaved || draft?.text.trim() ? (
-            <View style={styles.recoveryCard} testID="unsaved-note">
-              <Text style={styles.recoveryTitle}>
-                {noteUnsaved
-                  ? 'A note from your last meeting isn’t saved'
-                  : 'Finish a note from your last meeting'}
-              </Text>
-              {draft?.text.trim() ? <Text style={styles.body}>“{draft.text.trim()}”</Text> : null}
-              <Text style={styles.hint}>
-                The meeting itself is kept. Save this note to finish it.
-                {noteSaveError?.message
-                  ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
-                  : ''}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Save recovered note'}
-                onPress={submitNote}
-                style={styles.recoveryButton}
-              >
-                <Icon name="rotate-cw" size={16} color={colors.primary} />
-                <Text style={styles.recoveryButtonText}>
-                  {noteUnsaved ? 'Retry save' : 'Save note'}
-                </Text>
-              </Pressable>
-            </View>
+            <Card>
+              <View style={styles.setupCard} testID="unsaved-note">
+                <UiText variant="row">
+                  {noteUnsaved
+                    ? 'A note from your last meeting isn’t saved'
+                    : 'Finish a note from your last meeting'}
+                </UiText>
+                {draft?.text.trim() ? <UiText>“{draft.text.trim()}”</UiText> : null}
+                <UiText variant="subtitle">
+                  The meeting itself is kept. Save this note to finish it.
+                  {noteSaveError?.message
+                    ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
+                    : ''}
+                </UiText>
+                <View style={styles.setupInline}>
+                  <Button
+                    label={noteUnsaved ? 'Retry save' : 'Save note'}
+                    accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Save recovered note'}
+                    icon="rotate-cw"
+                    variant="secondary"
+                    size="compact"
+                    onPress={submitNote}
+                  />
+                </View>
+              </View>
+            </Card>
           ) : null}
-          <TextInput
+          <TextField
+            label="Title"
             accessibilityLabel="Meeting title"
             value={meetingTitle}
             onChangeText={setMeetingTitle}
             maxLength={200}
-            placeholder="Meeting title (optional)"
-            placeholderTextColor={colors.textFaint}
-            style={styles.engineChoice}
+            placeholder="Optional"
           />
-          <View style={styles.block}>
-            <Text style={styles.rowText}>Meeting source</Text>
-            <View style={styles.segmented}>
-              {(['presence', 'online'] as const).map((source) => (
-                <Pressable
-                  key={source}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: meetingSource === source }}
-                  onPress={() => setMeetingSource(source)}
-                  style={[styles.segment, meetingSource === source && styles.segmentSelected]}
-                >
-                  <Text
-                    style={{
-                      color: meetingSource === source ? colors.primary : colors.text,
-                    }}
-                  >
-                    {source === 'presence' ? 'In person' : 'Online meeting'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            {meetingSource === 'online' ? (
-              <>
-                <TextInput
-                  value={meetingUrl}
-                  onChangeText={setMeetingUrl}
-                  placeholder="Meeting link"
-                  placeholderTextColor={colors.textFaint}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  accessibilityLabel="Online meeting link"
-                  style={styles.engineChoice}
-                />
-                <Text style={styles.hint}>
-                  {attendeeConfigured
-                    ? 'Transcription continues while the app is closed. Requires Verity Premium Online sharing.'
-                    : 'Configure online meetings and enable Verity Premium Online sharing.'}
-                </Text>
-                {!attendeeConfigured ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => router.push('/settings/services')}
-                  >
-                    <Text style={styles.link}>Configure online meetings</Text>
-                  </Pressable>
-                ) : null}
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => router.push('/settings/premium')}
-                >
-                  <Text style={styles.link}>Verity Premium</Text>
-                </Pressable>
-              </>
-            ) : null}
+          <View style={styles.setupSection}>
+            <SectionHeader title="Meeting source" />
+            <Group>
+              <Row
+                title="In person"
+                subtitle="Records with this device's microphone"
+                leading={{ icon: 'mic' }}
+                selected={meetingSource === 'presence'}
+                onPress={() => setMeetingSource('presence')}
+              />
+              <Row
+                title="Online meeting"
+                subtitle="Joins the call and keeps transcribing in the background"
+                leading={{ icon: 'video' }}
+                selected={meetingSource === 'online'}
+                onPress={() => setMeetingSource('online')}
+              />
+            </Group>
           </View>
-          {meetingSource === 'presence' ? (
+          {meetingSource === 'online' ? (
+            <View style={styles.setupSection}>
+              <TextField
+                label="Meeting link"
+                accessibilityLabel="Online meeting link"
+                value={meetingUrl}
+                onChangeText={setMeetingUrl}
+                placeholder="https://"
+                keyboardType="url"
+              />
+              <UiText variant="footnote">
+                {attendeeConfigured
+                  ? 'Transcription continues while the app is closed. Requires Verity Premium Online sharing.'
+                  : 'Configure online meetings and enable Verity Premium Online sharing.'}
+              </UiText>
+              <View style={styles.setupInline}>
+                {!attendeeConfigured ? (
+                  <Button
+                    label="Configure online meetings"
+                    variant="text"
+                    size="compact"
+                    onPress={() => router.push('/settings/services')}
+                  />
+                ) : null}
+                <Button
+                  label="Verity Premium"
+                  variant="text"
+                  size="compact"
+                  onPress={() => router.push('/settings/premium')}
+                />
+              </View>
+            </View>
+          ) : (
             <>
-              <View style={styles.block}>
-                <SectionLabel>WHO IS THERE?</SectionLabel>
-                <View style={styles.segmented}>
+              <View style={styles.setupSection}>
+                <SectionHeader title="Who is there?" />
+                <Group>
                   {(
                     [
-                      [4, 'Up to 4 people'],
-                      [10, 'Larger group'],
+                      [4, 'Up to 4 people', 'Each voice gets its own speaker'],
+                      [10, 'Larger group', 'Tuned for many voices in one room'],
                     ] as const
-                  ).map(([count, label]) => {
-                    const selected = (expectedParticipants ?? 4) === count;
-                    return (
-                      <Pressable
-                        key={count}
-                        accessibilityRole="radio"
-                        accessibilityLabel={label}
-                        accessibilityState={{ selected }}
-                        disabled={busy}
-                        onPress={() => setExpectedParticipants(count)}
-                        style={[styles.segment, selected && styles.segmentSelected]}
-                      >
-                        <Text style={selected ? styles.segmentTextSelected : styles.segmentText}>
-                          {label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                  ).map(([count, label, detail]) => (
+                    <Row
+                      key={count}
+                      title={label}
+                      subtitle={detail}
+                      selected={(expectedParticipants ?? 4) === count}
+                      disabled={busy}
+                      onPress={() => setExpectedParticipants(count)}
+                    />
+                  ))}
+                </Group>
               </View>
-              <View style={styles.block}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Speech recognition"
-                  accessibilityState={{ expanded: showEngines }}
-                  onPress={() => setShowEngines((shown) => !shown)}
-                  style={styles.row}
-                >
-                  <Text style={styles.rowText}>Speech recognition</Text>
-                  <Text style={styles.rowValue}>{engine?.name ?? 'On device'}</Text>
-                  <Icon
-                    name={showEngines ? 'chevron-down' : 'chevron-right'}
-                    size={16}
-                    color={colors.textFaint}
-                  />
-                </Pressable>
-                {showEngines
-                  ? engines.map((item) => (
-                      <Pressable
+              <View style={styles.setupSection}>
+                <SectionHeader title="Speech recognition" />
+                <Group>
+                  {showEngines && engines.length > 0 ? (
+                    engines.map((item) => (
+                      <Row
                         key={item.id}
-                        accessibilityRole="radio"
-                        accessibilityState={{
-                          selected: selectedEngine === item.id,
-                          disabled: !item.available,
-                        }}
+                        title={item.name}
+                        subtitle={item.available ? undefined : 'Unavailable on this device'}
+                        selected={selectedEngine === item.id}
                         disabled={!item.available || busy}
-                        onPress={() => setSelectedEngine(item.id)}
-                        style={styles.engineChoice}
-                      >
-                        <Text
-                          style={
-                            selectedEngine === item.id ? styles.segmentTextSelected : styles.rowText
-                          }
-                        >
-                          {selectedEngine === item.id ? '● ' : '○ '}
-                          {item.name}
-                          {item.available ? '' : ' · unavailable'}
-                        </Text>
-                      </Pressable>
+                        onPress={() => {
+                          setSelectedEngine(item.id);
+                          setShowEngines(false);
+                        }}
+                      />
                     ))
-                  : null}
+                  ) : (
+                    <Row
+                      title={engine?.name ?? 'On device'}
+                      leading={{ icon: 'cpu' }}
+                      trailing="Change"
+                      accessibilityLabel="Speech recognition"
+                      onPress={() => setShowEngines(true)}
+                    />
+                  )}
+                </Group>
               </View>
             </>
-          ) : null}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Start meeting"
-            disabled={
-              busy || (meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim()))
+          )}
+          <Button
+            label={
+              returning
+                ? 'Return to live meeting'
+                : meetingSource === 'online'
+                  ? 'Start online meeting'
+                  : 'Start recording'
             }
+            accessibilityLabel="Start meeting"
+            icon={returning ? 'arrow-right' : meetingSource === 'online' ? 'video' : 'mic'}
+            loading={busy}
+            disabled={meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim())}
             onPress={start}
-            style={styles.startButton}
-          >
-            {busy ? (
-              <ActivityIndicator color={colors.primary} />
-            ) : (
-              <>
-                {returning ? null : <View style={styles.recordDot} />}
-                <Text style={styles.startButtonText}>
-                  {returning
-                    ? 'Return to live meeting'
-                    : meetingSource === 'online'
-                      ? 'Start online meeting'
-                      : 'Start recording'}
-                </Text>
-              </>
-            )}
-          </Pressable>
+            fullWidth
+          />
         </ScrollView>
       </View>
     );
@@ -1836,9 +1810,7 @@ export default function MeetingScreen() {
               }
               size={22}
               color={
-                noteUnsaved || meeting.state === 'interrupted'
-                  ? colors.tone.danger
-                  : colors.tone.done
+                noteUnsaved || meeting.state === 'interrupted' ? colors.attention : colors.success
               }
             />
             <View style={styles.fill}>{statusLines}</View>
@@ -1938,7 +1910,7 @@ export default function MeetingScreen() {
       >
         {liveProblem ??
           (meeting.captureStatus === 'paused'
-            ? 'Ⅱ Paused'
+            ? 'Paused'
             : meeting.captureStatus === 'downloading'
               ? 'Preparing language model…'
               : meeting.captureStatus === 'preparing'
@@ -1948,18 +1920,15 @@ export default function MeetingScreen() {
                   : '')}
       </Text>
       <View
-        style={[styles.pill, voiceSending && { borderColor: colors.accent }]}
+        style={[styles.pill, voiceSending && { borderColor: colors.signature }]}
         accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
       >
         {voiceSending ? (
-          <Text style={[styles.pillText, { color: colors.accent }]}>✦ Sending request…</Text>
+          <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>
         ) : (
           <>
-            <BreathingDot
-              color={paused ? colors.tone.attention : colors.tone.danger}
-              breathing={!paused && !preparing}
-            />
-            <Text style={[styles.pillText, paused && { color: colors.tone.attention }]}>
+            <BreathingDot color={colors.attention} breathing={!paused && !preparing} />
+            <Text style={[styles.pillText, paused && { color: colors.attention }]}>
               {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
             </Text>
           </>
@@ -2015,7 +1984,7 @@ export default function MeetingScreen() {
   const noticed = (
     <View style={styles.block}>
       <View style={styles.noticedHeader}>
-        <Text style={[styles.sparkle, { color: colors.accent }]}>✦</Text>
+        <Text style={[styles.sparkle, { color: colors.signature }]}>✦</Text>
         <Text style={styles.noticedTitle}>Verity noticed</Text>
         {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
       </View>
@@ -2241,8 +2210,8 @@ const styles = StyleSheet.create((theme) => {
     },
     pillText: {
       color: colors.text,
-      fontSize: theme.text.md,
-      fontWeight: '700',
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
       fontVariant: ['tabular-nums'],
     },
     dotRing: {
@@ -2266,24 +2235,53 @@ const styles = StyleSheet.create((theme) => {
     headerStatus: {
       flex: 1,
       color: colors.textFaint,
-      fontSize: theme.text.xs,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
       textAlign: 'right',
     },
-    endButtonText: { color: colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
-    status: { color: colors.textMuted, fontSize: theme.text.xs },
-    statusError: { color: colors.tone.danger },
-    error: { color: colors.tone.danger, fontSize: theme.text.sm },
-    hint: { color: colors.textFaint, fontSize: theme.text.sm },
-    body: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
-    link: { color: colors.primary, fontSize: theme.text.md },
-    centered: { alignItems: 'center', paddingVertical: theme.spacing.sm },
+    endButtonText: {
+      color: colors.attention,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.row.fontSize,
+    },
+    status: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
+    statusError: { color: colors.attention },
+    error: {
+      color: colors.attention,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    hint: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    link: {
+      color: colors.action,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
     avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
     noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    sparkle: { fontSize: theme.text.md },
-    noticedTitle: { flex: 1, color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-    note: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
-    noteTime: { color: colors.textFaint, fontWeight: '700' },
+    sparkle: { fontFamily: theme.fonts.regular, fontSize: theme.typography.row.fontSize },
+    noticedTitle: {
+      flex: 1,
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    note: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    noteTime: { color: colors.textFaint, fontFamily: theme.fonts.bold },
     notesCard: {
       flex: 1,
       backgroundColor: colors.surface,
@@ -2319,11 +2317,16 @@ const styles = StyleSheet.create((theme) => {
       paddingRight: 0,
       paddingVertical: theme.spacing.xs,
     },
-    composerTime: { color: colors.primary, fontWeight: '700', fontSize: theme.text.sm },
+    composerTime: {
+      color: colors.action,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
     composerInput: {
       alignSelf: 'stretch',
       color: colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
       minHeight: 40,
       maxHeight: 120,
       paddingVertical: theme.spacing.sm,
@@ -2351,17 +2354,29 @@ const styles = StyleSheet.create((theme) => {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    barButtonText: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
-    barButtonPrimary: { borderColor: colors.primary, backgroundColor: 'transparent' },
-    barButtonPrimaryText: { color: colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+    barButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    barButtonPrimary: { borderColor: colors.action, backgroundColor: 'transparent' },
+    barButtonPrimaryText: {
+      color: colors.action,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
     column: { flex: 1, gap: theme.spacing.md },
     divider: { width: 1, backgroundColor: colors.border },
+    setupSection: { gap: theme.spacing.sm },
+    setupCard: { flex: 1, gap: theme.spacing.sm },
+    setupInline: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
     titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    title: { color: colors.text, fontSize: theme.text.xl, fontWeight: '800' },
+    title: { ...theme.typography.display, color: colors.text },
     subtitle: {
       color: colors.textMuted,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       marginTop: -theme.spacing.lg,
     },
     segmented: {
@@ -2369,20 +2384,26 @@ const styles = StyleSheet.create((theme) => {
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.surfaceAlt,
-      borderRadius: theme.radius.pill,
+      borderRadius: theme.radius.control,
       padding: theme.spacing.xs,
     },
     segment: {
       flex: 1,
       alignItems: 'center',
-      paddingVertical: theme.spacing.md,
-      borderRadius: theme.radius.pill,
+      paddingVertical: theme.spacing.sm,
+      borderRadius: theme.radius.tile,
       borderWidth: 1,
       borderColor: 'transparent',
     },
-    segmentSelected: { borderColor: colors.primary, backgroundColor: colors.background },
-    segmentText: { color: colors.textMuted, fontSize: theme.text.md },
-    segmentTextSelected: { color: colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+    segmentSelected: {
+      borderColor: tint(colors.action, 'border'),
+      backgroundColor: tint(colors.action, 'fill'),
+    },
+    segmentText: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -2394,43 +2415,24 @@ const styles = StyleSheet.create((theme) => {
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
     },
-    rowText: { flex: 1, color: colors.text, fontSize: theme.text.md },
-    rowValue: { flex: 1, color: colors.textMuted, fontSize: theme.text.sm, textAlign: 'right' },
-    engineChoice: { paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.sm },
-    startButton: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: theme.spacing.md,
-      minHeight: 56,
-      borderRadius: theme.radius.pill,
-      borderWidth: 1,
-      borderColor: colors.accent,
-      backgroundColor: colors.accent,
+    rowText: {
+      flex: 1,
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
     },
-    recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.tone.danger },
-    startButtonText: { color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-    recoveryCard: {
-      gap: theme.spacing.sm,
-      borderWidth: 1,
-      borderColor: colors.tone.danger,
-      backgroundColor: colors.surface,
-      borderRadius: theme.radius.lg,
-      padding: theme.spacing.lg,
+    rowValue: {
+      flex: 1,
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+      textAlign: 'right',
     },
-    recoveryTitle: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
-    recoveryButton: {
-      flexDirection: 'row',
-      alignSelf: 'flex-start',
-      alignItems: 'center',
-      gap: theme.spacing.sm,
-      borderWidth: 1,
-      borderColor: colors.primary,
-      borderRadius: theme.radius.pill,
-      paddingHorizontal: theme.spacing.lg,
-      paddingVertical: theme.spacing.sm,
+    startButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
     },
-    recoveryButtonText: { color: colors.primary, fontWeight: '700' },
     savedCard: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -2448,9 +2450,18 @@ const styles = StyleSheet.create((theme) => {
       gap: theme.spacing.md,
     },
     sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    sheetTitle: { color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+    sheetTitle: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
-    transcriptText: { color: colors.text, fontSize: theme.text.md, lineHeight: 24 },
+    transcriptText: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 24,
+    },
     transcriptPending: { color: colors.textMuted },
   };
 });

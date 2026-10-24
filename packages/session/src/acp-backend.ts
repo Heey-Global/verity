@@ -1,4 +1,4 @@
-import * as acp from '@agentclientprotocol/sdk';
+import * as acp from '@agentclientprotocol/sdk/unstable';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
@@ -9,7 +9,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionUpdate,
-} from '@agentclientprotocol/sdk';
+} from '@agentclientprotocol/sdk/unstable';
 import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
@@ -139,8 +139,13 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
+  /** An answered `session/load` error that, besides `resourceNotFound`, names a
+   *  conversation the agent does not have — for an adapter that reports it some
+   *  other way. Only for answers that are about the conversation itself. */
+  readonly isMissingSession?:
+    ((error: acp.RequestError, requestedSessionId: string) => boolean) | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta(opts: RunTurnOptions): Record<string, unknown>;
+  sessionMeta(opts: RunTurnOptions): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Model recorded on the `session` event when the turn names none. */
   defaultModelLabel(opts: RunTurnOptions): string;
   /** The turn's prompt text — the hook for agents with no system-prompt field. */
@@ -306,6 +311,21 @@ function processStream(process: SpawnedProcess, worktree: string): acp.Stream {
       },
     }),
   );
+}
+
+/** The reason codex-acp gives for -32603 ("Internal error") travels only in the
+ *  error's `data.details`; its stderr stays empty. Without the details the operator
+ *  sees a bare "Internal error" and the failure cannot be told apart from any other. */
+const MAX_ACP_ERROR_DETAILS = 1_000;
+
+function acpErrorMessage(error: unknown, env: NodeJS.ProcessEnv): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof acp.RequestError)) return message;
+  const details = (error.data as { details?: unknown } | null | undefined)?.details;
+  if (typeof details !== 'string' || details.trim() === '' || message.includes(details)) {
+    return message;
+  }
+  return `${message}: ${redactProcessStderr(details.trim(), env).slice(0, MAX_ACP_ERROR_DETAILS)}`;
 }
 
 /** Turn and steer attachments share one shape, so one signature serves both. */
@@ -566,6 +586,7 @@ export async function runAcpTurn(
       cwd: opts.cwd,
       env: opts.env ?? process.env,
       keepStdinOpen: true,
+      ...(opts.planning === true ? { planning: true } : {}),
     });
   let child = spawn();
   const startupRecoveryDeadline = Date.now() + 16 * 60_000;
@@ -651,6 +672,8 @@ export async function runAcpTurn(
   // between accepting a prompt and the agent's first token gets it answered a
   // turn later instead of killing the session.
   let turnHasAgentContent = false;
+  // Replay safety is monotonic, unlike the steering/capacity classifier.
+  let executionObserved = false;
   opts.onSteer?.((message) => {
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === undefined) return false;
     sendSteering(message);
@@ -861,6 +884,7 @@ export async function runAcpTurn(
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
           if (loadingSession || stopped) return Promise.resolve();
+          if (isAgentContent(params.update)) executionObserved = true;
           if (profile.telemetryBackend === 'codex-acp') {
             // A provider refusal is not assistant content safe for steering.
             // Keep the channel closed until the ordered classifier accepts prose.
@@ -924,10 +948,11 @@ export async function runAcpTurn(
           if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
             turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
           }
+          const metadata = profile.sessionMeta(turnOpts);
           const request = {
             cwd: opts.cwd,
             mcpServers,
-            _meta: profile.sessionMeta(turnOpts),
+            _meta: metadata instanceof Promise ? await metadata : metadata,
           };
           let session: NewSessionResponse;
           if (opts.resumeSessionId !== undefined) {
@@ -963,7 +988,11 @@ export async function runAcpTurn(
                 // (-32603), or because the request was malformed — every one of those
                 // is a condition of the moment, and dropping a live binding on one
                 // would discard a conversation the agent still has, permanently.
-                if (error instanceof acp.RequestError && error.code === RESOURCE_NOT_FOUND) {
+                if (
+                  error instanceof acp.RequestError &&
+                  (error.code === RESOURCE_NOT_FOUND ||
+                    profile.isMissingSession?.(error, opts.resumeSessionId!) === true)
+                ) {
                   loadRefused = true;
                 }
                 throw error;
@@ -1317,7 +1346,7 @@ export async function runAcpTurn(
   } catch (error) {
     const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = acpErrorMessage(error, opts.env ?? process.env);
     await drainUpdates().catch(() => undefined);
     closedOut = true;
     // Unexpected disconnects preserve buffered prose and completed contracts.
@@ -1430,7 +1459,8 @@ export async function runAcpTurn(
       stderr,
       aborted,
       ...(failedBeforeExecution ? { failedBeforeExecution: true as const } : {}),
-      ...(loadRefused && !aborted ? { staleResume: true as const } : {}),
+      ...(executionObserved ? { executionObserved: true as const } : {}),
+      ...(loadRefused && !aborted && !executionObserved ? { staleResume: true as const } : {}),
     };
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);

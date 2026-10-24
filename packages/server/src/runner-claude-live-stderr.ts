@@ -2,8 +2,7 @@
  * claude-agent-acp owns stdout for the ACP protocol, so it routes its own
  * console logging to stderr rather than to a log file — 0.70.0 added a
  * per-query diagnostic line there. Verity drops stderr from a successful turn,
- * which makes that line noise rather than a finding, so the live smoke
- * tolerates it and nothing else.
+ * so the live smoke permits only the documented diagnostics below.
  *
  * Matched as a whole line rather than by "looks like a namespaced log line":
  * `[session/error] …` wears the same brackets and is precisely what this gate
@@ -31,12 +30,18 @@ const ADAPTER_MODELS_TAIL_LINE =
 const ADAPTER_REPLAY_LINE =
   /^\[session\/replay\] sessionId=[\w.-]+ phase=(?:read durationMs=\d+|publish durationMs=\d+ totalMs=\d+) messages=\d+$/u;
 
+// ACP 0.90.0 logs this when a session updates auth state while its startup
+// probe is still running; the older answer is discarded without changing auth.
+const ADAPTER_STALE_AUTH_PROBE_LINE =
+  '[authStatus] discarding a probe that predates the latest auth change';
+
 export function unexpectedStderrLines(stderr: string): string[] {
   return stderr
     .split('\n')
     .filter(
       (line) =>
         line.trim().length > 0 &&
+        line !== ADAPTER_STALE_AUTH_PROBE_LINE &&
         !ADAPTER_QUERY_LINE.test(line) &&
         !ADAPTER_CREATE_LINE.test(line) &&
         !ADAPTER_LOAD_LINE.test(line) &&

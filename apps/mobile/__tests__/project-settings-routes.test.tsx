@@ -8,8 +8,8 @@
 // the one action that answers it, and that a choice made on a screen lands on
 // the server as exactly the PATCH the server expects.
 import { subscribeProjectStatusMutations, type ProjectDetail } from '@verity/mobile';
+import { Alert, Linking } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -18,9 +18,14 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
 import ProjectServicesScreen from '../app/project/[id]/settings/services';
-import ProjectGitHubScreen from '../app/project/[id]/settings/github';
+import ProjectRepositoryScreen from '../app/project/[id]/settings/repository';
 import ProjectModelScreen from '../app/project/[id]/settings/model';
-import { healthWithRebuild, makeClient, makeDetail } from './support/projectHarness';
+import {
+  forgejoConnections,
+  healthWithRebuild,
+  makeClient,
+  makeDetail,
+} from './support/projectHarness';
 import {
   mockCreateVerityClient,
   mockDismissTo,
@@ -48,6 +53,7 @@ afterEach(() => {
 describe('project settings index — destinations', () => {
   // Each row opens its project-specific destination directly.
   it.each([
+    ['Vulnerability scan', '/project/[id]/vulnerability-scan'],
     ['Sandbox', '/project/[id]/settings/sandbox'],
     ['Agents', '/project/[id]/settings/model'],
   ])('routes %s to %s', async (label, pathname) => {
@@ -108,13 +114,13 @@ describe('project settings index — destinations', () => {
     expect(screen.getByText('Codex only')).toBeOnTheScreen();
   });
 
-  it('keeps the GitHub connection action for local projects', async () => {
+  it('keeps the repository connection action for local projects', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail({ kind: 'local' }) }));
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Connect GitHub(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Connect repository, GitHub(,|$)/));
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings/github',
+      pathname: '/project/[id]/settings/repository',
       params: { id: 'p/1' },
     });
     expect(screen.getByText('Automatic')).toBeOnTheScreen();
@@ -253,10 +259,11 @@ describe('project settings — sandbox', () => {
     const [title, message, buttons] = alert.mock.calls[0];
     expect(title).toBe('Update waiting for a turn');
     expect(message).toContain('cancel the turn first');
-    expect(buttons?.map((button) => button.text)).toEqual(['OK']);
-    // Nothing on this path may reach the route that would 409 — or, if SBX-1 ever
-    // stopped holding, kill the turn the message just promised was safe.
-    buttons?.forEach((button) => button.onPress?.());
+    // Only an acknowledgement, no action button: nothing on this path may reach
+    // the route that would 409 — or, if SBX-1 ever stopped holding, kill the turn
+    // the message just promised was safe.
+    expect(buttons).toBeUndefined();
+    expect(screen.queryByText('Update project?')).toBeNull();
     expect(recreateProjectContainer).not.toHaveBeenCalled();
     alert.mockRestore();
   });
@@ -364,20 +371,17 @@ describe('project settings — sandbox', () => {
     const detail: ProjectDetail = { ...base, project: { ...base.project, state: 'active' } };
     const deprovisionProject = jest.fn().mockResolvedValue({ ...detail.project, state: 'absent' });
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, deprovisionProject }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Pause')?.onPress?.();
-    });
     const published = jest.fn();
     const unsubscribe = subscribeProjectStatusMutations(published);
     render(<ProjectSandboxScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Pause project(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Pause sandbox' }));
     await waitFor(() => expect(deprovisionProject).toHaveBeenCalledWith('p/1', { purge: false }));
     await waitFor(() => expect(published).toHaveBeenCalledTimes(1));
     expect(published).toHaveBeenCalledWith(expect.objectContaining({ id: 'p/1', state: 'absent' }));
     expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
     unsubscribe();
-    alert.mockRestore();
   });
 
   // Every stacked screen sees the same `pending` status on load; without a
@@ -468,12 +472,11 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ detail, recreateProjectContainer, getHealth: healthWithRebuild() }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Rebuild')?.onPress?.();
-    });
     render(<ProjectSandboxScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Rebuild project image(,|$)/));
+    expect(screen.getByText('Rebuild image?')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Rebuild' }));
 
     await waitFor(() =>
       expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
@@ -481,8 +484,6 @@ describe('project settings — sandbox', () => {
         forceRebuild: true,
       }),
     );
-    expect(alert.mock.calls[0][0]).toBe('Rebuild image?');
-    alert.mockRestore();
   });
 
   // The canonical reason to want a cacheless rebuild: the project built once and
@@ -971,10 +972,10 @@ describe('project settings — agents', () => {
   });
 });
 
-describe('project settings — GitHub', () => {
+describe('project settings — repository', () => {
   it('shows the bound repository for a GitHub project', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
     expect(await screen.findByText('heey-global/verity')).toBeOnTheScreen();
     expect(screen.getByText('No published release')).toBeOnTheScreen();
@@ -994,36 +995,187 @@ describe('project settings — GitHub', () => {
         linkProjectToGitHub,
       }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Connect')?.onPress?.();
-    });
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Connect project to GitHub(,|$)/));
+    // Linking pushes history, so nothing is preselected for a single tap.
+    expect(await screen.findByLabelText(/^Connect project to GitHub(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to GitHub(,|$)/));
+    expect(linkProjectToGitHub).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(linkProjectToGitHub).toHaveBeenCalledWith('p/1', 'acme/site'));
-    alert.mockRestore();
+  });
+
+  // Linking through the GitHub route would bind a Forgejo repository to the
+  // wrong host; the Forgejo choice must carry its connection id.
+  it('connects a local project to a Forgejo repository through its connection', async () => {
+    const linkProject = jest
+      .fn()
+      .mockResolvedValue({ project: { ...makeDetail({ kind: 'forgejo' }).project } });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        listAvailableRepositories: jest
+          .fn()
+          .mockResolvedValue([{ ...makeDetail().project, id: 'r/1', owner: 'acme', repo: 'site' }]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest
+          .fn()
+          .mockResolvedValue([{ owner: 'team', repo: 'website', archived: false }]),
+        linkProject,
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(await screen.findByLabelText(/^Forgejo, git\.example\.org/));
+    // The GitHub choice must not travel with the Forgejo connection.
+    expect(screen.getByLabelText(/^Connect project to Forgejo(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('team/website'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to Forgejo(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() =>
+      expect(linkProject).toHaveBeenCalledWith('p/1', 'team/website', 'forgejo-1'),
+    );
+  });
+
+  it('offers only the connected code host when GitHub is not connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^GitHub, github\.com/)).toBeNull();
+  });
+
+  it('reloads repository hosts after returning from connection setup', async () => {
+    const connections = jest
+      .fn()
+      .mockResolvedValue({ connections: [], forgejoProjectsAvailable: true });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByText('Open Connections'));
+    connections.mockResolvedValue(forgejoConnections());
+    act(() => refocus());
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+  });
+
+  it('sends a local project without any code host to Connections', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('Open Connections'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services');
+  });
+
+  it('shows a Forgejo project with its instance and opens it there', async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByText('Forgejo (git.example.org)')).toBeOnTheScreen();
+    expect(screen.queryByText('Latest release')).toBeNull();
+    fireEvent.press(screen.getByText('Open in browser'));
+    expect(openURL).toHaveBeenCalledWith('https://git.example.org/heey-global/verity');
   });
 });
 
-it('changes only the project Drive access mode', async () => {
+describe('project settings index — code hosts', () => {
+  it('offers Forgejo for a local project when only Forgejo is connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Connect repository, Forgejo(,|$)/)).toBeOnTheScreen();
+  });
+
+  it('hides the action when Forgejo cannot run projects on this server', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections(false)),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Google Drive,/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Connect repository/)).toBeNull();
+  });
+
+  it('names a Forgejo project by its host', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(
+      await screen.findByLabelText(/^Forgejo repository, heey-global\/verity · git\.example\.org/),
+    ).toBeOnTheScreen();
+  });
+});
+
+it('changes only the selected account-bound project Drive folder mode', async () => {
   setSearchParams({ id: 'p/1', section: 'drive' });
-  const detail = makeDetail();
-  detail.settings = {
-    ...detail.settings!,
-    googleDriveFolderId: 'root',
-    googleDriveFolderName: 'Documents',
-    googleDriveAccessMode: 'read-only',
-  };
-  const updateProjectSettings = jest
-    .fn()
-    .mockResolvedValue({ ...detail.settings, googleDriveAccessMode: 'read-write' });
-  mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+  const connectProjectGoogleDriveFolder = jest.fn().mockResolvedValue({});
+  const client = makeClient({ detail: makeDetail() });
+  Object.assign(client, {
+    listProjectDriveFolders: jest.fn().mockResolvedValue([
+      {
+        id: 'link',
+        projectId: 'p/1',
+        accountId: 'work',
+        accountEmail: 'work@example.test',
+        accountName: null,
+        folderId: 'root',
+        name: 'Documents',
+        accessMode: 'read-only',
+      },
+    ]),
+    connectProjectGoogleDriveFolder,
+  });
+  mockCreateVerityClient.mockReturnValue(client);
   render(<ProjectServicesScreen />);
-  fireEvent.press(await screen.findByText('Google Drive folder'));
+  fireEvent.press(await screen.findByText('Google Drive folders'));
+  fireEvent.press(await screen.findByText('Documents'));
   fireEvent.press(await screen.findByLabelText(/^Allow changes to Google Drive files(,|$)/));
   await waitFor(() =>
-    expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
-      googleDriveAccessMode: 'read-write',
-    }),
+    expect(connectProjectGoogleDriveFolder).toHaveBeenCalledWith(
+      'p/1',
+      'root',
+      'read-write',
+      'work',
+    ),
   );
 });

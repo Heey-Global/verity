@@ -4,6 +4,7 @@ import {
   type AgentLogin,
   type AgentLoginProvider,
   type VerityClient,
+  type VeritySettings,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
@@ -11,7 +12,7 @@ import { ActivityIndicator, Linking, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AgentProviderIcon } from './AgentProviderIcon';
-import { Button, StatusTag, TextField } from './ui';
+import { Button, HintBox, StatusTag, TextField } from './ui';
 
 type LoginState = {
   login: AgentLogin | null;
@@ -70,6 +71,7 @@ export function AgentLoginPanel({
   compact = false,
   selectedProvider,
   subscriptionPlans = {},
+  claudeCredentialStatus,
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -85,6 +87,7 @@ export function AgentLoginPanel({
   selectedProvider?: AgentLoginProvider;
   /** Plan labels the server derived from each stored login, when it knows one. */
   subscriptionPlans?: Partial<Record<AgentLoginProvider, string | null>>;
+  claudeCredentialStatus?: VeritySettings['claudeCredentialStatus'];
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -329,6 +332,7 @@ export function AgentLoginPanel({
           configured={configured.claude}
           state={logins.claude}
           subscriptionPlan={subscriptionPlans.claude ?? null}
+          credentialState={claudeCredentialStatus?.state ?? 'unknown'}
           compact={compact}
           allowDisconnect={allowDisconnect}
           onStart={() => start('claude')}
@@ -368,6 +372,7 @@ function ProviderCard({
   configured,
   state,
   subscriptionPlan,
+  credentialState = 'unknown',
   allowDisconnect,
   compact,
   onStart,
@@ -383,6 +388,7 @@ function ProviderCard({
   configured: boolean;
   state: LoginState;
   subscriptionPlan: string | null;
+  credentialState?: NonNullable<VeritySettings['claudeCredentialStatus']>['state'];
   allowDisconnect: boolean;
   compact: boolean;
   onStart: () => void;
@@ -400,17 +406,31 @@ function ProviderCard({
   // credential is saved, but the operator still needs to see and complete the
   // active login flow.
   const ready = login === null ? configured : login.configured || login.status === 'complete';
-  const statusText = ready
-    ? 'Configured'
-    : login?.status === 'failed'
-      ? 'Failed'
-      : login?.status === 'waiting'
-        ? 'Waiting'
-        : login?.status === 'ready'
-          ? 'Ready'
-          : login?.status === 'starting'
-            ? 'Starting'
-            : 'Not set';
+  const loginInactive = login === null || login.status === 'complete';
+  const needsRelogin = configured && loginInactive && credentialState === 'relogin_required';
+  const refreshFailed = configured && loginInactive && credentialState === 'refresh_failed';
+  const statusIntent = needsRelogin
+    ? 'needsSetup'
+    : refreshFailed
+      ? 'transient'
+      : ready
+        ? 'ready'
+        : 'optional';
+  const statusText = needsRelogin
+    ? 'Re-login needed'
+    : refreshFailed
+      ? 'Retrying'
+      : ready
+        ? 'Configured'
+        : login?.status === 'failed'
+          ? 'Failed'
+          : login?.status === 'waiting'
+            ? 'Waiting'
+            : login?.status === 'ready'
+              ? 'Ready'
+              : login?.status === 'starting'
+                ? 'Starting'
+                : 'Not set';
   const canOpenLoginPage =
     login?.verificationUri !== undefined &&
     login.verificationUri !== null &&
@@ -451,13 +471,27 @@ function ProviderCard({
                 : 'Connect your Codex subscription to this Verity server.'}
             </Text>
           </View>
-          <StatusTag intent={ready ? 'ready' : 'optional'} label={statusText} />
+          <StatusTag intent={statusIntent} label={statusText} />
         </View>
+      ) : null}
+
+      {needsRelogin ? (
+        <HintBox
+          title="Sign in to Claude again"
+          message="Claude could not renew your login. Use Re-login to reconnect; you do not need to log out first."
+        />
+      ) : refreshFailed ? (
+        <HintBox
+          title="Claude connection temporarily unavailable"
+          message="Verity will retry automatically. Your saved login has been kept."
+        />
       ) : null}
 
       {ready ? (
         <>
-          {!compact ? <Text style={styles.success}>{title} connected.</Text> : null}
+          {!compact && !needsRelogin && !refreshFailed ? (
+            <Text style={styles.success}>{title} connected.</Text>
+          ) : null}
           {allowDisconnect ? (
             <View style={styles.actionRow}>
               <Button
@@ -629,6 +663,8 @@ function ProviderCard({
   // Each provider has its own settings page, so its status and actions are the
   // page: they stay visible instead of waiting behind a disclosure tap.
   const bodyVisible =
+    needsRelogin ||
+    refreshFailed ||
     (ready && allowDisconnect) ||
     primaryButtonVisible ||
     loginBoxVisible ||
@@ -644,14 +680,18 @@ function ProviderCard({
             {title}
           </Text>
           <Text style={styles.providerCopy}>
-            {ready
-              ? subscriptionPlan !== null
-                ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
-                : 'Subscription connected to this Verity server.'
-              : 'Connect your ' + title + ' subscription to use it in sessions.'}
+            {needsRelogin
+              ? 'Sign in again to use Claude in sessions.'
+              : refreshFailed
+                ? 'Waiting for the Claude connection to recover.'
+                : ready
+                  ? subscriptionPlan !== null
+                    ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
+                    : 'Subscription connected to this Verity server.'
+                  : 'Connect your ' + title + ' subscription to use it in sessions.'}
           </Text>
         </View>
-        <StatusTag intent={ready ? 'ready' : 'optional'} label={statusText} />
+        <StatusTag intent={statusIntent} label={statusText} />
       </View>
       {bodyVisible ? <View style={styles.settingsCardBody}>{content}</View> : null}
     </View>

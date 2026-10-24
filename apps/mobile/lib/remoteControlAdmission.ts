@@ -1,4 +1,4 @@
-import { getRandomBytes } from 'expo-crypto';
+import { CryptoDigestAlgorithm, digestStringAsync, getRandomBytes } from 'expo-crypto';
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_FRAME_BYTES = 16 * 1024;
@@ -17,7 +17,7 @@ export interface RemoteAdmission {
   readonly sessionId: string;
   readonly ticket: string;
   readonly expiresAt: number;
-  /** Close the admission socket after /data reports `attached`. */
+  /** Release local admission ownership after /data reports `attached`. */
   finish(): void;
   /** Cancel admission or an attachment that has not yet become active. */
   cancel(): void;
@@ -28,6 +28,12 @@ export interface RemoteAdmissionOptions {
   installationHandle: string;
   signal?: AbortSignal;
   socketFactory?: (url: string) => WebSocket;
+  /** Opt-in controlled caller: keep the ticket private until Core confirms arming. */
+  diagnosticArming?: {
+    runId: string;
+    installationFingerprint: string;
+    arm(sessionId: string, signal: AbortSignal): Promise<unknown>;
+  };
 }
 
 function admissionUrl(origin: string): string {
@@ -60,7 +66,7 @@ function fields(value: Record<string, unknown>, expected: string[]): boolean {
   );
 }
 
-/** One ticket request; the caller keeps admission open until the data barrier completes. */
+/** One ticket request; selected callers confirm Core arming before receiving the ticket. */
 export function requestRemoteControlAdmission(
   options: RemoteAdmissionOptions,
 ): Promise<RemoteAdmission> {
@@ -71,14 +77,17 @@ export function requestRemoteControlAdmission(
   const id = requestId();
   const startedAt = Date.now();
   const socket = (options.socketFactory ?? ((target) => new WebSocket(target)))(url);
-  let state: 'pending' | 'ready' | 'done' = 'pending';
+  let state: 'pending' | 'arming' | 'ready' | 'done' = 'pending';
+  const armingController = new AbortController();
   let opened = false;
+  let peerClosed = false;
 
   return new Promise<RemoteAdmission>((resolve, reject) => {
+    let armingTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => fail(new Error('Remote admission timed out.')), 20_000);
     const close = (cancel: boolean): void => {
       if (state === 'done') return;
-      if (cancel && opened) {
+      if (cancel && opened && !peerClosed) {
         try {
           socket.send(JSON.stringify({ type: 'connect.cancel', requestId: id }));
         } catch {
@@ -86,23 +95,25 @@ export function requestRemoteControlAdmission(
         }
       }
       state = 'done';
+      armingController.abort();
+      if (armingTimer) clearTimeout(armingTimer);
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
       socket.close();
     };
     const fail = (error: Error): void => {
-      if (state !== 'pending') return;
+      if (state !== 'pending' && state !== 'arming') return;
       console.warn('Remote Control admission failed', {
         requestId: id,
         opened,
         elapsedMs: Date.now() - startedAt,
         reason: error.message,
       });
-      close(false);
+      close(state === 'arming');
       reject(error);
     };
     const onAbort = (): void => {
-      if (state === 'pending') {
+      if (state === 'pending' || state === 'arming') {
         close(true);
         reject(new Error('Remote admission cancelled.'));
       } else close(true);
@@ -175,22 +186,83 @@ export function requestRemoteControlAdmission(
         fail(new Error('Invalid remote admission response.'));
         return;
       }
-      state = 'ready';
-      console.info('Remote Control admission ready', {
-        requestId: id,
-        sessionId: frame.sessionId,
-        elapsedMs: Date.now() - startedAt,
-      });
-      clearTimeout(timer);
-      resolve({
-        sessionId: frame.sessionId as string,
-        ticket: frame.ticket as string,
-        expiresAt: frame.expiresAt as number,
-        finish: () => close(false),
-        cancel: () => close(true),
-      });
+      const complete = (): void => {
+        if (state !== 'pending' && state !== 'arming') return;
+        state = 'ready';
+        clearTimeout(timer);
+        if (armingTimer) clearTimeout(armingTimer);
+        console.info('Remote Control admission ready', {
+          requestId: id,
+          sessionId: frame.sessionId,
+          elapsedMs: Date.now() - startedAt,
+        });
+        resolve({
+          sessionId: frame.sessionId as string,
+          ticket: frame.ticket as string,
+          expiresAt: frame.expiresAt as number,
+          finish: () => close(false),
+          cancel: () => close(true),
+        });
+      };
+      if (!options.diagnosticArming) {
+        complete();
+        return;
+      }
+      state = 'arming';
+      const gate = options.diagnosticArming;
+      armingTimer = setTimeout(
+        () => fail(new Error('Diagnostic arming timed out.')),
+        Math.max(0, Math.min(15000, (frame.expiresAt as number) - Date.now())),
+      );
+      void (async () => {
+        try {
+          const sessionHash = (
+            await digestStringAsync(CryptoDigestAlgorithm.SHA256, frame.sessionId as string)
+          ).slice(0, 16);
+          if (armingController.signal.aborted) return;
+          const value = await gate.arm(frame.sessionId as string, armingController.signal);
+          if (armingController.signal.aborted) return;
+          const result = value as {
+            runId?: unknown;
+            phase?: unknown;
+            installationFingerprint?: unknown;
+            expiresAt?: unknown;
+            selection?: {
+              sessionHash?: unknown;
+              confirmed?: unknown;
+              preparationExpiresAt?: unknown;
+            };
+          } | null;
+          if (
+            !result ||
+            result.runId !== gate.runId ||
+            result.phase !== 'starting' ||
+            result.installationFingerprint !== gate.installationFingerprint ||
+            !/^[a-f0-9]{16}$/u.test(gate.installationFingerprint) ||
+            result.selection?.confirmed !== true ||
+            result.selection.sessionHash !== sessionHash ||
+            typeof result.expiresAt !== 'string' ||
+            Date.parse(result.expiresAt) <= Date.now() ||
+            !Number.isFinite(Date.parse(result.expiresAt)) ||
+            typeof result.selection.preparationExpiresAt !== 'string' ||
+            !Number.isFinite(Date.parse(result.selection.preparationExpiresAt)) ||
+            Date.parse(result.selection.preparationExpiresAt) <= Date.now() ||
+            (frame.expiresAt as number) <= Date.now()
+          )
+            throw new Error();
+          complete();
+        } catch {
+          fail(new Error('Diagnostic arming unconfirmed.'));
+        }
+      })();
     });
     socket.addEventListener('error', () => fail(new Error('Remote admission connection failed.')));
-    socket.addEventListener('close', () => fail(new Error('Remote admission connection closed.')));
+    socket.addEventListener('close', (event) => {
+      peerClosed = true;
+      // The broker completes admission after connect.ready. Core arming remains
+      // mandatory even when its asynchronous work outlives that normal close.
+      if (state === 'arming' && event.code === 1000) return;
+      fail(new Error('Remote admission connection closed.'));
+    });
   });
 }

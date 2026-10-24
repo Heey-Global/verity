@@ -81,3 +81,12 @@ export function unavailablePage(): string {
 
 export const PREVIEW_PAGE_CSP =
   "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";
+
+export function reconnectingPage(reload: boolean): string {
+  const page = shell(
+    'Reconnecting',
+    'Shared preview',
+    '<h1 id="page-title">Reconnecting…</h1><p class="copy">The preview is reconnecting. Try again shortly.</p>',
+  );
+  return reload ? page.replace('</head>', '<meta http-equiv="refresh" content="2"></head>') : page;
+}

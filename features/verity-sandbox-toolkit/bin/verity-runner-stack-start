@@ -56,17 +56,18 @@ fi
 # configuration; sessions is a controlled symlink into the recreate-safe mount.
 CODEX_DIR="${CODEX_HOME:-/run/verity/codex}"
 CODEX_SESSIONS_DIR="$RUNTIME_DIR/codex-sessions"
-if [ -L "$CODEX_DIR" ] || [ -L "$CODEX_SESSIONS_DIR" ]; then
+CODEX_STATE_DIR="$RUNTIME_DIR/codex-state"
+if [ -L "$CODEX_DIR" ] || [ -L "$CODEX_SESSIONS_DIR" ] || [ -L "$CODEX_STATE_DIR" ]; then
   echo 'invalid Codex state path' >&2
   exit 1
 fi
-mkdir -p "$CODEX_DIR" "$CODEX_SESSIONS_DIR"
-if [ ! -d "$CODEX_DIR" ] || [ ! -d "$CODEX_SESSIONS_DIR" ]; then
+mkdir -p "$CODEX_DIR" "$CODEX_SESSIONS_DIR" "$CODEX_STATE_DIR"
+if [ ! -d "$CODEX_DIR" ] || [ ! -d "$CODEX_SESSIONS_DIR" ] || [ ! -d "$CODEX_STATE_DIR" ]; then
   echo 'invalid Codex state directory' >&2
   exit 1
 fi
-chown "$AGENT_UID:$AGENT_GID" "$CODEX_DIR" "$CODEX_SESSIONS_DIR"
-# Everything that MUTATES the two directories above now runs as the agent, not as
+chown "$AGENT_UID:$AGENT_GID" "$CODEX_DIR" "$CODEX_SESSIONS_DIR" "$CODEX_STATE_DIR"
+# Everything that MUTATES the runtime directories above now runs as the agent, not as
 # root. The container is launched with cap-drop ALL plus only
 # RUNNER_BROKER_CAPABILITIES (CHOWN, SETUID, SETGID, KILL, SETPCAP), so root here
 # holds NO CAP_DAC_OVERRIDE: against a directory it does not own it is judged by
@@ -87,6 +88,7 @@ as_agent() {
 # Runtime Codex must never discover a subscription credential locally. Project
 # sandboxes receive a read-only config.toml bind; the dedicated control-plane
 # Runner generates the same non-secret provider config in its private runtime.
+as_agent mkdir -p "$CLAUDE_DIR/projects" "$CODEX_STATE_DIR/thread-writer-locks"
 as_agent rm -f "$CODEX_DIR/auth.json"
 if [ "${VERITY_CODEX_GATEWAY_CONFIG_WRITE:-0}" = '1' ]; then
   CODEX_CONFIG_TMP="$CODEX_DIR/.config.toml.$$"

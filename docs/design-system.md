@@ -36,21 +36,21 @@ and restate nothing; if one disagrees with it, this document wins.
 
 ### Palette and roles
 
-| Role            | Token         | Dark                | Light                  | Use                                                                                    |
-| --------------- | ------------- | ------------------- | ---------------------- | -------------------------------------------------------------------------------------- |
-| Background      | `background`  | `#07080d`           | `#f6f7fa`              | Screen background                                                                      |
-| Surface         | `surface`     | `#0c0e17`           | `#ffffff`              | Cards, grouped lists, sheets                                                           |
-| Raised surface  | `surfaceAlt`  | `#111422`           | `#eef0f5`              | Inputs, secondary buttons, toggle track (off)                                          |
-| Border          | `border`      | `#22263a`           | `#dde1ea`              | 1 px outline of cards and fields, dividers                                             |
-| Text            | `text`        | `#f5f5f8`           | `#0d0f17`              | Titles and body                                                                        |
-| Muted text      | `textMuted`   | `#a5a8b8`           | `#4a4f62`              | Subtitles, values, labels, section headers in lists, icons outside tappable rows       |
-| Faint text      | `textFaint`   | `#80849a`           | `#62677c`              | Placeholders, footnotes, chevrons, inactive                                            |
-| Action          | `action`      | `#18c8f5`           | `#056485`              | Everything that can be tapped: buttons, links, focus, toggle (on), tappable row icons  |
-| Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
-| Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
-| Success         | `success`     | `#2ee6a6`           | `#0e6845`              | Connected, active, done                                                                |
-| Attention       | `attention`   | `#ff5c8a`           | `#d84f74`              | Errors, rejected states, outline of destructive buttons                                |
-| Scrim           | `scrim`       | `rgba(3,4,8,0.72)`  | `rgba(10,12,20,0.40)`  | The single backdrop behind sheets and dialogs                                          |
+| Role           | Token         | Dark               | Light                 | Use                                                                                    |
+| -------------- | ------------- | ------------------ | --------------------- | -------------------------------------------------------------------------------------- |
+| Background     | `background`  | `#07080d`          | `#f6f7fa`             | Screen background                                                                      |
+| Surface        | `surface`     | `#0c0e17`          | `#ffffff`             | Cards, grouped lists, sheets                                                           |
+| Raised surface | `surfaceAlt`  | `#111422`          | `#eef0f5`             | Inputs, secondary buttons, toggle track (off)                                          |
+| Border         | `border`      | `#22263a`          | `#dde1ea`             | 1 px outline of cards and fields, dividers                                             |
+| Text           | `text`        | `#f5f5f8`          | `#0d0f17`             | Titles and body                                                                        |
+| Muted text     | `textMuted`   | `#a5a8b8`          | `#4a4f62`             | Subtitles, values, labels, section headers in lists, icons outside tappable rows       |
+| Faint text     | `textFaint`   | `#80849a`          | `#62677c`             | Placeholders, footnotes, chevrons, inactive                                            |
+| Action         | `action`      | `#18c8f5`          | `#056485`             | Everything that can be tapped: buttons, links, focus, toggle (on), tappable row icons  |
+| Action label   | `actionLabel` | `#6fdcf8`          | `#055a78`             | Label of the tonal primary button                                                      |
+| Signature      | `signature`   | `#ff18b7`          | `#b0107d`             | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
+| Success        | `success`     | `#2ee6a6`          | `#0e6845`             | Connected, active, done                                                                |
+| Attention      | `attention`   | `#ff5c8a`          | `#d84f74`             | Errors, rejected states, outline of destructive buttons                                |
+| Scrim          | `scrim`       | `rgba(3,4,8,0.72)` | `rgba(10,12,20,0.40)` | The single backdrop behind sheets and dialogs                                          |
 
 ### Rules
 
@@ -72,18 +72,20 @@ and restate nothing; if one disagrees with it, this document wins.
 Typeface: **Inter** (variable, bundled with the app; already used by the website). Code and
 keys use the platform monospace font. All sizes scale with the in-app font-zoom factor.
 
-| Style     | Size | Weight | Tracking | Line height | Color       | Use                                             |
-| --------- | ---- | ------ | -------- | ----------- | ----------- | ----------------------------------------------- |
-| Display   | 28   | 750    | −0.035em | 1.15        | `text`      | Large headline at the top of a content screen   |
-| Title     | 20   | 700    | −0.02em  | 1.25        | `text`      | Sheet, dialog and section titles                |
-| Row       | 17   | 600    | 0        | 1.3         | `text`      | Titles in cards and list rows                   |
-| Body      | 15   | 400    | 0        | 1.5         | `text`      | Running text, explanations, chat                |
-| Button    | 15   | 700    | 0        | 1           | per variant | Button and link labels                          |
-| Subtitle  | 13   | 400    | 0        | 1.4         | `textMuted` | Second line under titles                        |
-| Footnote  | 12   | 400    | 0        | 1.4         | `textFaint` | Versions, timestamps, hints                     |
-| Eyebrow   | 11   | 800    | 0.18em   | 1.2         | `signature` | Uppercase group header on content screens       |
-| Label     | 11   | 700    | 0.14em   | 1.2         | `textMuted` | Uppercase section headers in lists, tags  |
-| Code      | 14   | 400    | 0        | 1.4         | `text`      | Branches, commands, keys (monospace)            |
+| Style     | Size | Weight | Tracking | Line height | Color       | Use                                           |
+| --------- | ---- | ------ | -------- | ----------- | ----------- | --------------------------------------------- |
+| Display   | 28   | 750    | −0.035em | 1.15        | `text`      | Large headline at the top of a content screen |
+| Title     | 20   | 700    | −0.02em  | 1.25        | `text`      | Sheet, dialog and section titles              |
+| Row       | 16   | 600    | 0        | 1.3         | `text`      | Titles in cards and list rows                 |
+| Body      | 15   | 400    | 0        | 1.5         | `text`      | Running text, explanations, chat              |
+| BodySmall | 14   | 400    | 0        | 1.43        | `text`      | Dense lists and panels: session rows, tasks   |
+| Button    | 15   | 700    | 0        | 1           | per variant | Button and link labels                        |
+| Subtitle  | 13   | 400    | 0        | 1.4         | `textMuted` | Second line under titles                      |
+| Footnote  | 12   | 400    | 0        | 1.4         | `textFaint` | Versions, timestamps, hints                   |
+| Caption   | 10   | 400    | 0        | 1.3         | `textMuted` | Meters, counters and badges in dense bars     |
+| Eyebrow   | 11   | 800    | 0.18em   | 1.2         | `signature` | Uppercase group header on content screens     |
+| Label     | 11   | 700    | 0.14em   | 1.2         | `textMuted` | Uppercase section headers in lists, tags      |
+| Code      | 14   | 400    | 0        | 1.4         | `text`      | Branches, commands, keys (monospace)          |
 
 - Weights in use: 400, 600, 700, plus 750 for Display and 800 for Eyebrow only.
 - **Section headers:** `Label` style (grey) in navigation and settings lists; `Eyebrow`
@@ -93,34 +95,42 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 
 **Spacing scale:** `2 · 4 · 8 · 12 · 16 · 24 · 32 · 48`. No other values.
 
-| Value | Typical use                                |
-| ----- | ------------------------------------------ |
-| 2     | Title to subtitle                          |
-| 4     | Icon to text inside one line               |
-| 8     | Between cards of one group                 |
-| 12    | Padding of small elements                  |
-| 16    | Card padding, screen margin                |
-| 24    | Between groups                             |
-| 32    | Between large sections                     |
-| 48    | Space above a Display headline             |
+| Value | Typical use                    |
+| ----- | ------------------------------ |
+| 2     | Title to subtitle              |
+| 4     | Icon to text inside one line   |
+| 8     | Between cards of one group     |
+| 12    | Padding of small elements      |
+| 16    | Card padding, screen margin    |
+| 24    | Between groups                 |
+| 32    | Between large sections         |
+| 48    | Space above a Display headline |
 
 **Radii:**
 
-| Token   | Value | Use                                       |
-| ------- | ----- | ----------------------------------------- |
-| `card`  | 16    | Cards, grouped lists, sheet top corners   |
-| `control` | 12  | Buttons, fields, icon buttons             |
-| `tile`  | 10    | Icon tiles inside rows                    |
-| `tag`   | 6     | Status tags                               |
-| `round` | 999   | Toggles, dots                             |
+| Token     | Value | Use                                     |
+| --------- | ----- | --------------------------------------- |
+| `card`    | 16    | Cards, grouped lists, sheet top corners |
+| `control` | 12    | Buttons, fields, icon buttons           |
+| `tile`    | 10    | Icon tiles inside rows                  |
+| `tag`     | 6     | Status tags                             |
+| `round`   | 999   | Toggles, dots                           |
 
 **Elevation:**
 
-| Level     | Look                                                        | Use                                              |
-| --------- | ----------------------------------------------------------- | ------------------------------------------------ |
-| Flat      | 1 px `border`, no shadow                                    | Cards and lists — the default                    |
-| Floating  | Soft dark shadow downward (`0 18px 50px` black at 60 %)     | Sheets, menus, dialogs                           |
-| Glow      | Colored halo                                                | Three uses only: brand moments in `signature` (success check), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
+| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                |
+| -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
+| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
+| Glow     | Colored halo                                            | Three uses only: brand moments in `signature` (success check), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
+
+**Website.** `docs/website/site/index.html` uses the same roles, Inter, the
+`control` radius for buttons and the tonal primary button. It has two brand moments
+the app does not: the hero headline's second phrase runs from `signature` through a
+violet midpoint to `action` as a text gradient, and a faint `signature` halo sits
+behind the hero. Neither appears anywhere else on the page, and neither marks
+something clickable. Product images on the page are rendered from the app itself
+(`npm run render:app-screens`, see `docs/mobile-demo.md`), never mocked up.
 
 ## 5. Components
 
@@ -129,12 +139,12 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 
 ### 5.1 Button
 
-| Variant     | Look                                                            | Use                                                      |
-| ----------- | --------------------------------------------------------------- | -------------------------------------------------------- |
-| Primary     | Tonal: `action` at 14 % fill, 35 % border, `actionLabel` text   | The single main action of a screen                       |
-| Secondary   | `surfaceAlt` fill, `border` outline, `text` label               | Further actions, Cancel                                  |
-| Text        | No container, `action` label                                    | Quiet actions inside cards ("Replace")                   |
-| Destructive | No fill, `attention` outline and label                          | Remove, delete — always preceded by a confirmation       |
+| Variant     | Look                                                          | Use                                                |
+| ----------- | ------------------------------------------------------------- | -------------------------------------------------- |
+| Primary     | Tonal: `action` at 14 % fill, 35 % border, `actionLabel` text | The single main action of a screen                 |
+| Secondary   | `surfaceAlt` fill, `border` outline, `text` label             | Further actions, Cancel                            |
+| Text        | No container, `action` label                                  | Quiet actions inside cards ("Replace")             |
+| Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
 - Sizes: **large 48** (full width, pinned at the bottom of a flow), **compact 36** (inside
   cards and rows, as wide as its label), **icon 40** (square, one symbol).
@@ -149,15 +159,23 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   (settings navigation, diagnostics).
 - **Card:** a single item with its own state or control stands alone (subscription,
   each feature switch). Cards of one group are 8 apart.
-- **Row anatomy** (minimum height 56):
-  - **Leading (optional):** icon tile 36 (radius 10) or a status dot. In a row that can be
+- **Sectioned card:** a stacked card about one thing whose head (`CardHead`: title,
+  subtitle, status) is followed by blocks that belong to it — a server and its pending
+  update. `divided` separates the sections with the same 1 px divider as a grouped list,
+  so a block can never be mistaken for a separate item.
+- **Row anatomy** (minimum height 52):
+  - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral
-    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`.
+    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
+    `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
+    the shared fill tint. Vulnerability finding rows use this to retain their severity
+    while still allowing navigation.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
-    title never wraps to make room. The chevron
-    `›` appears only when the row navigates.
+    title never wraps to make room. The trailing side takes at most 45 % of the row; a
+    status longer than that truncates, so the title is never squeezed. The chevron `›`
+    appears only when the row navigates.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 
@@ -186,12 +204,12 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   present.
 - Mapping from the status intents in [§ 8](#8-status-intents):
 
-  | Intent       | Tag                  | Dot and word                 |
-  | ------------ | -------------------- | ---------------------------- |
-  | `ready`      | success tone         | success dot                  |
-  | `needsSetup` | attention tone       | attention dot                |
-  | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot |
-  | `transient`  | spinner + muted word | spinner + muted word         |
+  | Intent       | Tag                                                      | Dot and word         |
+  | ------------ | -------------------------------------------------------- | -------------------- |
+  | `ready`      | success tone                                             | success dot          |
+  | `needsSetup` | attention tone                                           | attention dot        |
+  | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot            |
+  | `transient`  | spinner + muted word                                     | spinner + muted word |
 
 ### 5.5 Toggle
 
@@ -278,18 +296,18 @@ dot and word) and in which color.
 
 ### The four intents
 
-| Intent | Meaning | Example labels |
-| --- | --- | --- |
-| `ready` | Works, nothing to do | Connected, Configured, Active, Running, Minted, Signing ready, Unlocked, Up to date |
-| `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error |
-| `optional` | Optional and empty — not a to-do | Optional, Not configured, Off |
-| `transient` | In motion | Saving…, Checking, Starting, Stopping, Bound, Reprovisioning X/N |
+| Intent       | Meaning                                 | Example labels                                                                      |
+| ------------ | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| `ready`      | Works, nothing to do                    | Connected, Configured, Active, Running, Minted, Signing ready, Unlocked, Up to date |
+| `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error                                      |
+| `optional`   | Optional and empty — not a to-do        | Optional, Not configured, Off                                                       |
+| `transient`  | In motion                               | Saving…, Checking, Starting, Stopping, Bound, Reprovisioning X/N                    |
 
 ### Status rules
 
 - An `optional` state is never counted as a to-do and never uses the `needsSetup`
   appearance.
-- The word **`Not configured`** is reserved for `optional`. A *required* thing that is
+- The word **`Not configured`** is reserved for `optional`. A _required_ thing that is
   missing says **`Needs setup`** (`needsSetup`), never `Not configured`.
 - `transient` covers every in-flight state, including `Bound` (the in-progress Doppler
   step) and `Reprovisioning X/N`. It always shows a spinner next to its word.
@@ -310,12 +328,12 @@ Settings auto-save. There is **no Save button and no Reset button anywhere**, an
 
 ### When each control saves
 
-| Control type | When it saves | Feedback |
-| --- | --- | --- |
-| Toggle | immediately on flip | spinner in the knob until the server confirms |
-| Text (name, email, paths, command, ports, branch) | on blur, debounced; **invalid values are not persisted** | per-field `saving… → saved ✓` |
-| Secret paste (SSH key, Doppler token) | on blur; write-only, never echoed back | per-field `saving… → saved ✓` |
-| Selection / picker (default model, Doppler binding) | on selection commit | per-field `saving… → saved ✓` |
+| Control type                                        | When it saves                                            | Feedback                                      |
+| --------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------- |
+| Toggle                                              | immediately on flip                                      | spinner in the knob until the server confirms |
+| Text (name, email, paths, command, ports, branch)   | on blur, debounced; **invalid values are not persisted** | per-field `saving… → saved ✓`                 |
+| Secret paste (SSH key, Doppler token)               | on blur; write-only, never echoed back                   | per-field `saving… → saved ✓`                 |
+| Selection / picker (default model, Doppler binding) | on selection commit                                      | per-field `saving… → saved ✓`                 |
 
 ### Aggregate save signal
 
@@ -331,7 +349,7 @@ it.
 - **Invalid values are not saved.** The entered text stays visible with the inline hint box
   so it can be corrected; the stored value remains the last valid one. Leaving the screen
   without correcting it discards the invalid text.
-- **Sealed secret store:** a `503` from a sealed store on *any* secret field — the server
+- **Sealed secret store:** a `503` from a sealed store on _any_ secret field — the server
   SSH signing key **and** the project Doppler token — shows `Unlock the secret store first`
   under that field and reverts the value. The project Doppler-token field inherits this
   sealed-store gating verbatim.
@@ -355,7 +373,7 @@ Persisting a setting and applying it are two different things:
   [§ 5.7](#57-confirmation): server Reprovision, project Reprovision, and Update sandbox.
 - **Purge and Delete** keep their existing, stronger confirmation flows; this sheet does not
   replace them.
-- **Token refresh** and **dev-server start / stop / restart** are *not* destructive and
+- **Token refresh** and **dev-server start / stop / restart** are _not_ destructive and
   need **no** confirmation.
 
 ## 10. Navigation model
@@ -379,35 +397,36 @@ header count. Both specs state this so the difference reads as intentional.
 
 One decision per contested term. These labels are used **verbatim** everywhere.
 
-| Term | Meaning | Use for | Do not confuse with |
-| --- | --- | --- | --- |
-| **Sandbox image** | The per-project container image *version* (e.g. `v1.19.7`) and its up-to-date status | Project Container card: `Sandbox v1.19.7 · Up to date`, and the manual **Update sandbox** action | Sandbox update stuck (the fault report) |
-| **Sandbox update stuck** | Nothing is going to move this sandbox onto the current image on its own — Verity's repair has failed repeatedly, or the reconciler has looked and has no reason to act | The overview icon and the project Container card, **only** when the repair has stalled — never while it is merely in progress | Sandbox image (the artifact); an ordinary pending update, which needs no report because Verity applies it itself |
-| **Reprovision** | Recreate a container to apply changed config/image, losing container state. The one canonical verb for "recreate this container" | Server: reprovision all active containers. Project: reprovision **this** container (replaces the old label "Repair") | A GitHub-token refresh, a dev-server restart, or an image-version check |
-| **Update sandbox** | A reprovision that specifically pulls a newer sandbox image | Project Container card, only when a newer image exists | Reprovision-to-apply-config (same mechanism, but this action is scoped to image bumps) |
-| **Refresh token** | Re-mint the per-project GitHub token; does **not** recreate the container | Project Container card | Reprovision / Update sandbox (these recreate the container) |
-| **GitHub connection** | The authorization that grants Verity repository/API access | Server GitHub group: clone, push, pull-request access | Do not expose "GitHub App" in primary UI; it is an implementation detail |
-| **Commit author** | The personal name and GitHub-verified email written to commits | Server GitHub group and GitHub commits onboarding | "Agent Git identity" or GitHub App identity |
-| **Verified commits** | SSH signing that lets GitHub verify Verity-created commits | Server GitHub group and GitHub commits onboarding | Repository access or commit author |
-| **Ready** | `ready` terminal state meaning "this works / nothing to do" | The intent name in the status system; not a user-facing word by itself | The literal label `Ready` |
-| **Connected** | `ready` label for "external service link established" | GitHub, AI backends, Secret store (`Unlocked`), dev-server-reachable | `Configured` |
-| **Configured** | `ready` label for "a value is stored here" | Signing key stored, Doppler token pasted, default model set | `Connected` |
-| **Active** | `ready` label for container liveness | The container lifecycle status (`Active / Failed / Absent` → `ready` / `needsSetup` / `optional`) | `Running` |
-| **Running** | `ready` label for a *process* being up | The dev-server process status | `Active` (container) |
-| **Needs setup** | `needsSetup` state for a **required** thing that is missing | Signing unconfigured, GitHub unconnected, dev-server `Error` / `Unreachable`, sandbox `Update available` | `Not configured` (which is optional / muted) |
-| **Not configured** | Muted state for an **optional** thing that is empty | Doppler when unset, optional dev-server absence | `Needs setup` (required → `needsSetup`). Never render this phrase as `needsSetup` |
-| **Optional** | `optional` state, excluded from any to-do count | Server Doppler; project Monitors; any configured-but-optional item | A `ready` status |
-| **Account Doppler token** | The server-level token that lets projects bind Doppler secrets | Server Group 3 Doppler card | Doppler binding (the per-project consumer) |
-| **Doppler binding** | The per-project mapping (project → config) that consumes the account token | Project Configure sub-screen | Account Doppler token (its prerequisite) |
-| **Minted** | `ready`: the Doppler binding has a live minted secret | Project Doppler binding, `ready` only | `Bound` (the in-progress step) |
-| **Bound** | The binding exists but is not yet minted — an **in-progress**, not optional, state | Project Doppler binding, rendered as `transient` (spinner + word), **not** muted | `Minted` (done) / `Optional` (muted) |
-| **Verity Premium** | The umbrella for every paid Uplink feature | Settings row, hero panel, upsell dialogs and badges | "Uplink" as a product name in primary UI (it is the transport) |
-| **Uplink subscription key** | The credential that activates Verity Premium on a server | The one secret field on the Verity Premium screen | "Verity subscription key", "Premium key" |
-| **Online sharing** | Public preview links that work over the internet | Preview sheet, dev-server rows, Verity Premium feature switch, diagnostics | "Shared online", "Over the internet", "public sharing" |
-| **Remote access** | The app reaching Core from outside the local network through Uplink | Verity Premium feature switch, diagnostics, connection test | "Remote Control" |
-| **Soon** | `optional`: an announced feature that is not available yet | Verity Premium feature list (Teams) | `Off` (switched off) / `Not included` (not granted) |
-| **Update** | Short `needsSetup` tag for `Update available`, used where the row subtitle names the version | Settings row "Server update" | `Update sandbox` (the action) |
-| **Off** | Muted state for a feature the operator switched off deliberately | Verity Premium and diagnostics feature rows, rendered as `optional` | `Needs setup` (a fault) / `Not included` (Uplink does not grant it) |
+| Term                        | Meaning                                                                                                                                                                | Use for                                                                                                                       | Do not confuse with                                                                                              |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Sandbox image**           | The per-project container image _version_ (e.g. `v1.19.7`) and its up-to-date status                                                                                   | Project Container card: `Sandbox v1.19.7 · Up to date`, and the manual **Update sandbox** action                              | Sandbox update stuck (the fault report)                                                                          |
+| **Sandbox update stuck**    | Nothing is going to move this sandbox onto the current image on its own — Verity's repair has failed repeatedly, or the reconciler has looked and has no reason to act | The overview icon and the project Container card, **only** when the repair has stalled — never while it is merely in progress | Sandbox image (the artifact); an ordinary pending update, which needs no report because Verity applies it itself |
+| **Reprovision**             | Recreate a container to apply changed config/image, losing container state. The one canonical verb for "recreate this container"                                       | Server: reprovision all active containers. Project: reprovision **this** container (replaces the old label "Repair")          | A GitHub-token refresh, a dev-server restart, or an image-version check                                          |
+| **Update sandbox**          | A reprovision that specifically pulls a newer sandbox image                                                                                                            | Project Container card, only when a newer image exists                                                                        | Reprovision-to-apply-config (same mechanism, but this action is scoped to image bumps)                           |
+| **Refresh token**           | Re-mint the per-project GitHub token; does **not** recreate the container                                                                                              | Project Container card                                                                                                        | Reprovision / Update sandbox (these recreate the container)                                                      |
+| **GitHub connection**       | The authorization that grants Verity repository/API access                                                                                                             | Server GitHub group: clone, push, pull-request access                                                                         | Do not expose "GitHub App" in primary UI; it is an implementation detail                                         |
+| **Forgejo connection**      | The server address and token that grant Verity repository/API access on a Forgejo server                                                                               | Connections → Code, next to GitHub with equal weight; one Forgejo server                                                      | "Instance", "Gitea" or "token" as the row title                                                                  |
+| **Commit author**           | The personal name and GitHub-verified email written to commits                                                                                                         | Server GitHub group and GitHub commits onboarding                                                                             | "Agent Git identity" or GitHub App identity                                                                      |
+| **Verified commits**        | SSH signing that lets GitHub verify Verity-created commits                                                                                                             | Server GitHub group and GitHub commits onboarding                                                                             | Repository access or commit author                                                                               |
+| **Ready**                   | `ready` terminal state meaning "this works / nothing to do"                                                                                                            | The intent name in the status system; not a user-facing word by itself                                                        | The literal label `Ready`                                                                                        |
+| **Connected**               | `ready` label for "external service link established"                                                                                                                  | GitHub, AI backends, Secret store (`Unlocked`), dev-server-reachable                                                          | `Configured`                                                                                                     |
+| **Configured**              | `ready` label for "a value is stored here"                                                                                                                             | Signing key stored, Doppler token pasted, default model set                                                                   | `Connected`                                                                                                      |
+| **Active**                  | `ready` label for container liveness                                                                                                                                   | The container lifecycle status (`Active / Failed / Absent` → `ready` / `needsSetup` / `optional`)                             | `Running`                                                                                                        |
+| **Running**                 | `ready` label for a _process_ being up                                                                                                                                 | The dev-server process status                                                                                                 | `Active` (container)                                                                                             |
+| **Needs setup**             | `needsSetup` state for a **required** thing that is missing                                                                                                            | Signing unconfigured, GitHub unconnected, dev-server `Error` / `Unreachable`, sandbox `Update available`                      | `Not configured` (which is optional / muted)                                                                     |
+| **Not configured**          | Muted state for an **optional** thing that is empty                                                                                                                    | Doppler when unset, optional dev-server absence                                                                               | `Needs setup` (required → `needsSetup`). Never render this phrase as `needsSetup`                                |
+| **Optional**                | `optional` state, excluded from any to-do count                                                                                                                        | Server Doppler; project Monitors; any configured-but-optional item                                                            | A `ready` status                                                                                                 |
+| **Account Doppler token**   | The server-level token that lets projects bind Doppler secrets                                                                                                         | Server Group 3 Doppler card                                                                                                   | Doppler binding (the per-project consumer)                                                                       |
+| **Doppler binding**         | The per-project mapping (project → config) that consumes the account token                                                                                             | Project Configure sub-screen                                                                                                  | Account Doppler token (its prerequisite)                                                                         |
+| **Minted**                  | `ready`: the Doppler binding has a live minted secret                                                                                                                  | Project Doppler binding, `ready` only                                                                                         | `Bound` (the in-progress step)                                                                                   |
+| **Bound**                   | The binding exists but is not yet minted — an **in-progress**, not optional, state                                                                                     | Project Doppler binding, rendered as `transient` (spinner + word), **not** muted                                              | `Minted` (done) / `Optional` (muted)                                                                             |
+| **Verity Premium**          | The umbrella for every paid Uplink feature                                                                                                                             | Settings row, hero panel, upsell dialogs and badges                                                                           | "Uplink" as a product name in primary UI (it is the transport)                                                   |
+| **Uplink subscription key** | The credential that activates Verity Premium on a server                                                                                                               | The one secret field on the Verity Premium screen                                                                             | "Verity subscription key", "Premium key"                                                                         |
+| **Online sharing**          | Public preview links that work over the internet                                                                                                                       | Preview sheet, dev-server rows, Verity Premium feature switch, diagnostics                                                    | "Shared online", "Over the internet", "public sharing"                                                           |
+| **Remote access**           | The app reaching Core from outside the local network through Uplink                                                                                                    | Verity Premium feature switch, diagnostics, connection test                                                                   | "Remote Control"                                                                                                 |
+| **Soon**                    | `optional`: an announced feature that is not available yet                                                                                                             | Verity Premium feature list (Teams)                                                                                           | `Off` (switched off) / `Not included` (not granted)                                                              |
+| **Update**                  | Short `needsSetup` tag for `Update available`, used where the row subtitle names the version                                                                           | Settings row "Server update"                                                                                                  | `Update sandbox` (the action)                                                                                    |
+| **Off**                     | Muted state for a feature the operator switched off deliberately                                                                                                       | Verity Premium and diagnostics feature rows, rendered as `optional`                                                           | `Needs setup` (a fault) / `Not included` (Uplink does not grant it)                                              |
 
 ### Ready-word convention
 
@@ -415,9 +434,9 @@ Use the right `ready` word for the right kind of "done", and ban ad-hoc synonyms
 
 - **`Connected`** — an external service link is established.
 - **`Configured`** — a value is stored here.
-- **`Active`** — a *container* is live. (Use `Active`, not "running containers", when
+- **`Active`** — a _container_ is live. (Use `Active`, not "running containers", when
   counting container liveness.)
-- **`Running`** — a *process* is up.
+- **`Running`** — a _process_ is up.
 
 ### Progressive connection setup
 
@@ -487,9 +506,9 @@ can never drift because there is only one copy of it.
 1. **Theme:** move the roles, type scale, spacing, radii and elevation into
    `apps/mobile/theme/tokens.ts` and bundle Inter. Retire the separate `colors.setup.*`
    palette and the meeting override palette (`components/meeting/meetingPalette.ts`).
-   The current status tones map as follows: `tone.done` becomes `success`, `tone.danger`
-   becomes `attention` (red), and the existing amber `tone.attention` is removed. Until
-   that lands, `tone.attention` in code still means amber and must not be used for errors.
+   Done: the theme has only the roles of § 2. Data-layer tones (badge, tool and event
+   tones) are drawn through `toneColor`: `done` is `success`, `active` is `action`,
+   `idle` is `textFaint`, and `attention` and `danger` share `attention`.
 2. **Components:** implement section 5 as one shared module. It replaces the duplicated
    building blocks in `components/settings/SettingsChrome.tsx`,
    `components/premium/PremiumChrome.tsx` and the local button, pill, chip, input and sheet
@@ -499,13 +518,14 @@ can never drift because there is only one copy of it.
 3. **Catalog:** add a developer screen that renders every component in every state. It
    becomes the visual reference for future work, also on the web.
 4. **Enforcement:** `apps/mobile/__tests__/design-system-guard.test.ts` scans `app/` and
-   `components/` for raw colors (hex, `rgb()`, alpha suffixes glued onto a role), the legacy
-   color names (`setup.*`, `primary`, `onPrimary`, `accent`, `tone.*`, `linked`), font sizes
-   not taken from `theme.typography` and `fontWeight`. Code written before the design system
+   `components/` for raw colors (hex, `rgb()`, alpha suffixes glued onto a role), font sizes
+   not taken from `theme.typography` and `fontWeight`. Color names outside the roles no
+   longer exist in the theme, so TypeScript rejects them. Code written before the design system
    is recorded per file in `design-system-debt.json`. A file above its count fails, and so
    does one below it until its entry is lowered, so the record only shrinks. The
    contributor rule is in `AGENTS.md`.
-5. **Migration:** move screens area by area, starting with Settings.
+5. **Migration:** done area by area, starting with Settings. What remains is recorded in
+   `design-system-debt.json`.
 
 The visual workbench used to reach these decisions is
 [`design-system/index.html`](./design-system/index.html). It shows every component and pattern

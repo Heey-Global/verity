@@ -57,6 +57,7 @@ import {
   fchmodSync,
   fchownSync,
   fstatSync,
+  ftruncateSync,
   chmodSync,
   lstatSync,
   mkdirSync,
@@ -251,7 +252,7 @@ export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
 
 const DEVCONTAINER_NODE_FEATURE_REF = 'ghcr.io/devcontainers/features/node:1';
-const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.11.1' } as const;
+const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
@@ -503,7 +504,22 @@ type SandboxWakeFallbackReason =
   | 'container_running'
   | 'ownership_mismatch'
   | 'generation_missing'
-  | 'contract_mismatch';
+  | 'contract_mismatch'
+  | 'stale_runtime_state';
+
+/**
+ * gVisor names the rootfs overlay filestore after the sandbox id, which Docker
+ * sets to the container id, creates it with O_EXCL, and removes it only in
+ * `runsc delete`. After a teardown that skipped that step the retained
+ * container keeps the file in its writable layer, and runsc rejects every later
+ * start of that container with this message. Only a new container clears it.
+ */
+const STALE_GVISOR_FILESTORE_MESSAGE =
+  'repeated submounts are not supported with overlay optimizations';
+
+function isStaleGvisorFilestore(cause: unknown): boolean {
+  return cause instanceof DockerError && cause.message.includes(STALE_GVISOR_FILESTORE_MESSAGE);
+}
 
 // The function form accepts an optional `forceRefresh`: the provision/recreate
 // path passes `true` to bypass the resolver's staleness cache and pin the
@@ -550,6 +566,16 @@ export interface ProvisionerOptions {
   defaultImageRef: ProjectImageRefSource;
   /** GitHub App token minter for server-side repository operations. */
   projectTokenMint?: GitHubProjectTokenMint | undefined;
+  forgeRepositoryAccess?:
+    | ((target: {
+        owner: string;
+        repo: string;
+        forgeConnectionId?: string | null;
+      }) => Promise<
+        | { url: string; token: string; authorization: string; customCaPem?: string | null }
+        | undefined
+      >)
+    | undefined;
   /** Bind-mount root (`/data/dev`). The provisioner joins `<root>/<slug>`. */
   hostCloneRoot: string;
   /** Host-visible agent-seed directory mounted into sandboxes at /opt/agent-seed. */
@@ -571,7 +597,7 @@ export interface ProvisionerOptions {
    *  the operator opens it (see {@link LinkCloneToGitHubResult.pullRequestError}). */
   openPullRequest?:
     | ((
-        target: { owner: string; repo: string },
+        target: { owner: string; repo: string; forgeConnectionId?: string | null },
         token: string,
         pr: { head: string; base: string; title: string; body: string },
       ) => Promise<{ number: number; url: string }>)
@@ -613,7 +639,13 @@ export interface ProvisionerOptions {
    *  wrapper redeem the capability at `POST /internal/github/token` for a
    *  repo-scoped token minted on demand — so no GitHub token lives at rest. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
-  forgeProxy?: { caCertPem: string; enabled(projectId: string): boolean } | undefined;
+  forgeProxy?:
+    | {
+        caCertPem: string;
+        enabled(projectId: string): boolean;
+        urlFor?(project: ProjectRecord): Promise<string | undefined>;
+      }
+    | undefined;
   /** Claude-egress mTLS projection (ADR 0006 D10). When set together with
    *  {@link claudeEgressGatewayUrl}, {@link claudeConnectorPort} and
    *  {@link gitSecretRoot}, the provisioner issues this project's client identity
@@ -1571,20 +1603,27 @@ export interface Provisioner {
    * Leaves the clone DIRECTORY where it is — session worktrees live under it. */
   linkCloneToGitHub?(
     project: ProjectRecord,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
   withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
-  sleepProject?(projectId: string): Promise<ProjectRecord>;
+  sleepProject?(
+    projectId: string,
+    options?: { shouldRestore?: () => boolean },
+  ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
   /** Revoke partially issued wake authority and return to retained sleep. */
   recoverInterruptedWake?(projectId: string): Promise<ProjectRecord>;
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
+  /** Temporary background wake: reports whether this caller started the wake. */
+  wakeProjectForScan?(
+    projectId: string,
+  ): Promise<{ project: ProjectRecord; owned: boolean; activityAt: number | undefined }>;
   /** Readiness gate used by turns and automations; concurrent callers share one wake. */
   ensureProjectSandboxAwake?(
     projectId: string,
@@ -1712,16 +1751,27 @@ function rewriteMountedSecretFile(path: string, contents: string, mode: number):
   if (!before.isFile() || before.isSymbolicLink()) {
     throw new ProvisioningError(`retained secret path is not a regular file: ${path}`);
   }
-  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW);
+  // The server owns this file in its private secret directory, but the Runner
+  // key has mode 0040. Restore owner access before opening its retained inode.
+  chmodSync(path, (before.mode & 0o777) | 0o600);
+  let fd: number | undefined;
   try {
+    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
     const opened = fstatSync(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
       throw new ProvisioningError(`retained secret path changed while opening: ${path}`);
     }
+    ftruncateSync(fd, 0);
     writeFileSync(fd, contents.endsWith('\n') ? contents : `${contents}\n`);
     fchmodSync(fd, mode);
+  } catch (error) {
+    const current = lstatSync(path);
+    if (current.isFile() && current.dev === before.dev && current.ino === before.ino) {
+      chmodSync(path, before.mode & 0o777);
+    }
+    throw error;
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -1778,7 +1828,7 @@ export function openCodeSettingsConfig(
       permission: OPENCODE_KNOWLEDGE_READ_PERMISSION,
       provider: {
         verity: {
-          npm: '@ai-sdk/openai-compatible',
+          npm: '@opencode/ai/providers/openai-compatible',
           name: 'OpenAI-compatible',
           options: {
             baseURL: `http://127.0.0.1:${String(connectorPort)}/opencode`,
@@ -2166,7 +2216,9 @@ export function sandboxSleepCompatibilityFingerprint(inspect: ContainerInspect):
     id: inspect.id,
     image: inspect.image ?? null,
     labels: sortedRecord(inspect.labels),
-    networks: sortedRecord(inspect.networks),
+    // Docker releases endpoint addresses on stop; only network membership is
+    // part of the retained contract. Hashing an address forces every wake cold.
+    networks: inspect.networks === undefined ? null : Object.keys(inspect.networks).sort(),
     user: inspect.user ?? null,
     groupAdd: [...(inspect.groupAdd ?? [])].sort(),
     runtime: inspect.runtime ?? null,
@@ -2812,12 +2864,16 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  async sleepProject(projectId: string): Promise<ProjectRecord> {
+  async sleepProject(
+    projectId: string,
+    options?: { shouldRestore?: () => boolean },
+  ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
       const result = await this.withProjectExclusiveMutation(projectId, async () => {
         const project = await this.opts.store.getProject(projectId);
         if (project === undefined) throw new ProvisioningError('project gone mid-sleep');
+        if (options?.shouldRestore && !options.shouldRestore()) return project;
         if (project.state !== 'active') {
           throw new ProvisioningError(`project ${projectId} is not active`);
         }
@@ -2835,6 +2891,8 @@ export class ProvisionerImpl implements Provisioner {
             `project ${projectId} has no owned running Sandbox generation`,
           );
         }
+        // An explicit wake intent may arrive while Docker inspection is pending.
+        if (options?.shouldRestore && !options.shouldRestore()) return project;
         const fingerprint = sandboxSleepCompatibilityFingerprint(inspect);
         await this.opts.store.updateProjectSleepState(project.id, 'sleeping_starting', {
           sleepCompatibilityFingerprint: fingerprint,
@@ -3032,6 +3090,25 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  async wakeProjectForScan(
+    projectId: string,
+  ): Promise<{ project: ProjectRecord; owned: boolean; activityAt: number | undefined }> {
+    const current = await this.opts.store.getProject(projectId);
+    if (!current) throw new ProvisioningError('project gone before scan wake');
+    if (current.state === 'active')
+      return {
+        project: current,
+        owned: false,
+        activityAt: this.projectSandboxLastActivityAt(projectId),
+      };
+    if (current.state !== 'sleeping' && !this.projectWakeAttempts.has(projectId))
+      throw new ProvisioningError(`project ${projectId} is ${current.state}`);
+    const owned = !this.projectWakeAttempts.has(projectId);
+    const waking = this.wakeProject(projectId);
+    const activityAt = this.projectSandboxLastActivityAt(projectId);
+    return { project: await waking, owned, activityAt };
+  }
+
   private async wakeProjectOnce(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -3086,12 +3163,44 @@ export class ProvisionerImpl implements Provisioner {
             sleepingSince: project.sleepingSince ?? null,
             wakeStartedAt: new Date(),
           });
+          const sleepFingerprint = project.sleepCompatibilityFingerprint;
+          const replaceRetained = async (
+            reason: SandboxWakeFallbackReason,
+          ): Promise<ProjectRecord> => {
+            this.observeSandboxWakeFallback(project.id, reason);
+            try {
+              return await this.recreateContainer(project.id, { confirmWarnings: true });
+            } catch (cause) {
+              // Image preparation can fail before replacement advances the row.
+              // Leaving it waking makes later admissions require reconciliation
+              // even though this process no longer owns a wake to finish.
+              const latest = await this.opts.store.getProject(project.id);
+              if (latest?.state === 'waking') {
+                try {
+                  await this.quiesceProjectAfterRestart(latest);
+                  await this.confirmSandboxStopped(latest.containerName);
+                  await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
+                    sleepCompatibilityFingerprint: sleepFingerprint,
+                    sleepingSince: project.sleepingSince ?? new Date(),
+                    wakeStartedAt: null,
+                  });
+                } catch (cleanupError) {
+                  const message = `project cold wake rollback failed: ${failureMessage(cleanupError)}`;
+                  await this.opts.store.updateProjectState(project.id, 'failed', message);
+                  throw new ProvisioningError(
+                    message,
+                    new AggregateError([cause, cleanupError], message, { cause }),
+                  );
+                }
+              }
+              throw cause;
+            }
+          };
           if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
             // Docker state or trying to repair its mounts in place.
-            this.observeSandboxWakeFallback(project.id, fallbackReason);
-            return this.recreateContainerOnce(project.id, { confirmWarnings: true });
+            return await replaceRetained(fallbackReason);
           }
           if (inspect === null || generation === undefined) {
             throw new Error('compatible retained Sandbox lost its identity');
@@ -3203,6 +3312,9 @@ export class ProvisionerImpl implements Provisioner {
                 new AggregateError([cause, ...cleanupFailures], message, { cause }),
               );
             }
+            // The retained container can never start again (see
+            // isStaleGvisorFilestore); returning it to sleep would fail every wake.
+            if (isStaleGvisorFilestore(cause)) return await replaceRetained('stale_runtime_state');
             await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
               sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
               sleepingSince: project.sleepingSince ?? new Date(),
@@ -3463,6 +3575,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
       containerGeneration,
@@ -3879,6 +3992,7 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     opts: { confirmWarnings?: boolean } = {},
   ): Promise<ProjectRecord> {
+    this.markProjectSandboxActivity(projectId);
     // Coalesce onto an already-running attempt (see inFlightProvisions). The
     // joining caller's own `opts` are intentionally ignored — it observes the
     // running attempt's outcome, exactly as if its request had arrived while
@@ -4124,12 +4238,16 @@ export class ProvisionerImpl implements Provisioner {
       await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
       return;
     }
-    const token = await this.resolveProjectToken(project);
-    const authHeader = gitAuthHeader(token);
-    const url = `https://github.com/${project.owner}/${project.repo}`;
+    const access = await this.opts.forgeRepositoryAccess?.(project);
+    if (project.kind === 'forgejo' && !access)
+      throw new ProvisioningError('Forgejo connection unavailable');
+    const token = access?.token ?? (await this.resolveProjectToken(project));
+    const authHeader = access?.authorization ?? gitAuthHeader(token);
+    const url = access?.url ?? `https://github.com/${project.owner}/${project.repo}`;
+    const git = this.forgeGitRunner(access, project.forgeConnectionId ?? project.id);
     let remoteIsEmpty: boolean;
     try {
-      const remoteHeads = await this.git([
+      const remoteHeads = await git([
         '-c',
         `http.extraheader=${authHeader}`,
         'ls-remote',
@@ -4154,7 +4272,7 @@ export class ProvisionerImpl implements Provisioner {
           defaultBranch = 'main';
         } else {
           try {
-            const remoteHead = await this.git([
+            const remoteHead = await git([
               '-C',
               dirs.clonePath,
               'symbolic-ref',
@@ -4173,11 +4291,12 @@ export class ProvisionerImpl implements Provisioner {
           defaultBranch ?? 'main',
           token,
           authHeader,
+          git,
         );
         return;
       }
       try {
-        await this.git([
+        await git([
           '-C',
           dirs.clonePath,
           '-c',
@@ -4192,7 +4311,7 @@ export class ProvisionerImpl implements Provisioner {
         // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
         throw new Error(safeCause.message, { cause: safeCause });
       }
-      await this.git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
+      await git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
     } else {
       try {
         const cloneArgs = [
@@ -4205,7 +4324,7 @@ export class ProvisionerImpl implements Provisioner {
           url,
           dirs.clonePath,
         ];
-        await this.git(cloneArgs);
+        await git(cloneArgs);
       } catch (cause) {
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4213,13 +4332,14 @@ export class ProvisionerImpl implements Provisioner {
         // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
         throw new Error(safeCause.message, { cause: safeCause });
       }
-      await this.git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
+      await git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
       if (remoteIsEmpty) {
         await this.bootstrapEmptyGitHubRepo(
           dirs.clonePath,
           configuredDefaultBranch ?? 'main',
           token,
           authHeader,
+          git,
         );
       }
     }
@@ -4231,12 +4351,11 @@ export class ProvisionerImpl implements Provisioner {
     defaultBranch: string,
     token: string | undefined,
     authHeader: string,
+    git: GitRunner = this.git,
   ): Promise<void> {
     let existingHead: string | undefined;
     try {
-      existingHead = (
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-      ).stdout.trim();
+      existingHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
     } catch {
       // The clone is genuinely unborn; create the first commit below.
     }
@@ -4244,11 +4363,11 @@ export class ProvisionerImpl implements Provisioner {
       // A retry may find the bootstrap commit on a different local branch (for
       // example after the configured default changed). Preserve that history
       // before repointing HEAD; symbolic-ref alone would make it unreachable.
-      await this.git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
+      await git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
     }
-    await this.git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
+    await git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
     if (existingHead === undefined || existingHead.length === 0) {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4264,7 +4383,7 @@ export class ProvisionerImpl implements Provisioner {
       ]);
     }
     try {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4400,26 +4519,25 @@ export class ProvisionerImpl implements Provisioner {
    */
   async linkCloneToGitHub(
     project: ProjectRecord,
-    target: { owner: string; repo: string },
+    target: { owner: string; repo: string; forgeConnectionId?: string | null },
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult> {
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
     if (!this.isDir(clonePath) || !this.isRepoDir(clonePath)) {
       throw new ProvisioningError('project clone is missing; repair the project first');
     }
-    const url = `https://github.com/${target.owner}/${target.repo}`;
-    const authHeader = gitAuthHeader(token);
-    const branch = (
-      await this.git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])
-    ).stdout.trim();
-    const localHead = (
-      await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-    ).stdout.trim();
+    const access = await this.opts.forgeRepositoryAccess?.(target);
+    token = access?.token ?? token;
+    const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
+    const authHeader = access?.authorization ?? gitAuthHeader(token);
+    const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
+    const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
+    const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
     let originMatchesTarget = false;
     let originExists = false;
     try {
       const existingOrigin = (
-        await this.git(['-C', clonePath, 'remote', 'get-url', 'origin'])
+        await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
       ).stdout.trim();
       originExists = true;
       originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
@@ -4433,7 +4551,7 @@ export class ProvisionerImpl implements Provisioner {
     }
     let remoteRefs: Awaited<ReturnType<GitRunner>>;
     try {
-      remoteRefs = await this.git([
+      remoteRefs = await git([
         '-c',
         `http.extraheader=${authHeader}`,
         'ls-remote',
@@ -4470,7 +4588,7 @@ export class ProvisionerImpl implements Provisioner {
       }
     }
     if (!originExists) {
-      await this.git(['-C', clonePath, 'remote', 'add', 'origin', url]);
+      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
     }
     if (remoteHeads.length > 0) {
       let localStatus: string;
@@ -4482,11 +4600,11 @@ export class ProvisionerImpl implements Provisioner {
         // ones not at risk below — `git merge` refuses on its own rather than
         // clobbering an untracked file, and the `reset --merge` rollback ignores them.
         localStatus = (
-          await this.git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
+          await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
         ).stdout.trim();
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4495,7 +4613,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       if (localStatus !== '') {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         throw new ProvisioningError(
           'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
@@ -4503,7 +4621,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       let remoteBranch: string | undefined;
       try {
-        const remoteHead = await this.git([
+        const remoteHead = await git([
           '-c',
           `http.extraheader=${authHeader}`,
           'ls-remote',
@@ -4517,7 +4635,7 @@ export class ProvisionerImpl implements Provisioner {
           .find((candidate) => candidate !== undefined);
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4533,13 +4651,13 @@ export class ProvisionerImpl implements Provisioner {
         ?.replace(/^refs\/heads\//, '');
       if (remoteBranch === undefined) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         throw new ProvisioningError('the GitHub repository default branch could not be determined');
       }
       destinationBranch = remoteBranch;
       try {
-        await this.git([
+        await git([
           '-C',
           clonePath,
           '-c',
@@ -4550,7 +4668,7 @@ export class ProvisionerImpl implements Provisioner {
         ]);
       } catch (cause) {
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4566,7 +4684,7 @@ export class ProvisionerImpl implements Provisioner {
         // no `user.email`, and an unset one aborts this merge commit outright, while
         // an inherited `commit.gpgsign=true` would route Verity's own merge through a
         // signing path that holds no key for it.
-        await this.git([
+        await git([
           '-C',
           clonePath,
           '-c',
@@ -4590,14 +4708,14 @@ export class ProvisionerImpl implements Provisioner {
         // send the operator to repair a clone that was never modified.
         let midMerge = true;
         try {
-          await this.git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+          await git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
         } catch {
           midMerge = false;
         }
         let abortCause: unknown;
         if (midMerge) {
           try {
-            await this.git(['-C', clonePath, 'merge', '--abort']);
+            await git(['-C', clonePath, 'merge', '--abort']);
           } catch (error) {
             abortCause = error;
           }
@@ -4611,7 +4729,7 @@ export class ProvisionerImpl implements Provisioner {
           );
         }
         if (!originExists) {
-          await this.git(['-C', clonePath, 'remote', 'remove', 'origin']);
+          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
         }
         const safeCause = new Error(
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
@@ -4673,7 +4791,7 @@ export class ProvisionerImpl implements Provisioner {
     let importBranch: string | undefined;
     if (mergedExistingHistory) {
       const mergedHead = (
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+        await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
       ).stdout.trim();
       const remoteShaByBranch = new Map(
         remoteHeads
@@ -4704,7 +4822,7 @@ export class ProvisionerImpl implements Provisioner {
           : `${branch}:${destinationBranch}`
         : `HEAD:refs/heads/${importBranch}`;
     try {
-      await this.git([
+      await git([
         '-C',
         clonePath,
         '-c',
@@ -4725,7 +4843,7 @@ export class ProvisionerImpl implements Provisioner {
       let rollbackCause: unknown;
       if (mergedExistingHistory) {
         try {
-          await this.git(['-C', clonePath, 'reset', '--merge', localHead]);
+          await git(['-C', clonePath, 'reset', '--merge', localHead]);
         } catch (error) {
           rollbackCause = error;
         }
@@ -5148,9 +5266,15 @@ export class ProvisionerImpl implements Provisioner {
     }
     const forgeProxy =
       this.opts.forgeProxy?.enabled(project.id) === true &&
-      (project.kind === undefined || project.kind === 'github')
+      (project.kind === undefined || project.kind === 'github' || project.kind === 'forgejo')
         ? this.opts.forgeProxy
         : undefined;
+    const forgeUrl =
+      project.kind === 'forgejo' ? await forgeProxy?.urlFor?.(project) : 'https://github.com';
+    if (project.kind === 'forgejo' && (!forgeProxy || !forgeUrl))
+      throw new Error('Forgejo sandbox proxy unavailable');
+    const forgeOrigin = new URL(forgeUrl ?? 'https://github.com').origin;
+    const forgeAuthority = new URL(forgeOrigin).host;
     if (forgeProxy !== undefined && ghTokenCapabilityPath === undefined) {
       throw new Error('forge proxy test mode requires a project-bound GitHub capability');
     }
@@ -5171,6 +5295,7 @@ export class ProvisionerImpl implements Provisioner {
         ? []
         : [
             'VERITY_FORGE_MODE=proxy-test',
+            `VERITY_FORGE_AUTHORITY=${forgeAuthority}`,
             `VERITY_FORGE_PROXY_URL=${forgeProxyUrl}`,
             `VERITY_FORGE_PROXY_CA_FILE=${FORGE_PROXY_CA_FILE}`,
             'GIT_TERMINAL_PROMPT=0',
@@ -5192,6 +5317,9 @@ export class ProvisionerImpl implements Provisioner {
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            // `verity-repo`: pull requests and issues through the project's code host,
+            // executed server-side with the same capability (POST /internal/project/repo).
+            `VERITY_PROJECT_REPO_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/repo`,
             // Managed dev servers (concept 2.6): `verity-dev-server` add/start/stop/....
             `VERITY_DEV_SERVER_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/dev-servers`,
           ]
@@ -5328,17 +5456,17 @@ export class ProvisionerImpl implements Provisioner {
       // the helper here makes every git invocation in agent sessions work
       // immediately, including `docker exec` turns and interactive shells.
       if (forgeProxyUrl !== undefined)
-        gitRuntimeConfig.push({ key: 'credential.https://github.com.helper', value: '' });
+        gitRuntimeConfig.push({ key: `credential.${forgeOrigin}.helper`, value: '' });
       gitRuntimeConfig.push({
-        key: 'credential.https://github.com.helper',
+        key: `credential.${forgeOrigin}.helper`,
         value: '/opt/agent-seed/bin/verity-gh-cred',
       });
     }
     if (forgeProxyUrl !== undefined) {
       gitRuntimeConfig.push(
-        { key: 'http.https://github.com.proxy', value: forgeProxyUrl },
-        { key: 'http.https://github.com.sslCAInfo', value: FORGE_PROXY_CA_FILE },
-        { key: 'http.https://github.com.sslVerify', value: 'true' },
+        { key: `http.${forgeOrigin}.proxy`, value: forgeProxyUrl },
+        { key: `http.${forgeOrigin}.sslCAInfo`, value: FORGE_PROXY_CA_FILE },
+        { key: `http.${forgeOrigin}.sslVerify`, value: 'true' },
         { key: 'credential.interactive', value: 'false' },
       );
     }
@@ -5676,6 +5804,7 @@ export class ProvisionerImpl implements Provisioner {
     };
     try {
       let containerId: string;
+      let reusedExisting = false;
       try {
         const shouldForcePull =
           forcePull && preparedImage === undefined && !image.usesDevcontainerImage;
@@ -5693,11 +5822,26 @@ export class ProvisionerImpl implements Provisioner {
             );
           }
           containerId = inspect.id;
+          reusedExisting = !inspect.running;
         } else {
           throw cause;
         }
       }
-      await this.opts.docker.startContainer(containerId);
+      try {
+        await this.opts.docker.startContainer(containerId);
+      } catch (cause) {
+        if (!reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
+        // Starting a retained container reuses its id, which gVisor also uses as
+        // the sandbox id. A sandbox torn down without `runsc delete` (host memory
+        // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
+        // `.gvisor.filestore.<id>` behind in the container's writable layer, and
+        // runsc refuses to create it again. That container can never start, and
+        // every Repair kept retrying it. Replace it: durable project state lives
+        // in named volumes, which container removal does not touch.
+        await this.opts.docker.removeContainer(containerId);
+        containerId = (await this.createContainerPullingIfMissing(spec, false)).id;
+        await this.opts.docker.startContainer(containerId);
+      }
     } catch (cause) {
       const message = `docker start failed: ${failureMessage(cause)}`;
       await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -6113,6 +6257,37 @@ export class ProvisionerImpl implements Provisioner {
   /** The token for a SERVER-SIDE clone/fetch. It is used only for this server-side
    *  git operation and is NEVER written into the sandbox — the sandbox authenticates
    *  to GitHub via the token broker. */
+  private forgeGitRunner(
+    access: { url: string; customCaPem?: string | null } | undefined,
+    id: string,
+  ): GitRunner {
+    if (!access) return this.git;
+    const config = ['-c', 'http.followRedirects=false'];
+    if (access.customCaPem) {
+      if (!this.opts.gitSecretRoot) throw new ProvisioningError('Forgejo CA storage unavailable');
+      const path = writeSecretFile(
+        this.opts.gitSecretRoot,
+        `forge_ca.${id}`,
+        access.customCaPem,
+        'git',
+        0o600,
+      );
+      config.push('-c', `http.${access.url}.sslCAInfo=${path}`);
+    }
+    return (args, options) =>
+      this.git(
+        [
+          ...config,
+          ...args.map((arg) =>
+            arg.startsWith('http.extraheader=')
+              ? arg.replace('http.extraheader=', `http.${access.url}.extraheader=`)
+              : arg,
+          ),
+        ],
+        options,
+      );
+  }
+
   private async resolveProjectToken(project: ProjectRecord): Promise<string | undefined> {
     return this.opts.projectTokenMint?.(project);
   }

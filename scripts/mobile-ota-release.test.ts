@@ -219,6 +219,7 @@ interface ServiceState {
   deliveredWork?: string;
   largeReleasePayload?: boolean;
   stagedVersion?: string;
+  nativeRuntime?: 'missing' | 'draft' | 'staging';
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -288,7 +289,7 @@ if(tool === 'gh') {
       s.releaseReads++;
       if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
-      const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
+      const releases=[...(s.nativeRuntime==='missing'?[]:[{tag_name:'mobile-v1.33.0',draft:s.nativeRuntime==='draft',prerelease:s.nativeRuntime==='staging'}]),{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
       if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
       out([releases]);
@@ -460,6 +461,30 @@ describe('OTA CLI interrupted external operations', () => {
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
   });
 
+  it.each(['missing', 'draft', 'staging'] as const)(
+    'defers promotion without publishing while the native runtime is %s',
+    (nativeRuntime) => {
+      const candidate = artifact();
+      const service = serviceFixture({
+        nativeRuntime,
+        tags: {
+          [`ota-artifact/${candidate.tag}/${sha}`]: {
+            commit: sha,
+            message: JSON.stringify(candidate),
+          },
+        },
+      });
+      const result = service.run('promote');
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('waits for native production runtime 1.33.0');
+      expect(service.state().released).toBe('mobile-v1.33.2');
+      expect(service.state().calls.some((call) => call.startsWith('npx '))).toBe(false);
+      expect(
+        service.state().calls.some((call) => /^gh release (create|edit|upload) /.test(call)),
+      ).toBe(false);
+    },
+  );
+
   it('finishes the GitHub release after a successful channel edit without rebuilding', () => {
     const candidate = artifact();
     const service = serviceFixture({
@@ -509,7 +534,7 @@ describe('OTA CLI interrupted external operations', () => {
       false,
     );
   });
-  it('dismisses stale approvals before CI while preserving exact-head approval', () => {
+  it('dismisses stale approvals for the new candidate while preserving exact-head approval', () => {
     const service = serviceFixture({
       reviews: [
         { id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) },
@@ -521,10 +546,13 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.status).toBe(0);
     const state = service.state();
     expect(state.reviews?.map((review) => review.state)).toEqual(['DISMISSED', 'APPROVED']);
+    // The app-authored candidate commit starts its own pull_request CI, so the
+    // dismissal follows that commit and nothing dispatches CI explicitly.
+    const commit = state.calls.findIndex((call) => call.includes('createCommitOnBranch'));
     const dismissal = state.calls.findIndex((call) => call.includes('/reviews/1/dismissals'));
-    const dispatch = state.calls.findIndex((call) => call.startsWith('gh workflow run'));
-    expect(dismissal).toBeGreaterThan(-1);
-    expect(dispatch).toBeGreaterThan(dismissal);
+    expect(commit).toBeGreaterThan(-1);
+    expect(dismissal).toBeGreaterThan(commit);
+    expect(state.calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
 
   it('does not make the new candidate mergeable if stale approval cannot be cleared', () => {
@@ -584,7 +612,8 @@ describe('OTA CLI interrupted external operations', () => {
             !call.includes('--branch staging-staging-'),
         ),
     ).toHaveLength(1);
-    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(true);
+    // CI follows from the app-authored commit, not from a dispatch.
+    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
   it.each(['metadata', 'pull'] as const)(
     'recovers the first branch when %s creation was interrupted before any PR exists',

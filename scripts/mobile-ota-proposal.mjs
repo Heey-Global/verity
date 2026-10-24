@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { captureJson } from './capture-json.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 export const otaVersionPath = 'apps/mobile/ota/version.txt';
 export const otaManifestPath = '.release-please-manifest.mobile-ota.json';
@@ -54,7 +55,7 @@ const repository = () => {
 /** @template T @param {string[]} args @returns {T} */
 const api = (...args) => /** @type {T} */ (captureJson('gh', ['api', ...args]));
 /** @typedef {{tag_name: string, draft: boolean, prerelease: boolean, target_commitish?: string}} Release */
-/** @typedef {{number: number, merged_at: string | null, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+/** @typedef {{number: number, merged_at: string | null, merge_commit_sha?: string, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
 
 /**
  * @param {string} runtime
@@ -114,20 +115,11 @@ async function plan(runtime) {
   if (!token) throw new Error('GH_TOKEN is required for OTA release planning');
   const github = await GitHub.create({ owner, repo: name, token });
   const manifest = await createOtaManifest(github, baselineSha, next.version);
+  // The app token behind GH_TOKEN authors the PR, so its pull_request events
+  // run CI and Gitleaks on the generated branch without an explicit dispatch.
   const prs = await manifest.createPullRequests();
   for (const pr of prs) {
     if (!pr) continue;
-    run('gh', [
-      'workflow',
-      'run',
-      'ci.yml',
-      '--ref',
-      pr.headBranchName,
-      '-f',
-      'release-train=mobile-ota',
-      '-f',
-      `release-pr=${pr.number}`,
-    ]);
     console.log(`Staging OTA ${next.version}: release PR #${pr.number}`);
   }
 }
@@ -241,12 +233,24 @@ function mergedVersion(runtime) {
     throw new Error('OTA manifest and version marker differ');
   const commit = run('git', ['log', '-1', '--format=%H', '--', otaVersionPath]);
   const prs = /** @type {Pull[]} */ (api(`repos/${repository()}/commits/${commit}/pulls`));
+  // GitHub can omit commit associations even for a merged release PR.
+  if (prs.length === 0) {
+    const owner = repository().split('/')[0];
+    const pages = /** @type {Pull[][]} */ (
+      api(
+        '--paginate',
+        '--slurp',
+        `repos/${repository()}/pulls?state=closed&base=main&head=${owner}:release-please--branches--main--components--mobile-ota&per_page=100`,
+      )
+    );
+    prs.push(...pages.flat().filter((candidate) => candidate.merge_commit_sha === commit));
+  }
   const pr = prs.find(
     (pr) =>
       pr.merged_at &&
       pr.base.ref === 'main' &&
       pr.head.ref === 'release-please--branches--main--components--mobile-ota' &&
-      ['github-actions[bot]', 'app/github-actions'].includes(pr.user?.login ?? ''),
+      isReleaseBotLogin(pr.user?.login),
   );
   if (!pr) throw new Error('OTA publication requires a merged Release Please Staging PR');
   const checked = /** @type {{content: string}} */ (

@@ -145,6 +145,8 @@ export function projectSocketBindingName(identity: InternalConnectionIdentity): 
 export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
   'POST /internal/project/memory',
+  // `verity-repo`: pull requests and issues through the project's code host.
+  'POST /internal/project/repo',
   'POST /internal/package-install',
   // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
   'POST /internal/dev-servers',

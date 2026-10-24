@@ -30,13 +30,18 @@ import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
-import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
+import { useServerUpdateNotice } from '../lib/serverUpdateBadge';
+import {
+  serverUpdateBannerFor,
+  useServerUpdateBannerDismissal,
+} from '../lib/serverUpdateBannerDismissal';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+import { isDemoShowcase } from '../lib/demoShowcase';
 // One subpath per weight: the package root would pull all eighteen Inter
 // files (about 6 MB) into the bundle, not just the four the theme uses.
 import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
@@ -134,7 +139,7 @@ export default function RootLayout() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -188,7 +193,7 @@ function HydratedRoot() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -253,6 +258,10 @@ function HydratedRoot() {
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
               <Stack.Screen
+                name="project/[id]/settings/repository"
+                options={{ title: 'Repository' }}
+              />
+              <Stack.Screen
                 name="project/[id]/settings/services"
                 options={{ title: 'Connections' }}
               />
@@ -268,6 +277,8 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/forgejo/new" options={{ title: 'Connect Forgejo' }} />
+              <Stack.Screen name="settings/forgejo/[id]" options={{ title: 'Forgejo' }} />
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
@@ -292,7 +303,7 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
-              <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
+              <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}
@@ -307,7 +318,11 @@ function HydratedRoot() {
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
             {isDemoMode() ? (
-              <DemoBanner />
+              // Product images are rendered from the showcase; the banner would
+              // only have to be cropped out of every one of them.
+              isDemoShowcase() ? null : (
+                <DemoBanner />
+              )
             ) : (
               <>
                 <ActiveMeetingOverlay />
@@ -385,7 +400,12 @@ function AppHeader({
   // Only the overview carries the update banner, and every screen renders this
   // header — so the screen tells the hook whether to poll at all rather than
   // filtering its answer afterwards.
-  const pendingServerUpdate = useServerUpdateBadge(isHome);
+  const pendingServerUpdate = useServerUpdateNotice(isHome);
+  const bannerDismissal = useServerUpdateBannerDismissal(
+    pendingServerUpdate?.baseUrl ?? null,
+    pendingServerUpdate?.version ?? null,
+  );
+  const serverUpdateBanner = serverUpdateBannerFor(pendingServerUpdate, bannerDismissal.dismissed);
   const showMessageSearch = showsMessageSearch(route.name);
   const title = options.title ?? (isHome ? 'Verity' : route.name);
   const routeParams = route.params as { id?: unknown; selected?: unknown } | undefined;
@@ -397,8 +417,8 @@ function AppHeader({
         : undefined;
   return (
     <View style={[styles.header, { paddingTop: insets.top }]}>
-      <WindowControlsProbe onInset={trackWindowControls} />
       <View style={[styles.headerRow, headerRowInset]}>
+        <WindowControlsProbe onInset={trackWindowControls} />
         <View style={styles.headerSide}>
           {isHome ? (
             <>
@@ -421,7 +441,7 @@ function AppHeader({
                   ]}
                   accessibilityRole="button"
                 >
-                  <Icon name="folder-plus" size={20} color={theme.colors.accent} />
+                  <Icon name="folder-plus" size={20} color={theme.colors.signature} />
                 </Pressable>
               </Link>
             </>
@@ -487,8 +507,12 @@ function AppHeader({
           ) : null}
         </View>
       </View>
-      {isHome && pendingServerUpdate !== null ? (
-        <ServerUpdateBanner version={pendingServerUpdate} />
+      {isHome && serverUpdateBanner !== null ? (
+        <ServerUpdateBanner
+          version={serverUpdateBanner.version}
+          problem={serverUpdateBanner.problem}
+          onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
+        />
       ) : null}
     </View>
   );
@@ -533,7 +557,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     color: theme.colors.text,
     fontFamily: theme.fonts.semibold,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
   },
   headerPressed: {
     opacity: 0.62,
@@ -548,7 +572,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 3,
   },
   headerTitleHome: {
-    color: theme.colors.accent,
+    color: theme.colors.signature,
   },
   headerIconButton: {
     width: 44,

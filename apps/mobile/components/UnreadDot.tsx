@@ -15,7 +15,7 @@ export function UnreadDot({ size = 9 }: { size?: number }) {
         width: size,
         height: size,
         borderRadius: size / 2,
-        backgroundColor: theme.colors.tone.active,
+        backgroundColor: theme.colors.action,
       }}
     />
   );

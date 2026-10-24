@@ -1,3 +1,13 @@
+import type { SessionHistoryPage } from '../api.js';
+function historyPage(page: SessionHistoryPage) {
+  return {
+    ...page,
+    contract: 'bounded-history-v1' as const,
+    kind: 'page' as const,
+    snapshotSeq: page.events.at(-1)?.seq ?? 0,
+    beforeSeq: page.events[0]?.seq ?? null,
+  };
+}
 import { beginSessionSwitch } from '../sessionSwitchTiming.js';
 import type { AgentEvent } from '@verity/events';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,17 +23,17 @@ function recordingConnect(): { connect: FakeTransport; sockets: FakeSubscription
 
 function stubClient(): VerityClient {
   // getSession backs the resumable probe on start(); default to a live session.
-  // getHistory backs the tail-open probe; default to "short session" (no older
-  // events) → the stream opens from seq 0 (full replay), as before.
+  // getBoundedHistory backs the tail-open probe; default to "short session" (no older
+  // events) → a confirmed empty snapshot allows live continuation from seq 0.
   return {
     sendTurn: vi.fn(),
     getSession: vi.fn().mockResolvedValue({ resumable: true }),
-    getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+    getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
     getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
   } as unknown as VerityClient;
 }
 
-/** Flush microtasks + a macrotask so the async tail-open (getHistory → stream
+/** Flush microtasks + a macrotask so the async tail-open (getBoundedHistory → stream
  * connect) has run and the socket exists. */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -64,25 +74,27 @@ describe('SessionModel — stream', () => {
 
   it('publishes REST history before the live replay has caught up', async () => {
     const { connect, sockets } = recordingConnect();
-    let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;
+    let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getBoundedHistory']>>) => void;
     const client = stubClient();
-    const getHistory = vi.fn().mockReturnValue(
+    const getBoundedHistory = vi.fn().mockReturnValue(
       new Promise((resolve) => {
         resolveHistory = resolve;
       }),
     );
-    client.getHistory = getHistory;
+    client.getBoundedHistory = getBoundedHistory;
     const getActivity = vi.fn().mockResolvedValue({ busy: false, queued: [] });
     client.getActivity = getActivity;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
       model.start();
-      expect(getHistory).toHaveBeenCalledTimes(1);
+      expect(getBoundedHistory).toHaveBeenCalledTimes(1);
       expect(getActivity).not.toHaveBeenCalled();
-      resolveHistory({
-        events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-        hasMore: true,
-      });
+      resolveHistory(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+          hasMore: true,
+        }),
+      );
       await flush();
       // A slow live replay must not hide a complete REST transcript.
       expect(model.state.loaded).toBe(true);
@@ -102,25 +114,27 @@ describe('SessionModel — stream', () => {
     'opens on resume when the initial history probe settles in background (%s)',
     async (outcome) => {
       const { connect, sockets } = recordingConnect();
-      let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;
+      let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getBoundedHistory']>>) => void;
       let rejectHistory!: (error: Error) => void;
-      const history = new Promise<Awaited<ReturnType<VerityClient['getHistory']>>>(
+      const history = new Promise<Awaited<ReturnType<VerityClient['getBoundedHistory']>>>(
         (resolve, reject) => {
           resolveHistory = resolve;
           rejectHistory = reject;
         },
       );
       const client = stubClient();
-      client.getHistory = vi.fn().mockReturnValue(history);
+      client.getBoundedHistory = vi.fn().mockReturnValue(history);
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       try {
         model.start();
         model.pause();
         if (outcome === 'resolve') {
-          resolveHistory({
-            events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-            hasMore: true,
-          });
+          resolveHistory(
+            historyPage({
+              events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+              hasMore: true,
+            }),
+          );
         } else {
           rejectHistory(new Error('background request failed'));
         }
@@ -131,12 +145,15 @@ describe('SessionModel — stream', () => {
         // A completed probe must not strand the unstarted stream behind the loading screen.
         model.resume();
         await flush();
-        expect(sockets).toHaveLength(1);
-        expect(sockets[0]?.sinceSeq).toBe(outcome === 'resolve' ? 100 : 0);
-        if (outcome === 'reject') sockets[0]?.emitEvent(100, { t: 'text', delta: 'loaded' });
-        sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
-        expect(model.state.loaded).toBe(true);
-        expect(agentTexts(model.state)).toEqual([outcome === 'resolve' ? 'tail' : 'loaded']);
+        expect(sockets).toHaveLength(outcome === 'resolve' ? 1 : 0);
+        if (outcome === 'resolve') {
+          expect(sockets[0]?.sinceSeq).toBe(100);
+          expect(model.state.loaded).toBe(true);
+          expect(agentTexts(model.state)).toEqual(['tail']);
+        } else {
+          expect(model.state.historyError).toBe('background request failed');
+          expect(model.state.loaded).toBe(false);
+        }
       } finally {
         model.stop();
       }
@@ -168,10 +185,12 @@ describe('SessionModel — stream', () => {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
       // Tail page's oldest event is seq 100, and older events exist (hasMore).
-      getHistory: vi.fn().mockResolvedValue({
-        events: [{ seq: 100, event: { t: 'text', delta: 'x' } }],
-        hasMore: true,
-      }),
+      getBoundedHistory: vi.fn().mockResolvedValue(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'text', delta: 'x' } }],
+          hasMore: true,
+        }),
+      ),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -185,30 +204,34 @@ describe('SessionModel — stream', () => {
 
   it('opens far enough back when the latest tail page has no renderable messages', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [
-          {
-            seq: 100,
-            event: {
-              t: 'task',
-              id: 'task-1',
-              phase: 'progress',
-              description: 'background verification',
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [
+            {
+              seq: 100,
+              event: {
+                t: 'task',
+                id: 'task-1',
+                phase: 'progress',
+                description: 'background verification',
+              },
             },
-          },
-        ],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({
-        events: [{ seq: 50, event: { t: 'text', delta: 'visible tail' } }],
-        hasMore: true,
-      });
+          ],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 50, event: { t: 'text', delta: 'visible tail' } }],
+          hasMore: true,
+        }),
+      );
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory,
+      getBoundedHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -216,31 +239,37 @@ describe('SessionModel — stream', () => {
     model.start();
     await flush();
 
-    expect(getHistory).toHaveBeenNthCalledWith(2, 's1', { beforeSeq: 100, limit: 150 });
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      2,
+      's1',
+      expect.objectContaining({ beforeSeq: 100, snapshotSeq: 100 }),
+    );
     expect(sockets[0]?.sinceSeq).toBe(100);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
     expect(agentTexts(model.state)).toEqual(['visible tail']);
     expect(model.state.hasOlder).toBe(true);
   });
 
-  it('scans past a long metadata-only tail without replaying it over the socket', async () => {
+  it('stops the initial metadata scan after two pages until explicit continuation', async () => {
     const { connect, sockets } = recordingConnect();
     let pages = 0;
-    const getHistory = vi.fn().mockImplementation(() => {
+    const getBoundedHistory = vi.fn().mockImplementation(() => {
       pages += 1;
       const seq = 1_001 - pages * 100;
-      return Promise.resolve({
-        events:
-          pages === 6
-            ? [{ seq, event: { t: 'text', delta: 'recovered' } }]
-            : [metadataHistoryEvent(seq)],
-        hasMore: true,
-      });
+      return Promise.resolve(
+        historyPage({
+          events:
+            pages === 6
+              ? [{ seq, event: { t: 'text', delta: 'recovered' } }]
+              : [metadataHistoryEvent(seq)],
+          hasMore: true,
+        }),
+      );
     });
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory,
+      getBoundedHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -248,12 +277,13 @@ describe('SessionModel — stream', () => {
     model.start();
     await flush();
 
-    // Five pages was the former cutoff. Keep walking REST history until the snapshot
-    // can render, then connect after its newest event instead of bursting the entire
-    // session through the WebSocket.
-    expect(getHistory).toHaveBeenCalledTimes(6);
+    // Metadata-only tails must not turn startup into an unbounded history scan.
+    expect(getBoundedHistory).toHaveBeenCalledTimes(2);
+    expect(model.state.olderLoadNeedsContinuation).toBe(true);
     expect(sockets[0]?.sinceSeq).toBe(901);
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 901 }));
+    expect(agentTexts(model.state)).toEqual([]);
+    await model.loadOlder();
     expect(agentTexts(model.state)).toEqual(['recovered']);
     expect(model.state.hasOlder).toBe(true);
   });
@@ -272,10 +302,12 @@ describe('SessionModel — stream', () => {
           providerLabel: 'Codex',
         },
       }),
-      getHistory: vi.fn().mockResolvedValue({
-        events: [{ seq: 100, event: { t: 'text', delta: 'tail A' } }],
-        hasMore: true,
-      }),
+      getBoundedHistory: vi.fn().mockResolvedValue(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'text', delta: 'tail A' } }],
+          hasMore: true,
+        }),
+      ),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -330,9 +362,9 @@ describe('SessionModel — stream', () => {
     model.start();
     await flush();
     expect(model.state.locallyCreated).toBe(false);
-    expect(model.state.loaded).toBe(false); // still connecting / loading backlog
+    expect(model.state.loaded).toBe(true); // the empty REST snapshot is complete
     sockets[0]?.emitEvent(1, { t: 'text', delta: 'hi' });
-    expect(model.state.loaded).toBe(false); // backlog event applied but batched — not loaded yet
+    expect(model.state.loaded).toBe(true); // concurrent events arrive through live replay
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
     expect(model.state.loaded).toBe(true); // first snapshot at caught_up → loaded
   });
@@ -390,9 +422,9 @@ describe('SessionModel — stream', () => {
   });
 
   it('does not open the stream when stop wins a slow tail-history probe', async () => {
-    let resolveHistory!: (value: { events: []; hasMore: false }) => void;
+    let resolveHistory!: (value: ReturnType<typeof historyPage>) => void;
     const client = stubClient();
-    vi.spyOn(client, 'getHistory').mockReturnValue(
+    vi.spyOn(client, 'getBoundedHistory').mockReturnValue(
       new Promise((resolve) => {
         resolveHistory = resolve;
       }),
@@ -401,33 +433,39 @@ describe('SessionModel — stream', () => {
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     model.stop();
-    resolveHistory({ events: [], hasMore: false });
+    resolveHistory(historyPage({ events: [], hasMore: false }));
     await flush();
     expect(sockets).toHaveLength(0);
   });
 });
 
 describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
-  it('fetches the exact span down to the target seq in one request and prepends it', async () => {
+  it('fetches a bounded page toward the target seq and prepends it', async () => {
     const { connect, sockets } = recordingConnect();
     // Bind the mock to a local so assertions don't reference an unbound method (lint).
-    const getHistory = vi.fn().mockImplementation((_id: string, opts?: { beforeSeq?: number }) =>
-      // Tail-open probe (no beforeSeq): oldest loaded is seq 100, older exists.
-      // The targeted jump (beforeSeq set): return the older event at the target seq.
-      opts?.beforeSeq === undefined
-        ? Promise.resolve({
-            events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-            hasMore: true,
-          })
-        : Promise.resolve({
-            events: [{ seq: 42, event: { t: 'text', delta: 'old' } }],
-            hasMore: false,
-          }),
-    );
+    const getBoundedHistory = vi
+      .fn()
+      .mockImplementation((_id: string, opts?: { beforeSeq?: number }) =>
+        // Tail-open probe (no beforeSeq): oldest loaded is seq 100, older exists.
+        // The targeted jump (beforeSeq set): return the older event at the target seq.
+        opts?.beforeSeq === undefined
+          ? Promise.resolve(
+              historyPage({
+                events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+                hasMore: true,
+              }),
+            )
+          : Promise.resolve(
+              historyPage({
+                events: [{ seq: 42, event: { t: 'text', delta: 'old' } }],
+                hasMore: false,
+              }),
+            ),
+      );
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory,
+      getBoundedHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -439,8 +477,11 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
 
     await model.loadOlderUntil(42);
 
-    // One fetch sized to the whole span (100 − 42), not a fixed 150 page.
-    expect(getHistory).toHaveBeenCalledWith('s1', { beforeSeq: 100, limit: 58, timing: undefined });
+    // The request retains the original snapshot and the older-history cursor.
+    expect(getBoundedHistory).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ beforeSeq: 100, snapshotSeq: 100 }),
+    );
     // The older event is prepended AHEAD of the tail — consecutive agent-text deltas
     // coalesce, so the merged 'old'+'tail' (not 'tail'+'old') confirms the order.
     expect(agentTexts(model.state)).toEqual(['oldtail']);
@@ -450,14 +491,16 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
   it('is a no-op when the target is already within the loaded window', async () => {
     const { connect, sockets } = recordingConnect();
     // Bind the mock to a local so assertions don't reference an unbound method (lint).
-    const getHistory = vi.fn().mockResolvedValue({
-      events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-      hasMore: true,
-    });
+    const getBoundedHistory = vi.fn().mockResolvedValue(
+      historyPage({
+        events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+        hasMore: true,
+      }),
+    );
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory,
+      getBoundedHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -465,11 +508,11 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
     await flush();
     sockets[0]?.emitEvent(100, { t: 'text', delta: 'tail' });
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
-    getHistory.mockClear();
+    getBoundedHistory.mockClear();
 
     await model.loadOlderUntil(150); // target newer than the oldest loaded → nothing to do
 
-    expect(getHistory).not.toHaveBeenCalled();
+    expect(getBoundedHistory).not.toHaveBeenCalled();
   });
 });
 
@@ -479,7 +522,7 @@ describe('SessionModel — busy seeding', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true, status: 'running' }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       // Never resolves within the test → the seed must come from the detail probe.
       getActivity: vi.fn().mockReturnValue(new Promise(() => {})),
     } as unknown as VerityClient;
@@ -505,7 +548,7 @@ describe('SessionModel — busy seeding', () => {
               setTimeout(() => resolve({ resumable: true, status: 'running' }), 10),
             ),
         ),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -526,7 +569,7 @@ describe('SessionModel — busy seeding', () => {
       getSession: vi
         .fn()
         .mockResolvedValue({ resumable: true, status: 'awaiting_input', busy: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockReturnValue(new Promise(() => {})),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -749,7 +792,7 @@ describe('SessionModel — working reconciliation', () => {
       const client = {
         sendTurn: vi.fn(),
         getSession: vi.fn().mockResolvedValue({ resumable: true, status: 'idle' }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity,
       } as unknown as VerityClient;
       const workingSeen: boolean[] = [];
@@ -789,7 +832,7 @@ describe('SessionModel — working reconciliation', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true, status: 'running' }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: true, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -981,17 +1024,21 @@ describe('SessionModel — cancel (#79)', () => {
         finishCancel = resolve;
       }),
     );
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [{ seq: 1, event: { t: 'prompt', text: 'go' } }],
-        hasMore: true,
-      })
-      .mockResolvedValue({
-        events: [{ seq: 0, event: { t: 'prompt', text: 'older' } }],
-        hasMore: false,
-      });
-    client.getHistory = getHistory;
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 1, event: { t: 'prompt', text: 'go' } }],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValue(
+        historyPage({
+          events: [{ seq: 0, event: { t: 'prompt', text: 'older' } }],
+          hasMore: false,
+        }),
+      );
+    client.getBoundedHistory = getBoundedHistory;
     client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
@@ -1030,7 +1077,7 @@ describe('SessionModel — cancel (#79)', () => {
       expect(agentTexts(model.state)).toEqual(['visible']);
       expect(model.state.hasOlder).toBe(true);
       await model.loadOlder();
-      expect(getHistory).toHaveBeenCalledTimes(2);
+      expect(getBoundedHistory).toHaveBeenCalledTimes(2);
       expect(agentTexts(model.state)).toEqual(['visible']);
       sockets[0]?.emitEvent(7, { t: 'text', delta: 'new turn' });
       expect(agentTexts(model.state)).toEqual(['visible', 'new turn']);
@@ -1673,31 +1720,35 @@ describe('SessionModel — switchModel (engine switch)', () => {
 
   it('does not resurrect a cleared rate-limit when older history is prepended', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [{ seq: 99, event: { t: 'text', delta: 'tail A' } }],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({
-        events: [
-          {
-            seq: 50,
-            event: {
-              t: 'rate_limit',
-              status: 'rejected',
-              resetsAt: 1_700_000_000,
-              window: 'five_hour',
-              providerLabel: 'Claude',
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 99, event: { t: 'text', delta: 'tail A' } }],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [
+            {
+              seq: 50,
+              event: {
+                t: 'rate_limit',
+                status: 'rejected',
+                resetsAt: 1_700_000_000,
+                window: 'five_hour',
+                providerLabel: 'Claude',
+              },
             },
-          },
-          { seq: 51, event: { t: 'prompt', text: 'older Q' } },
-        ],
-        hasMore: false,
-      });
+            { seq: 51, event: { t: 'prompt', text: 'older Q' } },
+          ],
+          hasMore: false,
+        }),
+      );
     const setSessionModel = vi.fn().mockResolvedValue({ sessionId: 's1', model: 'codex/default' });
     const model = new SessionModel({
-      client: { ...stubClient(), getHistory, setSessionModel } as unknown as VerityClient,
+      client: { ...stubClient(), getBoundedHistory, setSessionModel } as unknown as VerityClient,
       sessionId: 's1',
       transport: connect,
     });
@@ -1926,16 +1977,20 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     async (mode) => {
       const { connect } = recordingConnect();
       const client = stubClient();
-      client.getHistory = vi
+      client.getBoundedHistory = vi
         .fn()
-        .mockResolvedValueOnce({
-          events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-          hasMore: true,
-        })
-        .mockResolvedValueOnce({
-          events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
-          hasMore: false,
-        });
+        .mockResolvedValueOnce(
+          historyPage({
+            events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+            hasMore: true,
+          }),
+        )
+        .mockResolvedValueOnce(
+          historyPage({
+            events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
+            hasMore: false,
+          }),
+        );
       const updates: SessionModelState[] = [];
       const model = new SessionModel({
         client,
@@ -1967,16 +2022,20 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
   it('reduces a visible older page only for visibility and canonical replay', async () => {
     const { connect } = recordingConnect();
     const client = stubClient();
-    client.getHistory = vi
+    client.getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({
-        events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
-        hasMore: true,
-      });
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 50, event: { t: 'prompt', text: 'older' } }],
+          hasMore: true,
+        }),
+      );
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     model.start();
     await flush();
@@ -1992,22 +2051,26 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
   it('opens from the tail, then loads + prepends an older page on demand', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
       // tail-open probe: older history exists before seq 100.
-      .mockResolvedValueOnce({
-        events: [{ seq: 100, event: { t: 'text', delta: 'tail A' } }],
-        hasMore: true,
-      })
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'text', delta: 'tail A' } }],
+          hasMore: true,
+        }),
+      )
       // loadOlder: the previous page (a prompt), nothing older left.
-      .mockResolvedValueOnce({
-        events: [{ seq: 50, event: { t: 'prompt', text: 'older Q' } }],
-        hasMore: false,
-      });
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 50, event: { t: 'prompt', text: 'older Q' } }],
+          hasMore: false,
+        }),
+      );
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory,
+      getBoundedHistory,
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2021,7 +2084,11 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
     await model.loadOlder();
 
-    expect(getHistory).toHaveBeenNthCalledWith(2, 's1', { beforeSeq: 100, limit: 150 });
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      2,
+      's1',
+      expect.objectContaining({ beforeSeq: 100, snapshotSeq: 100 }),
+    );
     expect(model.state.hasOlder).toBe(false); // nothing older left
     expect(model.state.loadingOlder).toBe(false);
     // Older prompt is prepended before the tail's agent text.
@@ -2035,7 +2102,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
       // short session: tail-open returns no-more → hasOlder stays false.
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2045,28 +2112,34 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
     await model.loadOlder();
     // Only the initial tail-open probe ran; loadOlder didn't fetch.
-    expect((client.getHistory as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((client.getBoundedHistory as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
   });
 
   it('continues through event-only pages until older transcript rows are visible', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [{ seq: 300, event: { t: 'text', delta: 'tail' } }],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({
-        events: [metadataHistoryEvent(200)],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({
-        events: [{ seq: 100, event: { t: 'prompt', text: 'visible older prompt' } }],
-        hasMore: false,
-      });
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 300, event: { t: 'text', delta: 'tail' } }],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [metadataHistoryEvent(200)],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'prompt', text: 'visible older prompt' } }],
+          hasMore: false,
+        }),
+      );
     const client = {
       ...stubClient(),
-      getHistory,
+      getBoundedHistory,
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
 
@@ -2077,8 +2150,16 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
     await model.loadOlder();
 
-    expect(getHistory).toHaveBeenNthCalledWith(2, 's1', { beforeSeq: 300, limit: 150 });
-    expect(getHistory).toHaveBeenNthCalledWith(3, 's1', { beforeSeq: 200, limit: 150 });
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      2,
+      's1',
+      expect.objectContaining({ beforeSeq: 300 }),
+    );
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      3,
+      's1',
+      expect.objectContaining({ beforeSeq: 200 }),
+    );
     expect(model.state.session.messages[0]).toMatchObject({
       kind: 'user-text',
       text: 'visible older prompt',
@@ -2088,18 +2169,22 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
   it('bounds scans through metadata-only history pages', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi.fn().mockResolvedValueOnce({
-      events: [{ seq: 1000, event: { t: 'text', delta: 'tail' } }],
-      hasMore: true,
-    });
+    const getBoundedHistory = vi.fn().mockResolvedValueOnce(
+      historyPage({
+        events: [{ seq: 1000, event: { t: 'text', delta: 'tail' } }],
+        hasMore: true,
+      }),
+    );
     for (const seq of [900, 800, 700, 600, 500, 400]) {
-      getHistory.mockResolvedValueOnce({
-        events: [metadataHistoryEvent(seq)],
-        hasMore: seq !== 400,
-      });
+      getBoundedHistory.mockResolvedValueOnce(
+        historyPage({
+          events: [metadataHistoryEvent(seq)],
+          hasMore: seq !== 400,
+        }),
+      );
     }
     const model = new SessionModel({
-      client: { ...stubClient(), getHistory } as unknown as VerityClient,
+      client: { ...stubClient(), getBoundedHistory } as unknown as VerityClient,
       sessionId: 's1',
       transport: connect,
     });
@@ -2110,7 +2195,7 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1000 }));
     await model.loadOlder();
 
-    expect(getHistory).toHaveBeenCalledTimes(6); // tail probe + at most five scan pages
+    expect(getBoundedHistory).toHaveBeenCalledTimes(6); // tail probe + at most five scan pages
     expect(model.state.hasOlder).toBe(true);
     expect(model.state.olderLoadStalled).toBe(false);
     expect(model.state.olderLoadNeedsContinuation).toBe(true);
@@ -2118,26 +2203,34 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     // Navigation must see cursor progress even when the bounded scan added no rows.
     expect(model.state.oldestHistorySeq).toBe(500);
     await model.loadOlder();
-    expect(getHistory).toHaveBeenNthCalledWith(7, 's1', { beforeSeq: 500, limit: 150 });
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      7,
+      's1',
+      expect.objectContaining({ beforeSeq: 500 }),
+    );
     expect(model.state.oldestHistorySeq).toBe(400);
   });
 
   it('keeps successful metadata pages when a later scan request fails', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi
+    const getBoundedHistory = vi
       .fn()
-      .mockResolvedValueOnce({
-        events: [{ seq: 300, event: { t: 'text', delta: 'tail' } }],
-        hasMore: true,
-      })
-      .mockResolvedValueOnce({ events: [metadataHistoryEvent(200)], hasMore: true })
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 300, event: { t: 'text', delta: 'tail' } }],
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(historyPage({ events: [metadataHistoryEvent(200)], hasMore: true }))
       .mockRejectedValueOnce(new Error('temporary history failure'))
-      .mockResolvedValueOnce({
-        events: [{ seq: 100, event: { t: 'prompt', text: 'older prompt after retry' } }],
-        hasMore: false,
-      });
+      .mockResolvedValueOnce(
+        historyPage({
+          events: [{ seq: 100, event: { t: 'prompt', text: 'older prompt after retry' } }],
+          hasMore: false,
+        }),
+      );
     const model = new SessionModel({
-      client: { ...stubClient(), getHistory } as unknown as VerityClient,
+      client: { ...stubClient(), getBoundedHistory } as unknown as VerityClient,
       sessionId: 's1',
       transport: connect,
     });
@@ -2152,7 +2245,11 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
     expect(model.state.olderLoadGeneration).toBe(1);
     await model.loadOlder();
 
-    expect(getHistory).toHaveBeenNthCalledWith(4, 's1', { beforeSeq: 200, limit: 150 });
+    expect(getBoundedHistory).toHaveBeenNthCalledWith(
+      4,
+      's1',
+      expect.objectContaining({ beforeSeq: 200 }),
+    );
     expect(model.state.session.messages[0]).toMatchObject({
       kind: 'user-text',
       text: 'older prompt after retry',
@@ -2198,7 +2295,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi
         .fn()
         .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'waiting one' }] }),
@@ -2216,7 +2313,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [], branch: 'feat/122-x' }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2237,7 +2334,7 @@ describe('SessionModel — server activity + queued messages', () => {
       const client = {
         sendTurn: vi.fn(),
         getSession: vi.fn().mockResolvedValue({ resumable: true, name: null }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity,
       } as unknown as VerityClient;
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2257,7 +2354,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true, name: 'From Detail' }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2284,7 +2381,7 @@ describe('SessionModel — server activity + queued messages', () => {
             providerLabel: 'Codex',
           },
         }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
       } as unknown as VerityClient;
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2319,7 +2416,7 @@ describe('SessionModel — server activity + queued messages', () => {
       const client = {
         sendTurn: vi.fn(),
         getSession: vi.fn().mockResolvedValue({ resumable: true }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity,
       } as unknown as VerityClient;
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2349,7 +2446,7 @@ describe('SessionModel — server activity + queued messages', () => {
       const client = {
         sendTurn: vi.fn(),
         getSession: vi.fn().mockResolvedValue({ resumable: true }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity,
       } as unknown as VerityClient;
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2382,7 +2479,7 @@ describe('SessionModel — server activity + queued messages', () => {
       const client = {
         sendTurn: vi.fn(),
         getSession: vi.fn().mockResolvedValue({ resumable: true }),
-        getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+        getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
         getActivity,
       } as unknown as VerityClient;
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2412,7 +2509,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn().mockResolvedValue({ sessionId: 's1', accepted: true, queued: true }),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2435,7 +2532,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       // The server still reports the message as queued (poll lag / not yet dequeued).
       getActivity: vi
         .fn()
@@ -2460,7 +2557,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi
         .fn()
         .mockResolvedValue({ busy: true, queued: [{ id: 'q1', text: 'same words' }] }),
@@ -2498,7 +2595,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockReturnValue(activity),
     } as unknown as VerityClient;
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
@@ -2521,7 +2618,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({
         busy: true,
         queued: [
@@ -2557,7 +2654,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({
         busy: true,
         queued: [{ id: 'q1', text: 'fix me' }],
@@ -2586,7 +2683,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({
         busy: true,
         queued: [{ id: 'q1', text: 'already running' }],
@@ -2609,7 +2706,7 @@ describe('SessionModel — server activity + queued messages', () => {
     const client = {
       sendTurn: vi.fn(),
       getSession: vi.fn().mockResolvedValue({ resumable: true }),
-      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getBoundedHistory: vi.fn().mockResolvedValue(historyPage({ events: [], hasMore: false })),
       getActivity: vi.fn().mockResolvedValue({
         busy: true,
         queued: [{ id: 'q1', text: 'still queued' }],
@@ -2849,12 +2946,19 @@ describe('SessionModel — a session that is still being created', () => {
 
   it('touches nothing until the session exists, then comes up normally', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi.fn().mockResolvedValue({ events: [], hasMore: false });
+    const getBoundedHistory = vi
+      .fn()
+      .mockResolvedValue(historyPage({ events: [], hasMore: false }));
     const getSession = vi.fn().mockResolvedValue({ resumable: true });
     const getActivity = vi.fn().mockResolvedValue({ busy: false, queued: [] });
     const { ready, created } = gate();
     const model = new SessionModel({
-      client: { ...stubClient(), getHistory, getSession, getActivity } as unknown as VerityClient,
+      client: {
+        ...stubClient(),
+        getBoundedHistory,
+        getSession,
+        getActivity,
+      } as unknown as VerityClient,
       sessionId: 's1',
       transport: connect,
       ready,
@@ -2866,7 +2970,7 @@ describe('SessionModel — a session that is still being created', () => {
     expect(model.state.loaded).toBe(false);
     // Every one of these would 404 against an id the server has not minted yet.
     expect(sockets).toHaveLength(0);
-    expect(getHistory).not.toHaveBeenCalled();
+    expect(getBoundedHistory).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
     expect(getActivity).not.toHaveBeenCalled();
 
@@ -3176,4 +3280,95 @@ it('records an Allow failure without exporting the error text', async () => {
   expect(trace.phases.map((p) => p.phase)).toEqual(['allow-model-handler', 'allow-model-error']);
   expect(JSON.stringify(trace.phases)).not.toContain('private-secret-error');
   model.stop();
+});
+
+describe('bounded history recovery', () => {
+  it('requires explicit retry after first-page failure and never starts sequence-zero replay', async () => {
+    const client = stubClient();
+    const { connect, sockets } = recordingConnect();
+    client.getBoundedHistory = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(
+        historyPage({
+          events: [{ seq: 42, event: { t: 'text', delta: 'complete' } }],
+          hasMore: false,
+        }),
+      );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    model.start();
+    await flush();
+    expect(sockets).toHaveLength(0);
+    expect(model.state.historyError).toBe('offline');
+    expect(model.state.loadingHistory).toBe(false);
+    await model.retryHistory();
+    expect(sockets[0]?.sinceSeq).toBe(42);
+    expect(model.state.historyError).toBeUndefined();
+    expect(agentTexts(model.state)).toEqual(['complete']);
+    model.stop();
+  });
+
+  it('retains a complete first page on second-page failure and retries only older history', async () => {
+    const client = stubClient();
+    const { connect, sockets } = recordingConnect();
+    const getBoundedHistory = vi
+      .spyOn(client, 'getBoundedHistory')
+      .mockResolvedValueOnce(historyPage({ events: [metadataHistoryEvent(42)], hasMore: true }))
+      .mockRejectedValueOnce(new Error('second page failed'))
+      .mockResolvedValueOnce({
+        ...historyPage({
+          events: [{ seq: 20, event: { t: 'text', delta: 'older' } }],
+          hasMore: false,
+        }),
+        snapshotSeq: 42,
+      });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    model.start();
+    await flush();
+    expect(model.state.loaded).toBe(true);
+    expect(model.state.historyError).toBe('second page failed');
+    expect(sockets[0]?.sinceSeq).toBe(42);
+    sockets[0]?.emitEvent(43, { t: 'text', delta: 'new' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 43 }));
+    expect(model.state.historyError).toBe('second page failed');
+    connect.reconnect();
+    expect(sockets.at(-1)?.sinceSeq).toBe(43);
+    sockets.at(-1)?.emitEvent(43, { t: 'text', delta: 'duplicate' });
+    sockets.at(-1)?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 43 }));
+    await model.loadOlder();
+    expect(getBoundedHistory).toHaveBeenLastCalledWith(
+      's1',
+      expect.objectContaining({ beforeSeq: 42, snapshotSeq: 42 }),
+    );
+    expect(model.state.historyError).toBeUndefined();
+    expect(agentTexts(model.state).join('')).toContain('older');
+    expect(agentTexts(model.state).join('')).toContain('new');
+    expect(agentTexts(model.state).join('')).not.toContain('duplicate');
+    model.stop();
+  });
+
+  it('aborts an obsolete initial request and ignores a late response', async () => {
+    const client = stubClient();
+    const { connect, sockets } = recordingConnect();
+    let resolve!: (page: ReturnType<typeof historyPage>) => void;
+    const getBoundedHistory = vi.spyOn(client, 'getBoundedHistory').mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    model.start();
+    const signal = getBoundedHistory.mock.calls[0]?.[1]?.signal;
+    model.stop();
+    expect(signal?.aborted).toBe(true);
+    resolve(
+      historyPage({
+        events: [{ seq: 42, event: { t: 'text', delta: 'obsolete' } }],
+        hasMore: false,
+      }),
+    );
+    await flush();
+    expect(sockets).toHaveLength(0);
+    expect(agentTexts(model.state)).toEqual([]);
+  });
 });

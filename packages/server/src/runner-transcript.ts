@@ -1,6 +1,8 @@
 import type { Dirent } from 'node:fs';
-import { open, readdir, stat } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { open, readdir, rename, rm, stat } from 'node:fs/promises';
+import { basename, join, sep } from 'node:path';
+import { sessionHomePath } from './session-home.js';
+import { migrateSessionArtifact } from './session-home-migration.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   restoreIfMissing,
@@ -37,6 +39,7 @@ export interface ServerTranscriptOptions {
   /** Server-side host path of the runner-runtime dir: `<dataVolumeRoot>/runners/<projectId>`.
    * The worker sees the same storage at `/run/verity-runner`. */
   runtimeDir: string;
+  veritySessionId?: string;
   /** The durable verbatim transcript store (the same one the in-process path uses). */
   transcript: TranscriptStore;
   /** Tail poll interval (ms); defaults to the transport's own default. */
@@ -56,7 +59,12 @@ export class ServerTranscript implements RunnerTranscriptSink {
     return transcriptPath({
       cwd,
       sessionId,
-      claudeHome: join(this.options.runtimeDir, RUNNER_CLAUDE_HOME_DIRNAME),
+      claudeHome: join(
+        this.options.veritySessionId
+          ? sessionHomePath(this.options.runtimeDir, this.options.veritySessionId)
+          : this.options.runtimeDir,
+        RUNNER_CLAUDE_HOME_DIRNAME,
+      ),
     });
   }
 
@@ -66,6 +74,19 @@ export class ServerTranscript implements RunnerTranscriptSink {
     storeSessionId: string,
   ): Promise<number> {
     const file = this.transcriptFile(backendSessionId, cwd);
+    if (this.options.veritySessionId) {
+      const legacy = transcriptPath({
+        cwd,
+        sessionId: backendSessionId,
+        claudeHome: join(this.options.runtimeDir, RUNNER_CLAUDE_HOME_DIRNAME),
+      });
+      await migrateSessionArtifact(legacy, file, this.options.runtimeDir);
+      await migrateSessionArtifact(
+        legacy.replace(/\.jsonl$/u, ''),
+        file.replace(/\.jsonl$/u, ''),
+        this.options.runtimeDir,
+      );
+    }
     await restoreIfMissing(this.options.transcript, storeSessionId, file, {
       rootDir: this.options.runtimeDir,
     });
@@ -165,7 +186,35 @@ async function findCodexRollout(dir: string, sessionId: string): Promise<string 
   return (await codexRolloutHasSession(restored, sessionId)) ? restored : undefined;
 }
 
+const MAX_FOUR_DIGIT_YEAR_MILLIS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
 function restoredCodexFile(dir: string, sessionId: string): string {
+  // Codex reads a paginated rollout only under its canonical name,
+  // `rollout-YYYY-MM-DDThh-mm-ss-<thread-id>.jsonl`, and refuses to resume any
+  // other ("does not have a canonical rollout filename"). The time in the name
+  // is not checked against the contents; a v7 thread id carries its creation
+  // time, so that is what goes there.
+  if (UUID.test(sessionId)) {
+    return join(
+      dir,
+      'verity-restored',
+      `rollout-${codexRolloutTimestamp(sessionId)}-${sessionId}.jsonl`,
+    );
+  }
+  return legacyRestoredCodexFile(dir, sessionId);
+}
+
+function codexRolloutTimestamp(threadId: string): string {
+  const millis = threadId[14] === '7' ? parseInt(threadId.replaceAll('-', '').slice(0, 12), 16) : 0;
+  // Past year 9999 the ISO form gains a sign and the name would not be canonical.
+  const created = new Date(millis <= MAX_FOUR_DIGIT_YEAR_MILLIS ? millis : 0);
+  return created.toISOString().slice(0, 19).replaceAll(':', '-');
+}
+
+/** The name restores used before the canonical one. Not a thread id Codex can
+ * resume under, and the only name an id that is no UUID at all can have. */
+function legacyRestoredCodexFile(dir: string, sessionId: string): string {
   // Native Codex discovers rollouts by their `-<thread-id>.jsonl` suffix, so
   // preserve ordinary thread IDs. Encode only values that are unsafe as one
   // path segment; the metadata inside the rollout still carries the original ID.
@@ -174,6 +223,39 @@ function restoredCodexFile(dir: string, sessionId: string): string {
       ? sessionId
       : `encoded-${Buffer.from(sessionId, 'utf8').toString('base64url')}`;
   return join(dir, 'verity-restored', `rollout-${fileSessionId}.jsonl`);
+}
+
+/** A Sandbox restored before the canonical name keeps that copy in its runtime,
+ * and Codex would keep finding it by its id suffix and refusing it. Move it to
+ * the canonical name, so it is resumed instead of shadowing a second restore. */
+async function migrateLegacyRestoredCodexFile(dir: string, sessionId: string): Promise<void> {
+  const legacy = legacyRestoredCodexFile(dir, sessionId);
+  const canonical = restoredCodexFile(dir, sessionId);
+  if (legacy === canonical) return;
+  const legacySize = await fileSize(legacy);
+  if (legacySize === 0 && !(await exists(legacy))) return;
+  const ignoreGone = (error: NodeJS.ErrnoException): void => {
+    // A concurrent resume of the same thread may have moved it already.
+    if (error.code !== 'ENOENT') throw error;
+  };
+  // Keep whichever copy holds more of the thread; Codex may have appended to
+  // either. A legacy copy without this thread's metadata holds nothing to keep,
+  // and its name is the one Verity derives for this id, so it is Verity's own.
+  // A native dated rollout is what resumes; a renamed copy beside it would only
+  // be a second canonical file for the same thread.
+  const native = (await listCodexRollouts(dir, sessionId)).some(
+    (file) => !file.includes(`${sep}verity-restored${sep}`),
+  );
+  if (
+    !native &&
+    (await codexRolloutHasSession(legacy, sessionId)) &&
+    (!(await codexRolloutHasSession(canonical, sessionId)) ||
+      legacySize > (await fileSize(canonical)))
+  ) {
+    await rename(legacy, canonical).catch(ignoreGone);
+  } else {
+    await rm(legacy, { force: true });
+  }
 }
 
 async function waitForCodexRollout(
@@ -200,7 +282,13 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
   constructor(private readonly options: ServerTranscriptOptions) {}
 
   private sessionsDir(): string {
-    return join(this.options.runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME);
+    return this.options.veritySessionId
+      ? join(
+          sessionHomePath(this.options.runtimeDir, this.options.veritySessionId),
+          'codex',
+          'sessions',
+        )
+      : join(this.options.runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME);
   }
 
   private restoredFile(sessionId: string): string {
@@ -213,6 +301,15 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
     storeSessionId: string,
   ): Promise<number> {
     void _cwd;
+    if (this.options.veritySessionId) {
+      for (const legacy of await codexRolloutFiles(this.options.runtimeDir, backendSessionId))
+        await migrateSessionArtifact(
+          legacy,
+          join(this.sessionsDir(), 'legacy', basename(legacy)),
+          this.options.runtimeDir,
+        );
+    }
+    await migrateLegacyRestoredCodexFile(this.sessionsDir(), backendSessionId);
     const existing = await findCodexRollout(this.sessionsDir(), backendSessionId);
     const file = existing ?? this.restoredFile(backendSessionId);
     if (existing === undefined)
@@ -243,6 +340,13 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
       ...(this.options.pollMs !== undefined ? { pollMs: this.options.pollMs } : {}),
     });
   }
+}
+
+async function exists(file: string): Promise<boolean> {
+  return await stat(file).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** Current size of `file`, or 0 if it does not exist yet (a fresh session). */

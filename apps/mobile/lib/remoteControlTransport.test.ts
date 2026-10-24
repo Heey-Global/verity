@@ -1743,3 +1743,65 @@ it('reconciles a surviving native recording when status is read after JavaScript
   expect(await reloaded.remoteDataRecordingRemainingMs()).toBe(0);
   expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
 });
+
+it('arms the authenticated selected session before App DATA attachment and probes afterwards', async () => {
+  const transport = await armScopedRecording();
+  const select = jest.fn().mockResolvedValue(undefined);
+  await transport.prepareSelectedDataRecording(select);
+  expect(select).toHaveBeenCalledWith('session');
+  expect(select.mock.invocationCallOrder[0]).toBeLessThan(mockStart.mock.invocationCallOrder[0]!);
+  expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
+    mockRequest.mock.invocationCallOrder[0]!,
+  );
+});
+it('does not attach or retry another session after selected-capture preparation fails', async () => {
+  const transport = await armScopedRecording();
+  await expect(
+    transport.prepareSelectedDataRecording(async () => {
+      throw new Error('diagnostics_version_unavailable');
+    }),
+  ).rejects.toThrow('diagnostics_version_unavailable');
+  expect(mockAdmission).toHaveBeenCalledTimes(1);
+  expect(mockStart).not.toHaveBeenCalled();
+});
+it('cancels admission when consent is stopped while selected capture is being armed', async () => {
+  const transport = await armScopedRecording();
+  let complete!: () => void;
+  const selected = transport.prepareSelectedDataRecording(
+    () =>
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  for (let i = 0; i < 30 && !complete; i++) await Promise.resolve();
+  expect(complete).toBeDefined();
+  await transport.stopRemoteDataRecording();
+  complete();
+  await expect(selected).rejects.toThrow('Recording stopped');
+  expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('reserves native arming and selected admission ahead of competing ordinary requests', async () => {
+  const transport = await armScopedRecording();
+  await transport.stopRemoteDataRecording();
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValue(119_000);
+  mockIsActive.mockResolvedValue(true);
+  transport.reportDirectRouteFailure(coreUrl);
+  let release!: () => void;
+  const select = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const recording = transport.startRemoteDataRecording(select);
+  const ordinary = transport.remoteControlPortForUrl(`${coreUrl}/projects`, false);
+  for (let i = 0; i < 80 && !release; i++) await Promise.resolve();
+  expect(select).toHaveBeenCalledWith('session');
+  expect(mockStart).not.toHaveBeenCalled();
+  release();
+  await expect(recording).resolves.toBe(119_000);
+  await expect(ordinary).resolves.toBe(4999);
+  expect(mockAdmission).toHaveBeenCalledTimes(1);
+  expect(mockStart).toHaveBeenCalledTimes(1);
+});

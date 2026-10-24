@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(edges.splice(0).map((edge) => edge.close()));
 });
 
-function localEdge() {
+function localEdge(requestTimeoutMs?: number) {
   const edge = new PreviewEdge({
     shareId: 'local-test',
     accessMode: 'local-open',
@@ -22,6 +22,7 @@ function localEdge() {
     sessionSecretHash: hashPreviewSecret('session'),
     publicOrigin: 'http://localhost:8100',
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
   });
   edges.push(edge);
   return edge;
@@ -32,6 +33,46 @@ it('identifies the local edge without a PIN, cookie or connector', async () => {
   const response = await fetch(`http://127.0.0.1:${port}/__verity/health`);
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ shareId: 'local-test' });
+});
+
+it('releases rejected WebSocket dial timers without later timeout frames', async () => {
+  const edge = localEdge(50);
+  const port = await edge.listen(0, '127.0.0.1');
+  const peer = new WebSocket(`ws://127.0.0.1:${port}/__verity/connector`, {
+    headers: { authorization: 'Bearer connector' },
+  });
+  await new Promise<void>((resolve, reject) => {
+    peer.once('open', resolve);
+    peer.once('error', reject);
+  });
+  const timeouts: unknown[] = [];
+  peer.on('message', (data) => {
+    const bytes = Array.isArray(data)
+      ? Buffer.concat(data)
+      : data instanceof ArrayBuffer
+        ? Buffer.from(data)
+        : data;
+    const frame = JSON.parse(bytes.toString()) as { kind: string; streamId: string; code?: string };
+    if (frame.kind === 'stream.open') {
+      peer.send(
+        JSON.stringify({ kind: 'stream.reset', streamId: frame.streamId, code: 'upstream_error' }),
+      );
+    }
+    if (frame.code === 'timeout') timeouts.push(frame);
+  });
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const client = new WebSocket(`ws://127.0.0.1:${port}/socket`);
+      await new Promise<void>((resolve) => client.once('error', () => resolve()));
+    }
+    // Rejected dials must not retain the pending socket until their original deadline.
+    const state = edge as unknown as { activeStreams: number };
+    expect(state.activeStreams).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(timeouts).toEqual([]);
+  } finally {
+    peer.close();
+  }
 });
 
 it('does not redirect local API requests to the public PIN page', async () => {

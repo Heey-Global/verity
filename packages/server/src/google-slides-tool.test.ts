@@ -641,3 +641,57 @@ it('preserves native Slides reads while refusing edits in read-only projects', a
   ).rejects.toThrow('read-only');
   expect(slides.update).not.toHaveBeenCalled();
 });
+
+it('recovers each temporary image with its owning account and never substitutes a connected account', async () => {
+  const fail = vi.fn().mockResolvedValue(undefined);
+  const eventStore = store({
+    failGoogleSlideImageCleanup: fail,
+    listGoogleSlideImageCleanups: vi.fn().mockResolvedValue([
+      {
+        id: 'expired',
+        accountId: 'revoked',
+        fileId: 'expired-image',
+        permissionId: 'public-expired',
+      },
+      { id: 'one', accountId: 'personal', fileId: 'personal-image', permissionId: 'public-one' },
+      { id: 'two', accountId: 'work', fileId: 'work-image', permissionId: 'public-two' },
+      { id: 'three', accountId: null, fileId: 'orphan', permissionId: 'public-three' },
+      { id: 'four', accountId: 'removed', fileId: 'removed-image', permissionId: 'public-four' },
+    ]),
+  });
+  const googleAccessToken = vi.fn(async (accountId?: string) => {
+    if (accountId === 'revoked') throw new Error('refresh revoked');
+    return accountId === 'personal'
+      ? 'personal-token'
+      : accountId === 'work'
+        ? 'work-token'
+        : undefined;
+  });
+  const drive = {
+    upload: vi.fn(),
+    share: vi.fn(),
+    deletePermission: vi.fn().mockResolvedValue(undefined),
+    deleteFile: vi.fn().mockResolvedValue(undefined),
+  };
+  const tool = createGoogleSlidesTool({
+    eventStore,
+    googleAccessToken,
+    drive,
+    cleanupIntervalMs: 2_147_483_647,
+  });
+  try {
+    await tool.recover();
+    expect(fail).toHaveBeenCalledWith('expired', 'refresh revoked');
+    expect(drive.deletePermission.mock.calls).toEqual([
+      ['personal-token', 'personal-image', 'public-one'],
+      ['work-token', 'work-image', 'public-two'],
+    ]);
+    expect(drive.deleteFile.mock.calls).toEqual([
+      ['personal-token', 'personal-image'],
+      ['work-token', 'work-image'],
+    ]);
+    expect(googleAccessToken).not.toHaveBeenCalledWith(undefined);
+  } finally {
+    tool.close();
+  }
+});

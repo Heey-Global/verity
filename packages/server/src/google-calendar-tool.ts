@@ -1,11 +1,15 @@
 import {
+  resolveGoogleServiceCredential,
+  type GoogleServiceCredentialStore,
+} from './google-service-credentials.js';
+import {
   googleCalendarRequestSchema,
   invokeGoogleCalendarApi,
   type GoogleCalendarRequest,
 } from './google-calendar.js';
 import type { WorkspaceInvocationInput } from './google-workspace-tool-types.js';
 
-export interface GoogleCalendarToolStore {
+export interface GoogleCalendarToolStore extends GoogleServiceCredentialStore {
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getSessionCalendarConnection(
     sessionId: string,
@@ -33,11 +37,26 @@ export function googleCalendarHasStandingAuthorization(request: unknown): boolea
 }
 export function createGoogleCalendarTool(deps: {
   eventStore: GoogleCalendarToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   calendar?: (token: string, request: GoogleCalendarRequest) => Promise<unknown>;
 }): { invoke(input: WorkspaceInvocationInput): Promise<unknown> } {
   const authorized = async (input: WorkspaceInvocationInput) => {
     const session = await deps.eventStore.getSession(input.sessionId);
+    if (deps.eventStore.getGoogleServiceCredentials) {
+      if (session?.projectId !== input.projectId)
+        throw new Error('Google access is restricted to the calling session');
+      const credential = await resolveGoogleServiceCredential(
+        deps.eventStore,
+        input.sessionId,
+        'calendar',
+      );
+      return {
+        credentialVersion: credential.credentialVersion,
+        accountId: credential.accountId,
+        email: credential.accountEmail,
+        refreshToken: credential.refreshToken,
+      };
+    }
     const connection = await deps.eventStore.getSessionCalendarConnection(input.sessionId);
     const settings = await deps.eventStore.getVeritySettings();
     if (
@@ -60,7 +79,7 @@ export function createGoogleCalendarTool(deps: {
     async invoke(input) {
       const credential = await authorized(input);
       const request = googleCalendarRequestSchema.parse(input.request);
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(credential.accountId);
       if (!token) throw new Error('Google Calendar is not connected');
       const mutation = !googleCalendarHasStandingAuthorization(request);
       if (mutation) {
@@ -75,7 +94,9 @@ export function createGoogleCalendarTool(deps: {
       const current = await authorized(input);
       if (
         current.email.toLowerCase() !== credential.email.toLowerCase() ||
-        current.refreshToken !== credential.refreshToken
+        current.refreshToken !== credential.refreshToken ||
+        current.accountId !== credential.accountId ||
+        current.credentialVersion !== credential.credentialVersion
       )
         throw new Error('The connected Google account changed during this operation');
       const result = await (deps.calendar ?? invokeGoogleCalendarApi)(token, request);

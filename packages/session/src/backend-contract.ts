@@ -33,6 +33,8 @@ export interface SpawnOptions {
    * stdin is closed right after the initial write.
    */
   keepStdinOpen?: boolean;
+  /** Require the broker's filesystem boundary before starting a planning agent. */
+  planning?: boolean;
 }
 
 export interface SpawnedProcess {
@@ -272,6 +274,8 @@ export interface RunResult {
    * missing persisted transcript events.
    */
   failedBeforeExecution?: true;
+  /** Agent output or tool execution was observed; automatic prompt replay is unsafe. */
+  executionObserved?: true;
   /**
    * True only when the backend was asked to resume a conversation and the AGENT
    * ANSWERED that request with an error — the session this turn is bound to is not

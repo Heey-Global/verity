@@ -23,6 +23,9 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 );
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+// The app's own box shares the screen and says "Up to date" too; it has its own
+// suite (settings-app-update.test.tsx), so this one sees only the server.
+jest.mock('../components/settings/AppUpdateSection', () => ({ AppUpdateSection: () => null }));
 
 import ServerUpdateScreen from '../app/settings/server-update';
 import ServerUpdateChannelScreen from '../app/settings/server-update-channel';
@@ -452,7 +455,7 @@ describe('settings/server-update', () => {
     );
     // Once accepted, the panel reports progress instead of offering the action
     // again — a second press would race the operation already running.
-    expect(await screen.findByText('Step 1 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 1 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
@@ -529,7 +532,7 @@ describe('settings/server-update', () => {
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
-    expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 2 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
@@ -571,7 +574,7 @@ describe('settings/server-update', () => {
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
-    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(await screen.findByText('Up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
@@ -612,7 +615,7 @@ describe('settings/server-update', () => {
       for (const refresh of [...mockLiveRefresh]) await refresh();
     });
 
-    expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
+    expect(await screen.findByText('Up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     jest.useRealTimers();
   });
@@ -668,7 +671,7 @@ describe('settings/server-update', () => {
       for (const refresh of [...mockLiveRefresh]) await refresh();
     });
 
-    expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
+    expect(await screen.findByText(/· step 2 of 14$/)).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
     jest.useRealTimers();
   });
@@ -834,7 +837,7 @@ describe('server update channel selection', () => {
         jest.advanceTimersByTime(2_000);
       });
       await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeChecked());
-      expect(screen.queryByText('Verity is up to date')).toBeNull();
+      expect(screen.queryByText('Up to date')).toBeNull();
     } finally {
       jest.useRealTimers();
     }
@@ -944,4 +947,123 @@ describe('server update channel selection', () => {
       expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1);
     },
   );
+});
+
+// The incident this screen was rebuilt for: 4.52.0 committed, its companion step
+// stuck on an image pull, 4.52.1 published meanwhile — and the old panel showed
+// an endless "Activating" spinner with no way out but a host restart.
+describe('stuck server update', () => {
+  const NEWER = {
+    version: '4.52.1',
+    serverImage: `ghcr.io/heey-global/verity/verity-server@sha256:${'c'.repeat(64)}`,
+    publishedAt: '2026-10-21T00:00:00.000Z',
+  };
+  const stuck = {
+    state: 'available',
+    release: NEWER,
+    operation: {
+      updateId: 'update-155',
+      state: 'activating',
+      phase: 'reconciling-companions',
+      step: 15,
+      totalSteps: 16,
+      generation: 155,
+      previousDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+      targetDigest: SERVER_IMAGE,
+      failureCode: null,
+      startedAt: '2026-10-20T21:31:00.000Z',
+      updatedAt: '2026-10-20T21:42:00.000Z',
+    },
+    installed: { version: '4.52.0', generation: 155 },
+    stalled: true,
+    recovery: { retry: true, supersede: true },
+    attempt: {
+      updateId: 'update-155',
+      failures: 12,
+      lastAttemptAt: '2026-10-21T11:55:00.000Z',
+      lastError: { phase: 'reconciling-companions', cause: 'network-timeout' },
+    },
+  };
+
+  it('shows the installed version, the stuck update and the newer release separately', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getServerUpdates: jest.fn().mockResolvedValue(stuck) }),
+    );
+    render(<ServerUpdateScreen />);
+
+    expect(await screen.findByText('Update to 4.52.0 did not finish')).toBeOnTheScreen();
+    expect(screen.getByText('Version 4.52.0')).toBeOnTheScreen();
+    // The server's box names its state once, on its head, for both blocks below.
+    expect(screen.getByText('Stuck')).toBeOnTheScreen();
+    // The Updater's generation counter means nothing to the person reading this.
+    expect(screen.queryByText(/Generation/)).toBeNull();
+    expect(screen.getByText('Updating companions · step 15 of 16')).toBeOnTheScreen();
+    expect(screen.getByText('Updating companions failed: network timeout')).toBeOnTheScreen();
+    expect(screen.getByText('Version 4.52.1 available')).toBeOnTheScreen();
+    // No spinner pretending the stuck operation is still switching over.
+    expect(screen.queryByText(/Switching over/)).toBeNull();
+    expect(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/)).toBeEnabled();
+    expect(screen.getByLabelText(/^Install 4\.52\.1(,|$)/)).toBeEnabled();
+  });
+
+  it('resumes the stuck operation by its id', async () => {
+    const retryServerUpdate = jest.fn().mockResolvedValue(stuck.operation);
+    const getServerUpdates = jest.fn().mockResolvedValue(stuck);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { getServerUpdates, retryServerUpdate }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+    await waitFor(() => expect(retryServerUpdate).toHaveBeenCalledWith('update-155'));
+    // The screen re-reads what the Updater is doing instead of assuming.
+    await waitFor(() => expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByText('Could not retry the update.')).toBeNull();
+  });
+
+  // Retries are paced; a refused one must not look like a tap that did nothing.
+  it('explains a retry refused because one is already running', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest.fn().mockResolvedValue(stuck),
+        retryServerUpdate: jest
+          .fn()
+          .mockRejectedValue(new VerityApiError(409, 'operation-in-progress')),
+      }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+    expect(
+      await screen.findByText('A retry is already running. Check back in a minute.'),
+    ).toBeOnTheScreen();
+  });
+
+  it('installs the newer release as a new request', async () => {
+    const requestServerUpdate = jest.fn().mockResolvedValue({
+      ...stuck.operation,
+      updateId: 'update-156',
+      state: 'preparing',
+      phase: 'requested',
+      step: 1,
+      generation: 156,
+      targetDigest: NEWER.serverImage,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates: jest.fn().mockResolvedValue(stuck),
+        requestServerUpdate,
+      }),
+    );
+    render(<ServerUpdateScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Install 4\.52\.1(,|$)/));
+    await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
+    const sent = requestServerUpdate.mock.calls[0]?.[0] as {
+      targetDigest: string;
+      idempotencyKey: string;
+    };
+    expect(sent.targetDigest).toBe(NEWER.serverImage);
+    expect(sent.idempotencyKey).toContain('g155');
+  });
 });

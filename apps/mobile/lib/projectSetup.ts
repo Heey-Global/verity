@@ -97,16 +97,18 @@ export interface ProjectOverviewStatus {
  * points of width. So the order below is a priority, not a layout, and whatever
  * wins is the only thing the row shows.
  *
- * The first branch is what makes the row agree with its own dot: if the badge
- * pulses, Verity is doing something to this container, and the badge's label is
- * exactly what that pulsing magenta dot means. Nothing else may speak over it —
- * a background finding is not more urgent than the transition in flight, and it
- * is still there afterwards.
+ * Vulnerability findings take priority over lifecycle and other status lines.
  */
 export function projectOverviewStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
 ): ProjectOverviewStatus | undefined {
+  const vulnerabilities = project.vulnerabilitySummary;
+  if (vulnerabilities && vulnerabilities.count > 0) {
+    const count = vulnerabilities.count;
+    const label = `${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'}`;
+    return { label, tone: 'attention' };
+  }
   const badge = projectBadge(project);
   // Before the pulse, not after. A failed project explains itself — the
   // reconciler writes an operator-facing reason ("Sandbox container stopped —

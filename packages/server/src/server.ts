@@ -1,3 +1,21 @@
+import { createVulnerabilityTool } from './vulnerability-tool.js';
+import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
+import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
+import { startVulnerabilityPush } from './vulnerability-push.js';
+import {
+  createVulnerabilitySessionMonitor,
+  type VulnerabilitySummary,
+} from './vulnerability-session.js';
+import { createVulnerabilityScanService } from './vulnerability-scan.js';
+import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
+import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
+import {
+  googleAccountSettingsStatus,
+  googleApprovalAccount,
+} from './google-account-presentation.js';
+import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
+import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
+import { resolveGoogleServiceCredential } from './google-service-credentials.js';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
@@ -126,6 +144,7 @@ import {
   createClaudeOAuthTokenProvider,
   createClaudeUsageService,
   type ClaudeOAuthTokenProvider,
+  type ClaudeCredentialStatus,
   type ClaudeUsageService,
 } from './claudeUsage.js';
 import {
@@ -253,13 +272,15 @@ import {
   type GitOutput,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
-import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
+import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
+import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
+import { registerGoogleConnectRoutes } from './google-connect-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerWebAppRoutes, isWebAppRequest } from './web-app.js';
@@ -288,6 +309,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerProjectRepoRoute, type ProjectRepository } from './project-repo-route.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import {
   appendProjectOverview,
@@ -355,7 +377,7 @@ import {
   type ProjectRecord,
   type SessionAutomationStatus,
 } from '@verity/store';
-import { parseOwnerRepo } from './canonical.js';
+import { parseOwnerRepo, parseForgejoRepository } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import {
@@ -670,6 +692,7 @@ type PublicVeritySettingsRecord = Omit<
   sandboxAutoUpdateSecurity: boolean;
   sandboxAutoUpdateNormal: boolean;
   claudeCodeOauthCredentialsConfigured: boolean;
+  claudeCredentialStatus?: ClaudeCredentialStatus;
   codexAuthJsonConfigured: boolean;
   /** Plan labels derived from the stored logins (`agent-subscription.ts`). */
   claudeSubscriptionPlan: string | null;
@@ -745,6 +768,7 @@ export interface PublicProjectRecord extends Omit<
   latestReleaseName: string | null;
   latestReleaseUrl: string | null;
   latestReleasePublishedAt: string | null;
+  vulnerabilitySummary?: VulnerabilitySummary | undefined;
   sandboxUpdate: SandboxUpdateStatus;
   /** Whether this project's recorded attestation verdict still holds against the
    *  toolkit this Server ships — `null` for every row the drift report declines
@@ -1320,7 +1344,7 @@ export interface ServerDeps {
    * unparseable origin), omits owner/repo so the chips degrade to non-tappable. Never
    * throws into the branches list — a rejection degrades to omitting the fields.
    */
-  repoIdentity?: (worktree: string) => Promise<GitHubIdentity | null>;
+  repoIdentity?: (worktree: string) => Promise<ForgeRepoRef | null>;
   /**
    * Account-global Claude quota probe (the undocumented `/api/oauth/usage`
    * endpoint the Claude apps use), surfaced via `GET /provider-limits` so the
@@ -1390,6 +1414,7 @@ export interface ServerDeps {
    * making the overview look like every repo has been created.
    */
   listAvailableRepositories?: () => Promise<ProjectRecord[]>;
+  forgejoEnabled?: boolean;
   listProjectGitHubIssues?: (project: ProjectRecord) => Promise<ProjectGitHubIssues>;
   /**
    * Provisioning worker (concept §19.3, #174). When `POST /sessions { project }`
@@ -1506,11 +1531,16 @@ export interface ServerDeps {
    *  together with {@link ServerDeps.ghTokenMint}, the route is registered +
    *  pre-auth-allowlisted; otherwise no token-broker route is exposed. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** The code host behind a repository project, for the sandbox `verity-repo` tool. */
+  projectRepository?:
+    ((project: ProjectRecord) => Promise<ProjectRepository | undefined>) | undefined;
   /** Check live Drive ancestry before granting automatic document URL reads. */
   googleDriveDocumentIsWithinProject?: (input: {
     projectId: string;
     sessionId: string;
     url: string;
+    accountId?: string | undefined;
+    folderLinkId?: string | undefined;
   }) => Promise<boolean>;
   /**
    * The loopback MCP gateway's dependencies, minus its approval seam (ADR 0014 D1). When
@@ -2744,14 +2774,24 @@ function buildPullRequestCiFailureDisplayPrompt(number: number): string {
   return `Fix failing CI for PR #${String(number)}`;
 }
 
-function buildPullRequestCiFailurePrompt(pr: PullRequestStatus): string {
+/** Only GitHub sessions can read check runs and their logs (`gh`); `verity-repo`
+ * exposes none, so a repair turn on another host that asks for them sends the
+ * agent improvising with tools that have no credentials there. */
+function readsCheckLogs(host: string): boolean {
+  return host === 'GitHub';
+}
+
+const LOCAL_CHECKS_INSTRUCTION =
+  "Check logs cannot be read from this sandbox, so find the failing jobs in the repository's CI workflow files and reproduce them locally.";
+
+function buildPullRequestCiFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
   return appendExternalPromptData(
-    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks${readsCheckLogs(host) ? '' : ` (${LOCAL_CHECKS_INSTRUCTION})`}, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2773,18 +2813,18 @@ function buildPostMergeActionsFailureDisplayPrompt(number: number): string {
  * surprising and may target the wrong branch, so this turn is deliberately
  * diagnostic: collect the concrete failed runs and logs once, then put an actionable
  * decision back in the chat. */
-function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus): string {
+function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus, host: string): string {
   const failed = pr.checks.failed;
   const total = pr.checks.total;
   const checks =
-    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : 'GitHub Actions failed';
+    total > 0 ? `${String(failed)}/${String(total)} Actions failed` : `${host} Actions failed`;
   return appendExternalPromptData(
     `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. ${readsCheckLogs(host) ? `Inspect the concrete failed ${host} Actions runs and their logs with one-time REST reads;` : `${LOCAL_CHECKS_INSTRUCTION} Run them against the merged base branch;`} do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
 Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title },
   );
 }
@@ -2809,11 +2849,11 @@ function buildPullRequestConflictDisplayPrompt(number: number): string {
  * `pull_request` workflows never start and CI reports nothing to react to. The prompt
  * therefore names the conflict explicitly — the session cannot infer it from a check
  * run, because there is none. */
-function buildPullRequestConflictPrompt(pr: PullRequestStatus): string {
+function buildPullRequestConflictPrompt(pr: PullRequestStatus, host: string): string {
   const base = pr.baseRef ?? 'the base branch';
   return appendExternalPromptData(
-    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so GitHub cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
-    `GitHub pull request #${String(pr.number)}`,
+    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so ${host} cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
+    `${host} pull request #${String(pr.number)}`,
     { title: pr.title, baseRef: base },
   );
 }
@@ -3435,8 +3475,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return true;
   };
-  const afterProjectProvision = async (projectId: string): Promise<void> => {
+  const afterProjectProvision = async (
+    projectId: string,
+    scanAfterStart = false,
+  ): Promise<void> => {
     if (await discardProvisionOfDeletedProject(projectId)) return;
+    if (scanAfterStart) {
+      void scanStartedProjectIfNeeded(projectId, {
+        store: deps.eventStore.vulnerabilityScans,
+        getProject: (id) => deps.eventStore.getProject(id),
+        service: vulnerabilityService,
+      }).catch((error: unknown) =>
+        app.log.warn({ err: error, projectId }, 'Vulnerability scan after project start failed'),
+      );
+    }
   };
   /** Settle a provision the caller is not waiting on (the routes answer `202` and
    *  let the worker clone and build in the background). Either outcome ends at
@@ -3449,7 +3501,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onError: (error: unknown) => void,
   ): void => {
     void provision.then(
-      () => afterProjectProvision(projectId),
+      () => afterProjectProvision(projectId, true),
       async (error: unknown) => {
         onError(error);
         await discardProvisionOfDeletedProject(projectId);
@@ -3674,6 +3726,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // would otherwise resolve the channel and send into a closing PushSender.
     await serverUpdateNotifier?.close();
     await pushFirePoints?.close();
+    await vulnerabilityPush?.stop();
     await pushSender?.close();
   });
   // P0b: on graceful shutdown, mark any in-flight turn `interrupted` before the
@@ -3781,6 +3834,99 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     automationScheduler.stop();
   });
 
+  const vulnerabilityService = createVulnerabilityScanService({
+    store: deps.eventStore.vulnerabilityScans,
+    getProject: (id) => deps.eventStore.getProject(id),
+    getSession: (id) => deps.eventStore.getSession(id),
+    sessionPath: (session, project) => {
+      if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
+      return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
+    },
+    canWakeSleeping: canWakeForScan(deps.provisioner),
+    ...(deps.provisioner?.projectSandboxLastActivityAt &&
+    deps.provisioner.tryBeginProjectSandboxActivity &&
+    deps.provisioner.endProjectSandboxActivity
+      ? {
+          acquireSandbox: vulnerabilitySandboxLease({
+            provisioner: deps.provisioner,
+            getProject: (id) => deps.eventStore.getProject(id),
+            warn: (error) =>
+              app.log.warn({ err: error }, 'Vulnerability scan sandbox restoration failed'),
+          }),
+        }
+      : {}),
+    beginActivity: (id) => {
+      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
+      return () => deps.provisioner?.endProjectSandboxActivity?.(id);
+    },
+    ...(deps.projectRuntime?.runAutomationScript
+      ? {
+          runScript: (project: ProjectRecord, script: string) =>
+            deps.projectRuntime!.runAutomationScript!(project, emptyProjectSettings(project.id), {
+              workdir: '/work',
+              script,
+              timeoutMs: 120_000,
+              maxOutputBytes: 8 * 1024 * 1024,
+            }),
+        }
+      : {}),
+    changed: (id, sessionId) => {
+      resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
+      if (sessionId)
+        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/vulnerability-scan`);
+      void vulnerabilitySessions.rebuild();
+    },
+  });
+  const vulnerabilitySessions = createVulnerabilitySessionMonitor({
+    store: deps.eventStore.vulnerabilityScans,
+    service: vulnerabilityService,
+    getSession: (id) => deps.eventStore.getSession(id),
+    listSessions: () => deps.eventStore.listSessions(),
+    isBusy: (id) => conductor.isBusy(id),
+    changed: () => {
+      resources.invalidate('/sessions');
+      resources.invalidate('/projects');
+    },
+    warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
+  });
+  void vulnerabilitySessions.rebuild();
+  const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
+    if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
+  });
+  const vulnerabilityPush = pushSender
+    ? startVulnerabilityPush({
+        store: deps.eventStore,
+        sender: pushSender,
+        warn: (err) => app.log.warn({ err }, 'Vulnerability push failed'),
+      })
+    : undefined;
+
+  const presentProject = (...args: Parameters<typeof publicProject>): PublicProjectRecord => ({
+    ...publicProject(...args),
+    vulnerabilitySummary: vulnerabilitySessions.projects.get(args[0].id),
+  });
+  const vulnerabilityScheduler = startVulnerabilityScheduler({
+    store: deps.eventStore.vulnerabilityScans,
+    listProjects: () => deps.eventStore.listProjects(),
+    scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
+    accepts: (project) => vulnerabilityService.accepts(project),
+    log: app.log,
+  });
+  registerVulnerabilityRoutes(app, {
+    eventStore: deps.eventStore,
+    service: vulnerabilityService,
+    settingsChanged: () => {
+      vulnerabilityScheduler.wake();
+      void vulnerabilitySessions.rebuild();
+    },
+  });
+  app.addHook('onClose', async () => {
+    vulnerabilityScheduler.stop();
+    unsubscribeVulnerabilityTurns();
+    await vulnerabilitySessions.stop();
+    await vulnerabilityService.stop();
+  });
+
   // SBX-1 helper: is any session bound to this project running a turn right now?
   // Used to refuse tearing a sandbox out from under an in-flight turn.
   const isProjectBusy = async (
@@ -3882,7 +4028,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
      * again against the freshly re-read status before the turn is dispatched. */
     applies(pr: PullRequestStatus): boolean;
     key(sessionId: string, pr: PullRequestStatus): string;
-    prompt(pr: PullRequestStatus): string;
+    /** `host` names the project's code host (`GitHub`, `Forgejo`) in the turn. */
+    prompt(pr: PullRequestStatus, host: string): string;
     displayPrompt(number: number): string;
   }
   const CI_FAILURE_REPAIR: PullRequestRepairKind = {
@@ -3905,6 +4052,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     key: postMergeActionsFailureKey,
     prompt: buildPostMergeActionsFailurePrompt,
     displayPrompt: buildPostMergeActionsFailureDisplayPrompt,
+  };
+  // Repair turns name the code host the agent has to act on; a Forgejo PR
+  // described as a GitHub one sends the agent to the wrong tools.
+  const codeHostName = async (session: SessionRecord): Promise<string> => {
+    if (session.projectId === null) return 'GitHub';
+    const project = await deps.eventStore.getProject(session.projectId).catch(() => undefined);
+    return project?.kind === 'forgejo' ? 'Forgejo' : 'GitHub';
   };
   const scheduledPrRepairTurns = new Set<string>();
   const maybeDispatchPrRepairTurn = async (
@@ -3945,7 +4099,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (!fresh) return;
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
-            repair.prompt(latest),
+            repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
@@ -4028,7 +4182,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
   // Real git worktree when injected (deployment); else an empty scratch dir.
   const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
-  const dbClaudeOAuthTokenProvider = hasVeritySettingsStore(deps.eventStore)
+  const dbClaudeOAuthTokenProvider: ClaudeOAuthTokenProvider = hasVeritySettingsStore(
+    deps.eventStore,
+  )
     ? createClaudeOAuthTokenProvider({
         env: {},
         credentialsPath: '/dev/null',
@@ -4422,17 +4578,34 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (
         !body ||
         typeof body !== 'object' ||
-        Object.keys(body).length !== 2 ||
+        Object.keys(body).some(
+          (key) => !['runId', 'durationMs', 'diagnosticsVersion', 'targetSessionId'].includes(key),
+        ) ||
+        (body.diagnosticsVersion !== undefined &&
+          body.diagnosticsVersion !== 1 &&
+          body.diagnosticsVersion !== 2 &&
+          body.diagnosticsVersion !== 3) ||
         typeof body.runId !== 'string' ||
-        typeof body.durationMs !== 'number'
+        typeof body.durationMs !== 'number' ||
+        (body.targetSessionId !== undefined && typeof body.targetSessionId !== 'string')
       )
         throw new Error('invalid_recording');
-      return manager.start(body.runId, body.durationMs);
+      return manager.start(
+        body.runId,
+        body.durationMs,
+        body.diagnosticsVersion,
+        body.targetSessionId,
+      );
     }),
   );
   app.get('/api/remote-control/recordings/:runId', async (request, reply) =>
     recordingRequest(request, reply, (manager) =>
-      manager.status((request.params as { runId: string }).runId),
+      manager.refreshStatus((request.params as { runId: string }).runId),
+    ),
+  );
+  app.get('/api/remote-control/recordings/:runId/selection', async (request, reply) =>
+    recordingRequest(request, reply, (manager) =>
+      manager.selectedStatus((request.params as { runId: string }).runId),
     ),
   );
   app.delete('/api/remote-control/recordings/:runId', async (request, reply) =>
@@ -5249,6 +5422,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
+      newVulnerabilities: vulnerabilitySessions.attention.get(session.sessionId),
       projectId: session.projectId,
       disconnectedSandboxProjects:
         deps.provisioner?.disconnectedSandboxProjects?.() ?? NO_DISCONNECTED_SANDBOXES,
@@ -5412,12 +5586,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     storeAgentCredentials,
-    publicSettings: (settings, request) =>
-      publicVeritySettings(
+    publicSettings: async (settings, request) => ({
+      ...publicVeritySettings(
         settings,
         googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
+      ...(await googleAccountSettingsStatus(deps.eventStore)),
+      claudeCredentialStatus: (
+        deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
+      ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
+        state: 'unknown',
+        code: null,
+      },
+    }),
     effectiveTranscription: effectiveExternalTranscription,
     transcriptionConfigured: externalMeetingTranscriptionConfigured,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
@@ -5444,6 +5626,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerGoogleConnectRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
+    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
+      : {}),
+  });
+  registerForgeConnectionRoutes(
+    app,
+    deps.eventStore,
+    async () => {
+      const projects = deps.listAvailableRepositories
+        ? await deps.listAvailableRepositories()
+        : await deps.eventStore.listProjects({ includeHidden: true });
+      return projects
+        .filter((project) => project.kind === 'github')
+        .map((project) => ({ owner: project.owner, repo: project.repo }));
+    },
+    deps.forgejoEnabled === true,
+  );
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
@@ -5451,27 +5655,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
   registerGoogleCalendarRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
   registerGoogleContactsRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
@@ -5560,6 +5755,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  if (deps.ghTokenCapabilities !== undefined && deps.projectRepository !== undefined) {
+    registerProjectRepoRoute(app, {
+      capabilities: deps.ghTokenCapabilities,
+      getProject: (projectId) => deps.eventStore.getProject(projectId),
+      repositoryFor: deps.projectRepository,
+    });
+  }
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
       ? {}
@@ -6102,6 +6304,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
+    const vulnerabilityTool = createVulnerabilityTool({
+      store: deps.eventStore,
+      service: vulnerabilityService,
+      requireUser: () => deps.authRegistry?.isEnabled() === true,
+      isPlanningTurn: (id) => conductor.isPlanningTurn?.(id) === true,
+      warn: (err) => app.log.warn({ err }, 'Agent vulnerability scan failed'),
+    });
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -6111,6 +6320,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize(input);
+          return;
+        }
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
@@ -6176,24 +6389,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (toolName === 'verity_google_drive') {
           const session = await deps.eventStore.getSession(sessionId);
-          const settings = await deps.eventStore.getProjectSettings(projectId);
-          const globalSettings = await deps.eventStore.getVeritySettings();
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
           const driveRequest = googleDriveRequestSchema.parse(input.request);
+          if (driveRequest.action === 'capabilities' && !driveRequest.folderLinkId) return;
+          const authority = await resolveGoogleDriveAuthority(
+            deps.eventStore,
+            projectId,
+            driveRequest,
+          );
           if (
-            session?.projectId !== projectId ||
-            (driveRequest.action !== 'read_document_url' && !settings?.googleDriveFolderId) ||
-            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          ) {
-            throw new ControlPlaneSessionAuthorityError(
-              'Google Drive requires a folder connected to the calling project',
-            );
-          }
-          if (
-            googleDriveIsMutation(googleDriveRequestSchema.parse(input.request)) &&
-            settings?.googleDriveAccessMode === 'read-only'
+            googleDriveIsMutation(driveRequest) &&
+            authority.googleDriveAccessMode === 'read-only'
           )
             throw new ControlPlaneSessionAuthorityError(
-              'This project has read-only Google Drive access',
+              'This project folder has read-only Google Drive access',
             );
           return;
         }
@@ -6207,37 +6417,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           if (toolName === 'verity_google_contacts') {
-            const connection = await deps.eventStore.getSessionContactsConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session?.projectId !== projectId ||
-              connection === undefined ||
-              settings?.contactsAuthorized !== true ||
-              !settings.googleDriveRefreshToken?.trim() ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Google Contacts requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
             return;
           }
           if (toolName === 'verity_google_calendar') {
-            const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session?.projectId !== projectId ||
-              connection === undefined ||
-              settings?.calendarAuthorized !== true ||
-              !settings.googleDriveRefreshToken?.trim() ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Google Calendar requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
             return;
           }
           if (toolName === 'verity_gmail') {
@@ -6249,23 +6441,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ) {
               assertSafeGmailSendSnapshot(input.request as unknown as GmailDraftSendSnapshot);
             }
-            const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session === undefined ||
-              session.projectId !== projectId ||
-              connection === undefined ||
-              settings?.gmailAuthorized !== true ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Gmail requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
             return;
           }
-          const projectSettings = await deps.eventStore.getProjectSettings(projectId);
           const action = (input.request as { action?: string }).action;
           const writing =
             toolName === 'verity_google_docs'
@@ -6273,28 +6455,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               : toolName === 'verity_google_slides'
                 ? action === 'edit' || action === 'insert_image'
                 : ['write_range', 'clear_range', 'structural_edit'].includes(action ?? '');
-          if (
-            writing &&
-            projectSettings?.googleDriveFolderId &&
-            projectSettings.googleDriveAccessMode === 'read-only'
-          )
-            throw new ControlPlaneSessionAuthorityError(
-              'This project has read-only Google Drive access',
-            );
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
-          const globalSettings = await deps.eventStore.getVeritySettings();
+
           if (
             session === undefined ||
             session.projectId !== projectId ||
             file === undefined ||
+            !file.accountId ||
             file.kind !== expectedKind
           ) {
             throw new ControlPlaneSessionAuthorityError(
               'Google Workspace requires a matching file assigned to the calling session',
             );
           }
-          if (!hasGoogleWorkspaceScope(globalSettings?.googleGrantedScopes, file.kind)) {
+          if (writing) await assertWorkspaceWritePermission(deps.eventStore, projectId, file);
+          const account = file.accountId
+            ? await deps.eventStore.googleAccounts.get(file.accountId)
+            : undefined;
+          if (!account || !hasGoogleWorkspaceScope(account.scopes, file.kind)) {
             throw new ControlPlaneSessionAuthorityError(
               `Google ${expectedKind} needs additional permission. Open this native file for editing in the Google Drive picker to grant access to its file type.`,
             );
@@ -6340,6 +6519,46 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
+      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+        const service =
+          toolName === 'verity_gmail'
+            ? 'gmail'
+            : toolName === 'verity_google_calendar'
+              ? 'calendar'
+              : toolName === 'verity_google_contacts'
+                ? 'contacts'
+                : undefined;
+        if (service)
+          return JSON.stringify(
+            await deps.eventStore.googleAccounts.authorizationSnapshot(sessionId, service),
+          );
+        if (toolName === 'verity_google_drive') {
+          const parsed = googleDriveRequestSchema.parse(request);
+          if (parsed.action === 'capabilities') return undefined;
+          return JSON.stringify(
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed),
+          );
+        }
+        if (
+          ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(toolName)
+        ) {
+          const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
+          if (!file?.accountId) throw new Error('No Google account is assigned');
+          const account = await deps.eventStore.googleAccounts.get(file.accountId);
+          const link = file.folderLinkId
+            ? (await deps.eventStore.googleAccounts.folders(projectId)).find(
+                (candidate) => candidate.id === file.folderLinkId,
+              )
+            : undefined;
+          return JSON.stringify({
+            assignmentId: file.assignmentId,
+            accountId: account?.id,
+            credentialVersion: account?.credentialVersion,
+            folder: link,
+          });
+        }
+        return undefined;
+      },
       hasStandingAuthorization: async ({
         turnId,
         projectId,
@@ -6348,6 +6567,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
+          return true;
+        }
         if (toolName === 'verity_matrix') {
           return (
             matrixRequestSchema.parse(request).action !== 'send' &&
@@ -6406,24 +6629,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (toolName === 'verity_google_drive') {
           if (!googleDriveHasStandingAuthorization(request)) return false;
-          const session = await deps.eventStore.getSession(sessionId);
-          const settings = await deps.eventStore.getProjectSettings(projectId);
-          const globalSettings = await deps.eventStore.getVeritySettings();
-          if (
-            session?.projectId !== projectId ||
-            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          )
-            return false;
+          if ((await deps.eventStore.getSession(sessionId))?.projectId !== projectId) return false;
           const driveRequest = googleDriveRequestSchema.parse(request);
+          if (driveRequest.action === 'capabilities') return true;
+          try {
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, driveRequest);
+          } catch {
+            return false;
+          }
           if (driveRequest.action === 'read_document_url')
             return (
               (await deps.googleDriveDocumentIsWithinProject?.({
                 projectId,
                 sessionId,
                 url: driveRequest.url,
+                accountId: driveRequest.accountId,
+                folderLinkId: driveRequest.folderLinkId,
               })) ?? false
             );
-          return Boolean(settings?.googleDriveFolderId);
+          return true;
         }
         if (
           toolName !== 'verity_google_slides' &&
@@ -6438,47 +6662,44 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (session === undefined || session.projectId !== projectId) return false;
         if (toolName === 'verity_google_contacts') {
           if (!googleContactsHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionContactsConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.contactsAuthorized === true &&
-            Boolean(settings.googleDriveRefreshToken?.trim()) &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            return true;
+          } catch {
+            return false;
+          }
         }
         if (toolName === 'verity_google_calendar') {
           if (!googleCalendarHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.calendarAuthorized === true &&
-            Boolean(settings.googleDriveRefreshToken?.trim()) &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            return true;
+          } catch {
+            return false;
+          }
         }
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.gmailAuthorized === true &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            return true;
+          } catch {
+            return false;
+          }
         }
         const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
-        const globalSettings = await deps.eventStore.getVeritySettings();
-        return (
-          file?.kind === toolName.slice('verity_google_'.length) &&
-          hasGoogleWorkspaceScope(globalSettings?.googleGrantedScopes, file.kind)
+        const account = file?.accountId
+          ? await deps.eventStore.googleAccounts.get(file.accountId)
+          : undefined;
+        return Boolean(
+          file &&
+          account &&
+          file.kind === toolName.slice('verity_google_'.length) &&
+          hasGoogleWorkspaceScope(account.scopes, file.kind),
         );
       },
       invokeTool: async (input) => {
+        if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session?.projectId !== input.projectId)
@@ -6670,13 +6891,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           });
           if (!created) throw new Error('linked message is already awaiting approval');
         }
+        const googleAccount = await googleApprovalAccount(deps.eventStore, {
+          projectId,
+          sessionId,
+          toolName,
+          request: input,
+        });
         let answer;
         try {
           answer = await conductor.requestExternalPermission({
             sessionId,
             toolUseId: callId,
             toolName,
-            input,
+            input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:
@@ -6788,7 +7015,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
     // Neither the control-plane workspace nor a project without a GitHub
     // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project)) {
+    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
       return { project, release: null };
     }
     // Trigger the in-memory release refresh + read its freshest SETTLED value.
@@ -6961,7 +7188,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       )) ?? new Map<string, SandboxUpdateStatus>();
     const verdicts = sandboxRepairVerdicts();
     return resolved.map(({ project, release }) =>
-      publicProject(
+      presentProject(
         project,
         release,
         isControlPlaneProject(project)
@@ -7031,6 +7258,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.invalidateProjectList?.();
       return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
     },
+    forgejoEnabled: deps.forgejoEnabled === true,
     listAvailableRepositories: async () =>
       deps.listAvailableRepositories
         ? deps.listAvailableRepositories()
@@ -7113,7 +7341,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sandboxRepairVerdicts(),
       );
       return {
-        project: publicProject(
+        project: presentProject(
           resolved.project,
           resolved.release,
           sandboxUpdate,
@@ -7138,7 +7366,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // After the last row write in this handler, so no list started in between
       // can memoise a state this request is still about to change.
       deps.invalidateProjectList?.();
-      return publicProject(
+      return presentProject(
         resolved.project,
         resolved.release,
         sandboxUpdate,
@@ -7502,7 +7730,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project.state === 'sleeping') {
         return {
           code: 200,
-          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       }
       if (project.state !== 'active') {
@@ -7512,7 +7740,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const slept = await deps.provisioner.sleepProject(id);
         return {
           code: 200,
-          project: publicProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: project sleep failed');
@@ -7527,11 +7755,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project === undefined || project.hiddenAt !== null) {
         return { code: 404, error: `project ${id} not found` };
       }
-      if (project.state === 'active') {
-        return {
-          code: 200,
-          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
+      if (
+        project.state === 'active' ||
+        (project.state === 'waking' && deps.provisioner.ensureProjectSandboxAwake)
+      ) {
+        // An explicit wake takes ownership from a temporary background scan, also while
+        // that scan's own wake is still in flight: it joins the wake and marks activity,
+        // so the scan does not put the sandbox back to sleep afterwards.
+        try {
+          if (project.state === 'active') {
+            // Only the activity mark matters here, which a scan lease reads as takeover;
+            // the readiness gate is not needed for a sandbox that is already running.
+            const acquired = deps.provisioner.tryBeginProjectSandboxActivity?.(id);
+            if (acquired === false)
+              return { code: 409, error: `project ${id} has a sandbox mutation in progress` };
+            if (acquired) deps.provisioner.endProjectSandboxActivity?.(id);
+            return {
+              code: 200,
+              project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+            };
+          }
+          const awake = (await deps.provisioner.ensureProjectSandboxAwake?.(id)) ?? project;
+          return {
+            code: 200,
+            project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+          };
+        } catch (error) {
+          // A row left in `waking` without a wake in flight (after a restart) stays a conflict.
+          if (project.state === 'waking' && error instanceof ProvisioningError)
+            return { code: 409, error: `project ${id} is ${project.state}` };
+          request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
+          throw error;
+        }
       }
       if (project.state !== 'sleeping') {
         return { code: 409, error: `project ${id} is ${project.state}` };
@@ -7540,7 +7795,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const awake = await deps.provisioner.wakeProject(id);
         return {
           code: 200,
-          project: publicProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+          project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
         };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
@@ -7618,7 +7873,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
   registerProjectGitHubLinkRoute(app, {
     isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
-    link: async (request, reply, id, repository) => {
+    link: async (request, reply, id, repository, connectionId) => {
       const provisioner = deps.provisioner!;
       const project = await deps.eventStore.getProject(id);
       if (project === undefined || project.hiddenAt !== null) {
@@ -7629,10 +7884,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'this project is already backed by a GitHub repository' };
       }
-      const target = parseOwnerRepo(repository);
-      if (target === undefined || target.owner === LOCAL_PROJECT_OWNER) {
+      let parsedTarget = parseOwnerRepo(repository);
+      if (connectionId) {
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (connection?.provider === 'forgejo')
+          parsedTarget = parseForgejoRepository(repository, connection.baseUrl);
+      }
+      if (parsedTarget === undefined || parsedTarget.owner === LOCAL_PROJECT_OWNER) {
         reply.code(400);
         return { error: 'invalid repository' };
+      }
+      const target: {
+        owner: string;
+        repo: string;
+        forgeConnectionId?: string | null;
+        kind?: 'github' | 'forgejo';
+      } = { ...parsedTarget };
+      if (connectionId) {
+        if (
+          !request.localUserId ||
+          !(await deps.eventStore.isActiveAdministrator(request.localUserId))
+        )
+          return reply.code(403).send({ error: 'administrator required' });
+        const connection = await deps.eventStore.forgeConnections.get(connectionId);
+        if (!connection) return reply.code(404).send({ error: 'connection not found' });
+        if (connection.provider === 'github' && connection.id !== 'legacy-github')
+          return reply
+            .code(400)
+            .send({ error: 'only the existing GitHub App connection is supported' });
+        if (connection.provider === 'forgejo' && !deps.forgejoEnabled)
+          return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
+        target.forgeConnectionId = connection.id;
+        target.kind = connection.provider;
       }
       // `(owner, repo)` is UNIQUE, so a taken pair would surface as an opaque DB
       // error AFTER the push already happened. Check first and fail clean.
@@ -7647,6 +7930,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const conflict = (await deps.eventStore.listProjects({ includeHidden: true })).find(
         (candidate) =>
           candidate.id !== project.id &&
+          (candidate.forgeConnectionId ?? 'legacy-github') ===
+            (target.forgeConnectionId ?? 'legacy-github') &&
           candidate.owner === target.owner &&
           candidate.repo === target.repo &&
           !isInstallationPlaceholder(candidate),
@@ -7752,7 +8037,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const reservation = Symbol(localIdentityKey);
       localIdentityLinkReservations.set(localIdentityKey, reservation);
-      const targetKey = `${target.owner}/${target.repo}`;
+      const targetKey = `${target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github' ? `${target.forgeConnectionId}:` : ''}${target.owner}/${target.repo}`;
       if (githubTargetLinkReservations.has(targetKey)) {
         localIdentityLinkReservations.delete(localIdentityKey);
         reply.code(409);
@@ -9193,6 +9478,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
       // a long session with only its tail and fetch older turns on scroll-up, instead
       // of replaying the whole event log. Live updates still arrive over the WS stream.
+      boundedHistory: async (reply, id, beforeSeq, snapshotSeq) => {
+        if (!(await deps.eventStore.getSession(id))) {
+          reply.code(404);
+          return { error: `session ${id} not found` };
+        }
+        return deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq);
+      },
       history: async (reply, id, limit, beforeSeq) => {
         const session = await deps.eventStore.getSession(id);
         if (!session) {
@@ -9385,7 +9677,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     PROJECT_MODEL_ERROR,
     isSleepLifecycleState,
-    publicProject: (project) => publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+    publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
 
@@ -9592,6 +9884,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
   // sibling worktree is developing (#122). 404 unknown session; 503 when no
   // project repo is configured (scratch deployments).
+  /** Null for a project not on Forgejo; 'unknown' for a Forgejo project whose
+   *  connection is gone, so the caller never falls back to the broker remote. */
+  const forgejoWebHost = async (
+    projectId: string | null,
+  ): Promise<{ baseUrl: string; identity: { owner: string; repo: string } } | 'unknown' | null> => {
+    if (projectId === null) return null;
+    const project = await deps.eventStore.getProject(projectId);
+    if (project?.kind !== 'forgejo') return null;
+    if (!project.forgeConnectionId) return 'unknown';
+    const connection = await deps.eventStore.forgeConnections.get(project.forgeConnectionId);
+    if (connection?.provider !== 'forgejo') return 'unknown';
+    return {
+      baseUrl: connection.baseUrl,
+      identity: { owner: project.owner, repo: project.repo },
+    };
+  };
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
@@ -9668,9 +9976,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
       // chips then stay non-tappable rather than failing the branch list.
-      const identity = deps.repoIdentity
+      const remoteIdentity = deps.repoIdentity
         ? await deps.repoIdentity(session.worktree).catch(() => null)
         : null;
+      // A Forgejo project's chips link to its own instance; its origin remote is
+      // the sandbox broker, so the identity comes from the project record.
+      const forgeHost = await forgejoWebHost(session.projectId).catch(() => 'unknown' as const);
+      // Without its connection a Forgejo project's remote is still the broker;
+      // unlinked chips beat links to an unrelated GitHub repository.
+      const identity =
+        forgeHost === 'unknown' ? null : forgeHost === null ? remoteIdentity : forgeHost.identity;
       // A `local` project has no PR strip to merge from, so the cockpit needs to know
       // that merging into the project's base branch is possible here at all, and what
       // that base is called. File changes determine strip visibility; the merge
@@ -9714,6 +10029,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
+        ...(forgeHost !== null && forgeHost !== 'unknown'
+          ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
+          : {}),
         ...(localBase !== null ? { localMerge: { base: localBase, hasChanges } } : {}),
       };
     },

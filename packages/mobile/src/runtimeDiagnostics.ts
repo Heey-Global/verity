@@ -34,7 +34,7 @@ export function runtimeRequestGroup(path: string, method: string): RuntimeReques
     )
   )
     return 'preview';
-  if (/^\/sessions\/[^/]+(?:\/(?:events|activity))?$/.test(pathname)) return 'session';
+  if (/^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/.test(pathname)) return 'session';
   return 'other';
 }
 

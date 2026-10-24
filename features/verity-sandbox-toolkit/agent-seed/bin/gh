@@ -31,4 +31,64 @@ export HTTPS_PROXY="${VERITY_FORGE_PROXY_URL:?}"
 export https_proxy="$HTTPS_PROXY"
 export SSL_CERT_FILE="${VERITY_FORGE_PROXY_CA_FILE:?}"
 export NO_PROXY= no_proxy=
-exec "$REAL_GH" "$@"
+# Parse command positions rather than matching text in a title or body.
+args=("$@")
+command_parts=()
+repo_args=()
+head=""
+head_set=false
+help=false
+for ((i=0; i<${#args[@]}; i++)); do
+  arg="${args[i]}"
+  case "$arg" in
+    -R|--repo)
+      ((i+=1)); repo_args=("${args[i]:-}") ;;
+    --repo=*) repo_args=("${arg#*=}") ;;
+    -R?*) repo_args=("${arg:2}") ;;
+    -H|--head)
+      ((i+=1)); head="${args[i]:-}"; head_set=true ;;
+    --head=*) head="${arg#*=}"; head_set=true ;;
+    -H?*) head="${arg:2}"; head_set=true ;;
+    -h|--help) help=true ;;
+    -B|--base|-b|--body|-F|--body-file|-t|--title|-a|--assignee|-l|--label|-m|--milestone|-p|--project|-r|--reviewer|--recover|--template|--hostname)
+      ((i+=1)) ;;
+    -*) ;;
+    *) command_parts+=("$arg") ;;
+  esac
+done
+if [ "${command_parts[0]:-}" = pr ] && [ "${command_parts[1]:-}" = create ] && [ "$help" = false ]; then
+  reject_pr() {
+    echo "verity PR guard: $*" >&2
+    echo "Create the PR from the session worktree and its current branch, or use a separate Verity session for independent branch work. Do not switch a dirty worktree." >&2
+    exit 1
+  }
+  session_tree="${VERITY_SESSION_WORKTREE:-}"
+  [ -n "$session_tree" ] && [ -d "$session_tree" ] || reject_pr "session worktree unavailable; restart the session to restore its launch context."
+  # Git environment overrides must not redirect inspection away from the session.
+  session_git() (
+    for key in ${!GIT_@}; do unset "$key"; done
+    git -C "$session_tree" "$@"
+  )
+  session_branch="$(session_git symbolic-ref --quiet --short HEAD)" || reject_pr "session has no checked-out branch."
+  expected_repo="$(
+    for key in ${!GIT_@}; do unset "$key"; done
+    cd "$session_tree" && env -u GH_REPO "$REAL_GH" repo view --json url --jq .url
+  )" || reject_pr "cannot resolve the session repository."
+  actual_repo="$("$REAL_GH" repo view "${repo_args[@]}" --json url --jq .url)" || reject_pr "cannot resolve the PR repository."
+  [ -n "$expected_repo" ] && [ "${expected_repo,,}" = "${actual_repo,,}" ] || reject_pr "PR repository differs from the session repository."
+  if [ "$head_set" = true ]; then
+    expected_owner="${expected_repo#*://*/}"
+    expected_owner="${expected_owner%%/*}"
+    if [[ "$head" == *:* ]]; then
+      [ "${head%%:*}" = "$expected_owner" ] || reject_pr "PR head repository differs from the session repository."
+      head="${head#*:}"
+    fi
+    [ "$head" = "$session_branch" ] || reject_pr "PR head differs from session branch '$session_branch'."
+  else
+    current_branch="$(git symbolic-ref --quiet --short HEAD)" || reject_pr "current directory has no checked-out branch."
+    [ "$current_branch" = "$session_branch" ] || reject_pr "current branch differs from session branch '$session_branch'."
+    # Pin the head: gh must not infer a different upstream branch or prompt for a fork.
+    args+=(--head "$session_branch")
+  fi
+fi
+exec "$REAL_GH" "${args[@]}"

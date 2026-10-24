@@ -74,7 +74,7 @@ export { LANGUAGE_SYSTEM_PROMPT } from './language.js';
 export { LOCAL_PROJECT_SYSTEM_PROMPT } from './local-project.js';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from './project-provision.js';
 export { MEMORY_SYSTEM_PROMPT } from './memory.js';
-export { PULL_REQUEST_SYSTEM_PROMPT } from './pull-requests.js';
+export { PULL_REQUEST_SYSTEM_PROMPT, repoToolPullRequestSystemPrompt } from './pull-requests.js';
 export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export {
@@ -201,3 +201,30 @@ export {
 } from './live.js';
 
 export { liveResourceInterval } from './live-resources.js';
+export {
+  socketEvidenceRecordSchema,
+  socketEvidenceMetadataSchema,
+  socketEvidenceHashSchema,
+  socketEvidenceExportSchema,
+  canonicalEvidenceJson,
+  socketEvidenceHashInput,
+} from './socket-evidence.js';
+export type { SocketEvidenceExport } from './socket-evidence.js';
+export {
+  selectedEvidenceMetadataSchema,
+  selectedEvidenceRecordSchema,
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+} from './selected-socket-evidence.js';
+export type {
+  SelectedEvidenceMetadata,
+  SelectedEvidenceExport,
+} from './selected-socket-evidence.js';
+
+export {
+  HISTORY_MAX_BYTES,
+  HISTORY_MAX_EVENTS,
+  boundedHistoryPageSchema,
+  boundedHistoryResultSchema,
+} from './history.js';
+export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';

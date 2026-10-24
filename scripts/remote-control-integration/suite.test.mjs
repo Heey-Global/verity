@@ -8,13 +8,13 @@ const runner = readFileSync(new URL('./run-apple.sh', import.meta.url), 'utf8');
 const suite = runner.match(/case "\$scenario" in\n([\s\S]*?)\nesac/u)?.[0];
 assert.ok(suite, 'The runner must select the integration scenarios');
 
-function run(source = suite, fail = '') {
+function run(source = suite, fail = '', selected = 'suite') {
   return spawnSync(
     'bash',
     [
       '-c',
       `set -e
-scenario=suite
+scenario=${selected}
 platform=macos
 uplink_root=/fixture
 bash() { printf '%s\\n' "$4"; [[ "$4" != "$FAIL_SCENARIO" ]]; }
@@ -40,4 +40,18 @@ void test('detects silently omitting the fault scenario', () => {
   // Recovery alone would stay green even if the preceding fault never ran.
   assert.equal(run(broken).status, 0);
   assert.notDeepEqual(run(broken).stdout.trim().split('\n'), ['loss', 'recovery']);
+});
+
+void test('runs pooled baseline, release, abort and fresh recovery in order', () => {
+  const result = run(suite, '', 'pooled-suite');
+  assert.equal(result.status, 0);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'pooled',
+    'frame-release',
+    'frame-abort',
+    'recovery',
+  ]);
+  for (const stage of ['pooled', 'frame-release', 'frame-abort', 'recovery']) {
+    assert.notEqual(run(suite, stage, 'pooled-suite').status, 0);
+  }
 });

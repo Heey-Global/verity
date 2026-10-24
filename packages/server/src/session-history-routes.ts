@@ -43,6 +43,12 @@ export interface SessionHistoryRouteDeps {
     limit: number | undefined,
     beforeSeq: number | undefined,
   ) => Promise<unknown>;
+  boundedHistory: (
+    reply: FastifyReply,
+    sessionId: string,
+    beforeSeq?: number,
+    snapshotSeq?: number,
+  ) => Promise<unknown>;
   diagnostics: (reply: FastifyReply, sessionId: string) => Promise<unknown>;
 }
 
@@ -72,6 +78,25 @@ export function registerSessionHistoryRoutes(
       const { id } = sessionParams.parse(request.params);
       const { beforeSeq, limit } = historyQuery.parse(request.query);
       return deps.history(reply, id, limit, beforeSeq);
+    },
+  );
+  app.get(
+    '/sessions/:id/history/v1',
+    { compress: { encodings: ['gzip', 'deflate'] } },
+    async (request, reply): Promise<unknown> => {
+      const { id } = sessionParams.parse(request.params);
+      const { beforeSeq, snapshotSeq } = z
+        .object({
+          beforeSeq: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+          snapshotSeq: z.coerce
+            .number()
+            .int()
+            .nonnegative()
+            .max(Number.MAX_SAFE_INTEGER - 1)
+            .optional(),
+        })
+        .parse(request.query);
+      return deps.boundedHistory(reply, id, beforeSeq, snapshotSeq);
     },
   );
   app.get('/sessions/:id/diagnostics', async (request, reply): Promise<unknown> => {

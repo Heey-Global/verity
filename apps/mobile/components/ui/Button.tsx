@@ -26,6 +26,7 @@ export function Button({
   fullWidth = false,
   accessibilityLabel,
   accessibilityHint,
+  role = 'button',
 }: {
   /** A verb: "Activate", "Copy", "Remove key". */
   label: string;
@@ -39,6 +40,8 @@ export function Button({
   accessibilityLabel?: string;
   /** What happens when the label alone does not say it ("the starter keeps preparing"). */
   accessibilityHint?: string;
+  /** `link` for an action that leaves the app for an external page. */
+  role?: 'button' | 'link';
 }) {
   const { theme } = useUnistyles();
   const locked = disabled || loading;
@@ -54,7 +57,7 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={locked}
-      accessibilityRole="button"
+      accessibilityRole={role}
       accessibilityLabel={accessibilityLabel ?? label}
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: locked, busy: loading }}
@@ -143,7 +146,7 @@ const styles = StyleSheet.create((theme) => ({
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.8 },
   label: { ...theme.typography.button },
-  labelCompact: { fontSize: 14 * theme.fontScale },
+  labelCompact: { fontSize: theme.typography.bodySmall.fontSize },
   icon: {
     width: 40,
     height: 40,

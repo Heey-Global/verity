@@ -83,6 +83,8 @@ export interface HttpRequestMeta {
  * frame carrying a status line, so there is nowhere else for one to go.
  */
 export interface HttpResponseMeta {
+  /** Time since upstream admission, excluding connector queue wait. */
+  upstreamElapsedMs?: number;
   status: number;
   headers: Record<string, string>;
 }
@@ -240,6 +242,8 @@ export function isHttpResponseMeta(value: unknown): value is HttpResponseMeta {
     meta.status !== undefined &&
     meta.status >= 200 &&
     meta.status <= 599 &&
+    (meta.upstreamElapsedMs === undefined ||
+      (Number.isSafeInteger(meta.upstreamElapsedMs) && meta.upstreamElapsedMs >= 0)) &&
     validHeaders(meta.headers, FORBIDDEN_RESPONSE_HEADERS)
   );
 }

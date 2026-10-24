@@ -81,11 +81,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   panelStack: {
     gap: theme.spacing.sm,
   },
-  groupHeader: {
-    flexShrink: 1,
-    color: theme.colors.textMuted,
-    ...theme.typography.label,
-  },
   groupDescription: {
     ...theme.typography.subtitle,
     color: theme.colors.textMuted,
@@ -120,14 +115,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.colors.border,
   },
-  // Navigation rows share the same fine rules as detail sections.
-  listPanel: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-    overflow: 'hidden',
-  },
   // 56pt, comfortably past the 44pt minimum target: these are the primary
   // navigation of the whole settings surface.
   navRow: {
@@ -137,13 +124,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-  },
-  // Inset from the left so the separator starts under the label, not under the
-  // leading icon — the iOS grouped-list convention.
-  rowSeparator: {
-    height: StyleSheet.hairlineWidth,
-    marginLeft: theme.spacing.md,
-    backgroundColor: theme.colors.border,
   },
   modelGroupSeparator: {
     height: StyleSheet.hairlineWidth,
@@ -185,9 +165,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.colors.text,
-  },
-  checklistPanelDone: {
-    borderTopColor: theme.colors.border,
   },
   checklistHeadline: {
     ...theme.typography.row,
@@ -299,12 +276,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
   },
-  connectedServiceSubsection: {
-    gap: theme.spacing.md,
-    paddingTop: theme.spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-  },
   signingKeySection: {
     gap: theme.spacing.sm,
   },
@@ -328,29 +299,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
   },
-  // Secret paste field: a taller, monospace multiline box with a label+status row.
-  secretLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  secretInput: {
-    fontFamily: theme.typography.code.fontFamily,
-    fontSize: theme.typography.code.fontSize,
-    minHeight: 88,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.background,
-    color: theme.colors.text,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    textAlignVertical: 'top',
-  },
-  secretInputDisabled: {
-    opacity: 0.45,
-  },
   secretStoreForm: {
     gap: theme.spacing.sm,
   },
@@ -362,6 +310,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
+    gap: theme.spacing.sm,
+  },
+  // Buttons inside a hint box follow its text, so they start where it starts.
+  actionRowStart: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
   settingsSaveState: {
@@ -381,10 +335,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.sm,
     backgroundColor: theme.colors.action,
   },
-  primaryButtonLabel: {
-    color: theme.colors.onAction,
-    ...theme.typography.button,
-  },
   buttonDisabled: {
     opacity: 0.45,
   },
@@ -395,18 +345,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   pressed: {
     opacity: 0.7,
   },
-  // Sub-panel inside a card: reprovision, server update.
-  reproPanel: {
-    marginTop: theme.spacing.xs,
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-  },
-  reproTitle: {
-    ...theme.typography.row,
-    color: theme.colors.text,
-  },
   reproSubtitle: {
     ...theme.typography.subtitle,
     color: theme.colors.textMuted,
@@ -416,24 +354,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
   },
-  reproButton: {
-    minHeight: 44,
-    minWidth: 0,
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  reproButtonLabel: {
-    color: theme.colors.action,
-    ...theme.typography.button,
-  },
   reproHint: {
     ...theme.typography.footnote,
     color: theme.colors.textFaint,
@@ -441,6 +361,17 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   updateHeader: {
     gap: 2,
+  },
+  // One operation or release inside a server's box, spaced like a stacked card.
+  updateBlock: {
+    gap: theme.spacing.md,
+  },
+  // Quiet text actions under a box's head ("Check for updates"), left-aligned.
+  updateLinks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: theme.spacing.md,
   },
   updateTitle: {
     ...theme.typography.title,
@@ -478,18 +409,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.xs,
-  },
-  toggleRow: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
-  },
-  toggleLabel: {
-    flex: 1,
-    color: theme.colors.text,
-    ...theme.typography.row,
   },
   footnote: {
     color: theme.colors.textMuted,
@@ -536,18 +455,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     ...theme.typography.subtitle,
     color: theme.colors.textMuted,
   },
-  retryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.action,
-  },
-  retryButtonLabel: {
-    ...theme.typography.button,
-    color: theme.colors.onAction,
-  },
   signingKeyLoadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -583,10 +490,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.sm,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.attention,
-  },
-  dangerButtonLabel: {
-    ...theme.typography.button,
-    color: theme.colors.attention,
   },
   // An editable name in the title slot of a list row. Reads as the row's title
   // until tapped, so the underline is the only hint that it is a field — the
@@ -715,11 +618,5 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: theme.spacing.xs,
-  },
-  // A destructive row action that does not outweigh the row it sits in.
-  quietDangerButton: {
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xs,
   },
 }));

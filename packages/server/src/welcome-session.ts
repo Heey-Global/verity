@@ -126,8 +126,8 @@ async function welcomeSetupStatus(
     aiProvider: status.claudeConfigured || status.codexConfigured || status.opencodeConfigured,
     github: status.githubAppConfigured,
     doppler: status.dopplerConfigured,
-    // One account-level Google sign-in backs Drive, mail, calendar and contacts.
-    google: present(settings?.googleDriveRefreshToken),
+    google:
+      (await store.googleAccounts.list()).length > 0 || present(settings?.googleDriveRefreshToken),
   };
 }
 

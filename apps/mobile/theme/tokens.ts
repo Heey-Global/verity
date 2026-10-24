@@ -1,15 +1,7 @@
 // Verity design tokens, as specified in docs/design-system.md. Colors are
-// per-theme (light/dark); the spacing, radius, elevation and text scales are
-// shared across both. The `tone` colors are the concrete palette behind the data
-// layer's semantic badge tones (@verity/mobile `sessionBadge` → BadgeTone:
-// idle | active | attention | done | danger) — the session-list slice resolves
-// `theme.colors.tone[badge.tone]` to color a row.
-//
-// Components use the role keys (`action`, `signature`, `success`, `attention`,
-// …). The older keys below them (`primary`, `onPrimary`, `accent`, `setup.*`,
-// `tone.*`) are kept as aliases of those roles while screens migrate, so the
-// whole app already renders the design-system palette; they are removed once no
-// screen reads them.
+// per-theme (light/dark) roles; the spacing, radius, elevation and text scales
+// are shared across both. Data-layer tones (badge, tool and event tones) map to
+// roles through `toneColor`.
 
 import { Platform } from 'react-native';
 
@@ -80,25 +72,29 @@ export type TypeStyles = Record<
   | 'title'
   | 'row'
   | 'body'
+  | 'bodySmall'
   | 'button'
   | 'subtitle'
   | 'footnote'
+  | 'caption'
   | 'eyebrow'
   | 'label'
   | 'code',
   TypeStyle
 >;
-// The ten named styles from docs/design-system.md § 3, unscaled. Colors are not
+// The twelve named styles from docs/design-system.md § 3, unscaled. Colors are not
 // part of a style: each component applies the role its spec names. Display uses
 // ExtraBold, the nearest static weight to the specified 750.
 const baseTypography: TypeStyles = {
   display: { fontFamily: fonts.extrabold, fontSize: 28, lineHeight: 32, letterSpacing: -0.98 },
   title: { fontFamily: fonts.bold, fontSize: 20, lineHeight: 25, letterSpacing: -0.4 },
-  row: { fontFamily: fonts.semibold, fontSize: 17, lineHeight: 22, letterSpacing: 0 },
+  row: { fontFamily: fonts.semibold, fontSize: 16, lineHeight: 21, letterSpacing: 0 },
   body: { fontFamily: fonts.regular, fontSize: 15, lineHeight: 22, letterSpacing: 0 },
+  bodySmall: { fontFamily: fonts.regular, fontSize: 14, lineHeight: 20, letterSpacing: 0 },
   button: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 18, letterSpacing: 0 },
   subtitle: { fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, letterSpacing: 0 },
   footnote: { fontFamily: fonts.regular, fontSize: 12, lineHeight: 17, letterSpacing: 0 },
+  caption: { fontFamily: fonts.regular, fontSize: 10, lineHeight: 13, letterSpacing: 0 },
   eyebrow: {
     fontFamily: fonts.extrabold,
     fontSize: 11,
@@ -174,26 +170,6 @@ const lightTheme = {
   ...shared,
   colors: {
     ...lightRoles,
-    // Aliases of the roles above, kept until every screen reads the roles.
-    setup: {
-      surface: lightRoles.surface,
-      surfaceAlt: lightRoles.surfaceAlt,
-      border: lightRoles.border,
-      text: lightRoles.text,
-      textMuted: lightRoles.textMuted,
-    },
-    primary: lightRoles.action,
-    onPrimary: lightRoles.onAction,
-    accent: lightRoles.signature,
-    linked: '#64748b',
-    tone: {
-      idle: lightRoles.textFaint,
-      active: lightRoles.action,
-      // Amber and raspberry are retired; both former tones now read as attention.
-      attention: lightRoles.attention,
-      done: lightRoles.success,
-      danger: lightRoles.attention,
-    },
   },
 } as const;
 
@@ -201,27 +177,29 @@ const darkTheme = {
   ...shared,
   colors: {
     ...darkRoles,
-    // Aliases of the roles above, kept until every screen reads the roles.
-    setup: {
-      surface: darkRoles.surface,
-      surfaceAlt: darkRoles.surfaceAlt,
-      border: darkRoles.border,
-      text: darkRoles.text,
-      textMuted: darkRoles.textMuted,
-    },
-    primary: darkRoles.action,
-    onPrimary: darkRoles.onAction,
-    accent: darkRoles.signature,
-    linked: '#cbd5e1',
-    tone: {
-      idle: darkRoles.textFaint,
-      active: darkRoles.action,
-      // Amber and raspberry are retired; both former tones now read as attention.
-      attention: darkRoles.attention,
-      done: darkRoles.success,
-      danger: darkRoles.attention,
-    },
   },
 } as const;
+
+/** The data layer's semantic tones (@verity/mobile `BadgeTone` and the tool and
+ *  event tones of a session). */
+export type Tone = 'idle' | 'active' | 'attention' | 'done' | 'danger';
+
+/**
+ * The role a tone is drawn in. There is one problem colour, so `attention` and
+ * `danger` share it; the label next to the colour says which.
+ */
+export function toneColor(colors: { [K in keyof typeof darkRoles]: string }, tone: Tone): string {
+  switch (tone) {
+    case 'idle':
+      return colors.textFaint;
+    case 'active':
+      return colors.action;
+    case 'done':
+      return colors.success;
+    case 'attention':
+    case 'danger':
+      return colors.attention;
+  }
+}
 
 export { lightTheme, darkTheme, baseText, baseTypography };

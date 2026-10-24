@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -63,12 +64,18 @@ const backend: Backend = {
   runnerSupervisorBackend: 'claude-acp',
   run: () => Promise.reject(new Error('live recreate smoke must use the supervisor')),
 };
-const serverTranscript = new ServerTranscript({ runtimeDir, transcript, pollMs: 10 });
+const serverTranscript = new ServerTranscript({
+  runtimeDir,
+  veritySessionId: STORE_SESSION_ID,
+  transcript,
+  pollMs: 10,
+});
 const client = new SupervisorRunnerClient(backend, {
   runtimeDir,
   store,
   bus,
   transcript: serverTranscript,
+  persistentSessionHomes: true,
   timeoutMs: 15_000,
 });
 
@@ -80,6 +87,13 @@ try {
   await store.markTurnRunning({ sessionId: STORE_SESSION_ID, promptSeq: mode === 'seed' ? 1 : 2 });
   await store.bindTurnIdentity(STORE_SESSION_ID, { turnId, startCommandId });
 
+  // Check the same path the sink restores, before startTurn can populate it.
+  if (
+    resumeSessionId !== undefined &&
+    existsSync(serverTranscript.transcriptFile(resumeSessionId, worktree))
+  ) {
+    throw new Error('native transcript survived runtime replacement; restore was not exercised');
+  }
   const turn = client.startTurn(
     {
       store,

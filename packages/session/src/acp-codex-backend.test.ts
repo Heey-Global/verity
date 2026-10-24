@@ -96,6 +96,11 @@ function acpSpawner(
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
+    /** Answer `session/load` with this JSON-RPC error instead. */
+    loadError?: { code: number; message: string; data?: unknown };
+    /** Answer `session/prompt` with this JSON-RPC error instead. */
+    promptError?: { code: number; message: string; data?: unknown };
+    updatesBeforePromptError?: Record<string, unknown>[];
     /** Answer `session/new` without the `model` config option, as an adapter
      *  build that does not expose it would. */
     withoutModelOption?: boolean;
@@ -228,6 +233,8 @@ function acpSpawner(
                 data: { uri: 'codex-session-existing' },
               },
             });
+          } else if (method === 'session/load' && behavior.loadError !== undefined) {
+            push({ jsonrpc: '2.0', id, error: behavior.loadError });
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('codex-session-existing') });
           } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
@@ -249,6 +256,15 @@ function acpSpawner(
                   ? sessionResult('codex-session-1')
                   : {},
             });
+          } else if (method === 'session/prompt' && behavior.promptError !== undefined) {
+            for (const update of behavior.updatesBeforePromptError ?? []) {
+              push({
+                jsonrpc: '2.0',
+                method: 'session/update',
+                params: { sessionId: 'codex-session-existing', update },
+              });
+            }
+            push({ jsonrpc: '2.0', id, error: behavior.promptError });
           } else if (method === 'session/prompt' && behavior.cancel !== undefined) {
             push({
               jsonrpc: '2.0',
@@ -1429,6 +1445,130 @@ describe('AcpCodexBackend', () => {
     // fails identically — the session wedges instead of recovering cold.
     expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
     expect(result.stderr).toContain('Resource not found: codex-session-existing');
+  });
+
+  // codex-acp 2.2.2 refuses the load of a thread Codex never wrote a rollout for —
+  // one whose first turn died before its prompt — with -32603 and the reason only
+  // in `data`. Without recognizing it, every later turn re-resumed the same thread
+  // and failed with a bare "Internal error".
+  it.each([
+    ['no rollout found for thread id codex-session-existing', { staleResume: true }],
+    // The conductor's second rung tries the Verity session id, which need not be a
+    // thread id Codex can even parse.
+    [
+      'invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `v` at 1',
+      { staleResume: true },
+    ],
+    // Codex's state database still lists the thread, but its rollout is not where
+    // the database recorded it — after a restart, or a restore to another path.
+    ['thread not found: codex-session-existing', { staleResume: true }],
+    // The same answer about a different thread says nothing about this one.
+    ['thread not found: codex-session-other', { staleResume: undefined }],
+    // Any other internal failure is a condition of the moment, not proof that the
+    // conversation is gone; dropping the binding on it would discard one for good.
+    ['state db unavailable', { staleResume: undefined }],
+  ])('classifies a Codex load refused with "%s"', async (details, expected) => {
+    await ctx.store.createSession({
+      sessionId: 'verity-codex-rollout',
+      worktree: '/work/project',
+      model: 'codex/default',
+    });
+    const fake = acpSpawner({
+      loadError: { code: -32603, message: 'Internal error', data: { details } },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-rollout',
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      spawner: fake.spawner,
+    });
+    expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
+    expect(result.staleResume).toBe(expected.staleResume);
+  });
+
+  // codex-acp answers a prompt it cannot run with -32603 and leaves stderr empty;
+  // the reason is only in `data.details`. Dropping it left the operator with a
+  // bare "Internal error" and nothing to tell one failure from another.
+  it('keeps the reason a refused prompt carries in its error data', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'example reason with secret-token-123' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Look at this',
+      env: { EXAMPLE_TOKEN: 'secret-token-123' },
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Internal error: example reason with');
+    // The same redaction the agent's own stderr gets before it is stored.
+    expect(result.stderr).not.toContain('secret-token-123');
+  });
+
+  // The conductor recognizes a prompt Codex rejected for the resumed thread by
+  // this exact line; pin it here, where the backend writes it.
+  it('appends a prompt rejected for a missing thread in the shape the conductor reads', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      env: {},
+      spawner: fake.spawner,
+    });
+    expect(result.stderr).toBe('\nInternal error: thread not found: codex-session-existing');
+  });
+
+  it('retains replay protection after tool execution followed by a capacity fragment and missing-thread error', async () => {
+    const fake = acpSpawner({
+      updatesBeforePromptError: [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'side-effect',
+          title: 'Write file',
+          kind: 'execute',
+          status: 'completed',
+        },
+        {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Selected model is at capacity.' },
+        },
+      ],
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      env: {},
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.executionObserved).toBe(true);
+    expect(result.staleResume).not.toBe(true);
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {

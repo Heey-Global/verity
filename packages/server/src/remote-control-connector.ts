@@ -1,8 +1,10 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
 import WebSocket from 'ws';
 import { RemoteReturnPathDiagnostics } from './remote-return-path-diagnostics.js';
 import { RemoteTransportDiagnostics } from './remote-transport-diagnostics.js';
 import { recordingTransportState } from './recording-transport-state.js';
+import { coreDataAssociation } from './core-data-association.js';
 import type {
   RemoteConnectorRequest,
   RemoteConnectorReservation,
@@ -97,7 +99,9 @@ export interface RemoteConnectorPoolOptions {
   log?: Pick<Console, 'info' | 'warn'>;
   /** Returns an absolute expiry only for the authenticated selected installation. */
   onReturnPathSnapshot?: (snapshot: unknown) => void;
-  returnPathExpiry?: () => number | undefined;
+  returnPathExpiry?: (sessionHash: string, connectorId: string) => number | undefined;
+  /** Optional SHA-256/16 of the exact remote session; never a wildcard or first-session selector. */
+  returnPathSessionHash?: string;
   returnPathInstallation?: () => string | undefined;
   returnPathBeforeStopSubscribe?: (listener: () => void) => () => void;
   returnPathSubscribe?: (listener: () => void) => () => void;
@@ -149,6 +153,11 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
   ) {
     throw new Error('remote connector requires a fixed local TLS ingress');
   }
+  if (
+    options.returnPathSessionHash !== undefined &&
+    !/^[a-f0-9]{16}$/u.test(options.returnPathSessionHash)
+  )
+    throw new Error('return-path session selector must be a lowercase SHA-256/16 fingerprint');
   const sessions = new Set<ConnectorSession>();
   const ended: RemoteStreamRecord[] = [];
   const retain = (record: RemoteStreamRecord): void => {
@@ -197,9 +206,14 @@ export function createRemoteConnectorPool(options: RemoteConnectorPoolOptions): 
 }
 
 class ConnectorSession implements RemoteConnectorReservation {
+  readonly diagnosticId = randomUUID();
   readonly closed: Promise<void>;
   private resolveClosed: () => void = () => undefined;
   private ws?: WebSocket;
+  private socketLifetimeId: string | null = null;
+  private coverageStart: 'before_socket_creation' | 'after_socket_creation' =
+    'before_socket_creation';
+  private activatedAt = new Date().toISOString();
   private terminated = false;
   private ready = false;
   private streams = new Map<string, Stream>();
@@ -234,11 +248,20 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private selectedReturnPathExpiry(): number | undefined {
     if (
+      this.options.returnPathSessionHash !== undefined &&
+      createHash('sha256').update(this.request.sessionId).digest('hex').slice(0, 16) !==
+        this.options.returnPathSessionHash
+    )
+      return undefined;
+    if (
       this.options.returnPathInstallation &&
       this.options.returnPathInstallation() !== this.returnPathInstallation
     )
       return undefined;
-    return this.options.returnPathExpiry?.();
+    return this.options.returnPathExpiry?.(
+      createHash('sha256').update(this.request.sessionId).digest('hex').slice(0, 16),
+      this.diagnosticId,
+    );
   }
   flushReturnPath(): void {
     this.logReturnPath(true);
@@ -269,6 +292,8 @@ class ConnectorSession implements RemoteConnectorReservation {
       expiry - Date.now() <= 600_000
     ) {
       this.returnPathExpiresAt = expiry;
+      this.coverageStart = this.ws ? 'after_socket_creation' : 'before_socket_creation';
+      this.activatedAt = new Date().toISOString();
       this.retainedReturnPath ??= new RemoteReturnPathDiagnostics(this.request.sessionId, expiry);
       this.retainedReturnPath.beginWindow(expiry);
       this.returnPath = this.retainedReturnPath;
@@ -314,6 +339,7 @@ class ConnectorSession implements RemoteConnectorReservation {
       { maxPayload: MAX_FRAME_BYTES },
     );
     this.ws = ws;
+    this.socketLifetimeId = randomUUID();
     const onAbort = () => this.release('remote attachment aborted');
     signal.addEventListener('abort', onAbort, { once: true });
     try {
@@ -552,6 +578,14 @@ class ConnectorSession implements RemoteConnectorReservation {
     const snapshot = this.returnPathDiagnostics()?.exportSummary(final);
     if (snapshot) {
       snapshot.transport = recordingTransportState(this.ws);
+      snapshot.association = coreDataAssociation(
+        this.request.sessionId,
+        this.request.requestId,
+        this.socketLifetimeId,
+        this.coverageStart,
+        this.activatedAt,
+        this.ws,
+      );
       try {
         this.options.onReturnPathSnapshot?.(snapshot);
       } catch {

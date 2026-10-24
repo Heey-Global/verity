@@ -1,8 +1,9 @@
+import { SelectedConnectionTest } from './SelectedConnectionTest';
 import type { ConnectionRecordingExport, VerityClient } from '@verity/mobile';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
-import { randomUUID } from 'expo-crypto';
-import { useEffect, useRef, useState } from 'react';
+import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { CardRow, Eyebrow, RowCard } from '../premium/PremiumChrome';
 import { getServerProfile } from '../../lib/serverProfile';
@@ -17,7 +18,59 @@ import {
   stopRemoteDataRecording,
 } from '../../lib/remoteControlTransport';
 
-type SavedRun = { runId: string; expiresAt: number; startedAt: number; local: string | null };
+const preparationStages = [
+  'storage',
+  'local-and-admission',
+  'remote-start',
+  'attachment',
+  'readiness',
+  'ready',
+] as const;
+type Preparation = {
+  stage: (typeof preparationStages)[number];
+  failed: boolean;
+  httpStatus?: number;
+};
+function httpFailureStatus(value: unknown): number | undefined {
+  if (!value || typeof value !== 'object' || !('status' in value)) return undefined;
+  return typeof value.status === 'number' &&
+    Number.isInteger(value.status) &&
+    value.status >= 400 &&
+    value.status <= 599
+    ? value.status
+    : undefined;
+}
+const preparationLabels: Record<Preparation['stage'], string> = {
+  storage: 'saving the run',
+  'local-and-admission': 'preparing the device connection',
+  'remote-start': 'starting Core and Uplink recording',
+  attachment: 'connecting the recorded session',
+  readiness: 'confirming recording readiness',
+  ready: 'completing preparation',
+};
+function parsePreparation(value: unknown): Preparation | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Preparation;
+  return preparationStages.includes(candidate.stage) && typeof candidate.failed === 'boolean'
+    ? {
+        stage: candidate.stage,
+        failed: candidate.failed,
+        ...(httpFailureStatus({ status: candidate.httpStatus }) !== undefined
+          ? { httpStatus: candidate.httpStatus }
+          : {}),
+      }
+    : undefined;
+}
+
+type SavedRun = {
+  runId: string;
+  expiresAt: number;
+  startedAt: number;
+  local: string | null;
+  diagnosticsVersion?: 1 | 2 | 3;
+  targetSession?: string;
+  preparation?: Preparation;
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 function parseSaved(raw: string | null): SavedRun | null {
   if (!raw || raw.length > 600_000) return null;
@@ -25,6 +78,10 @@ function parseSaved(raw: string | null): SavedRun | null {
     const value = JSON.parse(raw) as SavedRun;
     if (
       !UUID.test(value.runId) ||
+      (value.diagnosticsVersion !== undefined &&
+        value.diagnosticsVersion !== 1 &&
+        value.diagnosticsVersion !== 2 &&
+        value.diagnosticsVersion !== 3) ||
       !Number.isFinite(value.expiresAt) ||
       !Number.isFinite(value.startedAt) ||
       value.startedAt < 0 ||
@@ -38,6 +95,11 @@ function parseSaved(raw: string | null): SavedRun | null {
       runId: value.runId,
       expiresAt: value.expiresAt,
       startedAt: value.startedAt,
+      diagnosticsVersion: value.diagnosticsVersion ?? 1,
+      preparation: parsePreparation(value.preparation),
+      ...(typeof value.targetSession === 'string' && /^[a-f0-9]{16}$/u.test(value.targetSession)
+        ? { targetSession: value.targetSession }
+        : {}),
       local: value.local === null ? null : validateStoredRemoteRecording(value.local),
     };
   } catch {
@@ -45,20 +107,39 @@ function parseSaved(raw: string | null): SavedRun | null {
   }
 }
 
+async function freshStatus(client: VerityClient, runId: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    return await client.getConnectionRecording(runId, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Coordinates preparation over VPN; the local Stop never depends on that path. */
 export function ConnectionRecording({ client }: { client: VerityClient | null }) {
   const serverId = getServerProfile()?.serverId;
   const key = serverId ? `verity.connectionRecording.v1.${serverId}` : null;
+  const captureDeadline = useRef<number | null>(null);
   const runRef = useRef<SavedRun | null>(null);
+  const [selectedBusy, setSelectedBusy] = useState(false);
+  const selectedBusyRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const collectingRef = useRef<number | null>(null);
   const preparingRef = useRef<number | null>(null);
+  const ownSelected = useCallback((busy: boolean) => {
+    if (busy && (preparingRef.current !== null || collectingRef.current !== null)) return false;
+    selectedBusyRef.current = busy;
+    setSelectedBusy(busy);
+    return true;
+  }, []);
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [message, setMessage] = useState(
-    'Connect through VPN to prepare App, Core and Uplink together for up to 2 minutes.',
+    'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
   );
   const revision = useRef(0);
   const mounted = useRef(true);
@@ -85,7 +166,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     preparingRef.current = null;
     collectingRef.current = null;
     runRef.current = null;
-    setMessage('Connect through VPN to prepare App, Core and Uplink together for up to 2 minutes.');
+    captureDeadline.current = null;
+    setMessage(
+      'Connect through VPN to prepare App, Core and Uplink together for a 30-second test.',
+    );
     void (async () => {
       try {
         const saved = key ? parseSaved(await AsyncStorage.getItem(key)) : null;
@@ -108,18 +192,86 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, [key]);
   useEffect(() => {
     let current = true;
+    let polling = false;
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       const token = revision.current;
-      const left = await remoteDataRecordingRemainingMs();
-      if (!current || token !== revision.current) return;
-      setRemaining(left ?? 0);
-      if (left === null || left <= 0) {
-        setReady(false);
-        setMessage((previous) =>
-          previous.startsWith('Ready')
-            ? 'Local recording ended. Stop and collect the saved evidence.'
-            : previous,
+      const valid = () => current && token === revision.current;
+      try {
+        const left = await remoteDataRecordingRemainingMs();
+        if (!valid()) return;
+        const saved = runRef.current;
+        if (preparingRef.current !== null && captureDeadline.current === null) return;
+        const remainingBudget = (budget: number | null) =>
+          Math.min(
+            budget ?? 0,
+            captureDeadline.current !== null
+              ? Math.max(0, captureDeadline.current - performance.now())
+              : saved
+                ? Math.max(0, saved.expiresAt - Date.now())
+                : 0,
+          );
+        const remainingMs = remainingBudget(left);
+        setRemaining(remainingMs);
+        if (remainingMs <= 0) {
+          setReady(false);
+          if (left && saved && saved.diagnosticsVersion === 3) await stopRemoteDataRecording();
+          setMessage((previous) =>
+            previous.startsWith('Ready')
+              ? 'Local recording ended. Stop and collect the saved evidence.'
+              : previous,
+          );
+          return;
+        }
+        if (
+          !saved ||
+          saved.diagnosticsVersion !== 3 ||
+          preparingRef.current !== null ||
+          collectingRef.current !== null
+        )
+          return;
+        if (!client) throw new Error('Core unavailable');
+        const status = await freshStatus(client, saved.runId);
+        if (!valid()) return;
+        const freshLeft = await remoteDataRecordingRemainingMs();
+        if (!valid()) return;
+        const freshRemaining = remainingBudget(freshLeft);
+        setRemaining(freshRemaining);
+        if (freshRemaining <= 0) {
+          setReady(false);
+          setMessage('Local recording ended. Stop and collect the saved evidence.');
+          if (freshLeft) await stopRemoteDataRecording();
+          return;
+        }
+        const evidence = status.evidence;
+        const confirmed =
+          status.runId === saved.runId &&
+          status.phase === 'recording' &&
+          status.uplink.state === 'recording' &&
+          status.core.state === 'recording' &&
+          status.error === null &&
+          evidence?.targetSession === saved.targetSession &&
+          evidence?.readiness.ready === true &&
+          evidence.readiness.installation.bound &&
+          evidence.readiness.installation.active &&
+          evidence.readiness.app.bound &&
+          evidence.readiness.app.active;
+        setReady(confirmed);
+        setMessage(
+          confirmed
+            ? 'Ready — turn off VPN and use the app normally. Stop and collect when finished.'
+            : 'Recording readiness is unconfirmed. Local evidence remains available; stop and collect.',
         );
+      } catch {
+        if (valid()) {
+          setReady(false);
+          setMessage(
+            'Recording readiness is unconfirmed. Local evidence remains available; reconnect VPN to collect.',
+          );
+        }
+      } finally {
+        polling = false;
       }
     };
     void poll();
@@ -128,59 +280,104 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       current = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [client]);
 
   const start = async () => {
-    if (!loaded || preparing || collectingRef.current || !key || !client) return;
+    if (selectedBusyRef.current || !loaded || preparing || collectingRef.current || !key || !client)
+      return;
     const token = ++revision.current;
+    const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
+    captureDeadline.current = null;
+    setRemaining(0);
     setPreparing(true);
     setReady(false);
     setMessage('Preparing local recording, Core and Uplink…');
     const saved: SavedRun = {
       runId: randomUUID(),
       startedAt: Date.now(),
-      expiresAt: Date.now() + 120_000,
+      expiresAt: Date.now() + 45_000,
       local: null,
+      diagnosticsVersion: 3,
+      preparation: { stage: 'storage', failed: false },
     };
     runRef.current = saved;
     let requested = false;
     try {
       await save(saved);
-      if (token !== revision.current) return;
-      const duration = await startRemoteDataRecording();
-      if (token !== revision.current) return;
-      saved.expiresAt = Date.now() + duration;
+      if (!current()) return;
+      saved.preparation = { stage: 'local-and-admission', failed: false };
+      await startRemoteDataRecording(async (sessionId) => {
+        if (!current()) throw new Error('Recording cancelled');
+        const localBudget = await remoteDataRecordingRemainingMs();
+        if (localBudget === null || localBudget < 45_000)
+          throw new Error('Insufficient local capture window');
+        captureDeadline.current = performance.now() + 45_000;
+        saved.expiresAt = Date.now() + 45_000;
+        saved.targetSession = (
+          await digestStringAsync(CryptoDigestAlgorithm.SHA256, sessionId)
+        ).slice(0, 16);
+        await save(saved);
+        if (!current()) throw new Error('Recording cancelled');
+        saved.preparation = { stage: 'remote-start', failed: false };
+        requested = true;
+        const armed = await client.startConnectionRecording(saved.runId, 30_000, 3, sessionId);
+        if (armed.error === 'uplink_version_unavailable')
+          throw new Error('diagnostics_version_unavailable');
+        if (
+          armed.error ||
+          armed.uplink.state === 'unavailable' ||
+          !armed.evidence ||
+          armed.evidence.targetSession !== saved.targetSession ||
+          !['starting', 'recording'].includes(armed.phase)
+        )
+          throw new Error('Not armed');
+        saved.preparation = { stage: 'attachment', failed: false };
+      });
+      if (!current()) return;
+      captureDeadline.current = Math.min(captureDeadline.current ?? 0, performance.now() + 30_000);
+      saved.expiresAt = Math.min(saved.expiresAt, Date.now() + 30_000);
       await save(saved);
-      if (token !== revision.current) return;
-      const remainingDuration = Math.floor(saved.expiresAt - Date.now());
-      if (remainingDuration <= 0) throw new Error('Recording expired');
-      requested = true;
-      const status = await client.startConnectionRecording(
-        saved.runId,
-        Math.min(120_000, remainingDuration),
-      );
-      if (token !== revision.current) {
-        await client.stopConnectionRecording(saved.runId).catch(() => undefined);
-        return;
-      }
+      if (!current()) return;
+      saved.preparation = { stage: 'readiness', failed: false };
+      const status = await freshStatus(client, saved.runId);
+      if (!current()) return;
+      if (status.error === 'uplink_version_unavailable')
+        throw new Error('diagnostics_version_unavailable');
       const left = await remoteDataRecordingRemainingMs();
-      if (token !== revision.current) return;
+      if (!current()) return;
       if (
         status.runId !== saved.runId ||
         status.phase !== 'recording' ||
         status.core.state !== 'recording' ||
         status.uplink.state !== 'recording' ||
         status.error !== null ||
+        !status.evidence?.readiness.ready ||
+        status.evidence.targetSession !== saved.targetSession ||
+        !status.evidence.readiness.installation.bound ||
+        !status.evidence.readiness.installation.active ||
+        !status.evidence.readiness.app.bound ||
+        !status.evidence.readiness.app.active ||
         !left ||
-        Date.parse(status.expiresAt) <= Date.now()
+        captureDeadline.current <= performance.now() ||
+        saved.expiresAt <= Date.now()
       )
         throw new Error('Not ready');
-      setRemaining(left);
+      saved.preparation = { stage: 'ready', failed: false };
+      await save(saved);
+      if (!current()) return;
+      if (captureDeadline.current <= performance.now() || saved.expiresAt <= Date.now())
+        throw new Error('Recording expired');
+      setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
       setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
-    } catch {
-      if (token !== revision.current) return;
+    } catch (error) {
+      if (!current()) return;
+      saved.preparation = {
+        stage: saved.preparation?.stage ?? 'local-and-admission',
+        failed: true,
+        ...(httpFailureStatus(error) !== undefined ? { httpStatus: httpFailureStatus(error) } : {}),
+      };
       const localStopped = await stopRemoteDataRecording();
       const remoteStopped =
         !requested ||
@@ -191,11 +388,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
             value.uplink.state === 'stopped',
           () => false,
         ));
+      if (!current()) return;
+      await save(saved).catch(() => undefined);
       if (mounted.current && token === revision.current)
         setMessage(
-          `Preparation failed. ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
+          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Uplink does not support this recording version. Update Uplink before retrying.' : `Preparation failed while ${preparationLabels[saved.preparation.stage]}.${saved.preparation.httpStatus ? ` HTTP ${String(saved.preparation.httpStatus)}.` : ''}`} ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
         );
     } finally {
+      // A prior DELETE may have completed before the pending start created the run.
+      if (requested && !current())
+        await client.stopConnectionRecording(saved.runId).catch(() => undefined);
       if (mounted.current && preparingRef.current === token) {
         preparingRef.current = null;
         setPreparing(false);
@@ -204,6 +406,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   };
 
   const collect = async () => {
+    if (selectedBusyRef.current) return;
     // Duplicate taps still stop locally, but never create competing exports.
     if (collectingRef.current !== null) {
       await stopRemoteDataRecording();
@@ -260,7 +463,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           status.runId === saved.runId &&
           status.core.state === 'stopped' &&
           status.uplink.state === 'stopped';
-        const result = await client.exportConnectionRecording(saved.runId);
+      } catch {
+        // A missing stop response must not discard retained remote evidence.
+      }
+      if (!current()) return;
+      try {
+        if (!client) throw new Error('Core unavailable');
+        const result = await client.exportConnectionRecording(
+          saved.runId,
+          saved.diagnosticsVersion ?? 1,
+        );
         if (!current()) return;
         if (result.status.runId === saved.runId) remote = result;
       } catch {
@@ -271,6 +483,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         version: 1,
         runId: saved.runId,
         startedAt: new Date(saved.startedAt).toISOString(),
+        preparation: saved.preparation ?? null,
         app: {
           available: updated.local !== null,
           stopped: localStopped,
@@ -299,20 +512,27 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     <View>
       <Eyebrow>Connection recording</Eyebrow>
       <RowCard>
+        <SelectedConnectionTest
+          disabled={!loaded || preparing || collecting || remaining > 0 || !client}
+          onBusy={ownSelected}
+        />
         <CardRow
           title="Record connection"
           subtitle={message}
-          disabled={!loaded || preparing || collecting || !key || !client || remaining > 0}
+          disabled={
+            selectedBusy || !loaded || preparing || collecting || !key || !client || remaining > 0
+          }
           onPress={() => void start()}
         />
         <CardRow
           title="Stop and collect"
+          disabled={selectedBusy}
           subtitle="Stops this device immediately. Turn VPN back on to collect Core and Uplink; otherwise a partial report is copied."
           onPress={() => void collect()}
         />
         {ready ? (
           <CardRow
-            title={`${String(Math.ceil(remaining / 1000))} seconds remaining`}
+            title={`${String(Math.ceil(remaining / 1000))} seconds of local recording remaining`}
             chevron={false}
           />
         ) : null}

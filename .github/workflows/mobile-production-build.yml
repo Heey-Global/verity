@@ -41,22 +41,25 @@ jobs:
     if: >-
       always() && (needs.publish-mobile-native.result == 'success' ||
       (needs.publish-mobile-native.result == 'skipped' && inputs.production-run-id != ''))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 130
+    # The production proposal (branch push, signed commit, PR, approval
+    # dismissals) is written with the release app token so the promotion PR
+    # triggers pull_request CI. GITHUB_TOKEN reads the release, this run's
+    # artifact and the recovery run's provenance.
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      actions: write
+      actions: read
+      contents: read
     env:
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.11.1'
+          node-version: '26.12.1'
       - name: Verify recovery build provenance
         if: inputs.production-run-id != ''
         env:
@@ -80,8 +83,9 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 240); do
-            state="$(gh release view "$MOBILE_TAG" --json isDraft,assets)"
-            if jq -e '.isDraft == false and any(.assets[]; .name == "native-staging.json")' <<< "$state" >/dev/null; then
+            # This read-only token cannot see the release while it is a draft.
+            if state="$(gh release view "$MOBILE_TAG" --json isDraft,assets)" &&
+              jq -e '.isDraft == false and any(.assets[]; .name == "native-staging.json")' <<< "$state" >/dev/null; then
               gh release download "$MOBILE_TAG" --pattern native-staging.json --output "$RUNNER_TEMP/native-staging.json" --clobber
               jq -e --slurpfile staging "$RUNNER_TEMP/native-staging.json" \
                 '.source == $staging[0].source and .version == $staging[0].version and .product == "mobile-native" and .appId != $staging[0].appId' \
@@ -93,11 +97,26 @@ jobs:
           echo '::error::Staging has not published; retry this job after staging recovery.'
           exit 1
 
+      # Installation tokens expire after an hour and the wait above can take
+      # two, so mint right before the only step that writes.
+      - name: Mint release app token
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Open native production approval
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
+          # The proposer pushes the promotion branch through `origin`.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $basic"
           version="${MOBILE_TAG#mobile-v}"
           pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
           [[ "$pr" =~ ^[0-9]+$ ]]

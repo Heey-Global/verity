@@ -12,12 +12,17 @@ import { tint } from './tint';
  * A single item with its own state or control (docs/design-system.md § 5.2).
  * `selected` draws the `action` border with its glow; `muted` is for items that
  * are present but not available (Teams "Soon", a feature not included).
+ * `attention` draws the tonal `attention` border for an item reporting a
+ * problem, alongside the status word that names it — never instead of it.
  */
 export function Card({
   children,
   selected = false,
   muted = false,
   flush = false,
+  attention = false,
+  stacked = false,
+  divided = false,
 }: {
   children: ReactNode;
   selected?: boolean;
@@ -25,17 +30,65 @@ export function Card({
   /** For a card that holds a single Row or ToggleRow: the row brings its own
    *  padding and fills the card, so the card adds none. */
   flush?: boolean;
+  attention?: boolean;
+  /** Lays the content out top to bottom (status, title, detail, action)
+   *  instead of as one row. */
+  stacked?: boolean;
+  /** For a stacked card made of sections — a head and the blocks below it:
+   *  separates them with the same 1 px divider `Group` draws between rows. */
+  divided?: boolean;
 }) {
+  const sections = divided ? Children.toArray(children).filter(isValidElement) : null;
   return (
     <View
       style={[
         styles.card,
+        stacked ? styles.cardStacked : null,
         flush ? styles.cardFlush : null,
+        attention ? styles.cardAttention : null,
         selected ? styles.cardSelected : null,
         muted ? styles.muted : null,
       ]}
     >
-      {children}
+      {sections === null
+        ? children
+        : sections.map((section, index) => (
+            <Fragment key={section.key ?? index}>
+              {index > 0 ? <View style={styles.divider} /> : null}
+              {section}
+            </Fragment>
+          ))}
+    </View>
+  );
+}
+
+/**
+ * The head of a stacked card: what the card is about, one line under it, and
+ * its state. The same title/subtitle/trailing slots as a `Row`, without the
+ * row's own padding, which the stacked card already provides.
+ */
+export function CardHead({
+  title,
+  subtitle,
+  trailing,
+}: {
+  title: string;
+  subtitle?: string | undefined;
+  trailing?: ReactNode;
+}) {
+  return (
+    <View style={styles.head}>
+      <View style={styles.body}>
+        <Text style={styles.title} numberOfLines={2} accessibilityRole="header">
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text style={styles.subtitle} numberOfLines={2}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {trailing !== undefined ? <View style={styles.trailing}>{trailing}</View> : null}
     </View>
   );
 }
@@ -63,7 +116,9 @@ export function Group({ children }: { children: ReactNode }) {
  *  Feather glyph (an agent's logo), drawn in the same tile. `signature` draws
  *  the icon in the brand pink — reserved for the Premium mark (§ 2). */
 type Leading =
-  { icon: IconName; signature?: boolean } | { dot: StatusIntent } | { element: ReactNode };
+  | { icon: IconName; signature?: boolean; intent?: StatusIntent }
+  | { dot: StatusIntent }
+  | { element: ReactNode };
 
 // Rows already warned about a button inside a pressable row, so a list that
 // re-renders often warns once per row instead of on every render.
@@ -251,18 +306,30 @@ function RowContent({
           <View
             style={[
               styles.tile,
-              leading.signature === true ? styles.tileSignature : acts ? styles.tileAction : null,
+              leading.intent === 'needsSetup'
+                ? styles.tileAttention
+                : leading.intent === 'ready'
+                  ? styles.tileReady
+                  : leading.signature === true
+                    ? styles.tileSignature
+                    : acts
+                      ? styles.tileAction
+                      : null,
             ]}
           >
             <Icon
               name={leading.icon}
-              size={18}
+              size={16}
               color={
-                leading.signature === true
-                  ? theme.colors.signature
-                  : acts
-                    ? theme.colors.action
-                    : theme.colors.textMuted
+                leading.intent === 'needsSetup'
+                  ? theme.colors.attention
+                  : leading.intent === 'ready'
+                    ? theme.colors.success
+                    : leading.signature === true
+                      ? theme.colors.signature
+                      : acts
+                        ? theme.colors.action
+                        : theme.colors.textMuted
               }
             />
           </View>
@@ -286,7 +353,13 @@ function RowContent({
       </View>
       {trailing !== undefined || chevron ? (
         <View style={styles.trailing}>
-          {typeof trailing === 'string' ? <Text style={styles.value}>{trailing}</Text> : trailing}
+          {typeof trailing === 'string' ? (
+            <Text style={styles.value} numberOfLines={1}>
+              {trailing}
+            </Text>
+          ) : (
+            trailing
+          )}
           {chevron ? <Icon name="chevron-right" size={16} color={theme.colors.textFaint} /> : null}
         </View>
       ) : null}
@@ -310,6 +383,12 @@ const styles = StyleSheet.create((theme) => ({
   // Clips the row's pressed background to the rounded corners. Not on `card`
   // itself: that would clip the selected glow on iOS.
   cardFlush: { paddingVertical: 0, paddingHorizontal: 0, overflow: 'hidden' },
+  cardStacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    paddingVertical: theme.spacing.lg,
+  },
+  cardAttention: { borderColor: tint(theme.colors.attention, 'border') },
   cardSelected: {
     borderColor: theme.colors.action,
     shadowColor: theme.colors.action,
@@ -324,6 +403,7 @@ const styles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
   },
   divider: { height: 1, backgroundColor: theme.colors.border },
+  head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   // Rows fill their container, so a row inside a card spans the card's width.
   row: {
     flexGrow: 1,
@@ -331,25 +411,35 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
-    minHeight: 56,
+    minHeight: 52,
     paddingVertical: theme.spacing.sm + theme.spacing.xxs,
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
   tile: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     borderRadius: theme.radius.tile,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: tint(theme.colors.text, 'neutral'),
   },
   tileAction: { backgroundColor: tint(theme.colors.action, 'fill') },
+  tileAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
+  tileReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
-  dotSlot: { width: 36, alignItems: 'center' },
+  dotSlot: { width: 32, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
-  trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, flexShrink: 0 },
-  value: { ...theme.typography.body, color: theme.colors.textMuted },
+  // The trailing side takes at most 45 % of the row; a long value or status
+  // truncates there, so the title is never squeezed into a column of fragments.
+  trailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    flexShrink: 1,
+    maxWidth: '45%',
+  },
+  value: { ...theme.typography.body, color: theme.colors.textMuted, flexShrink: 1 },
 }));

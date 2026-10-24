@@ -338,6 +338,46 @@ describe('SupervisorRunnerClient', () => {
     ingestRunnerFrame: async () => ({ outcome: 'accepted' as const }),
   } as RunnerFrameStore;
 
+  it.each(['claude-acp', 'codex-acp', 'opencode-acp'] as const)(
+    'refuses %s on a supervisor that cannot attest managed configuration',
+    async (backendId) => {
+      const runtime = join(dir, 'stale-runtime');
+      await mkdir(runtime);
+      const requests: Record<string, unknown>[] = [];
+      const server = createServer((peer) => {
+        sockets.add(peer);
+        peer.once('close', () => sockets.delete(peer));
+        peer.once('data', (data) => {
+          requests.push(JSON.parse(data.toString('utf8')) as Record<string, unknown>);
+          peer.end(JSON.stringify({ ok: true, scriptIsolation: true }) + '\n');
+        });
+      });
+      servers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen(join(runtime, 'supervisor.sock'), resolve),
+      );
+      const client = new SupervisorRunnerClient({ runnerSupervisorBackend: backendId } as Backend, {
+        runtimeDir: runtime,
+        store,
+        bus: new InMemoryEventBus(),
+      });
+      const turn = client.startTurn(
+        {
+          store: {} as never,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          storeSessionId: 'session-1',
+          turnId: 'turn-1',
+          startCommandId: 'start-1',
+          planning: true,
+        },
+        {},
+      );
+      await expect(turn.result).rejects.toThrow('recreate the Sandbox');
+      expect(requests.map((request) => request['kind'])).toEqual(['status']);
+    },
+  );
+
   it('sends the durable turn identity and runtime fields to start-turn', async () => {
     const runtime = join(dir, 'runtime');
     const socket = join(runtime, 'supervisor.sock');
@@ -354,6 +394,7 @@ describe('SupervisorRunnerClient', () => {
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(socket, resolve));
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -424,6 +465,7 @@ describe('SupervisorRunnerClient', () => {
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(socket, resolve));
     const client = new SupervisorRunnerClient(overrides.backend ?? backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -733,6 +775,7 @@ describe('SupervisorRunnerClient', () => {
     const client = new SupervisorRunnerClient(
       { runnerSupervisorBackend: supervisorBackend } as Backend,
       {
+        securityPreflight: false,
         runtimeDir: runtime,
         store,
         bus: new InMemoryEventBus(),
@@ -1007,6 +1050,7 @@ describe('SupervisorRunnerClient', () => {
     const client = new SupervisorRunnerClient(
       { runnerSupervisorBackend: 'opencode-acp' } as Backend,
       {
+        securityPreflight: false,
         runtimeDir: runtime,
         store,
         bus: new InMemoryEventBus(),
@@ -1132,6 +1176,7 @@ describe('SupervisorRunnerClient', () => {
       tail: vi.fn(async () => undefined),
     };
     const client = new SupervisorRunnerClient({ runnerSupervisorBackend: 'codex-acp' } as Backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1168,6 +1213,7 @@ describe('SupervisorRunnerClient', () => {
     // Steering and permission prompts need a mid-turn round trip the worker cannot
     // serve yet; dropping either silently would be a real behavior loss.
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: join(dir, 'missing'),
       store,
       bus: new InMemoryEventBus(),
@@ -1253,6 +1299,7 @@ describe('SupervisorRunnerClient', () => {
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1288,6 +1335,7 @@ describe('SupervisorRunnerClient', () => {
       },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1316,6 +1364,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: 23 },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1344,6 +1393,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: 0, workerSignal: null },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1377,6 +1427,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: 1 },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1406,6 +1457,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: 1, workerError: 'x'.repeat(16 * 1024 + 1) },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1439,6 +1491,7 @@ describe('SupervisorRunnerClient', () => {
       state: state('settled'),
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1480,6 +1533,7 @@ describe('SupervisorRunnerClient', () => {
       },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1519,6 +1573,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: 0, workerSignal: null },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1545,6 +1600,7 @@ describe('SupervisorRunnerClient', () => {
       state: { ...state('settled'), workerExitCode: null, workerSignal: 'SIGKILL' },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1569,6 +1625,7 @@ describe('SupervisorRunnerClient', () => {
     const controller = new AbortController();
     controller.abort();
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: join(dir, 'absent-runtime'),
       store,
       bus: new InMemoryEventBus(),
@@ -1673,6 +1730,7 @@ describe('SupervisorRunnerClient transcript sink (Stage 5b Slice 2)', () => {
         }),
     };
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1725,6 +1783,7 @@ describe('SupervisorRunnerClient transcript sink (Stage 5b Slice 2)', () => {
         }),
     };
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1758,6 +1817,7 @@ describe('SupervisorRunnerClient transcript sink (Stage 5b Slice 2)', () => {
         }),
     };
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -1782,6 +1842,7 @@ describe('SupervisorRunnerClient transcript sink (Stage 5b Slice 2)', () => {
 
   it('still fails closed on opts.transcript when NO server sink is configured', async () => {
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: join(dir, 'sink-missing'),
       store,
       bus: new InMemoryEventBus(),
@@ -2100,6 +2161,7 @@ describe('runSupervisorTrustedCli result validation', () => {
       'run-trusted-cli': { ok: true, exitCode: 0, stdout: 'ok', stderr: '' },
     });
     const client = new SupervisorRunnerClient({ runnerSupervisorBackend: 'codex-acp' } as Backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store: { ingestRunnerFrame: async () => ({ outcome: 'accepted' as const }) },
       bus: new InMemoryEventBus(),
@@ -2439,6 +2501,7 @@ describe('SupervisorRunnerClient.forceCancel', () => {
    * the only thing under test is how `forceCancel` talks to the supervisor. */
   function reattach(runtime: string, turnId = 'turn-1') {
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -2595,6 +2658,7 @@ describe('SupervisorRunnerClient launch preconditions', () => {
       'start-turn': { ok: true, outcome: 'created', state: state('running') },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -2624,6 +2688,7 @@ describe('SupervisorRunnerClient artifact readiness', () => {
 
   function start(runtime: string) {
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -2688,6 +2753,7 @@ describe('SupervisorRunnerClient artifact readiness', () => {
       supervisor.listen(join(runtime, 'supervisor.sock'), resolve),
     );
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -2734,6 +2800,7 @@ describe('SupervisorRunnerClient artifact readiness', () => {
       supervisor.listen(join(runtime, 'supervisor.sock'), resolve),
     );
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3014,6 +3081,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       );
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3041,6 +3109,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
     const runtime = join(dir, 'absent-supervisor-runtime');
     await mkdir(runtime, { recursive: true });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3073,6 +3142,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true, state: state('settled') })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3110,6 +3180,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       );
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3147,6 +3218,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       );
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3182,6 +3254,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3218,6 +3291,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3252,6 +3326,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true, state: state(finished ? 'settled' : 'claimed') })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3278,6 +3353,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true, state: state('claimed') })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3312,6 +3388,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true, state: state('claimed') })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3343,6 +3420,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       );
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3369,6 +3447,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3399,6 +3478,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       peer.end(`${JSON.stringify({ ok: true, state: state('settled') })}\n`);
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3423,6 +3503,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       );
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3460,6 +3541,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       },
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),
@@ -3485,6 +3567,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
       // Deliberately silent — connected, reading, answering nothing.
     });
     const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
       runtimeDir: runtime,
       store,
       bus: new InMemoryEventBus(),

@@ -30,6 +30,7 @@ import type { Kysely } from 'kysely';
  *  token is minted for; the sandbox cannot influence them. */
 interface GhTokenCapabilityBinding {
   projectId: string;
+  forgeConnectionId?: string | null;
   owner: string;
   repo: string;
   /** Required for project-bound Unix-socket redemption. Omitted only for legacy
@@ -78,6 +79,7 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
         .values({
           project_id: binding.projectId,
           cap_hash: capHash,
+          forge_connection_id: binding.forgeConnectionId ?? null,
           owner: binding.owner,
           repo: binding.repo,
           container_generation: binding.containerGeneration ?? null,
@@ -85,6 +87,7 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
         .onConflict((oc) =>
           oc.column('project_id').doUpdateSet({
             cap_hash: capHash,
+            forge_connection_id: binding.forgeConnectionId ?? null,
             owner: binding.owner,
             repo: binding.repo,
             container_generation: binding.containerGeneration ?? null,
@@ -97,12 +100,13 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
       if (capability.length === 0) return undefined;
       const row = await db
         .selectFrom('gh_token_capabilities')
-        .select(['project_id', 'owner', 'repo', 'container_generation'])
+        .select(['project_id', 'owner', 'repo', 'container_generation', 'forge_connection_id'])
         .where('cap_hash', '=', hashCapability(capability))
         .executeTakeFirst();
       if (row === undefined) return undefined;
       return {
         projectId: row.project_id,
+        ...(row.forge_connection_id === null ? {} : { forgeConnectionId: row.forge_connection_id }),
         owner: row.owner,
         repo: row.repo,
         ...(row.container_generation !== null

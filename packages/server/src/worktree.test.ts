@@ -180,6 +180,25 @@ describe('createGitWorktreeProvisioner', () => {
     expect(fetches).toBe(2);
   });
 
+  it('redacts connection-scoped credentials when a Forgejo fetch fails', async () => {
+    const authorization = 'Authorization: Basic private-forgejo-token';
+    const provisioner = createGitWorktreeProvisioner({
+      repoDir: '/clone',
+      worktreeRoot: tempRoot(),
+      refreshBase: true,
+      fetchConnection: async () => ({ url: 'https://forge.example/repo.git', authorization }),
+      git: async (args) => {
+        if (args.includes('fetch')) throw new Error(args.join(' '));
+      },
+    });
+    await expect(provisioner.add('agent/forgejo-failure')).rejects.toThrow(
+      /refusing to branch off/,
+    );
+    await expect(provisioner.add('agent/forgejo-retry')).rejects.not.toThrow(
+      'private-forgejo-token',
+    );
+  });
+
   it('with fetchAuthHeader, injects `-c http.extraheader=<header>` before the fetch', async () => {
     const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0LXRva2Vu';
     const calls: string[][] = [];

@@ -26,6 +26,33 @@ const detection = {
 } as DevServerDetection;
 
 describe('project setup presentation', () => {
+  it('gives main-branch vulnerabilities priority over every project lifecycle status', () => {
+    for (const state of ['active', 'failed', 'cloning', 'sleeping', 'waking'] as const) {
+      expect(
+        projectOverviewStatus(
+          {
+            ...project,
+            lifecycleState: state,
+            provisionError: 'Broken',
+            vulnerabilitySummary: { count: 3, critical: 2, high: 1 },
+          },
+          detection,
+        ),
+      ).toEqual({ label: '3 vulnerabilities', tone: 'attention' });
+    }
+    expect(
+      projectOverviewStatus({
+        ...project,
+        vulnerabilitySummary: { count: 1, critical: 0, high: 1 },
+      })?.label,
+    ).toBe('1 vulnerability');
+    expect(
+      projectOverviewStatus({
+        ...project,
+        vulnerabilitySummary: { count: 1, critical: 0, high: 0 },
+      })?.label,
+    ).toBe('1 vulnerability');
+  });
   it('maps internal lifecycle states to friendly progress', () => {
     expect(projectSetupStatus(project)).toMatchObject({
       label: 'Preparing repository…',

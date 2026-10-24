@@ -1,5 +1,15 @@
 import {
+  resolveGoogleServiceCredential,
+  type GoogleServiceCredentialStore,
+} from './google-service-credentials.js';
+import { basename } from 'node:path';
+import { readWorktreeFile } from './worktree-file.js';
+import {
+  MAX_GMAIL_ATTACHMENT_BYTES,
+  MAX_GMAIL_ATTACHMENTS,
   appendGmailSignature,
+  type GmailOutgoingAttachment,
+  downloadGmailAttachment,
   createGmailDraft,
   prepareGmailReplyDraft,
   listGmailSendAs,
@@ -23,8 +33,10 @@ export interface GmailInvocationInput {
   request: unknown;
 }
 
-export interface GmailToolStore {
-  getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
+export interface GmailToolStore extends GoogleServiceCredentialStore {
+  getSession(
+    sessionId: string,
+  ): Promise<{ projectId: string | null; worktree?: string } | undefined>;
   getSessionGmailConnection(
     sessionId: string,
   ): Promise<{ accountEmail: string; enabledAt: Date } | undefined>;
@@ -44,16 +56,24 @@ export interface GmailToolStore {
   completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void>;
 }
 
+interface GmailAttachmentRequest {
+  path: string;
+  filename?: string;
+  mimeType?: string;
+}
+
 type GmailRequest =
   | { action: 'list_senders' }
   | { action: 'search'; query: string; maxResults?: number; pageToken?: string }
   | { action: 'read_thread'; threadId: string }
+  | { action: 'download_attachment'; messageId: string; partId: string }
   | {
       action: 'create_reply_draft';
       threadId: string;
       messageId?: string;
       body: string;
       htmlBody?: string;
+      attachments?: GmailAttachmentRequest[];
     }
   | {
       action: 'create_draft';
@@ -66,9 +86,61 @@ type GmailRequest =
       threadId?: string;
       inReplyTo?: string;
       references?: string;
+      attachments?: GmailAttachmentRequest[];
     }
   | { action: 'prepare_draft_send'; draftId: string }
   | ({ action: 'send_draft' } & GmailDraftSendSnapshot);
+
+const MEDIA_TYPES: Record<string, string> = {
+  csv: 'text/csv',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  gif: 'image/gif',
+  htm: 'text/html',
+  html: 'text/html',
+  ics: 'text/calendar',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  json: 'application/json',
+  md: 'text/markdown',
+  pdf: 'application/pdf',
+  png: 'image/png',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  svg: 'image/svg+xml',
+  txt: 'text/plain',
+  webp: 'image/webp',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  zip: 'application/zip',
+};
+
+async function readDraftAttachments(
+  worktree: string | undefined,
+  requested: GmailAttachmentRequest[] | undefined,
+): Promise<GmailOutgoingAttachment[]> {
+  if (requested === undefined || requested.length === 0) return [];
+  if (requested.length > MAX_GMAIL_ATTACHMENTS)
+    throw new Error(`Gmail drafts support at most ${MAX_GMAIL_ATTACHMENTS} attachments`);
+  if (worktree === undefined) throw new Error('This session has no workspace to attach files from');
+  const attachments: GmailOutgoingAttachment[] = [];
+  let remaining = MAX_GMAIL_ATTACHMENT_BYTES;
+  for (const attachment of requested) {
+    const content = await readWorktreeFile(worktree, attachment.path, {
+      label: 'Gmail attachment path',
+      maxBytes: remaining,
+      tooLarge: 'Gmail attachments exceed the 17 MiB total limit',
+    });
+    remaining -= content.length;
+    const filename = attachment.filename ?? basename(attachment.path);
+    const extension = filename.includes('.') ? filename.split('.').pop()!.toLowerCase() : '';
+    attachments.push({
+      filename,
+      mimeType: attachment.mimeType ?? MEDIA_TYPES[extension] ?? 'application/octet-stream',
+      content,
+    });
+  }
+  return attachments;
+}
 
 export function gmailHasStandingAuthorization(request: unknown): boolean {
   return !(
@@ -81,14 +153,12 @@ export function gmailHasStandingAuthorization(request: unknown): boolean {
 
 export function createGmailTool(deps: {
   eventStore: GmailToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   gmail?: {
     search(token: string, query: string, maxResults: number, pageToken?: string): Promise<unknown>;
+    downloadAttachment?(token: string, messageId: string, partId: string): Promise<unknown>;
     readThread(token: string, threadId: string): Promise<unknown>;
-    createDraft(
-      token: string,
-      input: Extract<GmailRequest, { action: 'create_draft' }>,
-    ): Promise<unknown>;
+    createDraft(token: string, input: GmailDraftInput): Promise<unknown>;
     listSenders(token: string): Promise<GmailSendAs[]>;
     prepareReplyDraft(
       token: string,
@@ -101,6 +171,7 @@ export function createGmailTool(deps: {
   };
 }): { invoke(input: GmailInvocationInput): Promise<unknown> } {
   const gmail = deps.gmail ?? {
+    downloadAttachment: downloadGmailAttachment,
     search: searchGmail,
     readThread: readGmailThread,
     createDraft: createGmailDraft,
@@ -112,8 +183,28 @@ export function createGmailTool(deps: {
   };
   const authorized = async (
     input: GmailInvocationInput,
-  ): Promise<{ accountEmail: string; refreshToken: string }> => {
+  ): Promise<{
+    accountId?: string;
+    credentialVersion?: number;
+    accountEmail: string;
+    refreshToken: string;
+  }> => {
     const session = await deps.eventStore.getSession(input.sessionId);
+    if (deps.eventStore.getGoogleServiceCredentials) {
+      if (session?.projectId !== input.projectId)
+        throw new Error('Google access is restricted to the calling session');
+      const credential = await resolveGoogleServiceCredential(
+        deps.eventStore,
+        input.sessionId,
+        'gmail',
+      );
+      return {
+        credentialVersion: credential.credentialVersion,
+        accountId: credential.accountId,
+        accountEmail: credential.accountEmail,
+        refreshToken: credential.refreshToken,
+      };
+    }
     const connection = await deps.eventStore.getSessionGmailConnection(input.sessionId);
     const settings = await deps.eventStore.getVeritySettings();
     if (
@@ -135,12 +226,19 @@ export function createGmailTool(deps: {
   };
   const verifyCredentialUnchanged = async (
     input: GmailInvocationInput,
-    expected: { accountEmail: string; refreshToken: string },
+    expected: {
+      accountId?: string;
+      credentialVersion?: number;
+      accountEmail: string;
+      refreshToken: string;
+    },
   ): Promise<void> => {
     const current = await authorized(input);
     if (
       current.accountEmail.toLowerCase() !== expected.accountEmail.toLowerCase() ||
-      current.refreshToken !== expected.refreshToken
+      current.refreshToken !== expected.refreshToken ||
+      current.accountId !== expected.accountId ||
+      current.credentialVersion !== expected.credentialVersion
     ) {
       throw new Error('The connected Gmail account changed during this operation');
     }
@@ -152,7 +250,7 @@ export function createGmailTool(deps: {
       if (typeof request !== 'object' || request === null || typeof request.action !== 'string') {
         throw new Error('Gmail request requires an action');
       }
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(credential.accountId);
       if (token === undefined) throw new Error('Gmail is not connected');
       if (request.action === 'list_senders') {
         await verifyCredentialUnchanged(input, credential);
@@ -166,9 +264,23 @@ export function createGmailTool(deps: {
         await verifyCredentialUnchanged(input, credential);
         return gmail.readThread(token, request.threadId);
       }
+      if (request.action === 'download_attachment') {
+        await verifyCredentialUnchanged(input, credential);
+        return (gmail.downloadAttachment ?? downloadGmailAttachment)(
+          token,
+          request.messageId,
+          request.partId,
+        );
+      }
       if (request.action === 'prepare_draft_send') {
         await verifyCredentialUnchanged(input, credential);
-        return gmail.prepareDraftSend(token, request.draftId);
+        const snapshot = await gmail.prepareDraftSend(token, request.draftId);
+        return {
+          ...snapshot,
+          ...(credential.accountId
+            ? { accountId: credential.accountId, credentialVersion: credential.credentialVersion }
+            : {}),
+        };
       }
       if (
         request.action !== 'create_draft' &&
@@ -177,19 +289,34 @@ export function createGmailTool(deps: {
       ) {
         throw new Error('Unsupported Gmail action');
       }
-      let requestWithSignature: Extract<GmailRequest, { action: 'create_draft' | 'send_draft' }>;
+      if (
+        request.action === 'send_draft' &&
+        credential.accountId &&
+        (request.accountId !== credential.accountId ||
+          request.credentialVersion !== credential.credentialVersion)
+      )
+        throw new Error('The Gmail account changed since the draft was prepared; prepare it again');
+      let requestWithSignature:
+        | (GmailDraftInput & { action: 'create_draft' })
+        | Extract<GmailRequest, { action: 'send_draft' }>;
       if (request.action === 'create_draft' || request.action === 'create_reply_draft') {
+        const { attachments: requestedAttachments, ...content } = request;
+        const attachments = await readDraftAttachments(
+          (await deps.eventStore.getSession(input.sessionId))?.worktree,
+          requestedAttachments,
+        );
         const aliases = await gmail.listSenders(token);
         const draft =
-          request.action === 'create_reply_draft'
-            ? await gmail.prepareReplyDraft(token, request, aliases)
-            : { ...request, from: selectGmailSender(aliases, request.from) };
+          content.action === 'create_reply_draft'
+            ? await gmail.prepareReplyDraft(token, content, aliases)
+            : { ...content, from: selectGmailSender(aliases, content.from) };
         const from = selectGmailSender(aliases, draft.from);
         requestWithSignature = {
           ...draft,
           action: 'create_draft',
           from,
           ...appendGmailSignature(request.body, await gmail.readSignature(token, from)),
+          ...(attachments.length === 0 ? {} : { attachments }),
         };
       } else {
         requestWithSignature = request;

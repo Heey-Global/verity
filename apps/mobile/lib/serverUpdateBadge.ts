@@ -32,6 +32,22 @@ import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './
  * draws. Passing the caller's own `isHome` keeps the overview subscription active.
  */
 export function useServerUpdateBadge(enabled: boolean): string | null {
+  return useServerUpdateNotice(enabled)?.version ?? null;
+}
+
+/**
+ * What the overview banner announces: the waiting version, the server it is
+ * waiting on, and whether an earlier update on that server failed or is stuck.
+ * The banner can be put away for a version, but not while that is the case —
+ * a problem is not an offer to decline.
+ */
+export interface ServerUpdateNotice {
+  readonly baseUrl: string;
+  readonly version: string;
+  readonly problem: boolean;
+}
+
+export function useServerUpdateNotice(enabled: boolean): ServerUpdateNotice | null {
   /**
    * The server an update is pending for, rather than a bare flag — the dot is a
    * claim about one particular server, and this hook outlives the choice of it.
@@ -41,7 +57,7 @@ export function useServerUpdateBadge(enabled: boolean): string | null {
    * to the base URL, an answer expires the moment it stops being about the server
    * in front of the operator.
    */
-  const [pending, setPending] = useState<{ baseUrl: string; version: string } | null>(null);
+  const [pending, setPending] = useState<ServerUpdateNotice | null>(null);
 
   useEffect(
     () =>
@@ -114,17 +130,22 @@ export function useServerUpdateBadge(enabled: boolean): string | null {
     };
   }, [enabled]);
 
-  return enabled && pending !== null && pending.baseUrl === getVerityBaseUrl()
-    ? pending.version
-    : null;
+  return enabled && pending !== null && pending.baseUrl === getVerityBaseUrl() ? pending : null;
 }
 
 function pendingRelease(
   baseUrl: string | null,
   status: ServerUpdateStatus,
-): { baseUrl: string; version: string } | null {
+): ServerUpdateNotice | null {
   if (baseUrl === null || !serverUpdateAwaitsAttention(status)) return null;
   // `serverUpdateAwaitsAttention` only answers yes for `available`, which always
-  // carries a release; the narrowing is for the compiler.
-  return status.state === 'available' ? { baseUrl, version: status.release.version } : null;
+  // carries a release; the narrowing is for the compiler. Any operation still
+  // shown next to it failed, rolled back, or is stuck: a completed one is history.
+  return status.state === 'available'
+    ? {
+        baseUrl,
+        version: status.release.version,
+        problem: status.operation !== null && status.operation.state !== 'completed',
+      }
+    : null;
 }

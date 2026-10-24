@@ -59,3 +59,30 @@ Apple CI from a context already authorized to check out that source, with both
 revisions pinned. Do not add private source or a personal token to this public
 repository. Missing adapter access or Apple runtime is a verification blocker,
 not a skipped test that can be counted as passing.
+
+## Pooled requests and partial outer frames
+
+Run `bash scripts/remote-control-integration/run-apple.sh macos UPLINK_CHECKOUT pooled-suite`
+(or `ios`) for four fresh invocations: pooled baseline, frame release, frame
+abort, then existing fresh-pair recovery. These tests require the real private
+Uplink adapter and an Apple runtime; a local byte-gate pass is not a native pass.
+
+The pooled workload uses the production `PinnedHTTPSessionPool`, pinned task
+delegates and loopback SOCKS through `RemoteAppTunnel`. An 8 MiB deterministic
+response runs with small read and synthetic POST requests. Completion requires
+an exact SHA-256 digest, both small receipts and a subsequent pooled read.
+Only fixture-control requests use a separate direct loopback connection.
+
+A test-only TLS proxy intercepts the Core-to-Uplink leg, preserving upgrade and
+frame bytes. Once armed by the large request, it withholds the final 295 bytes
+of one DATA frame before the relay decoder. Native code observes the held state
+and dispatches both sibling tasks before requesting release or abort. Release
+must restore complete responses; abort must fail the large request within the
+bounded runner, followed by a fresh fixture/recovery invocation. This is a
+synthetic interruption, not an Envoy reproduction or proof of the incident cause.
+
+Local gates cover split input, suffix release/abort, real WSS reverse progress,
+scenario-specific result receipts and suite order. Disabling interception must
+fail the tests. Fixed source revisions are recorded by the runner; commit both
+checkouts before collecting cross-repository provenance. No deployment credentials
+or production endpoints are used.

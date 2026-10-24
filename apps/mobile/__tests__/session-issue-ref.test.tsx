@@ -26,6 +26,24 @@ describe('SessionIssueRef', () => {
     expect(openRow).not.toHaveBeenCalled();
   });
 
+  it('opens a Forgejo issue on its own instance', () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    render(
+      <SessionIssueRef
+        branch="feat/122-preview"
+        repo={{
+          owner: 'team',
+          repo: 'website',
+          host: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+        }}
+      />,
+    );
+    fireEvent.press(screen.getByLabelText('Issue 122. Open on Forgejo.'), {
+      stopPropagation: jest.fn(),
+    });
+    expect(open).toHaveBeenCalledWith('https://git.example.org/team/website/issues/122');
+  });
+
   it('stays plain text when the repo is unknown, so no broken link is offered', () => {
     render(<SessionIssueRef branch="fix/42-keyboard-gap" repo={undefined} />);
 

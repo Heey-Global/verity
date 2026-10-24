@@ -1,4 +1,11 @@
 export {
+  ForgeConnectionStore,
+  type ForgeConnection,
+  type ForgeConnectionProvider,
+  type ForgeConnectionCredentials,
+  type ForgeConnectionInput,
+} from './forge-connections.js';
+export {
   MatrixOutboundStore,
   type MatrixSendSnapshot,
   type MatrixDelivery,
@@ -209,3 +216,7 @@ export * from './knowledge.js';
 export * from './knowledge-sources.js';
 
 export { redactSecrets, redactProcessStderr } from './redact.js';
+
+export * from './google-accounts.js';
+
+export * from './vulnerability-scan.js';

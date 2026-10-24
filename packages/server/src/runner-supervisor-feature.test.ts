@@ -596,6 +596,8 @@ describe('verity-runner supervisor runtime', () => {
     (command) => {
       const forge = {
         VERITY_FORGE_MODE: 'proxy-test',
+        VERITY_FORGE_AUTHORITY: 'forge.example:3000',
+        VERITY_PROJECT_REPO_URL: 'http://verity-project-relay:8080/internal/project/repo',
         VERITY_FORGE_PROXY_URL: 'http://verity-project-relay:8080',
         VERITY_FORGE_PROXY_CA_FILE: '/run/verity/forge-proxy/ca.crt',
         GIT_TERMINAL_PROMPT: '0',
@@ -738,6 +740,32 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS');
   });
 
+  it.each([{ planning: true }, { knowledgeIsolation: true }])(
+    'requires private process metadata for confined OpenCode: %j',
+    (isolation) => {
+      const spec = agentLaunchSpec(
+        {
+          command: 'opencode-acp',
+          args: [],
+          cwd: '/work/project',
+          knowledgeHome: '/tmp/home',
+          ...isolation,
+        },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '0' },
+        },
+      );
+      expect(spec.args).toContain('--self-proc-maps');
+      expect(spec.spawnOptions.env).not.toHaveProperty(
+        'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE',
+      );
+      expect(spec.args).toContain(isolation.planning ? '--read-only-root' : '--write-isolated');
+    },
+  );
+
   it('launches OpenCode ACP through the fixed wrapper, with XDG_CONFIG_HOME and no secrets', () => {
     const spec = agentLaunchSpec(
       { command: 'opencode-acp', args: [], cwd: '/work/project' },
@@ -748,6 +776,10 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           XDG_CONFIG_HOME: '/run/verity/xdg',
           OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+          OPENCODE_DISABLE_PROJECT_CONFIG: '0',
+          OPENCODE_PURE: '0',
+          OPENCODE_CONFIG_CONTENT: '{"agent":{"plan":{"permission":{"edit":"allow"}}}}',
+          OPENCODE_CONFIG_DIR: '/work/project/.opencode',
           OPENCODE_ENABLE_EXA: '0',
           OPENCODE_WEBSEARCH_PROVIDER: 'parallel',
           EXA_API_KEY: 'must-not-cross',
@@ -770,9 +802,24 @@ describe('verity-runner supervisor runtime', () => {
     });
     // A custom model provider otherwise hides websearch even when inference succeeds.
     expect(spec.spawnOptions.env).toMatchObject({
-      OPENCODE_ENABLE_EXA: '1',
-      OPENCODE_WEBSEARCH_PROVIDER: 'exa',
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
     });
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: ['/work/project/AGENTS.md'],
+      websearch: { provider: 'exa' },
+      permissions: [
+        { action: 'external_directory', resource: '*', effect: 'ask' },
+        { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+      ],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
+    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_DIR');
     expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('DOPPLER_TOKEN');
@@ -782,6 +829,37 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('CODEX_PATH');
     expect(spec.spawnOptions.env).not.toHaveProperty('INITIAL_AGENT_MODE');
+  });
+
+  it('keeps project instructions out of isolated OpenCode knowledge turns', () => {
+    const spec = agentLaunchSpec(
+      {
+        command: 'opencode-acp',
+        args: [],
+        cwd: '/work/project',
+        knowledgeIsolation: true,
+        knowledgeHome: '/run/verity/isolated-home',
+      },
+      {
+        agentUid: 1000,
+        agentGid: 1000,
+        env: { OPENCODE_CONFIG_CONTENT: '{"instructions":["/work/project/AGENTS.md"]}' },
+      },
+    );
+    // A Wiki turn must not import instructions from the project it cannot access.
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: [],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
+    expect(spec.spawnOptions.env).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
+    });
   });
 
   it('leaves the home-mode image on the HOME fallback OpenCode resolves itself', () => {
@@ -6742,3 +6820,74 @@ describe('supervisor protocol range (ADR 0006 D9)', () => {
     await expect(status(version)).rejects.toThrow(/unsupported supervisor protocol/u);
   });
 });
+
+it.each(['exit', 'interrupt'] as const)(
+  'releases an agent home after %s with inherited pipes open',
+  async (ending) => {
+    await writeFile(join(runtimeDir, 'egress-connector.url'), 'http://127.0.0.1:1', {
+      mode: 0o600,
+    });
+    const agents: ReturnType<typeof spawn>[] = [];
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      spawnChild: (_command, _args, options) => {
+        // The descendant keeps stdout and the home lock fd alive after its parent
+        // exits. A finite lifetime also bounds cleanup if the exit reaper regresses.
+        const child = spawn(
+          process.execPath,
+          [
+            '-e',
+            `
+        const {spawn} = require('node:child_process');
+        const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 8000)'],
+          {stdio: ['ignore', 1, 2, 3]});
+        descendant.once('spawn', () => ${ending === 'interrupt' ? "process.kill(process.pid, 'SIGTERM')" : 'process.exit(0)'});
+      `,
+          ],
+          options,
+        );
+        agents.push(child);
+        return child;
+      },
+    });
+    const request = {
+      protocolVersion: 1,
+      kind: 'spawn-agent',
+      command: 'codex-acp',
+      args: [],
+      cwd: runtimeDir,
+      sessionEnv: { VERITY_SESSION_ID: 'exit-home' },
+    };
+    try {
+      const started = Date.now();
+      const first = await supervisorRequestFrames(broker.socketPath, request);
+      expect(first.at(-1)).toMatchObject({
+        ok: true,
+        kind: 'exit',
+        ...(ending === 'interrupt' ? { signal: 'SIGTERM' } : { code: 0 }),
+      });
+      expect(Date.now() - started).toBeLessThan(6000);
+      const second = await supervisorRequestFrames(broker.socketPath, {
+        ...request,
+        command: 'claude-agent-acp',
+      });
+      expect(second.at(-1)).toMatchObject({
+        ok: true,
+        kind: 'exit',
+        ...(ending === 'interrupt' ? { signal: 'SIGTERM' } : { code: 0 }),
+      });
+    } finally {
+      for (const child of agents) {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          /* Already reaped. */
+        }
+      }
+      await broker.close();
+    }
+  },
+);

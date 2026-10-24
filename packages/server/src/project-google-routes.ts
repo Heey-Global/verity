@@ -1,3 +1,4 @@
+import { registerGoogleAccountRoutes } from './google-account-routes.js';
 import type { EventStore } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -18,7 +19,21 @@ const checks = {
 };
 
 export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: EventStore): void {
+  registerGoogleAccountRoutes(app, eventStore);
   app.get('/google/connection', async () => {
+    const accounts = await eventStore.googleAccounts.list();
+    if (accounts.length > 0) {
+      const used = new Map<string, { id: string; name: string }>();
+      for (const account of accounts)
+        for (const project of (await eventStore.googleAccounts.usage(account.id)).projects)
+          used.set(project.id, project);
+      return {
+        connected: true,
+        accountEmail: accounts.length === 1 ? accounts[0]!.email : null,
+        scopes: [...new Set(accounts.flatMap((account) => account.scopes))],
+        projects: [...used.values()],
+      };
+    }
     const settings = await eventStore.getVeritySettings();
     const projects = (await eventStore.listProjects()).filter(
       (project) => !project.archived && project.kind !== 'control_plane',
@@ -61,6 +76,19 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
+    const accounts = await eventStore.googleAccounts.list();
+    if (accounts.length > 0) {
+      const account = await eventStore.googleAccounts.projectAccess(id, service);
+      return {
+        enabled: account !== undefined && checks[service](account.scopes),
+        connected: accounts.some((candidate) => checks[service](candidate.scopes)),
+        accountId: account?.id ?? null,
+        accountEmail: account?.email ?? null,
+        accountName: account?.displayName ?? null,
+        clientId: account?.clientId ?? accounts[0]?.clientId ?? null,
+        legacySessionCount: await eventStore.countLegacyProjectGoogleSessions(id, service),
+      };
+    }
     const settings = await eventStore.getVeritySettings();
     const grant = await eventStore.getProjectGoogleConnection(id, service);
     const legacySessionCount = await eventStore.countLegacyProjectGoogleSessions(id, service);
@@ -84,6 +112,27 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
+    const allAccounts = await eventStore.googleAccounts.list();
+    const accounts = allAccounts.filter((account) => checks[service](account.scopes));
+    const body = z.object({ accountId: z.string().min(1).optional() }).parse(request.body ?? {});
+    if (body.accountId !== undefined || allAccounts.length > 0) {
+      const account =
+        body.accountId === undefined
+          ? accounts.length === 1
+            ? accounts[0]
+            : undefined
+          : accounts.find((candidate) => candidate.id === body.accountId);
+      if (!account) return reply.code(409).send({ error: 'Select an authorized Google account' });
+      await eventStore.googleAccounts.setProjectAccess(id, service, account.id);
+      return {
+        enabled: true,
+        connected: true,
+        accountId: account.id,
+        accountEmail: account.email,
+        accountName: account.displayName,
+        clientId: account.clientId,
+      };
+    }
     const settings = await eventStore.getVeritySettings();
     if (
       !settings?.googleDriveRefreshToken?.trim() ||
@@ -106,7 +155,9 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
-    await eventStore.disableProjectGoogleConnection(id, service);
+    if ((await eventStore.googleAccounts.list()).length > 0) {
+      await eventStore.googleAccounts.setProjectAccess(id, service, null);
+    } else await eventStore.disableProjectGoogleConnection(id, service);
     return { enabled: false };
   });
 }

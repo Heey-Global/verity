@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Network
 #if canImport(UIKit)
 import UIKit
@@ -11,6 +12,8 @@ private struct IntegrationManifest: Decodable {
   let outerPin: String
   let corePin: String
   let scenario: String
+  let controlURL: URL
+  let largeHash: String
 }
 
 private enum IntegrationFailure: Error { case invalidManifest, receipt, pin, diagnostics }
@@ -47,6 +50,13 @@ private final class IntegrationProgress: @unchecked Sendable {
 private func persistIntegrationFailure(_ value: [String: Any]) {
   if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
     let json = String(data: data, encoding: .utf8) { persistIntegrationResult(json) }
+}
+
+private final class IntegrationDispatch: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+  func mark() { lock.withLock { value = true } }
+  var started: Bool { lock.withLock { value } }
 }
 
 @available(macOS 14.0, iOS 17.0, *)
@@ -136,6 +146,93 @@ private func runIntegration() async -> Bool {
     catch { rejected = true }
     guard rejected, wrongPinDelegate.failure == "PIN_MISMATCH" else { throw IntegrationFailure.pin }
 
+    var pooledChecks: [String] = []
+    if ["pooled", "frame-release", "frame-abort"].contains(manifest.scenario) {
+      progress.update("pooled_requests")
+      let pool = PinnedHTTPSessionPool()
+      defer { pool.shutdown() }
+      func pooledRequest(_ path: String, lane: PinnedHTTPTransportLane, dispatch: IntegrationDispatch? = nil) async throws -> Data {
+        let lease = try pool.acquire(origin: coreOrigin, pin: manifest.corePin,
+          proxyPort: port, proxyMode: "socks", lane: lane)
+        defer { lease.release() }
+        let delegate = try CertificatePinDelegate(pin: manifest.corePin, origin: coreOrigin)
+        var request = URLRequest(url: coreOrigin.appendingPathComponent(path))
+        request.timeoutInterval = 20
+        if path == "send" { request.httpMethod = "POST"; request.httpBody = Data("synthetic-turn".utf8) }
+        return try await withCheckedThrowingContinuation { continuation in
+          let task = lease.session.dataTask(with: request) { data, response, error in
+            if let error { continuation.resume(throwing: error) }
+            else if let data, (response as? HTTPURLResponse)?.statusCode == 200 {
+              continuation.resume(returning: data)
+            } else { continuation.resume(throwing: IntegrationFailure.receipt) }
+          }
+          task.delegate = delegate
+          task.resume()
+          dispatch?.mark()
+        }
+      }
+      // Both lane pools are warm before the fault; all workload requests use
+      // the tunnel. Only the fixture-control channel bypasses it.
+      _ = try await pooledRequest("healthz", lane: .interactive)
+      _ = try await pooledRequest("healthz", lane: .background)
+      let controlDelegate = try CertificatePinDelegate(pin: manifest.corePin, origin: manifest.controlURL)
+      let control = URLSession(configuration: .ephemeral, delegate: controlDelegate, delegateQueue: nil)
+      defer { control.invalidateAndCancel() }
+      func command(_ path: String) async throws -> Data {
+        var request = URLRequest(url: manifest.controlURL.appendingPathComponent(path))
+        request.timeoutInterval = 3
+        let (data, response) = try await control.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw IntegrationFailure.receipt }
+        return data
+      }
+      let large = Task { try await pooledRequest("large", lane: .interactive) }
+      defer { large.cancel() }
+      if manifest.scenario != "pooled" {
+        var held = false
+        for _ in 0..<100 {
+          let status = try JSONSerialization.jsonObject(with: await command("control")) as? [String: Any]
+          if status?["held"] as? Bool == true { held = true; break }
+          try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard held else { throw IntegrationFailure.receipt }
+      }
+      let dispatch = IntegrationDispatch()
+      let small = Task { try await pooledRequest("small", lane: .background, dispatch: dispatch) }
+      defer { small.cancel() }
+      let sendDispatch = IntegrationDispatch()
+      let send = Task { try await pooledRequest("send", lane: .interactive, dispatch: sendDispatch) }
+      defer { send.cancel() }
+      if manifest.scenario != "pooled" {
+        for _ in 0..<100 {
+          if dispatch.started && sendDispatch.started { break }
+          try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard dispatch.started && sendDispatch.started else { throw IntegrationFailure.receipt }
+        _ = try await command("release")
+      }
+      if manifest.scenario == "frame-abort" {
+        var largeFailed = false
+        do { _ = try await large.value } catch { largeFailed = true }
+        _ = try? await small.value
+        _ = try? await send.value
+        guard largeFailed else { throw IntegrationFailure.receipt }
+        tunnel.stop()
+        let result = try JSONSerialization.data(withJSONObject: ["success": true,
+          "scenario": manifest.scenario, "checks": ["pooled_frame_abort", "bounded_large_failure"]])
+        persistIntegrationResult(String(decoding: result, as: UTF8.self))
+        return true
+      }
+      let body = try await large.value
+      guard body.count == 8 * 1024 * 1024,
+        SHA256.hash(data: body).map({ String(format: "%02x", $0) }).joined() == manifest.largeHash,
+        try await small.value == Data("small-ok".utf8),
+        try await pooledRequest("small", lane: .background) == Data("small-ok".utf8),
+        try await send.value == Data("sent-ok".utf8)
+      else { throw IntegrationFailure.receipt }
+      pooledChecks = ["pooled_large_digest", "pooled_small_receipt", "pooled_reuse_receipt", "pooled_send_receipt"]
+      if manifest.scenario == "frame-release" { pooledChecks.append("held_frame_released") }
+    }
+
     if manifest.scenario == "loss" {
       progress.update("directional_loss")
       func pongCount() -> Int {
@@ -180,6 +277,7 @@ private func runIntegration() async -> Bool {
     else { throw IntegrationFailure.diagnostics }
     var checks = ["production_decoder", "app_attached", "health_receipt", "parallel_exact_echo",
       "core_pin_rejection", "ordered_idempotent_stop"]
+    checks += pooledChecks
     if manifest.scenario == "loss" { checks += ["bounded_missing_response", "native_pong_during_loss"] }
     if manifest.scenario == "recovery" { checks += ["fresh_pair_exact_receipts"] }
     let result = try JSONSerialization.data(withJSONObject:

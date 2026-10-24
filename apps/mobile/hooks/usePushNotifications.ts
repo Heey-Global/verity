@@ -57,7 +57,21 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
         handled.add(key);
       }
       const deviceId = getAuthTokenId(baseUrl) ?? (await getStoredAuthTokenId(baseUrl));
-      await handlePushResponse(response, outbox, navigateToSession, deviceId, navigateToSettings);
+      await handlePushResponse(
+        response,
+        outbox,
+        navigateToSession,
+        deviceId,
+        navigateToSettings,
+        (projectId) => {
+          if (projectId)
+            router.push({
+              pathname: '/project/[id]/vulnerability-scan',
+              params: { id: projectId },
+            });
+          else router.push('/');
+        },
+      );
     };
 
     Notifications.setNotificationHandler({

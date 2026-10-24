@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { recordingTransportSchema } from './recording-transport-schema.js';
+import { coreDataAssociationSchema } from './core-data-association.js';
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const elapsed = z.number().nonnegative().finite();
@@ -20,7 +21,16 @@ const errorCode = z.enum([
   'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
 ]);
 const position = { eventOrder: count, elapsedMs: elapsed };
+const frameType = z.enum([
+  'stream.open',
+  'stream.data',
+  'stream.end',
+  'stream.reset',
+  'attached',
+  'unknown',
+]);
 const first = z.object({
+  type: frameType.optional(),
   ...position,
   encodedBytes: count,
   decodedBytes: count,
@@ -41,40 +51,48 @@ const event = z.object({
 });
 // Object schemas deliberately project fixed fields. Never copy a logger envelope,
 // arbitrary error text, or newly added payload fields into a support export.
-export const coreRecordingSummary = z.object({
-  time: count.optional(),
-  event: z.literal('remote.return_path'),
-  schemaVersion: z.literal(1),
-  transport: recordingTransportSchema.optional(),
-  session: hash,
-  generation: hash,
-  party: z.literal('installation'),
-  ...position,
-  outcome: z.literal('observed'),
-  stage: z.literal('summary'),
-  summaryOrder: count,
-  droppedEvents: count,
-  emittedMessages: count,
-  emittedBytes: count,
-  lastError: z.object({ ...position, errorCode }).nullable(),
-  lastCloseRequest: z.object(position).nullable().optional(),
-  lastClose: z
-    .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
-    .nullable(),
-  droppedStreamObservations: count,
-  streams: z
-    .array(
-      z.object({
-        stream: hash,
-        enqueuedFrames: count,
-        completedFrames: count,
-        errorFrames: count,
-        encodedBytes: count,
-        decodedBytes: count,
-        firstSend: first.optional(),
-        firstCallback: first.optional(),
-      }),
-    )
-    .max(64),
-  events: z.array(event).max(128),
-});
+export const coreRecordingSummary = z
+  .object({
+    time: count.optional(),
+    event: z.literal('remote.return_path'),
+    schemaVersion: z.literal(1),
+    transport: recordingTransportSchema.optional(),
+    association: coreDataAssociationSchema.optional(),
+    session: hash,
+    generation: hash,
+    party: z.literal('installation'),
+    callbackMeaning: z.literal('local_acceptance_not_peer_receipt').optional(),
+    ...position,
+    outcome: z.literal('observed'),
+    stage: z.literal('summary'),
+    summaryOrder: count,
+    droppedEvents: count,
+    emittedMessages: count,
+    emittedBytes: count,
+    lastError: z.object({ ...position, errorCode }).nullable(),
+    lastCloseRequest: z.object(position).nullable().optional(),
+    lastClose: z
+      .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
+      .nullable(),
+    droppedStreamObservations: count,
+    streams: z
+      .array(
+        z.object({
+          stream: hash,
+          enqueuedFrames: count,
+          completedFrames: count,
+          errorFrames: count,
+          encodedBytes: count,
+          decodedBytes: count,
+          firstSend: first.optional(),
+          firstCallback: first.optional(),
+        }),
+      )
+      .max(64),
+    events: z.array(event).max(128),
+  })
+  .refine(
+    (summary) =>
+      summary.association === undefined || summary.association.session === summary.session,
+    { message: 'Association session mismatch' },
+  );

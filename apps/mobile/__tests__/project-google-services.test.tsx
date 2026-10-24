@@ -3,26 +3,33 @@ jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMo
 import { ProjectGoogleServices } from '../components/settings/ProjectGoogleServices';
 import { makeClient, resetSettingsHarness } from './support/settingsHarness';
 afterEach(resetSettingsHarness);
-it('distinguishes legacy chat access from project access and offers complete revocation', async () => {
-  let legacySessionCount = 2;
+it('changes the project default without revoking separate chat grants', async () => {
   const client = Object.assign(makeClient('unlocked'), {
-    getProjectGoogleConnection: jest.fn().mockImplementation(async (_projectId, service) => ({
+    getProjectGoogleConnection: jest.fn().mockResolvedValue({
       connected: true,
-      enabled: false,
-      legacySessionCount: service === 'gmail' ? legacySessionCount : 0,
-    })),
-    disableProjectGoogleConnection: jest.fn().mockImplementation(async () => {
-      legacySessionCount = 0;
+      enabled: true,
+      accountEmail: 'one@example.test',
+      legacySessionCount: 2,
     }),
+    listGoogleAccounts: jest.fn().mockResolvedValue([
+      {
+        id: 'one',
+        email: 'one@example.test',
+        displayName: null,
+        scopes: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].map(
+          (scope) => `https://www.googleapis.com/auth/${scope}`,
+        ),
+      },
+    ]),
+    enableProjectGoogleConnection: jest.fn().mockResolvedValue({ enabled: true }),
+    disableProjectGoogleConnection: jest.fn(),
   });
   render(<ProjectGoogleServices client={client} projectId="p1" />);
-  await screen.findByText('2 existing chats have separate access.');
-  expect(screen.getByLabelText('Gmail').props.accessibilityState.checked).toBe(false);
-  fireEvent.press(screen.getByText('Revoke all Gmail access'));
+  await screen.findAllByText('one@example.test');
+  fireEvent.press(screen.getAllByText('one@example.test')[0]!);
   await waitFor(() =>
-    expect(client.disableProjectGoogleConnection).toHaveBeenCalledWith('p1', 'gmail'),
+    expect(client.enableProjectGoogleConnection).toHaveBeenCalledWith('p1', 'gmail', 'one'),
   );
-  await waitFor(() =>
-    expect(screen.queryByText('2 existing chats have separate access.')).toBeNull(),
-  );
+  expect(client.disableProjectGoogleConnection).not.toHaveBeenCalled();
+  expect(screen.queryByText('Revoke all Gmail access')).toBeNull();
 });

@@ -122,8 +122,8 @@ try {
   ) {
     throw new Error(`unexpected result: ${JSON.stringify(result)}`);
   }
-  // Every stderr line other than the adapter's own per-query diagnostic still
-  // fails this gate; see unexpectedStderrLines for why that one is tolerated.
+  // Undocumented stderr still fails this gate; only the exact adapter diagnostics
+  // listed by unexpectedStderrLines are tolerated.
   const unexpectedStderr = unexpectedStderrLines(stderr);
   if (unexpectedStderr.length > 0) {
     throw new Error(`unexpected stderr: ${JSON.stringify(unexpectedStderr)}`);

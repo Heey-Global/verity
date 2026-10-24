@@ -101,7 +101,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     justifyContent: 'center',
     padding: theme.spacing.xl,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: theme.colors.scrim,
   },
   card: {
     backgroundColor: theme.colors.surface,
@@ -109,11 +109,20 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.lg,
     gap: theme.spacing.md,
   },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '600' },
-  text: { color: theme.colors.text, fontSize: theme.text.md },
+  title: {
+    color: theme.colors.text,
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  text: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
   link: {
-    color: theme.colors.primary,
-    fontSize: theme.text.md,
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     minHeight: 44,
     paddingVertical: theme.spacing.sm,
   },

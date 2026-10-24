@@ -240,6 +240,8 @@ describe('paired device management', () => {
       returnPathActivation: activation,
       coordinatedRecording: manager,
     });
+    const startRecording = vi.spyOn(manager, 'start');
+    const selectedStatus = vi.spyOn(manager, 'selectedStatus');
     const base = '/api/remote-control/recordings';
     const runId = '01234567-0123-4123-8123-0123456789ab';
     const headers = { authorization: `Bearer ${device.token}` };
@@ -248,10 +250,12 @@ describe('paired device management', () => {
       { method: 'GET' as const, url: `${base}/${runId}` },
       { method: 'DELETE' as const, url: `${base}/${runId}` },
       { method: 'GET' as const, url: `${base}/${runId}/export` },
+      { method: 'GET' as const, url: `${base}/${runId}/selection` },
     ];
     try {
       for (const op of operations) expect((await app.inject(op)).statusCode).toBe(401);
       expect((await app.inject({ ...operations[0], headers })).json().phase).toBe('recording');
+      expect(startRecording).toHaveBeenLastCalledWith(runId, 120000, undefined, undefined);
       expect(
         (await app.inject({ ...operations[0], headers, payload: { runId, durationMs: 120001 } }))
           .statusCode,
@@ -262,6 +266,20 @@ describe('paired device management', () => {
       admin.mockRestore();
       expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
       expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      const v2Id = '11234567-0123-4123-8123-0123456789ab';
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: base,
+            headers,
+            payload: { runId: v2Id, durationMs: 120000, diagnosticsVersion: 2 },
+          })
+        ).json().phase,
+      ).toBe('recording');
+      expect(startRecording).toHaveBeenLastCalledWith(v2Id, 120000, 2, undefined);
+      expect((await app.inject({ ...operations[4], headers })).statusCode).toBe(400);
+      expect(selectedStatus).toHaveBeenLastCalledWith(runId);
       await registry.revoke(device.id);
       expect((await app.inject({ ...operations[3], headers })).statusCode).toBe(401);
     } finally {
@@ -863,6 +881,10 @@ describe('global auth gate (onRequest)', () => {
       const blocked = await app.inject({ method: 'GET', url: '/settings' });
       expect(blocked.statusCode).toBe(401);
       expect(blocked.json()).toEqual({ error: 'unauthorized' });
+      const history = await app.inject({ method: 'GET', url: '/sessions/private/history/v1' });
+      expect(history.statusCode).toBe(401);
+      expect(history.json()).toEqual({ error: 'unauthorized' });
+
       // Wrong token → 401.
       expect(
         (
@@ -985,6 +1007,7 @@ describe('global auth gate (onRequest)', () => {
         for (const [method, url] of [
           ['POST', '/internal/git/sign'],
           ['POST', '/internal/project/memory'],
+          ['POST', '/internal/project/repo'],
           ['POST', '/internal/mcp'],
           ['GET', '/internal/mcp'],
           ['POST', '/internal/control-plane/mcp'],

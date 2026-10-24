@@ -17,6 +17,7 @@ import type { AttentionFlag } from '@verity/mobile';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from './Icon';
+import { toneColor } from '../theme/tokens';
 
 function PrMarker({
   size,
@@ -84,7 +85,7 @@ export function AttentionMarkers({
   const flag = flags[0];
   const spec = flag ? MARKERS[flag.kind] : undefined;
   if (!flag || !spec) return null;
-  const color = theme.colors.tone[spec.tone];
+  const color = toneColor(theme.colors, spec.tone);
   return (
     <View
       style={inline ? styles.inline : styles.slot}

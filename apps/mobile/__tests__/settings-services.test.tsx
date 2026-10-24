@@ -419,6 +419,64 @@ describe('settings/services — AI backends', () => {
     expect(listProviderLimits).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['relogin_required', 'refresh_rejected', 'Re-login needed'],
+    ['refresh_failed', 'refresh_transport_error', 'Retrying'],
+  ] as const)('shows Claude %s in the connection list', async (state, code, label) => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeCredentialStatus: { state, code },
+        }),
+      }),
+    );
+    render(<ConnectionsScreen />);
+    expect(await screen.findByLabelText(new RegExp(`^Claude,.*${label}`))).toBeOnTheScreen();
+  });
+
+  it('offers re-login for a stored Claude login whose refresh was rejected', async () => {
+    const startAgentLogin = jest.fn().mockResolvedValue(claudeSession);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        startAgentLogin,
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeCredentialStatus: { state: 'relogin_required', code: 'refresh_rejected' },
+        }),
+      }),
+    );
+    render(<ClaudeScreen />);
+    expect(await screen.findByText('Re-login needed')).toBeOnTheScreen();
+    expect(
+      screen.getByLabelText(/Sign in to Claude again\. Claude could not renew/),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Reconnect Claude(,|$)/));
+    await waitFor(() => expect(startAgentLogin).toHaveBeenCalledWith('claude'));
+    expect(await screen.findByLabelText(/^Open Claude login page(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByText('Re-login needed')).toBeNull();
+  });
+
+  it('reports retrying for a transient Claude refresh failure without starting login', async () => {
+    const startAgentLogin = jest.fn();
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        startAgentLogin,
+        settings: makeSettings({
+          claudeCodeOauthCredentialsConfigured: true,
+          claudeCredentialStatus: { state: 'refresh_failed', code: 'refresh_transport_error' },
+        }),
+      }),
+    );
+    render(<ClaudeScreen />);
+    expect(await screen.findByText('Retrying')).toBeOnTheScreen();
+    expect(
+      screen.getByLabelText(/Claude connection temporarily unavailable\. Verity will retry/),
+    ).toBeOnTheScreen();
+    expect(startAgentLogin).not.toHaveBeenCalled();
+    expect(screen.queryByText('Re-login needed')).toBeNull();
+  });
+
   it('starts Claude re-login automatically when opened from an expired chat session', async () => {
     const startAgentLogin = jest.fn().mockResolvedValue(claudeSession);
     setSearchParams({ agentLogin: 'claude' });

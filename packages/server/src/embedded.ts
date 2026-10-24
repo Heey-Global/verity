@@ -1,15 +1,18 @@
+import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import { returnPathSelection } from './remote-return-path-diagnostics.js';
-import { listProjectGitHubIssues } from './project-github-issues.js';
 import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
+import { createForgejoForgeAdapter } from './brokered-forge-forgejo.js';
+import { ForgejoTransport } from './forgejo-transport.js';
 import { createGitHubForgeAdapter } from './brokered-forge-github.js';
 import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { issueGatewayServerCertificate } from './claude-egress-ca.js';
 import { loadForgeProxyIdentity } from './brokered-forge-identity.js';
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import { previewSharingCapability } from './preview-capability.js';
@@ -31,6 +34,7 @@ import {
   isRunnerSupervisorBackend,
   LoopbackRunnerClient,
   SupervisorRunnerClient,
+  requestRunnerSupervisor,
   SupervisorRunnerRecovery,
   brokeredGrantTarget,
   brokeredGrantToolName,
@@ -94,7 +98,6 @@ import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
-import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
 import { createGoogleContactsTool } from './google-contacts-tool.js';
@@ -111,14 +114,9 @@ import {
   type GitWorktreeOptions,
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
-import {
-  createGitHubIdentityResolver,
-  createGitHubInstallationService,
-  createGitHubPrService,
-  createGitHubReleaseService,
-  openPullRequest,
-  type GitHubInstallationService,
-} from './github.js';
+import { type GitHubInstallationService } from './github.js';
+import { projectForgeProvider } from './project-forge-provider.js';
+import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
@@ -187,6 +185,11 @@ import {
   createRuntimeReadinessGate,
   validateRuntimeReadinessTtl,
 } from './runtime-readiness-gate.js';
+import {
+  queueSessionCleanup,
+  finishSessionCleanup,
+  pendingSessionCleanups,
+} from './pending-session-cleanup.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
@@ -246,7 +249,11 @@ import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import { createBrokeredHttpTool } from './brokered-http-tool.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
-import { createClaudeOAuthTokenProvider } from './claudeUsage.js';
+import {
+  ClaudeOAuthResolutionError,
+  createClaudeOAuthTokenProvider,
+  type ClaudeOAuthTokenProvider,
+} from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import {
   createClaudeEgressIdentityService,
@@ -412,7 +419,7 @@ export function startClaudeCredentialSync(
 ): {
   close: () => Promise<void>;
   persistCredentials: (patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>;
-  getAccessToken: () => Promise<string | undefined>;
+  getAccessToken: ClaudeOAuthTokenProvider;
   persistCodexCredentialUpdate: (update: CodexCredentialUpdate) => Promise<boolean>;
   onCredentialsChanged: (listener: () => void) => () => void;
 } {
@@ -481,7 +488,7 @@ export function startClaudeCredentialSync(
       notifyCredentialListeners();
     },
   });
-  const getAccessToken = (): Promise<string | undefined> =>
+  const getAccessToken: ClaudeOAuthTokenProvider = (): Promise<string | undefined> =>
     exclusive(async () => {
       if (closed) return undefined;
       // Only this queue is allowed to consume the rotating refresh token. Claude
@@ -489,6 +496,9 @@ export function startClaudeCredentialSync(
       // therefore never race each other at the provider refresh endpoint.
       return tokenProvider();
     });
+  if (tokenProvider.statusForCredentials !== undefined) {
+    getAccessToken.statusForCredentials = tokenProvider.statusForCredentials;
+  }
   const persistCodexCredentialUpdate = (update: CodexCredentialUpdate): Promise<boolean> =>
     exclusive(async () => {
       if (closed) return false;
@@ -1282,10 +1292,23 @@ export function buildRunnerConductorWiring(deps: {
           transcript: ephemeral
             ? undefined
             : backend.runnerSupervisorBackend === 'claude-acp'
-              ? new ServerTranscript({ runtimeDir, transcript: deps.transcript })
+              ? new ServerTranscript({
+                  runtimeDir,
+                  transcript: deps.transcript,
+                  ...(isAcpBackend && context.sessionId
+                    ? { veritySessionId: context.sessionId }
+                    : {}),
+                })
               : backend.runnerSupervisorBackend === 'codex-acp'
-                ? new ServerCodexTranscript({ runtimeDir, transcript: deps.transcript })
+                ? new ServerCodexTranscript({
+                    runtimeDir,
+                    transcript: deps.transcript,
+                    ...(isAcpBackend && context.sessionId
+                      ? { veritySessionId: context.sessionId }
+                      : {}),
+                  })
                 : undefined,
+          persistentSessionHomes: isAcpBackend && !ephemeral,
           mapAttachmentPath: sandboxPath,
           mapTurnOptions: (opts) => ({
             ...opts,
@@ -1901,12 +1924,8 @@ export async function buildEmbeddedServer(
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
   }
-  const googleAccessToken = createCachedGoogleAccessToken(async () => {
-    if (secretCipher.isSealed()) return undefined;
-    const settings = await eventStore.getVeritySettings();
-    const clientId = settings?.googleDriveClientId ?? '';
-    const refreshToken = settings?.googleDriveRefreshToken ?? '';
-    return clientId.length > 0 && refreshToken.length > 0 ? { clientId, refreshToken } : undefined;
+  const googleAccessToken = createGoogleAccountAccessToken(eventStore, {
+    isSealed: () => secretCipher.isSealed(),
   });
   const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
   const invokeGoogleSlides = googleSlidesTool.invoke;
@@ -2002,6 +2021,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_app_help',
+            'verity_vulnerabilities',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -2022,6 +2042,7 @@ export async function buildEmbeddedServer(
             'verity_end_planning',
             'verity_tasks',
             'verity_app_help',
+            'verity_vulnerabilities',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -2320,55 +2341,6 @@ export async function buildEmbeddedServer(
             : {}),
         })
       : undefined;
-  // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not
-  // globally from config.repoDir. Project sessions live in their own repos, so using
-  // the Verity repo here would miss PRs like sample-app-web. The per-worktree services
-  // keep their own short GitHub TTL caches so the visible PR bar updates quickly
-  // while still coalescing repeated app polls; the token provider is re-read per lookup.
-  const prStatusTtlMs = 2_000;
-  const prServices = new Map<string, ReturnType<typeof createGitHubPrService>>();
-  // Share cooldowns between session worktrees of the SAME repository without
-  // pausing unrelated projects that may use a different GitHub installation.
-  const prFailureCooldowns = new Map<string, { until: number; inFlight?: Promise<void> }>();
-  const prFailureCooldownFor = (
-    owner: string,
-    repo: string,
-  ): { until: number; inFlight?: Promise<void> } => {
-    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-    let cooldown = prFailureCooldowns.get(key);
-    if (cooldown === undefined) {
-      cooldown = { until: 0 };
-      prFailureCooldowns.set(key, cooldown);
-    }
-    return cooldown;
-  };
-  const prServiceFor = (repoDir: string): ReturnType<typeof createGitHubPrService> => {
-    let svc = prServices.get(repoDir);
-    if (svc === undefined) {
-      svc = createGitHubPrService({
-        repoDir,
-        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-        ttlMs: prStatusTtlMs,
-        failureCooldownFor: prFailureCooldownFor,
-      });
-      prServices.set(repoDir, svc);
-    }
-    return svc;
-  };
-  // Repo identity (owner/repo) for the header's tappable Issue/PR chips (#161). Needs
-  // only the repo — owner/repo comes from the `origin` remote, no token required — so
-  // it's available even on token-less deployments. Resolves to null (chips stay
-  // non-tappable) when the repo has no GitHub origin.
-  const repoIdentities = new Map<string, ReturnType<typeof createGitHubIdentityResolver>>();
-  const repoIdentityFor = (repoDir: string): ReturnType<typeof createGitHubIdentityResolver> => {
-    let identity = repoIdentities.get(repoDir);
-    if (identity === undefined) {
-      identity = createGitHubIdentityResolver(repoDir);
-      repoIdentities.set(repoDir, identity);
-    }
-    return identity;
-  };
-
   // GitHub App creds resolve from Verity settings only. The App private key lives
   // encrypted in the DB/secret store; deployment env must not pre-configure or
   // override onboarding state.
@@ -2419,6 +2391,76 @@ export async function buildEmbeddedServer(
         ? githubAppAuthorityKey
         : () => Promise.resolve('test-github-project-token-mint'),
   });
+  const installationListTokenMint = createGitHubAppInstallationTokenMint({
+    ...baseMintOpts,
+    permissions: { metadata: 'read' },
+  });
+  // The forge behind project sessions, the repository list and the release badge
+  // (#1034). Open-PR lookups are built per SESSION WORKTREE, not globally from
+  // config.repoDir: project sessions live in their own repos (#125). The per-worktree
+  // services keep a short TTL so the visible PR bar updates quickly while repeated
+  // app polls still coalesce; the token mint is re-read per lookup.
+  //
+  // The repository list (concept §19, #174) is the live source of the `projects`
+  // cache and mints a dedicated metadata-only installation token. A sealed DB store
+  // must propagate as 503 so mobile can prompt for unlock instead of showing an
+  // empty repository list.
+  //
+  // The latest-release lookup for the project overview is non-blocking: `GET
+  // /projects` reads it synchronously and it refreshes in the background on a TTL.
+  const githubForge = createGitHubForgeProvider({
+    projectTokenMint: cachedProjectTokenMint,
+    issuesTokenMint,
+    installationToken: async () => {
+      try {
+        return await resolveInstallationListToken(installationListTokenMint);
+      } catch (err) {
+        if (err instanceof SealedError) throw err;
+        return undefined;
+      }
+    },
+    prStatusTtlMs: 2_000,
+  });
+  const forgeRepositoryAccess = async (target: {
+    owner: string;
+    repo: string;
+    forgeConnectionId?: string | null;
+  }) => {
+    if (!target.forgeConnectionId || target.forgeConnectionId === 'legacy-github') return undefined;
+    const connection = await eventStore.forgeConnections.get(target.forgeConnectionId);
+    if (!connection || connection.provider !== 'forgejo')
+      throw new Error('Forgejo connection unavailable');
+    const token = (await eventStore.forgeConnections.credentials(connection.id))?.personalToken;
+    if (!token) throw new Error('Forgejo credentials unavailable');
+    const transport = new ForgejoTransport(
+      connection.baseUrl,
+      () => Promise.resolve(token),
+      connection.customCaPem,
+    );
+    return {
+      url: `${transport.baseUrl}/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}.git`,
+      token,
+      authorization: `Authorization: Basic ${Buffer.from(`oauth2:${token}`).toString('base64')}`,
+      customCaPem: connection.customCaPem ?? null,
+    };
+  };
+  const forgeForWorktree = async (worktree: string) => {
+    if (config.hostCloneRoot) {
+      for (const project of await eventStore.listProjects({ includeHidden: true })) {
+        const suffix = relative(projectClonePath(config.hostCloneRoot, project), worktree);
+        if (
+          suffix === '' ||
+          (suffix !== '..' && !suffix.startsWith(`..${sep}`) && !suffix.startsWith(sep))
+        ) {
+          return projectForgeProvider(eventStore, githubForge, project);
+        }
+      }
+    }
+    return githubForge;
+  };
+  const installationService: GitHubInstallationService = {
+    listInstallationRepos: () => githubForge.listRepositories(),
+  };
   // GitHub-token broker (security review): the sandbox holds an opaque per-project
   // capability and redeems it at POST /internal/github/token instead of carrying a
   // gh-token file. The provisioner issues capabilities into this SAME registry; the
@@ -2442,40 +2484,11 @@ export async function buildEmbeddedServer(
         refreshBase: true,
         fetchAuthHeader: () =>
           resolveRepoWorktreeFetchAuthHeader(
-            () => repoIdentityFor(config.repoDir as string)(),
+            githubForge.identityFor(config.repoDir as string),
             cachedProjectTokenMint,
           ),
       })
     : undefined;
-  const installationListTokenMint = createGitHubAppInstallationTokenMint({
-    ...baseMintOpts,
-    permissions: { metadata: 'read' },
-  });
-  // GitHub-App-installation repo list (concept §19, #174) — the live source of the
-  // `projects` cache, fetched fresh per `GET /projects` (with a per-call TTL cached by
-  // the service so a polled picker doesn't burn rate limit). The DB-backed App path
-  // mints a dedicated metadata-only installation token. A sealed DB store must
-  // propagate as 503 so mobile can prompt for unlock instead of showing an empty
-  // repository list.
-  const installationService = createGitHubInstallationService({
-    asyncToken: async () => {
-      try {
-        return await resolveInstallationListToken(installationListTokenMint);
-      } catch (err) {
-        if (err instanceof SealedError) throw err;
-        return undefined;
-      }
-    },
-  });
-
-  // Latest-release lookup for the project overview: same precondition as the
-  // installation service (an App-installation token). Fleet-wide (keyed by
-  // (owner, repo) per call), non-blocking — `GET /projects` reads it synchronously
-  // and it refreshes in the background on a TTL. Absent → the overview shows no
-  // release version (the field is simply null on the wire).
-  const releaseService = createGitHubReleaseService({
-    asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-  });
 
   const secretRoot =
     config.secretMaterializationRoot ??
@@ -2621,7 +2634,8 @@ export async function buildEmbeddedServer(
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
         onReturnPathSnapshot: (snapshot) => coordinatedRecording?.observe(snapshot),
-        returnPathExpiry: (): number | undefined => returnPath.expiry(),
+        returnPathExpiry: (sessionHash, connectorId): number | undefined =>
+          returnPath.expiry(sessionHash, connectorId),
         returnPathInstallation: (): string | undefined => {
           const descriptor = uplinkControl?.remoteControlDescriptor();
           return descriptor?.enabled ? descriptor.installationId : undefined;
@@ -2674,7 +2688,11 @@ export async function buildEmbeddedServer(
       : undefined;
   if (uplinkControl && remoteConnector) {
     coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
-      start: (runId, durationMs) => uplinkControl.startRecording(runId, durationMs),
+      selectedConnectorId: (targetSessionId) =>
+        uplinkControl.selectedRecordingConnectorId(targetSessionId),
+      start: (runId, durationMs, version, targetSessionId) =>
+        uplinkControl.startRecording(runId, durationMs, version, targetSessionId),
+      status: (runId) => uplinkControl.recordingStatus(runId),
       stop: (runId) => uplinkControl.stopRecording(runId),
       export: (runId) => uplinkControl.exportRecording(runId),
     });
@@ -2942,12 +2960,16 @@ export async function buildEmbeddedServer(
       claude: {
         tls: { ca, cert, key },
         peerBindings: routedBindings,
-        ...(config.agentGatewayUnsealKey === undefined || agentGatewayAccessToken === undefined
+        ...(config.agentGatewayUnsealKey === undefined
           ? {}
           : {
               credential: {
                 unsealKey: config.agentGatewayUnsealKey,
-                accessToken: agentGatewayAccessToken,
+                // An unresolved token must recover spill rather than revoke it
+                // when another provider's credential update is projected.
+                ...(agentGatewayAccessToken === undefined
+                  ? {}
+                  : { accessToken: agentGatewayAccessToken }),
               },
             }),
       },
@@ -3163,6 +3185,10 @@ export async function buildEmbeddedServer(
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
   const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  const forgeCertificates = new Map<
+    string,
+    { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
+  >();
   const forgePackageMap = projectRelayEnabled
     ? await loadForgePackageMap(secretRoot)
     : new Map<string, readonly string[]>();
@@ -3195,14 +3221,68 @@ export async function buildEmbeddedServer(
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
+          allowsHost: async (authority) =>
+            githubForgeAdapter.hosts.has(authority) ||
+            ghcrForgeAdapter.hosts.has(authority) ||
+            (await eventStore.forgeConnections.list()).some(
+              (connection) =>
+                connection.provider === 'forgejo' && new URL(connection.baseUrl).host === authority,
+            ),
+          certificateFor: async (authority) => {
+            if (githubForgeAdapter.hosts.has(authority) || ghcrForgeAdapter.hosts.has(authority))
+              return forgeIdentity.certificate;
+            const hostname = new URL(`https://${authority}`).hostname.replace(/^\[|\]$/gu, '');
+            const cached = forgeCertificates.get(hostname);
+            if (cached && cached.expires > Date.now()) return cached.certificate;
+            const certificate = issueGatewayServerCertificate(forgeIdentity.ca, {
+              serverName: hostname,
+            }).catch((error) => {
+              forgeCertificates.delete(hostname);
+              throw error;
+            });
+            forgeCertificates.set(hostname, {
+              expires: Date.now() + 24 * 60 * 60_000,
+              certificate,
+            });
+            return certificate;
+          },
           adapter: {
             hosts: new Set([...githubForgeAdapter.hosts, ...ghcrForgeAdapter.hosts]),
-            streams: (request) => githubForgeAdapter.streams(request),
-            authorize: (request, ...args) =>
-              (request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter).authorize(
-                request,
-                ...args,
-              ),
+            streams: (request) =>
+              githubForgeAdapter.hosts.has(request.hostname) ||
+              ghcrForgeAdapter.hosts.has(request.hostname)
+                ? githubForgeAdapter.streams(request)
+                : !request.path.includes('/api/v1/'),
+            authorize: async (request, binding, actions, signal) => {
+              const project = await eventStore.getProject(binding.projectId);
+              if (
+                !project ||
+                project.owner !== binding.owner ||
+                project.repo !== binding.repo ||
+                (project.forgeConnectionId ?? 'legacy-github') !==
+                  (binding.forgeConnectionId ?? 'legacy-github')
+              )
+                throw new Error('forge binding changed');
+              if (project.kind !== 'forgejo')
+                return (
+                  request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter
+                ).authorize(request, binding, actions, signal);
+              if (!binding.forgeConnectionId) throw new Error('forge binding missing');
+              const connection = await eventStore.forgeConnections.get(binding.forgeConnectionId);
+              if (!connection || connection.provider !== 'forgejo')
+                throw new Error('forge connection unavailable');
+              return createForgejoForgeAdapter({
+                connectionId: connection.id,
+                baseUrl: connection.baseUrl,
+                customCaPem: connection.customCaPem ?? null,
+                credentials: async () => {
+                  const token = (await eventStore.forgeConnections.credentials(connection.id))
+                    ?.personalToken;
+                  if (!token) return undefined;
+                  return { token, login: 'oauth2' };
+                },
+              }).authorize(request, binding, actions, signal);
+            },
           },
           enabled: forgeProxyEnabled,
         });
@@ -3370,12 +3450,31 @@ export async function buildEmbeddedServer(
     // changes still invalidate the cache immediately.
     refreshProjectToken = (project: ProjectRecord): Promise<void> =>
       refreshProjectGitHubToken(project, cachedProjectTokenMint.strict);
-    // Per-project session worktree factory (see {@link createProjectWorktreeFactory}):
-    // its `refreshBase` fetch authenticates with the SAME project-scoped token the
-    // mint issues for `refreshProjectToken`. Guarded by the same mint + docker/
-    // clone-root config; the server's own `/work` worktrees keep no
-    // `fetchAuthHeader` (unchanged).
-    projectWorktrees = createProjectWorktreeFactory(projectTokenMint);
+    // Session worktrees use their project's provider: GitHub App tokens or the
+    // current Forgejo connection token and CA. Neither credential is persisted
+    // in the clone or worktree.
+    projectWorktrees = createProjectWorktreeFactory(projectTokenMint, async (project) => {
+      const access = await forgeRepositoryAccess(project);
+      if (!access) throw new Error('Forgejo connection unavailable');
+      let caPath: string | undefined;
+      if (access.customCaPem) {
+        const directory = join(secretRoot, 'git');
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        caPath = join(directory, `forge_ca.${project.forgeConnectionId ?? project.id}`);
+        const temporary = `${caPath}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, access.customCaPem, { mode: 0o600 });
+          await rename(temporary, caPath);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      }
+      return {
+        url: access.url,
+        authorization: access.authorization,
+        ...(caPath ? { caPath } : {}),
+      };
+    });
     // Claude-egress identity material is refreshed on every issue/revoke and
     // projected to the standalone gateway. The provisioner uses the same service
     // to issue per-project client certificates and the deprovisioner revokes them.
@@ -3592,11 +3691,22 @@ export async function buildEmbeddedServer(
       docker,
       defaultImageRef: defaultProjectImage,
       projectTokenMint,
+      forgeRepositoryAccess,
       veritySettings: () => eventStore.getVeritySettings(),
       // Linking a local project to a repository that already has history publishes an
       // import branch and opens the pull request that carries it onto the default
       // branch — the token is the one-shot, target-scoped mint the link route made.
-      openPullRequest: (target, token, pr) => openPullRequest(target, token, pr),
+      openPullRequest: async (target, token, pr) => {
+        const provider = await projectForgeProvider(eventStore, githubForge, {
+          ...target,
+          kind:
+            target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github'
+              ? 'forgejo'
+              : 'github',
+        });
+        if (!provider) throw new Error('Forge provider unavailable');
+        return provider.openPullRequest(target, token, pr);
+      },
       gitSecretRoot: secretRoot,
       // GitHub-token broker: the SAME registry the /internal/github/token endpoint
       // resolves against. The provisioner issues a per-container capability into it
@@ -3605,7 +3715,14 @@ export async function buildEmbeddedServer(
       forgeProxy:
         forgeIdentity === undefined
           ? undefined
-          : { caCertPem: forgeIdentity.ca.caCertPem, enabled: forgeProxyEnabled },
+          : {
+              caCertPem: forgeIdentity.ca.caCertPem,
+              enabled: forgeProxyEnabled,
+              urlFor: async (project: ProjectRecord) =>
+                project.forgeConnectionId
+                  ? (await eventStore.forgeConnections.get(project.forgeConnectionId))?.baseUrl
+                  : undefined,
+            },
       projectRelay: projectRelayControl!,
       claudeEgressGatewayUrl: config.claudeEgressGatewayUrl!,
       codexEgressGatewayUrl: config.codexEgressGatewayUrl!,
@@ -3889,10 +4006,20 @@ export async function buildEmbeddedServer(
     config.agentGatewayUnsealKey !== undefined
   ) {
     const projectCredential = async (): Promise<void> => {
-      // A confirmed missing credential is an explicit revocation. Errors retain
-      // the last valid projection and are retried by the periodic reconciler.
-      const token = await claudeCredentialSync.getAccessToken();
-      const projected = token ?? null;
+      // Only a missing or unusable login revokes the credential. A transient
+      // refresh failure must retain the last projection for the next retry.
+      let projected = agentGatewayAccessToken;
+      let credentialError: Error | undefined;
+      try {
+        projected = (await claudeCredentialSync.getAccessToken()) ?? null;
+      } catch (error) {
+        if (error instanceof ClaudeOAuthResolutionError && error.state === 'relogin_required') {
+          projected = null;
+        } else {
+          credentialError =
+            error instanceof Error ? error : new Error('Claude credential resolution failed');
+        }
+      }
       const settings = await eventStore.getVeritySettings();
       const codexAuth = settings?.codexAuthJson;
       const projectedCodex =
@@ -3907,15 +4034,18 @@ export async function buildEmbeddedServer(
           ? undefined
           : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
       if (
-        projected === agentGatewayAccessToken &&
-        projectedCodex === agentGatewayCodexAuthJson &&
-        JSON.stringify(projectedOpenCode) === JSON.stringify(agentGatewayOpenCode)
-      )
-        return;
-      agentGatewayAccessToken = projected;
-      agentGatewayCodexAuthJson = projectedCodex;
-      agentGatewayOpenCode = projectedOpenCode;
-      syncAgentGateway();
+        projected !== agentGatewayAccessToken ||
+        projectedCodex !== agentGatewayCodexAuthJson ||
+        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode)
+      ) {
+        agentGatewayAccessToken = projected;
+        agentGatewayCodexAuthJson = projectedCodex;
+        agentGatewayOpenCode = projectedOpenCode;
+        syncAgentGateway();
+      }
+      // Claude refresh must not hold another provider's logout hostage. Report
+      // the failure only after projecting the independently readable settings.
+      if (credentialError !== undefined) throw credentialError;
     };
     let projection: Promise<void> | undefined;
     let projectionRequested = false;
@@ -3981,10 +4111,14 @@ export async function buildEmbeddedServer(
       if (bindingGeneration !== agentGatewayBindingGeneration) continue;
       agentGatewayTls = material.tls;
       agentGatewayBindings = routedBindings;
-      // An omitted credential means revocation to the gateway. Preserve its
-      // encrypted recovery spill until credential synchronization has resolved to
-      // either a current token or an explicit null.
-      if (agentGatewayAccessToken !== undefined) {
+      // A sealed store must not revoke recovery spill. Once another provider's
+      // settings are readable, its updates may proceed with Claude in recovery
+      // mode even while Claude's token resolution remains unavailable.
+      if (
+        agentGatewayAccessToken !== undefined ||
+        agentGatewayCodexAuthJson !== undefined ||
+        agentGatewayOpenCode !== undefined
+      ) {
         const configuration = agentGatewayConfiguration();
         if (configuration !== undefined && agentGatewaySynchronizer !== undefined && confirm) {
           await agentGatewaySynchronizer.updateAndWait(configuration);
@@ -4102,6 +4236,15 @@ export async function buildEmbeddedServer(
             if (runnerProjectIds.size === 0) return;
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
+            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+            if (scope === 'session-delete')
+              await queueSessionCleanup(cleanupRoot, {
+                sessionId,
+                sandboxCwd,
+                runnerProjectIds: [...runnerProjectIds],
+                bindings: [...bindings],
+              });
+
             const removed: string[] = [];
             const absent: string[] = [];
             const absentBound: string[] = [];
@@ -4112,22 +4255,48 @@ export async function buildEmbeddedServer(
             let runtimeSeen = false;
             for (const runnerProjectId of runnerProjectIds) {
               const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              const purge = await purgeSessionArtifactFiles({
-                runtimeDir,
-                sandboxCwd,
-                bindings,
-                sessionId,
-                scope,
-              });
-              removed.push(...purge.removed);
-              absent.push(...purge.absent);
-              absentBound.push(...purge.absentBound);
-              failed.push(...purge.failed);
-              outsideRuntime.push(...purge.outsideRuntime);
-              if (!purge.runtimeMissing) runtimeSeen = true;
-              if (purge.unresolved) unresolved.push(runtimeDir);
-              for (const backend of purge.unknownBackends) unknownBackends.add(backend);
+              // Control sessions may name a historical project with no runner runtime.
+              if (!existsSync(runtimeDir)) continue;
+              try {
+                if (scope === 'session-delete') {
+                  const deleted = await requestRunnerSupervisor(
+                    join(runtimeDir, 'supervisor.sock'),
+                    { kind: 'delete-session-home', sessionId },
+                    30_000,
+                  );
+                  if (deleted.ok !== true) throw new Error('Session home deletion failed');
+                }
+                const purge = await purgeSessionArtifactFiles({
+                  runtimeDir,
+                  sandboxCwd,
+                  bindings,
+                  sessionId,
+                  scope,
+                });
+                removed.push(...purge.removed);
+                absent.push(...purge.absent);
+                absentBound.push(...purge.absentBound);
+                failed.push(...purge.failed);
+                outsideRuntime.push(...purge.outsideRuntime);
+                if (!purge.runtimeMissing) runtimeSeen = true;
+                if (purge.unresolved) unresolved.push(runtimeDir);
+                for (const backend of purge.unknownBackends) unknownBackends.add(backend);
+              } catch (error) {
+                unresolved.push(runtimeDir);
+                app.log.warn(
+                  { err: error, sessionId, runnerProjectId },
+                  'verity: runner session cleanup remains pending',
+                );
+              }
             }
+            if (
+              scope === 'session-delete' &&
+              failed.length === 0 &&
+              outsideRuntime.length === 0 &&
+              unresolved.length === 0 &&
+              unknownBackends.size === 0
+            )
+              await finishSessionCleanup(cleanupRoot, sessionId);
             // A path that resolved OUT of the runtime means something planted a symlink in
             // a directory the Sandbox can write. Nothing was deleted — but this is not a
             // cleanup problem, so it gets its own message rather than being read as one.
@@ -4473,32 +4642,37 @@ export async function buildEmbeddedServer(
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
     ...(branches !== undefined ? { branches } : {}),
-    ...(prServiceFor !== undefined
-      ? { branchPr: (b: string, wt: string) => prServiceFor(wt).prForBranch(b) }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? { branchPrStatus: (b: string, wt: string) => prServiceFor(wt).prStatusForBranch(b) }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? {
-          branchPrStatusForBranches: (bs: readonly string[], wt: string) =>
-            prServiceFor(wt).prStatusForBranches(bs),
-        }
-      : {}),
-    ...(prServiceFor !== undefined
-      ? {
-          mergePr: (n: number, wt: string, expectedHeadSha?: string) =>
-            prServiceFor(wt).mergePr(n, expectedHeadSha),
-        }
-      : {}),
-    repoIdentity: (wt: string) => repoIdentityFor(wt)(),
+    forgejoEnabled: projectRelayEnabled && provisioner !== undefined,
+    branchPr: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
+    branchPrStatus: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranch(b) ?? null,
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranches(bs) ?? null,
+    mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
+    repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
     // Live GitHub-App credential validation for the onboarding wizard (#320). The
     // route reads + decrypts the stored creds itself (unsealed-only) and hands them
     // here; this just performs the redaction-safe test-mint against GitHub.
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
-    ghTokenMint: (project) => cachedProjectTokenMint(project),
+    // `verity-repo`: the project's code host executes pull request and issue actions.
+    projectRepository: async (project: ProjectRecord) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider === undefined) return undefined;
+      return {
+        hostName: provider.id === 'forgejo' ? 'Forgejo' : 'GitHub',
+        operations: provider.repositoryOperations(project),
+        listIssues: () => provider.listIssues(project),
+      };
+    },
+    ghTokenMint: async (project: {
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string | null;
+    }) => (await forgeRepositoryAccess(project))?.token ?? githubForge.mintProjectToken(project),
     // Loopback MCP gateway for ACP sessions (ADR 0014 D1). The approval seam is
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
@@ -4533,11 +4707,15 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: (project: ProjectRecord) =>
-      listProjectGitHubIssues(project, issuesTokenMint),
-    latestRelease: (owner: string, repo: string) => releaseService.latestRelease(owner, repo),
+    listProjectGitHubIssues: async (project: ProjectRecord) =>
+      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
+        connected: false,
+        viewerLogin: null,
+        issues: [],
+      },
+    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
     refreshLatestRelease: (owner: string, repo: string) =>
-      releaseService.refreshLatestRelease(owner, repo),
+      githubForge.refreshLatestRelease({ owner, repo }),
     // Multi-repo fleet-registry listing (concept §19, #174). The provider syncs
     // the live GitHub-App-installation repos into the durable `projects` cache
     // (upsert preserves worker-owned state — cloning/container_starting/active/
@@ -5094,6 +5272,49 @@ export async function buildEmbeddedServer(
       } finally {
         storeReadsDone();
       }
+      const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+      for (const pending of await pendingSessionCleanups(cleanupRoot)) {
+        if (sweepAbort.signal.aborted) break;
+        try {
+          let clean = true;
+          for (const projectId of pending.runnerProjectIds) {
+            const runtimeDir = join(dataVolumeRoot, 'runners', projectId);
+            if (!existsSync(runtimeDir)) continue;
+            try {
+              const response = await requestRunnerSupervisor(
+                join(runtimeDir, 'supervisor.sock'),
+                { kind: 'delete-session-home', sessionId: pending.sessionId },
+                10_000,
+              );
+              if (response.ok !== true) throw new Error('Pending session home cleanup failed');
+              const result = await purgeSessionArtifactFiles({
+                runtimeDir,
+                sandboxCwd: pending.sandboxCwd,
+                sessionId: pending.sessionId,
+                bindings: pending.bindings,
+                scope: 'session-delete',
+              });
+              clean &&=
+                result.failed.length === 0 &&
+                result.outsideRuntime.length === 0 &&
+                result.unknownBackends.length === 0 &&
+                !result.unresolved;
+            } catch (error) {
+              clean = false;
+              app.log.warn(
+                { err: error, sessionId: pending.sessionId, projectId },
+                'verity: runner session cleanup remains pending',
+              );
+            }
+          }
+          if (clean) await finishSessionCleanup(cleanupRoot, pending.sessionId);
+        } catch (error) {
+          app.log.warn(
+            { err: error, sessionId: pending.sessionId },
+            'verity: session cleanup remains pending',
+          );
+        }
+      }
       const result = await sweepOrphanArtifacts({
         runnersRoot,
         liveIds: new Set(liveIds),
@@ -5400,6 +5621,17 @@ export async function buildEmbeddedServer(
       githubCapabilities: ghTokenCapabilities,
       forgeProxy,
       forgeProxyEnabled,
+      forgeAuthorities: async (projectId) => {
+        const project = await eventStore.getProject(projectId);
+        if (project?.kind !== 'forgejo')
+          return ['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'];
+        const connection = project.forgeConnectionId
+          ? await eventStore.forgeConnections.get(project.forgeConnectionId)
+          : undefined;
+        if (!connection || connection.provider !== 'forgejo') return [];
+        const url = new URL(connection.baseUrl);
+        return [`${url.hostname}:${url.port || '443'}`];
+      },
       image: config.projectRelayImage!,
       dataVolume: config.dataVolume,
       dataVolumeRoot: config.dataVolumeRoot,
@@ -5530,10 +5762,13 @@ export async function syncProjectsFromInstallation(
   // Repeated overview polls must not acquire the global knowledge lifecycle
   // lock and rewrite every unchanged repository, starving unrelated reads.
   const existing = new Map(
-    (await eventStore.listProjects({ includeHidden: true })).map((project) => [
-      `${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`,
-      project,
-    ]),
+    (await eventStore.listProjects({ includeHidden: true }))
+      .filter(
+        (project) =>
+          (project.kind === undefined || project.kind === 'github') &&
+          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
+      )
+      .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
   );
 
   // The container_name is the canonical hyphen-slug form derived from the
@@ -5689,7 +5924,12 @@ export async function refreshProjectGitHubToken(
  * narrow global token and fails with `remote: Repository not found`.
  */
 
-export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
+export function createProjectWorktreeFactory(
+  mint: GitHubProjectTokenMint,
+  forgeConnection?: (
+    project: ProjectRecord,
+  ) => ReturnType<NonNullable<GitWorktreeOptions['fetchConnection']>>,
+): (
   project: ProjectRecord,
   projectClone: string,
   // `git` is an optional injection seam (tests); production omits it and the
@@ -5702,7 +5942,16 @@ export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
       ...worktreeOpts,
       repoDir: projectClone,
       worktreeRoot: join(projectClone, '.verity-sessions'),
+      ...(project.kind === 'forgejo'
+        ? {
+            fetchConnection: async () => {
+              if (!forgeConnection) throw new Error('Forgejo connection unavailable');
+              return forgeConnection(project);
+            },
+          }
+        : {}),
       fetchAuthHeader: async () => {
+        if (project.kind === 'forgejo') return undefined;
         // On-demand mint only — no project-clone `.gh-token` file exists anymore
         // (it would sit in the sandbox's /work; the sandbox uses the token broker).
         const token = await mint(project);

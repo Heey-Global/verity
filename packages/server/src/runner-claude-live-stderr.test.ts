@@ -104,3 +104,14 @@ describe('live smoke stderr', () => {
     ]);
   });
 });
+
+it('tolerates only the exact stale auth probe diagnostic', () => {
+  const diagnostic = '[authStatus] discarding a probe that predates the latest auth change';
+  expect(unexpectedStderrLines(diagnostic)).toEqual([]);
+  expect(unexpectedStderrLines(`${diagnostic} token=unexpected`)).toEqual([
+    `${diagnostic} token=unexpected`,
+  ]);
+  expect(unexpectedStderrLines('[authStatus] authentication failed')).toEqual([
+    '[authStatus] authentication failed',
+  ]);
+});

@@ -33,3 +33,37 @@ test('live inputs are environment values and the production probe runs in app mo
   for (const step of steps) assert(!step.run?.includes('${{'));
   assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
 });
+
+test('a test entry route only accepts a dotted IPv4 and a bare https Uplink host', () => {
+  const check = steps.find((step) => step.name === 'Validate test entry')?.run;
+  assert.equal(typeof check, 'string');
+  const run = (ip, origin = 'https://uplink.verity.build') =>
+    spawnSync('bash', ['-c', check], {
+      env: { ...process.env, UPLINK_TEST_IP: ip, UPLINK_ORIGIN: origin },
+    }).status;
+  for (const ip of ['', '203.0.113.7', '10.0.0.1', '255.255.255.255']) assert.equal(run(ip), 0, ip);
+  for (const ip of ['1.2.3', '256.1.1.1', '01.2.3.4', '1.2.3.4 evil.example', '1.2.3.4\n', '::1']) {
+    assert.notEqual(run(ip), 0, ip);
+  }
+  assert.equal(run('203.0.113.7', 'https://uplink.verity.build/'), 0);
+  for (const origin of [
+    'https://uplink.verity.build:8443',
+    'https://a b',
+    'http://uplink.verity.build',
+  ]) {
+    assert.notEqual(run('203.0.113.7', origin), 0, origin);
+  }
+});
+
+test('the test entry route is opt-in and always removed', () => {
+  const route = steps.find((step) => step.name === 'Route the Uplink host to the test entry');
+  const cleanup = steps.find((step) => step.name === 'Remove the test entry route');
+  assert.equal(route.if, "inputs.uplink_test_ip != ''");
+  assert.equal(cleanup.if, "always() && inputs.uplink_test_ip != ''");
+  assert(steps.indexOf(route) < steps.findIndex((step) => step.run?.includes('run.sh')));
+  assert.equal(steps.at(-1), cleanup);
+  // A leftover route from a killed run is cleared before every soak, routed or not.
+  const leftover = steps.find((step) => step.name === 'Remove a leftover test entry route');
+  assert.equal(leftover.if, undefined);
+  assert(steps.indexOf(leftover) < steps.indexOf(route));
+});

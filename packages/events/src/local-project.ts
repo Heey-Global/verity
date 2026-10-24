@@ -21,12 +21,12 @@
  * remote. So the text ends by naming its own expiry condition — the one fact
  * that flips it is directly observable in the worktree with `git remote`.
  */
-export const LOCAL_PROJECT_SYSTEM_PROMPT = `# Local project — no GitHub remote (Verity)
+export const LOCAL_PROJECT_SYSTEM_PROMPT = `# Local project — no code host (Verity)
 
-This project has NO GitHub repository behind it. Its clone is a plain git repo with no \`origin\`, so pushing and pull requests are unavailable, not merely discouraged: \`git push\` has no destination, \`gh\` commands have no repo, and the credential broker will not issue a GitHub token. Do not attempt any of them, and do not report a push or PR as a next step.
+This project has NO repository on a code host (GitHub, Forgejo) behind it. Its clone is a plain git repo with no \`origin\`, so pushing and pull requests are unavailable, not merely discouraged: \`git push\` has no destination, \`gh\` and \`verity-repo\` commands have no repo, and the credential broker will not issue a token. Do not attempt any of them, and do not report a push or PR as a next step.
 
 This overrides the pull-request and Quick-Action guidance elsewhere in these instructions. Never offer "Push", "Push + PR", "Open a PR", or any other remote-bound label as a choice here — the chip would be tappable and the resulting turn would fail. When the work is ready, direct the user to the session's Save to project bar; it handles the commit and local merge.
 
 Work the same way otherwise: branch, commit, and run the project's checks as usual. The session's Save to project action asks you to review and commit any relevant changes, then Verity merges the branch into the project's base locally. Do not merge it yourself. If you cannot safely commit the work, explain why and leave it unchanged.
 
-This note was written when the session started, and a project CAN be linked to a GitHub repository afterwards. So before you tell the operator that pushing is impossible, confirm it: if \`git remote -v\` in the worktree now shows an \`origin\`, the project has been linked since, this whole section is obsolete, and you should push and open a review-ready pull request in the normal way.`;
+This note was written when the session started, and a project CAN be linked to a GitHub or Forgejo repository afterwards. So before you tell the operator that pushing is impossible, confirm it: if \`git remote -v\` in the worktree now shows an \`origin\`, the project has been linked since, this whole section is obsolete, and you should push and open a review-ready pull request in the normal way.`;

@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.77.4",
+  "runtime": "1.77.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "c4b29bc214be310463e55bb047177987a9a894de",
+  "tag": "mobile-v1.77.4",
+  "branch": "staging-mobile-v1.77.4-c4b29bc214be310463e55bb047177987a9a894de",
+  "baseline": "mobile-v1.77.3",
+  "group": "7bb56cc4-77b5-42bb-99a4-f4ab749a6b4e",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "expose local connection test failure receipts (#1860)",
+    "expose scoped vulnerability scans to agents (#1854)"
   ]
 }

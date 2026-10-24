@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 const trains = [
   { train: 'backend', component: 'server', path: '.', prefix: 'v' },
@@ -17,7 +19,7 @@ function execute(command, args) {
  * Tags reserve release identities; they do not constitute published releases.
  * @param {'register' | 'check'} mode
  * @param {string} head
- * @param {{repository?: string, run?: typeof execute}} [options]
+ * @param {{repository?: string, run?: typeof execute, train?: string}} [options]
  */
 export function registerReleaseTags(mode, head, options = {}) {
   if (!['register', 'check'].includes(mode) || !shaPattern.test(head))
@@ -64,11 +66,33 @@ export function registerReleaseTags(mode, head, options = {}) {
         raw
       );
     });
+  if (options.train && !trains.some((spec) => spec.train === options.train))
+    throw new Error('Invalid release train');
+  if (mode === 'check' && options.train) throw new Error('Barrier must check all trains');
+  /** Only exit 1 means non-ancestry; missing objects and Git failures are errors. */
+  const ancestor = (/** @type {string} */ base, /** @type {string} */ tip) => {
+    try {
+      git(['merge-base', '--is-ancestor', base, tip]);
+      return true;
+    } catch (error) {
+      if (/** @type {{status?: number}} */ (error).status === 1) return false;
+      throw error;
+    }
+  };
+  // Fresh PR metadata may reference objects created after checkout.
+  let current;
+  if (mode === 'register' && options.train) {
+    current = run('gh', ['api', `repos/${repository}/git/ref/heads/main`, '--jq', '.object.sha']);
+    if (!shaPattern.test(current)) throw new Error('Invalid current main');
+    git(['fetch', '--no-tags', 'origin', current]);
+    if (!ancestor(head, current)) throw new Error('Invalid current main ancestry');
+  }
   const results = [];
-  for (const spec of trains) {
+  for (const spec of trains.filter((spec) => !options.train || spec.train === options.train)) {
     const version = versionAt(head, spec);
     const tag = `${spec.prefix}${version}`;
     const matches = [];
+    const later = [];
     for (const pr of records) {
       if (
         !pr.merged_at ||
@@ -77,20 +101,21 @@ export function registerReleaseTags(mode, head, options = {}) {
         continue;
       const sha = pr.merge_commit_sha;
       if (!shaPattern.test(sha)) throw new Error('Invalid merged release commit');
-      // A later merge is irrelevant when checking an older PR base.
-      try {
-        git(['merge-base', '--is-ancestor', sha, head]);
-      } catch {
-        continue;
-      }
+      const contained = ancestor(sha, head);
+      // The merge barrier retains its immutable-base semantics. Only scoped
+      // registration may hand a provably later identity to current Main.
+      if (!contained && !(mode === 'register' && options.train)) continue;
       const manifestPath = `.release-please-manifest.${spec.train}.json`;
       // Old release PRs can predate the manifest; absence is not an API failure.
       if (!git(['ls-tree', '--name-only', sha, '--', manifestPath])) continue;
       if (versionAt(sha, spec) !== version) continue;
-      if (pr.user?.login !== 'github-actions[bot]') throw new Error(`Unexpected author for ${tag}`);
-      matches.push(sha);
+      if (!isReleaseBotLogin(pr.user?.login)) throw new Error(`Unexpected author for ${tag}`);
+      if (contained) matches.push(sha);
+      else later.push(sha);
     }
     if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
+    if (mode === 'register' && options.train && matches.length + later.length > 1)
+      throw new Error(`Ambiguous merged release identity for ${tag}`);
     /** Read remote refs so retries cannot trust stale checkout tags. */
     const remoteTarget = () => {
       const refs = run('git', [
@@ -110,6 +135,22 @@ export function registerReleaseTags(mode, head, options = {}) {
       );
     };
     let target = remoteTarget();
+    if (mode === 'register' && options.train && !matches.length && later.length) {
+      if (later.length !== 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
+      if (
+        !current ||
+        !ancestor(head, current) ||
+        !ancestor(head, later[0]) ||
+        !ancestor(later[0], current)
+      )
+        throw new Error('Invalid superseded release ancestry');
+      if (target && target !== later[0])
+        throw new Error(`${tag} differs from its merged release commit`);
+      // A fresh PR listing and immutable manifest at its merge commit establish
+      // the identity. Equal version strings alone never authorize a handoff.
+      results.push({ tag, status: 'superseded', head: current });
+      continue;
+    }
     if (!target) {
       if (mode === 'check')
         throw new Error(
@@ -147,5 +188,12 @@ export function registerReleaseTags(mode, head, options = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const mode = process.argv[2];
   if (mode !== 'register' && mode !== 'check') throw new Error('Expected register or check');
-  console.log(JSON.stringify(registerReleaseTags(mode, process.argv[3])));
+  const results = registerReleaseTags(mode, process.argv[3], { train: process.argv[4] });
+  const superseded = results.find((result) => result.status === 'superseded');
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `status=${superseded ? 'superseded' : 'registered'}\nhead=${superseded?.head ?? ''}\n`,
+    );
+  console.log(JSON.stringify(results));
 }

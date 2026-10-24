@@ -158,3 +158,34 @@ it('publishes changed preview links without replacing unchanged session or repos
   );
   expect(stopped[0]?.portLinks).toEqual([]);
 });
+
+it('links Forgejo projects to their instance and never to github.com', () => {
+  const forgejoProject = { ...project('f'), kind: 'forgejo' as const, forgeConnectionId: 'fj' };
+  const connections = [
+    {
+      id: 'fj',
+      provider: 'forgejo' as const,
+      baseUrl: 'https://git.example.org',
+      label: 'Forgejo',
+    },
+  ];
+  const [github, forgejo] = projectGroups(
+    [project('g'), forgejoProject],
+    [],
+    new Map(),
+    new Map(),
+    null,
+    [],
+    connections,
+  );
+  expect(github?.repo).toEqual({ owner: 'owner', repo: 'g' });
+  expect(forgejo?.repo).toEqual({
+    owner: 'owner',
+    repo: 'f',
+    host: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+  });
+  // Without the connection the app cannot know the host; a GitHub fallback
+  // would open an unrelated repository of the same name.
+  const [, unknown] = projectGroups([project('g'), forgejoProject], [], new Map(), new Map(), null);
+  expect(unknown?.repo).toBeUndefined();
+});

@@ -182,7 +182,11 @@ describe('validateGitHubAppCreds (production mint, faked transport)', () => {
       } as HttpResponse);
     };
     const result = await validateGitHubAppCreds(c, { fetch });
-    expect(result).toEqual({ ok: true, accountLogin: 'acme-org' });
+    expect(result).toEqual({
+      ok: true,
+      accountLogin: 'acme-org',
+      commitStatusPermission: { state: 'unknown' },
+    });
     expect(bodies[0] === undefined ? undefined : JSON.parse(bodies[0])).toEqual({
       permissions: {
         contents: 'write',

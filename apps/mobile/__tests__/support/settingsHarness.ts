@@ -13,6 +13,7 @@
 // over.
 import type { ProjectRecord, SecretStatus, VerityClient, VeritySettings } from '@verity/mobile';
 
+import { resetGithubPermissionForTests } from '../../lib/githubPermission';
 import { resetVeritySettingsStore } from '../../lib/settingsStore';
 
 /** The address `lib/client` is mocked to report. Assertions that render it
@@ -46,15 +47,18 @@ export function refocus(): void {
 /**
  * expo-router, reduced to what the settings routes actually use.
  *
- * `Stack.Screen` is a navigation-config sink with no host output, so a
- * null-rendering stub keeps it out of the tree. `useFocusEffect` fires once on
+ * `Stack.Screen` is a navigation-config sink with no host output; the stub
+ * renders only `headerRight`, the one option that carries something to press. `useFocusEffect` fires once on
  * mount and stays registered, which is close enough to focus for screens that
  * use it to re-read server state.
  */
 export function expoRouterMock(): Record<string, unknown> {
   const react = require('react') as typeof import('react');
   return {
-    Stack: { Screen: () => null },
+    Stack: {
+      Screen: ({ options }: { options?: { headerRight?: () => unknown } }) =>
+        options?.headerRight?.() ?? null,
+    },
     router: {
       push: (href: string) => mockPush(href),
       replace: (href: string) => mockReplace(href),
@@ -127,6 +131,7 @@ export function resetSettingsHarness(): void {
   searchParams = {};
   focusCallbacks.clear();
   resetVeritySettingsStore();
+  resetGithubPermissionForTests();
 }
 
 /**
@@ -203,6 +208,7 @@ export function makeProject(
 }
 
 export type ClientOverrides = {
+  validateGithubApp?: jest.Mock;
   getReturnPathStatus?: VerityClient['getReturnPathStatus'];
   startReturnPathDiagnostics?: VerityClient['startReturnPathDiagnostics'];
   stopReturnPathDiagnostics?: VerityClient['stopReturnPathDiagnostics'];
@@ -222,6 +228,7 @@ export type ClientOverrides = {
   getServerUpdateChannel?: jest.Mock;
   setServerUpdateChannel?: jest.Mock;
   requestServerUpdate?: jest.Mock;
+  retryServerUpdate?: jest.Mock;
   listProjects?: jest.Mock;
   recreateProjectContainer?: jest.Mock;
   listModels?: jest.Mock;
@@ -246,6 +253,9 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     throw new Error(`unexpected client.${name} call`);
   };
   const client: Record<string, unknown> = {
+    validateGithubApp:
+      opts.validateGithubApp ??
+      jest.fn().mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),
@@ -281,6 +291,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.getServerUpdates ??
       jest.fn().mockResolvedValue({ state: 'unsupported', reason: 'not managed', operation: null }),
     requestServerUpdate: opts.requestServerUpdate ?? jest.fn(notImplemented('requestServerUpdate')),
+    retryServerUpdate: opts.retryServerUpdate ?? jest.fn(notImplemented('retryServerUpdate')),
     createHttpMcpConnection:
       opts.createHttpMcpConnection ?? jest.fn(notImplemented('createHttpMcpConnection')),
     deleteHttpMcpConnection:

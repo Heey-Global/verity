@@ -1,8 +1,5 @@
 import { assertWorkspaceWriteAccess } from './google-workspace-tool-types.js';
 import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open, realpath, type FileHandle } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
 import type { EventStore, GoogleSlideImageCleanupRecord } from '@verity/store';
 
 import {
@@ -20,6 +17,7 @@ import {
   updateSlidesPresentation,
 } from './google-slides.js';
 import { richMcpToolResult } from './mcp-tool-result.js';
+import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_IMAGE_BYTES = 50_000_000;
 const MAX_IMAGE_PIXELS = 25_000_000;
@@ -53,54 +51,23 @@ function imageMediaType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/gif'
   throw new Error('insert_image imagePath must contain a PNG, JPEG, or GIF image');
 }
 
-async function readBoundedImage(handle: FileHandle): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  while (true) {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
-    if (bytesRead === 0) return Buffer.concat(chunks, total);
-    total += bytesRead;
-    if (total > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
-    chunks.push(chunk.subarray(0, bytesRead));
-  }
-}
-
 async function readWorktreeImage(
   worktree: string,
   imagePath: string,
 ): Promise<{ mediaType: 'image/png' | 'image/jpeg' | 'image/gif'; bytes: Buffer }> {
-  if (isAbsolute(imagePath)) throw new Error('insert_image imagePath must be relative');
-  const worktreeReal = await realpath(worktree);
-  const handle = await open(
-    resolve(worktreeReal, imagePath),
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  ).catch(() => undefined);
-  if (handle === undefined) throw new Error('insert_image imagePath does not exist');
-  try {
-    // Validate the opened object, not the pathname: an agent process may replace a
-    // path component after resolution, while this descriptor continues to identify
-    // the exact bytes we inspect and upload.
-    const openedReal = await realpath(`/proc/self/fd/${handle.fd}`);
-    const fromWorktree = relative(worktreeReal, openedReal);
-    if (fromWorktree === '' || fromWorktree.startsWith('..') || isAbsolute(fromWorktree)) {
-      throw new Error('insert_image imagePath must stay inside the session worktree');
-    }
-    const metadata = await handle.stat();
-    if (!metadata.isFile()) throw new Error('insert_image imagePath must name a file');
-    if (metadata.size > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
-    const bytes = await readBoundedImage(handle);
-    const mediaType = imageMediaType(bytes);
-    assertImageLimits(bytes, mediaType);
-    return { mediaType, bytes };
-  } finally {
-    await handle.close();
-  }
+  const bytes = await readWorktreeFile(worktree, imagePath, {
+    label: 'insert_image imagePath',
+    maxBytes: MAX_IMAGE_BYTES,
+    tooLarge: 'image exceeds 50 MB',
+  });
+  const mediaType = imageMediaType(bytes);
+  assertImageLimits(bytes, mediaType);
+  return { mediaType, bytes };
 }
 
 interface GoogleSlidesToolDeps {
   eventStore: EventStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   fetch?: typeof fetch;
   cleanupIntervalMs?: number;
   nowId?: () => string;
@@ -255,9 +222,17 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
     } satisfies NonNullable<GoogleSlidesToolDeps['slides']>);
   const doFetch = deps.fetch ?? fetch;
 
-  const assertStillAssigned = async (sessionId: string, assignmentId: string): Promise<void> => {
+  const assertStillAssigned = async (
+    sessionId: string,
+    assignmentId: string,
+    credentialVersion?: number | null,
+  ): Promise<void> => {
     const current = await deps.eventStore.getSessionSlideDeck(sessionId);
-    if (current?.assignmentId !== assignmentId) {
+    if (
+      current?.assignmentId !== assignmentId ||
+      current.accountId === null ||
+      (credentialVersion !== undefined && current.credentialVersion !== credentialVersion)
+    ) {
       throw new Error('The assigned Google Slides deck changed before the operation was sent');
     }
   };
@@ -288,9 +263,21 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
     await deps.eventStore.pruneGoogleSlideInvocations(new Date(Date.now() - 7 * 24 * 60 * 60_000));
     const pending = await deps.eventStore.listGoogleSlideImageCleanups();
     if (pending.length === 0) return;
-    const token = await deps.googleAccessToken();
-    if (token === undefined) return;
-    for (const cleanup of pending) await finishCleanup(token, cleanup);
+    for (const cleanup of pending) {
+      if (cleanup.accountId === null) continue;
+      try {
+        const token = await deps.googleAccessToken(cleanup.accountId);
+        if (token) await finishCleanup(token, cleanup);
+      } catch (error) {
+        // A revoked account must not strand other accounts' temporary public images.
+        await deps.eventStore
+          .failGoogleSlideImageCleanup(
+            cleanup.id,
+            error instanceof Error ? error.message : 'cleanup token refresh failed',
+          )
+          .catch(() => undefined);
+      }
+    }
   };
   let recovery: Promise<void> | undefined;
   const recover = (): Promise<void> => {
@@ -312,26 +299,27 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       throw new Error('Google Slides is restricted to the calling session');
     }
     const deck = await deps.eventStore.getSessionSlideDeck(input.sessionId);
-    if (deck === undefined) throw new Error('No Google Slides deck is assigned to this session');
-    const token = await deps.googleAccessToken();
+    if (deck === undefined || deck.accountId === null)
+      throw new Error('No Google Slides deck is assigned to this session');
+    const token = await deps.googleAccessToken(deck.accountId ?? undefined);
     if (token === undefined) throw new Error('Google Drive is not connected');
     const request = input.request as SlidesToolRequest;
     if (request.action === 'edit' || request.action === 'insert_image')
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
 
     if (request.action === 'inspect_deck') {
-      await assertStillAssigned(input.sessionId, deck.assignmentId);
+      await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
       return { deck, presentation: await slides.presentation(token, deck.fileId) };
     }
     if (request.slideId === undefined && request.action !== 'edit') {
       throw new Error(`${request.action} requires slideId`);
     }
     if (request.action === 'read_slide') {
-      await assertStillAssigned(input.sessionId, deck.assignmentId);
+      await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
       return slides.page(token, deck.fileId, request.slideId as string);
     }
     if (request.action === 'thumbnail') {
-      await assertStillAssigned(input.sessionId, deck.assignmentId);
+      await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
       const thumbnail = await slides.thumbnail(token, deck.fileId, request.slideId as string);
       const bytes = await downloadThumbnail(doFetch, thumbnail.contentUrl);
       if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
@@ -403,14 +391,14 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       if (request.asBackground === true && request.revisionId === undefined) {
         throw new Error('a background image requires revisionId');
       }
-      await assertStillAssigned(input.sessionId, deck.assignmentId);
+      await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
       const claim = await deps.eventStore.claimGoogleSlideInvocation(input);
       if (claim.status === 'completed') return claim.result;
       if (claim.status === 'pending') {
         throw new Error('This Google Slides edit may already have run; inspect the deck first');
       }
-      await assertStillAssigned(input.sessionId, deck.assignmentId);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+      await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
       const uploaded =
         attachment === undefined
           ? undefined
@@ -421,7 +409,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
             });
       if (uploaded === undefined) {
         const imageRequest = createImageRequest(request, publicImageUrl as string);
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         const result = await slides.update(
           token,
           deck.fileId,
@@ -444,6 +432,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         // permission, so recovery remains safe if the process dies after share() returns
         // but before its generated permission id can be recorded.
         await deps.eventStore.createGoogleSlideImageCleanup({
+          ...(deck.accountId === undefined ? {} : { accountId: deck.accountId }),
           id: cleanupId,
           sessionId: input.sessionId,
           fileId: uploaded.id,
@@ -454,12 +443,12 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       }
       let permissionId: string | null = null;
       try {
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         permissionId = await drive.share(token, uploaded.id);
         await deps.eventStore.setGoogleSlideImageCleanupPermission(cleanupId, permissionId);
         const url = `https://lh3.googleusercontent.com/d/${encodeURIComponent(uploaded.id)}`;
         const imageRequest = createImageRequest(request, url);
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         const result = await slides.update(
           token,
           deck.fileId,
@@ -488,14 +477,14 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
     if (slidesRequestsNeedRevision(requests) && request.revisionId === undefined) {
       throw new Error('This edit depends on previously read state and requires revisionId');
     }
-    await assertStillAssigned(input.sessionId, deck.assignmentId);
+    await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
     const claim = await deps.eventStore.claimGoogleSlideInvocation(input);
     if (claim.status === 'completed') return claim.result;
     if (claim.status === 'pending') {
       throw new Error('This Google Slides edit may already have run; inspect the deck first');
     }
-    await assertStillAssigned(input.sessionId, deck.assignmentId);
-    await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+    await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
+    await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
     const result = await slides.update(token, deck.fileId, requests, request.revisionId);
     const revisionId = result.writeControl.requiredRevisionId;
     await deps.eventStore.updateSessionSlideDeckRevision(

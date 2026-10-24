@@ -16,6 +16,8 @@ const edge = new PreviewEdge({
     shareId,
   ),
   shareId,
+  onRequest: (entry) =>
+    process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`),
   pinHash: required('VERITY_PREVIEW_PIN_HASH'),
   connectorTokenHash: required('VERITY_PREVIEW_CONNECTOR_TOKEN_HASH'),
   sessionSecretHash: required('VERITY_PREVIEW_SESSION_SECRET_HASH'),
@@ -24,6 +26,10 @@ const edge = new PreviewEdge({
   ...(trustedProxyHops === undefined ? {} : { trustedProxyHops }),
   ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
   ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+  onDiagnostic: (diagnostic) =>
+    process.stderr.write(
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...diagnostic })}\n`,
+    ),
 });
 
 const port = optionalPositiveInteger('PORT') ?? 8080;

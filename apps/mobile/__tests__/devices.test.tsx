@@ -50,7 +50,7 @@ jest.mock('../lib/serverProfile', () => ({
   }),
 }));
 
-import { Alert, Linking } from 'react-native';
+import { Linking } from 'react-native';
 
 import DevicesScreen from '../app/devices';
 import { resetVeritySettingsStore } from '../lib/settingsStore';
@@ -171,18 +171,15 @@ it('keeps a failure to draw the pairing link inside the card', async () => {
 });
 
 it('revokes the device the confirmed row belongs to', async () => {
-  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   render(<DevicesScreen />);
   fireEvent.press(await screen.findByLabelText('Remove iPad'));
 
-  // Confirm through the alert the way the operator would — pressing Remove with
+  // Confirm through the sheet the way the operator would — pressing Remove with
   // no confirmation step would be the silent failure worth catching here.
   expect(mockRevoke).not.toHaveBeenCalled();
-  const buttons = alert.mock.calls[0]?.[2] as Array<{ text: string; onPress?: () => void }>;
-  await act(async () => buttons.find((button) => button.text === 'Remove')!.onPress!());
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Remove device' })));
 
   expect(mockRevoke).toHaveBeenCalledWith('other');
-  alert.mockRestore();
 });
 
 it('renames a device on blur, trimmed, and reloads the list', async () => {

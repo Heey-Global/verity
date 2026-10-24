@@ -1054,6 +1054,8 @@ it('returns a bounded replay identity usable by the Matrix status action', () =>
 });
 
 it.each([
+  { action: 'download_attachment', messageId: 'm1', partId: '1.0' },
+  { action: 'download_attachment', messageId: 'm1', partId: '' },
   { action: 'list_senders' },
   {
     action: 'create_draft',
@@ -1062,7 +1064,23 @@ it.each([
     subject: 'Hello',
     body: 'Body',
   },
-])('accepts Gmail sender selection through the gateway: %j', async (request) => {
+  {
+    action: 'create_draft',
+    to: ['friend@example.test'],
+    subject: 'Report',
+    body: 'Body',
+    attachments: [
+      { path: 'out/report.pdf' },
+      { path: 'a', filename: 'b.txt', mimeType: 'text/plain' },
+    ],
+  },
+  {
+    action: 'create_reply_draft',
+    threadId: 't1',
+    body: 'Body',
+    attachments: [{ path: 'out/report.pdf' }],
+  },
+])('accepts Gmail read and draft actions through the gateway: %j', async (request) => {
   const { gateway, invokeTool } = harness({
     servedTools: ['verity_gmail'],
     hasStandingAuthorization: async () => true,
@@ -1074,4 +1092,80 @@ it.each([
   });
   expect(invokeTool).toHaveBeenCalledOnce();
   expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ request }));
+});
+
+// The approval card lists attachments from send_draft; a malformed entry must not reach it.
+it.each([
+  { attachments: [{ path: 'a', extra: true }], action: 'create_draft' },
+  { attachments: Array.from({ length: 11 }, () => ({ path: 'a' })), action: 'create_draft' },
+])('rejects malformed Gmail attachment requests: %#', async ({ attachments, action }) => {
+  const { gateway, invokeTool } = harness({
+    servedTools: ['verity_gmail'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(
+      { action, to: ['friend@example.test'], subject: 'S', body: 'B', attachments },
+      'verity_gmail',
+    ),
+  });
+  expect(invokeTool).not.toHaveBeenCalled();
+});
+
+describe('account-bound approval snapshots', () => {
+  it('refuses a bearer retired while rechecking account authority', async () => {
+    let retired = false;
+    let snapshots = 0;
+    const { gateway, invokeTool } = harness({
+      resolveCaller: async () => (retired ? undefined : { sessionId: 'sess-1', turnId: 'turn-1' }),
+      authorizationSnapshot: async () => {
+        if (++snapshots === 2) retired = true;
+        return 'unchanged-account';
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(response).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+  it('does not execute when account authority changes while approval is pending', async () => {
+    let authority = 'account-one:grant-one';
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async () => {
+        authority = 'account-two:grant-two';
+        return ALLOW;
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).isError).toBe(true);
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
+  it('requires a different approval receipt after authority changes on a transport retry', async () => {
+    let authority = 'account-one:grant-one';
+    const receipts: string[] = [];
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async (input) => {
+        receipts.push(input.invocationId);
+        return ALLOW;
+      },
+    });
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    authority = 'account-two:grant-two';
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0]).not.toBe(receipts[1]);
+    expect(invokeTool.mock.calls.map(([input]) => input.invocationId)).toEqual(receipts);
+  });
 });

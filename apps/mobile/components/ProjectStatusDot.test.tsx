@@ -42,8 +42,8 @@ describe('ProjectStatusDot', () => {
     expect(screen.UNSAFE_queryByType(WorkingDot)).not.toBeNull();
 
     const style = dotStyle('Updating secure workspace…');
-    expect(toneColors((theme) => theme.colors.accent)).toContain(style.backgroundColor);
-    expect(toneColors((theme) => theme.colors.tone.done)).not.toContain(style.backgroundColor);
+    expect(toneColors((theme) => theme.colors.signature)).toContain(style.backgroundColor);
+    expect(toneColors((theme) => theme.colors.success)).not.toContain(style.backgroundColor);
   });
 
   it('leaves a settled container still, in its own colour', () => {
@@ -55,8 +55,8 @@ describe('ProjectStatusDot', () => {
 
     expect(screen.UNSAFE_queryByType(WorkingDot)).toBeNull();
     const style = dotStyle('Running');
-    expect(toneColors((theme) => theme.colors.tone.done)).toContain(style.backgroundColor);
-    expect(toneColors((theme) => theme.colors.accent)).not.toContain(style.backgroundColor);
+    expect(toneColors((theme) => theme.colors.success)).toContain(style.backgroundColor);
+    expect(toneColors((theme) => theme.colors.signature)).not.toContain(style.backgroundColor);
     expect(style.opacity).toBeUndefined();
   });
 });

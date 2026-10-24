@@ -46,14 +46,15 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: \(error)")
           }
-          let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+          let observer = StallHTTPObserver(pin: delegate, recorder: tunnel.stallDiagnostics)
+          let client = URLSession(configuration: config, delegate: observer, delegateQueue: nil)
           defer { client.invalidateAndCancel() }
           let started = Date()
           do {
-            let (_, response) = try await client.data(for: URLRequest(url: coreURL))
+            let response = try await observer.request(coreURL, session: client)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
               let total = await counters.failure(worker: worker, own: own, kind: "http_response",
-                phase: delegate.phase)
+                phase: delegate.phase, diagnostic: observer.snapshot)
               throw ProbeFailure.soakFailed(
                 "worker \(worker) after \(own) own and \(total) total requests: status "
                   + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
@@ -64,7 +65,7 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
             throw failure
           } catch {
             let total = await counters.failure(worker: worker, own: own, kind: "transport",
-              code: (error as NSError).code, phase: delegate.phase)
+              code: (error as NSError).code, phase: delegate.phase, diagnostic: observer.snapshot)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: "
                 + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
@@ -88,6 +89,22 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
   fflush(stdout)
 }
 
+// Both request phases use the same bounded schema; the prefix keeps warmup
+// attempts separate from soak worker counters in the public receipt.
+func emitStallFailure(worker: Int, own: Int, total: Int, kind: String,
+  code: Int? = nil, phase: String, diagnostic: [String: Any]?, warmup: Bool = false)
+{
+  guard let diagnostic else { return }
+  let receipt: [String: Any] = ["worker": worker, "ownRequests": own, "totalRequests": total,
+    "kind": kind, "code": code as Any? ?? NSNull(), "phase": phase, "diagnostic": diagnostic]
+  if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]),
+    data.count <= 4096, let text = String(data: data, encoding: .utf8) {
+    let prefix = warmup ? "probe-warmup-failure" : "probe-stall-failure"
+    print("\(prefix):\(text)")
+    fflush(stdout)
+  }
+}
+
 actor SoakCounters {
   var requests = 0
   var maxMs = 0
@@ -95,11 +112,13 @@ actor SoakCounters {
 
   // Serialize the first observed failure before another worker can replace its fields.
   func failure(worker: Int, own: Int, kind: String, code: Int? = nil,
-    phase: String = "unknown") -> Int
+    phase: String = "unknown", diagnostic: [String: Any]? = nil) -> Int
   {
     if !failureEmitted {
       failureEmitted = true
       let errorCode = code.map { String($0) } ?? "unknown"
+      emitStallFailure(worker: worker, own: own, total: requests, kind: kind,
+        code: code, phase: phase, diagnostic: diagnostic)
       print("probe-soak-failure:\(worker):\(own):\(requests):\(kind):\(errorCode):\(phase)")
       fflush(stdout)
     }
@@ -158,16 +177,19 @@ enum StagingProbe {
           guard tunnel.isActive else {
             throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "unknown")
           }
+          let observer = StallHTTPObserver(pin: delegate, recorder: tunnel.stallDiagnostics)
           let response: URLResponse
           do {
             print("probe-stage:https_request")
             fflush(stdout)
-            let result = try await client.data(for: URLRequest(url: coreURL))
-            response = result.1
+            response = try await observer.request(coreURL, session: client)
             print("probe-stage:http_response")
             print("probe-tls:\(delegate.phase)")
             fflush(stdout)
           } catch {
+            emitStallFailure(worker: 0, own: attempt, total: attempt, kind: "transport",
+              code: (error as NSError).code, phase: delegate.phase,
+              diagnostic: observer.snapshot, warmup: true)
             print("probe-error:\((error as NSError).code)")
             print("probe-tls:\(delegate.phase)")
             fflush(stdout)
@@ -176,7 +198,11 @@ enum StagingProbe {
           }
           guard let http = response as? HTTPURLResponse, http.statusCode == 200,
             tunnel.isActive
-          else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }
+          else {
+            emitStallFailure(worker: 0, own: attempt, total: attempt, kind: "http_response",
+              phase: delegate.phase, diagnostic: observer.snapshot, warmup: true)
+            throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response")
+          }
           lastStatus = http.statusCode
         }
         // Unparsable values fail rather than skip: a soak that silently did

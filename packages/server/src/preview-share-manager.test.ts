@@ -19,6 +19,7 @@ import {
   PreviewShareInputError,
   PreviewShareManager,
   PreviewShareNotFoundError,
+  PreviewShareRemovalQueuedError,
   type PreviewShareManagerOptions,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
@@ -27,6 +28,8 @@ import {
   openCodeSettingsConfig,
   materializeOpenCodeSettings,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
 
@@ -413,7 +416,10 @@ describe('PreviewShareManager', () => {
         readOnlyRootfs: true,
         capDrop: ['ALL'],
         securityOpt: ['no-new-privileges:true'],
-        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000']),
+        env: expect.arrayContaining([
+          'VERITY_PREVIEW_SHARE_ID=share-id',
+          'VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000',
+        ]),
       }),
     );
     expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
@@ -1033,75 +1039,78 @@ describe('PreviewShareManager', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('allows only server-generated Codex and OpenCode gateway configuration', async () => {
-    const inspectArtifact = vi.fn(async (path: string) => {
-      const common = { uid: 1000, gid: 1000 };
-      if (path.endsWith('/opencode')) {
-        return { ...common, mode: 0o755, kind: 'directory' as const };
-      }
-      if (path.endsWith('/opencode/opencode.json')) {
+  it.each(['@ai-sdk/openai-compatible', '@opencode/ai/providers/openai-compatible'])(
+    'allows server-generated gateway configuration with %s',
+    async (providerPackage) => {
+      const inspectArtifact = vi.fn(async (path: string) => {
+        const common = { uid: 1000, gid: 1000 };
+        if (path.endsWith('/opencode')) {
+          return { ...common, mode: 0o755, kind: 'directory' as const };
+        }
+        if (path.endsWith('/opencode/opencode.json')) {
+          return {
+            ...common,
+            mode: 0o644,
+            kind: 'file' as const,
+            contents: JSON.stringify({
+              $schema: 'https://opencode.ai/config.json',
+              autoupdate: false,
+              permission: {
+                read: { '/knowledge/**': 'allow' },
+                external_directory: { '/knowledge/**': 'allow' },
+              },
+              provider: {
+                verity: {
+                  npm: providerPackage,
+                  name: 'OpenAI-compatible',
+                  options: {
+                    baseURL: 'http://127.0.0.1:47821/opencode',
+                    apiKey: 'verity-opencode-gateway-placeholder-v1',
+                  },
+                  models: { 'model-a': { name: 'model-a' } },
+                },
+              },
+            }),
+          };
+        }
         return {
           ...common,
           mode: 0o644,
           kind: 'file' as const,
-          contents: JSON.stringify({
-            $schema: 'https://opencode.ai/config.json',
-            autoupdate: false,
-            permission: {
-              read: { '/knowledge/**': 'allow' },
-              external_directory: { '/knowledge/**': 'allow' },
-            },
-            provider: {
-              verity: {
-                npm: '@ai-sdk/openai-compatible',
-                name: 'OpenAI-compatible',
-                options: {
-                  baseURL: 'http://127.0.0.1:47821/opencode',
-                  apiKey: 'verity-opencode-gateway-placeholder-v1',
-                },
-                models: { 'model-a': { name: 'model-a' } },
-              },
-            },
-          }),
+          contents: codexGatewayConfig(47_821),
         };
-      }
-      return {
-        ...common,
-        mode: 0o644,
-        kind: 'file' as const,
-        contents: codexGatewayConfig(47_821),
-      };
-    });
-    const { manager, docker, inspect } = fixture({
-      inspectArtifact,
-      listArtifactDirectory: async () => ['opencode.json'],
-    });
-    docker.inspectContainer.mockResolvedValueOnce({
-      ...inspect,
-      mountCount: 2,
-      mounts: [
-        {
-          type: 'volume',
-          name: 'verity-data',
-          source: '/var/lib/docker/volumes/verity-data/_data/secrets/codex/config.toml',
-          subpath: 'secrets/codex/config.toml',
-          destination: '/run/verity/codex/config.toml',
-          readWrite: false,
-        },
-        {
-          type: 'volume',
-          name: 'verity-data',
-          source: '/var/lib/docker/volumes/verity-data/_data/secrets/opencode',
-          subpath: 'secrets/opencode',
-          destination: '/run/verity/opencode-config',
-          readWrite: false,
-        },
-      ],
-    });
-    await expect(
-      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).resolves.toMatchObject({ state: 'active' });
-  });
+      });
+      const { manager, docker, inspect } = fixture({
+        inspectArtifact,
+        listArtifactDirectory: async () => ['opencode.json'],
+      });
+      docker.inspectContainer.mockResolvedValueOnce({
+        ...inspect,
+        mountCount: 2,
+        mounts: [
+          {
+            type: 'volume',
+            name: 'verity-data',
+            source: '/var/lib/docker/volumes/verity-data/_data/secrets/codex/config.toml',
+            subpath: 'secrets/codex/config.toml',
+            destination: '/run/verity/codex/config.toml',
+            readWrite: false,
+          },
+          {
+            type: 'volume',
+            name: 'verity-data',
+            source: '/var/lib/docker/volumes/verity-data/_data/secrets/opencode',
+            subpath: 'secrets/opencode',
+            destination: '/run/verity/opencode-config',
+            readWrite: false,
+          },
+        ],
+      });
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    },
+  );
 
   it('blocks provider credentials hidden in an otherwise valid gateway config mount', async () => {
     const { manager, docker, edge, inspect } = fixture({
@@ -1238,6 +1247,61 @@ describe('PreviewShareManager', () => {
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).rejects.toThrow(/mounted credentials/);
     expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('completes a stop whose Uplink removal is queued for later', async () => {
+    // The removal is persisted and retried when the Uplink connects. Failing the
+    // stop instead left the share revoking for the whole outage: stopping it
+    // answered 500, and every Repair of its project aborted on it.
+    const { manager, edge, store, log } = fixture();
+    edge.remove.mockRejectedValueOnce(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await expect(manager.stop('share-id')).resolves.toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ uplinkRemoveMs: null, uplinkRemoveQueued: true }),
+      'public preview share stop incomplete',
+    );
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      'share-id',
+      ['revoking'],
+      'revoked',
+      expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  it('finishes a share left revoking during an Uplink outage without anyone stepping in', async () => {
+    // Shares stopped while the Uplink was unreachable stayed `revoking`, and
+    // the periodic reconcile retried them every pass without ever finishing.
+    // Their project then refused every Repair until an operator edited the row.
+    const f = fixture();
+    const current = retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(
+      new PreviewShareRemovalQueuedError('cannot revoke preview while Uplink is unavailable'),
+    );
+
+    await f.manager.reconcile();
+
+    expect(current().state).not.toBe('revoking');
+    expect(['revoked', 'expired']).toContain(current().state);
+  });
+
+  it('runs a project change past a share left revoking during an Uplink outage', async () => {
+    const f = fixture();
+    retainShare(f, { state: 'revoking', connectorContainerId: null });
+    f.edge.remove.mockRejectedValue(new PreviewShareRemovalQueuedError('queued'));
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+  });
+
+  it('keeps the stop failing when the connector cannot be removed, even if the Uplink queued', async () => {
+    const { manager, docker, edge } = fixture();
+    docker.removeContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+    edge.remove.mockRejectedValueOnce(new PreviewShareRemovalQueuedError('queued'));
+
+    await expect(manager.stop('share-id')).rejects.toThrow(/revocation did not complete/);
   });
 
   it('keeps a failed revocation nonterminal so reconciliation retries it', async () => {
@@ -1838,6 +1902,41 @@ describe('PreviewShareManager', () => {
     expect(mutation).toHaveBeenCalledOnce();
   });
 
+  it('still runs a project change when the edge refuses the offline connector', async () => {
+    // An edge that no longer knows the share rejects the tunnel upgrade, so the
+    // offline connector never logs readiness. That used to abort every Repair of
+    // the project before its sandbox was created.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue(
+      '{"event":"connect.failed","cause":"upgrade_rejected","statusCode":404}\n',
+    );
+    const mutation = vi.fn(async () => 'repaired');
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).resolves.toBe('repaired');
+
+    expect(mutation).toHaveBeenCalledOnce();
+    // Neither the old nor the unready connector is left running.
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('old-connector');
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+  });
+
+  it('aborts a project change when an unready offline connector cannot be removed', async () => {
+    // Skipping past it would leave a connector that collides by name with every
+    // connector reconcile tries to create for the share afterwards.
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.docker.containerLogs.mockResolvedValue('');
+    // The old connector goes first; removing the unready replacement fails.
+    f.docker.removeContainer
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('removal failed'));
+    const mutation = vi.fn(async () => undefined);
+
+    await expect(f.manager.withProjectMutation('p1', mutation)).rejects.toThrow('removal failed');
+    expect(mutation).not.toHaveBeenCalled();
+  });
+
   it('takes a static share offline without starting an unmounted static server', async () => {
     const f = fixture();
     retainShare(f, {
@@ -2355,6 +2454,69 @@ describe('session port previews', () => {
 });
 
 describe('shared sandbox mount contract', () => {
+  const dependencyMount = {
+    type: 'volume',
+    name: projectNodeModulesVolumeName(project.id),
+    destination: NODE_MODULES_TARGET,
+    readWrite: true,
+  };
+
+  function dependencyFixture(mount: NonNullable<ContainerInspect['mounts']>[number]) {
+    const setup = fixture();
+    setup.store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: project.id,
+      worktree: '/data/p1/sessions/s1',
+      model: 'test',
+      name: null,
+      lastSeenEventCount: null,
+    });
+    setup.docker.inspectContainer.mockResolvedValue({
+      ...setup.inspect,
+      mounts: [mount],
+      mountCount: 1,
+    });
+    return setup;
+  }
+
+  it.each(['local', 'public'] as const)(
+    'accepts the provisioned dependency volume for %s previews',
+    async (access) => {
+      const { manager } = dependencyFixture(dependencyMount);
+      const result =
+        access === 'local'
+          ? manager.prepareLocalTarget('s1', {})
+          : manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
+      await expect(result).resolves.toBeDefined();
+    },
+  );
+
+  it.each([
+    { name: projectNodeModulesVolumeName('other-project') },
+    { name: undefined },
+    { type: 'bind', source: '/srv/dependencies' },
+    { destination: '/work/other' },
+    { readWrite: false },
+    { readWrite: undefined },
+    { subpath: 'nested' },
+    { subpath: '../secrets' },
+  ])('rejects unsupported dependency mount metadata: %j', async (metadata) => {
+    const { manager, edge, docker } = dependencyFixture({ ...dependencyMount, ...metadata });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(manager.prepareLocalTarget('s1', {})).rejects.toThrow(
+        /unsupported sandbox mount/,
+      );
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).rejects.toThrow(/unsupported sandbox mount/);
+      expect(edge.create).not.toHaveBeenCalled();
+      expect(docker.createContainer).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each(['bind', 'volume'] as const)(
     'accepts provisioned standard mounts as %s mounts',
     async (type) => {

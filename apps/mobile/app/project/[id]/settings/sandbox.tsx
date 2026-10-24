@@ -15,7 +15,7 @@ import {
 } from '@verity/mobile';
 import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -30,6 +30,7 @@ import { createVerityClient } from '../../../../lib/client';
 import { repairProject } from '../../../../lib/projectRepair';
 import { toolkitDriftNotice } from '../../../../lib/projectSetup';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { Button, useConfirm } from '../../../../components/ui';
 
 export default function ProjectSandboxScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -54,7 +55,7 @@ function ProjectSandboxView({ client, projectId }: { client: VerityClient; proje
   if (loading && detail === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
@@ -134,6 +135,7 @@ function SandboxSection({
   onUpdated: (project: ProjectRecord) => void;
   onReload: () => void;
 }) {
+  const [confirm, confirmSheet] = useConfirm();
   const [working, setWorking] = useState<'start' | 'pause' | 'update' | 'rebuild' | undefined>(
     undefined,
   );
@@ -234,30 +236,24 @@ function SandboxSection({
   // Pause: stop and remove the sandbox but keep the local clone for next start.
   const pause = useCallback(() => {
     if (working !== undefined) return;
-    Alert.alert(
-      'Pause project?',
-      'This stops the project sandbox. Your local files stay, so you can start it again anytime.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Pause',
-          onPress: () => {
-            setWorking('pause');
-            setError(undefined);
-            void client
-              .deprovisionProject(project.id, { purge: false })
-              .then(onUpdated)
-              .catch((caught) => {
-                setError(
-                  caught instanceof VerityApiError ? caught.message : 'Could not pause project',
-                );
-              })
-              .finally(() => setWorking(undefined));
-          },
-        },
-      ],
-    );
-  }, [client, onUpdated, project.id, working]);
+    confirm({
+      title: 'Pause project?',
+      message:
+        'This stops the project sandbox. Your local files stay, so you can start it again anytime.',
+      confirmLabel: 'Pause sandbox',
+      onConfirm: () => {
+        setWorking('pause');
+        setError(undefined);
+        void client
+          .deprovisionProject(project.id, { purge: false })
+          .then(onUpdated)
+          .catch((caught) => {
+            setError(caught instanceof VerityApiError ? caught.message : 'Could not pause project');
+          })
+          .finally(() => setWorking(undefined));
+      },
+    });
+  }, [client, confirm, onUpdated, project.id, working]);
 
   // Both container-replacing actions run the same request and differ only in
   // whether the image is rebuilt, so they share one driver — including the
@@ -350,26 +346,27 @@ function SandboxSection({
   const runUpdate = useCallback(() => {
     if (!updateSummary || working !== undefined) return;
     const blocked = update?.turnBlocked === true;
-    Alert.alert(
-      blocked ? 'Update waiting for a turn' : 'Update project?',
-      blocked
-        ? 'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.'
-        : isSecuritySandboxUpdate(update)
-          ? 'This recreates the project sandbox and applies the pending security update.'
-          : 'This recreates the project sandbox and applies the pending update.',
-      // No Update button while a turn holds the update off, and not out of
-      // caution: the Server refuses this recreate for as long as the turn runs
-      // (SBX-1), so the button could only ever produce the 409 the message just
-      // explained. An action that cannot be taken is worse than none — it invites
-      // the operator to read the refusal as a fault.
-      blocked
-        ? [{ text: 'OK', style: 'cancel' }]
-        : [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Update', onPress: () => recreate(false, 'Could not update project') },
-          ],
-    );
-  }, [recreate, update, updateSummary, working]);
+    // No Update button while a turn holds the update off, and not out of
+    // caution: the Server refuses this recreate for as long as the turn runs
+    // (SBX-1), so the button could only ever produce the 409 the message just
+    // explained. An action that cannot be taken is worse than none — it invites
+    // the operator to read the refusal as a fault.
+    if (blocked) {
+      Alert.alert(
+        'Update waiting for a turn',
+        'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.',
+      );
+      return;
+    }
+    confirm({
+      title: 'Update project?',
+      message: isSecuritySandboxUpdate(update)
+        ? 'This recreates the project sandbox and applies the pending security update.'
+        : 'This recreates the project sandbox and applies the pending update.',
+      confirmLabel: 'Update',
+      onConfirm: () => void recreate(false, 'Could not update project'),
+    });
+  }, [confirm, recreate, update, updateSummary, working]);
 
   // Rebuild image: the escape hatch for a devcontainer change the image cache
   // cannot see. Verity caches the built image under a content hash over the
@@ -379,15 +376,14 @@ function SandboxSection({
   // both reuse it; this discards it.
   const rebuild = useCallback(() => {
     if (working !== undefined) return;
-    Alert.alert(
-      'Rebuild image?',
-      'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the sandbox. It can take several minutes.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Rebuild', onPress: () => recreate(true, 'Could not rebuild project image') },
-      ],
-    );
-  }, [recreate, working]);
+    confirm({
+      title: 'Rebuild image?',
+      message:
+        'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the sandbox. It can take several minutes.',
+      confirmLabel: 'Rebuild',
+      onConfirm: () => void recreate(true, 'Could not rebuild project image'),
+    });
+  }, [confirm, recreate, working]);
 
   // Only a project on a BUILT image has a build to redo, and the server rejects
   // a recreate for a paused or mid-provision project — so the button is absent
@@ -405,7 +401,6 @@ function SandboxSection({
   const primary = running
     ? {
         label: 'Pause',
-        busyLabel: 'Pausing…',
         run: pause,
         busy: working === 'pause',
         enabled: true,
@@ -413,14 +408,12 @@ function SandboxSection({
     : failed || starting
       ? {
           label: 'Repair',
-          busyLabel: 'Repairing…',
           run: start,
           busy: working === 'start',
           enabled: true,
         }
       : {
           label: 'Start',
-          busyLabel: 'Starting…',
           run: start,
           busy: working === 'start',
           enabled: stopped,
@@ -448,22 +441,15 @@ function SandboxSection({
                   ? 'The workspace is starting. Repair restarts provisioning if it stalls.'
                   : 'The workspace is stopped. Starting it provisions the container again.'}
           </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryButton,
-              styles.selfStart,
-              !primary.enabled || working ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={primary.run}
-            disabled={!primary.enabled || working !== undefined}
-            accessibilityRole="button"
-            accessibilityLabel={`${primary.label} project`}
-          >
-            <Text style={styles.primaryButtonLabel}>
-              {primary.busy ? primary.busyLabel : primary.label}
-            </Text>
-          </Pressable>
+          <View style={styles.selfStart}>
+            <Button
+              label={primary.label}
+              accessibilityLabel={`${primary.label} project`}
+              loading={primary.busy}
+              disabled={!primary.enabled || (working !== undefined && !primary.busy)}
+              onPress={primary.run}
+            />
+          </View>
           {/* Both notices live beside Start/Repair/Update rather than on a facts
               list somewhere else: they describe the sandbox, and the actions
               that answer them are right here. */}
@@ -485,21 +471,17 @@ function SandboxSection({
                   'available'}
               </Text>
             </View>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reproButton,
-                working ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={runUpdate}
-              disabled={working !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Update project sandbox"
-            >
-              <Text style={styles.reproButtonLabel}>
-                {working === 'update' ? 'Updating…' : 'Update'}
-              </Text>
-            </Pressable>
+            <View style={styles.selfStart}>
+              <Button
+                label="Update"
+                accessibilityLabel="Update project sandbox"
+                variant="secondary"
+                size="compact"
+                loading={working === 'update'}
+                disabled={working !== undefined}
+                onPress={runUpdate}
+              />
+            </View>
           </SettingsPanel>
         </SettingsGroup>
       ) : null}
@@ -511,24 +493,21 @@ function SandboxSection({
               Rebuild the project image from the repository devcontainer without the build cache,
               for a change the cached image cannot see.
             </Text>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reproButton,
-                working ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={rebuild}
-              disabled={working !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Rebuild project image"
-            >
-              <Text style={styles.reproButtonLabel}>
-                {working === 'rebuild' ? 'Rebuilding…' : 'Rebuild image'}
-              </Text>
-            </Pressable>
+            <View style={styles.selfStart}>
+              <Button
+                label="Rebuild image"
+                accessibilityLabel="Rebuild project image"
+                variant="secondary"
+                size="compact"
+                loading={working === 'rebuild'}
+                disabled={working !== undefined}
+                onPress={rebuild}
+              />
+            </View>
           </SettingsPanel>
         </SettingsGroup>
       ) : null}
+      {confirmSheet}
     </>
   );
 }

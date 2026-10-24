@@ -122,3 +122,61 @@ fallback to broader credentials. If GitHub denies issuance, verify the App and
 installation grants from a trusted administrative context before requesting approval.
 All routes remain bound to the project repository. Protection/ruleset mutations
 remain denied. Installation grants and deployed behavior require live verification.
+
+### Commit-status access for existing installations
+
+New web and mobile onboarding manifests request `statuses: read` (GitHub's
+**Commit statuses: Read-only** repository permission). This grant is used only
+by the separate diagnostic token; ordinary project tokens and credential
+validation do not require it.
+
+Updating Verity does not change an existing GitHub App or installation grant.
+To enable commit-status diagnostics for an existing installation:
+
+1. As an App owner or manager, open the GitHub App's **Permissions & events**
+   settings, set **Repository permissions → Commit statuses** to **Read-only**,
+   and save the change.
+2. As the installation owner, review and approve the updated permissions in
+   the installed App's settings. Keep the existing repository selection.
+3. From a trusted administrative context, verify the installation's
+   `permissions.statuses` is `read` (or `write`) using GitHub's installation API,
+   then retry `gh api repos/OWNER/REPO/commits/REF/status` from the session.
+
+A generic `forge broker request rejected` response does not prove which grant
+is missing. Installation metadata is not exposed through the session's
+repository-bound broker; inspect it using administrator credentials outside the
+session. A successful check-run query does not verify commit-status access.
+
+See GitHub's [updated permission approval guide](https://docs.github.com/en/apps/using-github-apps/approving-updated-permissions-for-a-github-app).
+
+## Forgejo connections
+
+Forgejo uses a separate adapter bound to the project's configured connection,
+including its HTTPS port and reverse-proxy path prefix. Two connections to the
+same authority retain separate capability bindings and credentials. The broker
+rechecks the live project binding before injecting credentials. Unknown API
+operations, foreign repositories, encoded traversal, and authentication or sudo
+query overrides are rejected. Forgejo redirects are not followed.
+
+The core adapter allows Git Smart HTTP, issue reads/writes, PR reads/writes and
+merging, commit status reads and Actions run reads. It does not grant registry,
+release publication or GitHub GraphQL access. Mobile connection screens and a
+Forgejo agent CLI remain separate integrations.
+
+Configured Forgejo instances may resolve to private addresses: adding such a
+connection authorizes its fixed server-side endpoint. This exception does not
+apply to GitHub or arbitrary client-supplied destinations. Custom upstream CAs
+are independent of the sandbox-facing broker CA. Server-side Git operations
+scope credentials and CA settings to the configured repository URL and disable
+redirects. Sandbox Git receives only a broker capability placeholder.
+
+Local integration tests run real Git clone, fetch and push through both provider
+adapters, including a Forgejo prefix and non-default port. HTTPS fixtures check
+both CA trust boundaries. These checks do not replace acceptance against a live
+Forgejo deployment and its configured token scopes.
+
+Migration `0161_forge_connection_identity` preserves existing clone paths and
+legacy GitHub identities. A schema downgrade cannot restore owner/repository
+uniqueness while identical coordinates exist on multiple connections; resolve
+those duplicates before downgrading. The migration refuses the downgrade rather
+than deleting projects or reservations.

@@ -34,6 +34,7 @@ const causes = new Set([
   'heartbeat_failure',
   'stream_exhausted',
   'stream_stall',
+  'send_stall',
   'probe_failure',
   'profile_changed',
 ]);

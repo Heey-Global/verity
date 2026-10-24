@@ -19,7 +19,13 @@ case "$scenario" in
     bash "$0" "$platform" "$uplink_root" recovery
     exit 0
     ;;
-  baseline|loss|recovery) ;;
+  pooled-suite)
+    for stage in pooled frame-release frame-abort recovery; do
+      bash "$0" "$platform" "$uplink_root" "$stage"
+    done
+    exit 0
+    ;;
+  baseline|loss|recovery|pooled|frame-release|frame-abort) ;;
   *) echo 'Unknown integration scenario.' >&2; exit 2 ;;
 esac
 umask 077
@@ -56,7 +62,7 @@ verify_result() {
   kill "$fixture_pid" 2>/dev/null || true
   wait "$fixture_pid" || fixture_status=$?
   fixture_pid=''
-  python3 - "$1" "$tmp/core-result.json" "$tmp/provenance.json" "$fixture_status" "${2:-0}" <<'VERIFY'
+  python3 - "$1" "$tmp/core-result.json" "$tmp/provenance.json" "$fixture_status" "${2:-0}" "$scenario" <<'VERIFY'
 import json,re,sys
 from pathlib import Path
 results=[]
@@ -71,6 +77,23 @@ provenance_valid=(isinstance(provenance,dict) and all(
     for key in ['coreRevision','uplinkRevision']))
 success=(provenance_valid and native.get('success') is True and core.get('success') is True
          and sys.argv[4]=='0' and sys.argv[5]=='0')
+scenario=core.get('scenario')
+if len(sys.argv) > 6:
+    success = success and scenario == sys.argv[6] and native.get('scenario') == sys.argv[6]
+if scenario in ('pooled','frame-release','frame-abort'):
+    success = success and native.get('scenario') == scenario
+    checks=set(native.get('checks', []))
+    if scenario == 'frame-abort':
+        success = success and {'pooled_frame_abort','bounded_large_failure'} <= checks
+        success = success and core.get('proxy', {}).get('aborted') is True
+    else:
+        success = success and {'pooled_large_digest','pooled_small_receipt','pooled_reuse_receipt','pooled_send_receipt'} <= checks
+        success = success and core.get('largeRequests') == 1 and core.get('smallRequests') == 2 and core.get('sendRequests') == 1
+    if scenario != 'pooled':
+        proxy=core.get('proxy', {})
+        success = success and proxy.get('intercepted') == 1 and proxy.get('missingBytes') == 295
+        if scenario == 'frame-release':
+            success = success and 'held_frame_released' in checks and proxy.get('released') == 1
 print(json.dumps({'success':success,'native':native,'core':core,'provenance':provenance,
                   'fixtureExit':int(sys.argv[4]),'nativeExit':int(sys.argv[5])}))
 if not success:

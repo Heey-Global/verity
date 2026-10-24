@@ -75,6 +75,13 @@ async function harness(
     googleDriveRefreshToken: 'refresh',
     googleDriveAccountEmail: 'me@example.test',
   });
+  const settings = await store.getVeritySettings();
+  await store.googleAccounts.save({
+    email: settings!.googleDriveAccountEmail!,
+    clientId: 'client',
+    refreshToken: settings!.googleDriveRefreshToken!,
+    scopes: settings!.googleGrantedScopes,
+  });
   await store.enableSessionCalendar('s1', 'me@example.test');
   await store.enableSessionContacts('s1', 'me@example.test');
   const calendar = vi.fn().mockResolvedValue({ id: 'event' });
@@ -231,7 +238,7 @@ it('rejects project and Google account mismatches before raising a Calendar card
     const wrongProject = await call(deletion);
     expect(wrongProject.error !== undefined || wrongProject.result?.isError === true).toBe(true);
     await store.setSessionProject('s1', 'p1');
-    await store.enableSessionCalendar('s1', 'other@example.test');
+    await store.googleAccounts.remove((await store.googleAccounts.list())[0]!.id);
     const wrongAccount = await call(deletion);
     expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
     expect(approvals).not.toHaveBeenCalled();
@@ -262,7 +269,7 @@ it('blocks Contacts account and project mismatches before approval or Google acc
     const wrongProject = await call(search, 'p1', 'verity_google_contacts');
     expect(wrongProject.error !== undefined || wrongProject.result?.isError === true).toBe(true);
     await store.setSessionProject('s1', 'p1');
-    await store.enableSessionContacts('s1', 'other@example.test');
+    await store.googleAccounts.remove((await store.googleAccounts.list())[0]!.id);
     const wrongAccount = await call(search, 'p1', 'verity_google_contacts');
     expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
     expect(approvals).not.toHaveBeenCalled();
