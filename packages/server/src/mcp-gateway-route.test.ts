@@ -86,6 +86,7 @@ function build(
     runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics>;
     linkedTools?: boolean;
     planningTools?: boolean;
+    vulnerabilityTools?: boolean;
     unlocked?: boolean;
     deferLinkedApproval?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
@@ -107,20 +108,22 @@ function build(
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
-      options.trustedCli === true
-        ? ['verity_http_request', 'verity_secret_run']
-        : options.linkedTools === true
-          ? ['verity_send_session_message', 'verity_list_linked_sessions']
-          : options.planningTools === true
-            ? [
-                'verity_start_planning',
-                'verity_present_plan',
-                'verity_end_planning',
-                'verity_tasks',
-                'verity_app_help',
-                'verity_http_request',
-              ]
-            : ['verity_http_request'],
+      options.vulnerabilityTools === true
+        ? ['verity_vulnerabilities']
+        : options.trustedCli === true
+          ? ['verity_http_request', 'verity_secret_run']
+          : options.linkedTools === true
+            ? ['verity_send_session_message', 'verity_list_linked_sessions']
+            : options.planningTools === true
+              ? [
+                  'verity_start_planning',
+                  'verity_present_plan',
+                  'verity_end_planning',
+                  'verity_tasks',
+                  'verity_app_help',
+                  'verity_http_request',
+                ]
+              : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -2219,4 +2222,53 @@ it('keeps a newer proposal when an agent dismissal confirmation races a revision
     expect(JSON.parse(response.body)).toMatchObject({ result: { isError: true } });
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+});
+
+it('serves vulnerability reads through the audited gateway and refuses foreign resource overrides', async () => {
+  const harness = build({ vulnerabilityTools: true });
+  await harness.store.upsertProject({
+    id: 'p1',
+    owner: 'test',
+    repo: 'vulns',
+    containerName: 'vulns',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/vulns',
+    model: 'test',
+  });
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Read vulnerabilities',
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const call = (args: object) =>
+      postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_vulnerabilities', arguments: args },
+      });
+    const read = await call({ action: 'read', scope: 'session' });
+    expect(read.body).toContain('findings');
+    expect(read.body).toContain('comparable');
+    await harness.store.startSessionPlanning('s1');
+    expect((await call({ action: 'read', scope: 'project' })).body).toContain('findings');
+    expect((await call({ action: 'scan', scope: 'project' })).body).toContain('planning mode');
+    expect(
+      (await call({ action: 'read', scope: 'project', projectId: 'foreign' })).body,
+    ).not.toContain('comparable');
+  });
+  expect(harness.approvals).toEqual([]);
+  expect(harness.invocations).toEqual([]);
+  expect(
+    harness.records.some(
+      (r) => r.toolName === 'verity_vulnerabilities' && r.kind === 'gateway_call_served',
+    ),
+  ).toBe(true);
 });

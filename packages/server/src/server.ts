@@ -1,3 +1,4 @@
+import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
@@ -3869,8 +3870,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             }),
         }
       : {}),
-    changed: (id) => {
+    changed: (id, sessionId) => {
       resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
+      if (sessionId)
+        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/vulnerability-scan`);
       void vulnerabilitySessions.rebuild();
     },
   });
@@ -6301,6 +6304,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
+    const vulnerabilityTool = createVulnerabilityTool({
+      store: deps.eventStore,
+      service: vulnerabilityService,
+      requireUser: () => deps.authRegistry?.isEnabled() === true,
+      isPlanningTurn: (id) => conductor.isPlanningTurn?.(id) === true,
+      warn: (err) => app.log.warn({ err }, 'Agent vulnerability scan failed'),
+    });
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -6310,6 +6320,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize(input);
+          return;
+        }
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
@@ -6553,6 +6567,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
+          return true;
+        }
         if (toolName === 'verity_matrix') {
           return (
             matrixRequestSchema.parse(request).action !== 'send' &&
@@ -6681,6 +6699,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       },
       invokeTool: async (input) => {
+        if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session?.projectId !== input.projectId)
