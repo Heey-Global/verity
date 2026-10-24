@@ -600,6 +600,8 @@ export default function MeetingScreen() {
     setModelChoice((current) => (current ? { ...current, model, effective: model } : current));
   };
   const transcriptEnd = useRef<ScrollView>(null);
+  // New words follow the reader only while they are at the end; reading back stays put.
+  const wideTranscriptAtEnd = useRef(true);
   const speakerLabel = (speaker: number | null) =>
     speaker === null
       ? 'Unknown speaker'
@@ -2153,9 +2155,16 @@ export default function MeetingScreen() {
                   testID="meeting-transcript"
                   style={styles.transcriptPane}
                   contentContainerStyle={styles.transcriptTurns}
-                  onContentSizeChange={() =>
-                    transcriptEnd.current?.scrollToEnd({ animated: false })
-                  }
+                  scrollEventThrottle={100}
+                  onScroll={({ nativeEvent }) => {
+                    wideTranscriptAtEnd.current =
+                      nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height >=
+                      nativeEvent.contentSize.height - 24;
+                  }}
+                  onContentSizeChange={() => {
+                    if (wideTranscriptAtEnd.current)
+                      transcriptEnd.current?.scrollToEnd({ animated: false });
+                  }}
                 >
                   {turns.length ? (
                     turns.map((turn, index) => (
