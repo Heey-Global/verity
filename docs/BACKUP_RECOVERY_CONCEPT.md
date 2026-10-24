@@ -128,11 +128,17 @@ a scheduled run, the warm pre-update run and a restore in progress never share
 a path, and the directory is removed on every exit path of the run because it
 holds plaintext refs, index and user `config`). The copy uses reflinks where the
 filesystem offers them and a plain copy otherwise, never hardlinks, which would
-still share the sandbox-writable inode. The copy never follows a symlink: every
-entry is `lstat`ed, a symlink anywhere under `.git` is not copied and is
-recorded as a finding, because a link to another project's `objects/pack` or
-`refs` would otherwise let a server-identity read pull foreign data into this
-backup. Before the copy, the `gitdir:` target of a `.git` file and the `gitdir`
+still share the sandbox-writable inode. The copy never follows a symlink, and
+it does not rely on a check that a running sandbox could race: traversal is
+fd-relative from the project root using `openat2` with `RESOLVE_BENEATH` and
+`RESOLVE_NO_SYMLINKS` and `O_NOFOLLOW`, every opened file is `fstat`ed and its
+identity compared with the directory entry before `FICLONE` or read, and a
+symlink anywhere under `.git` is recorded as a finding instead of being copied.
+A path component swapped for a symlink between two syscalls therefore fails the
+open rather than redirecting a server-identity read into another project's
+`objects/pack`, `refs` or the `secrets` directory. The same traversal copies
+working files in capture step 4, storing symlinks as links and never following
+them. Before the copy, the `gitdir:` target of a `.git` file and the `gitdir`
 and `commondir` entries under `worktrees/<name>` are resolved and must lie
 inside the project's own workspace or session paths; anything else is recorded
 and the repository is captured as plain files without running Git. In the copy,
@@ -197,8 +203,9 @@ Capture, per repository that the project record ties to the connected code host:
 1. Exclude `objects/` (loose objects and packs) of the frozen copy from the
    snapshot. Keep the rest: `HEAD`, `refs`, `packed-refs`, `index`, `logs`,
    `info`, `worktrees/*` and the stash, plus the user's original `config`,
-   `config.worktree` files and `hooks` taken from the live repository as plain
-   user files. Verity never writes a token
+   `config.worktree` files and `hooks` from the frozen copy's `user-files/`
+   directory as plain user files, so metadata and user files come from the same
+   moment. Verity never writes a token
    into `config`; the provisioner passes credentials as an in-memory
    `http.extraheader` (`packages/server/src/provisioner.ts:37`). Users and
    agents can still put secrets there, so `config` is user content encrypted
@@ -251,15 +258,17 @@ Capture, per repository that the project record ties to the connected code host:
 Repositories that do not qualify are copied completely, including
 `.git/objects`, and marked `self-contained`: no remote, an `origin` that is not
 the connected code host, no recorded trusted tip, a failed tip verification, a
-shallow or partial clone with a promisor remote, or submodules under
-`.git/modules`, whose object sets cannot be reasoned about locally. Submodule `config` files are set aside at
+shallow or partial clone with a promisor remote, a `shallow` file, grafts or
+replace refs, or submodules under `.git/modules`, whose object sets cannot be
+reasoned about locally. Submodule `config` files are set aside at
 restore like the main one. Alternates are never honored: the provisioner does
 not create shared clones, so an `objects/info/alternates` file is either a
 user's `clone --shared` or an attempt to pull another server-readable
 repository into this project's backup. The freeze removes the alternates file
 from the copy, so the copy holds only the repository's own objects and no
 command follows a host path into another project; the repository is captured
-self-contained as a file copy of those objects and flagged "Code incomplete"
+self-contained as a file copy of those objects and flagged `alternates-dropped`,
+a capture-time flag distinct from the restore-time "Code incomplete" state,
 because the borrowed objects are missing. The manifest records that the file
 existed. Today's local projects, which
 still start from an empty initial commit, fall under this; after the "project
@@ -276,11 +285,18 @@ reports it. Self-contained repositories keep their whole `.git/objects` and
 re-upload it after every `git gc`, so the size saving applies to remote-dependent
 repositories only.
 
-Restore, per remote-dependent repository, after the master password has unlocked
-the secret store so the code host connection credentials are usable:
+Restore, per repository. Steps 1 and 4 apply to every repository, including
+self-contained ones; steps 2 and 3 apply to remote-dependent and
+pending-rehydration repositories only and run after the master password has
+unlocked the secret store so the code host connection credentials are usable:
 
-1. Restore `.git` without objects and the working files from the snapshot. Move
-   the restored `config`, the main worktree's `config.worktree`, every
+1. Before any Git command, validate every `gitdir:` file target and every
+   `worktrees/<name>/gitdir` and `commondir` entry in the snapshot against the
+   project's own restore paths, rewriting them for a moved `VERITY_ROOT` and
+   refusing any that point elsewhere, so a hostile snapshot cannot make the
+   server write outside the restore root. Then restore `.git` (without objects
+   for remote-dependent repositories) and the working files from the snapshot.
+   Move the restored `config`, the main worktree's `config.worktree`, every
    `worktrees/<name>/config.worktree` and `hooks` into the server-owned restore
    staging area outside the sandbox-writable tree
    (`<VERITY_ROOT>/restore/<projectId>/git-user-config/`), where they persist
@@ -322,8 +338,10 @@ the secret store so the code host connection credentials are usable:
    container, which is what makes this acceptable. No sanitized denylist is
    relied on for the credentialed command: the fresh repository has no
    sandbox-written file at all, so no `include.path`, `config.worktree`,
-   alternates or replace ref can reach it. The resulting packs are moved into
-   the restored `.git/objects`. No second fetch follows: the objects are already
+   alternates or replace ref can reach it. The allowlist also sets
+   `fetch.unpackLimit=1`, so every received object arrives as a pack and none is
+   exploded into loose files; the resulting packs are moved into the restored
+   `.git/objects`. No second fetch follows: the objects are already
    present, so the restored `refs/remotes/origin/*` are rewritten from the
    staging repository with `git for-each-ref refs/remotes/origin` piped into
    `git update-ref --stdin` as one transaction, which needs no protocol and no
@@ -331,12 +349,8 @@ the secret store so the code host connection credentials are usable:
    repository without a trusted tip at capture time was already classified
    self-contained and does not reach this step. Remote-tracking refs restored
    from the snapshot are untrusted and are overwritten here.
-4. `git fsck --connectivity-only`, then validate every `gitdir:` file target
-   and every `worktrees/<name>/gitdir` and `commondir` entry from the snapshot
-   against the project's own restored paths before `git worktree repair` runs,
-   rewriting them for a moved `VERITY_ROOT` and refusing any that point
-   elsewhere, so a snapshot cannot make the server write outside the restore
-   root. Only after `fsck` passes, put the original `config`, the main and
+4. `git fsck --connectivity-only` and `git worktree repair`, the latter on the
+   pointers already validated in step 1. Only after `fsck` passes, put the original `config`, the main and
    every per-worktree `config.worktree`, `hooks`, and the `shallow`, graft and
    replace files back from the staging area and remove the staging copy; they
    are user content, not restore input. On failure they stay in staging, and a
@@ -353,8 +367,8 @@ config stay next to it, and the project screen shows that Code has no history
 until the code host is reconnected and rehydration is retried. Nothing local is
 discarded by that choice; it is not a self-contained repository.
 
-Pending state is itself backed up, under its own manifest class. A project in
-"Code incomplete" or "working files only" state is captured as
+Pending state is itself backed up, under its own manifest class. A project that
+a restore left in "Code incomplete" or "working files only" state is captured as
 `pending-rehydration`, not as self-contained: the snapshot carries its working
 files, the renamed `.git.verity-incomplete`, its
 `<VERITY_ROOT>/restore/<projectId>/` staging directory with the unimported
@@ -541,8 +555,10 @@ coupling and retention dependencies; they are not silently added to version one.
 1. Inventory scope, data locations, capacity and uncovered storage before work;
    write the warnings into the manifest up front.
 2. Acquire the lifecycle lock: refuse provision, deprovision, sleep, wake, mount
-   changes and project deletion while repositories are frozen and working files
-   copied, not during verification, packing or upload. Turns, edits and commits
+   changes, project deletion, and rehydration retries or resumption of a pending
+   project while repositories are frozen and working files copied, not during
+   verification, packing or upload, so a snapshot never sees a half-moved
+   pending state. Turns, edits and commits
    keep running. There is no global drain.
 3. Take one transaction-consistent logical PostgreSQL snapshot (repeatable-read
    deterministically segmented logical export through the read-only backup role,
@@ -550,8 +566,9 @@ coupling and retention dependencies; they are not silently added to version one.
    `DATABASE_URL` and lives outside the secret store, so a sealed server can
    still capture). Record its timestamp.
 4. Copy worktrees and knowledge folders live, streaming through the encryptor,
-   skipping `.git/objects` only for repositories that qualify as
-   remote-dependent under "Git history and code hosts" and writing their
+   with the same fd-relative no-follow traversal as the freeze, storing symlinks
+   as links; skip `.git/objects` only for repositories that qualify as
+   remote-dependent under "Git history and code hosts" and write their
    local-only packfile instead; every other repository keeps its objects, and
    projects in a pending restore state include their restore staging
    directory. Record the copy window and the turns active in it.

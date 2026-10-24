@@ -166,22 +166,24 @@ are not repeated here, so that one text stays authoritative.
   a mismatch forces a self-contained copy; the full read of pushed history per
   snapshot, outside the lifecycle lock, is the accepted price.
 - No Git command the backup runs reads a sandbox-written file. Capture freezes
-  the repository first: a no-follow copy of the whole `.git` into server-owned
-  staging, with user `config`, `config.worktree`, `hooks`, alternates, shallow,
+  the repository first: an fd-relative, no-follow copy of the whole `.git` into
+  server-owned staging that a concurrently running sandbox cannot redirect, with user `config`, `config.worktree`, `hooks`, alternates, shallow,
   graft and replace files moved out of Git's reach and carried as user content.
   Restore sets the same files aside before its first command and returns them
   after `fsck`. A hardened invocation with overrides for executable keys is
   defense in depth, not the protection. The Git floor on server and installer
   images is 2.39.
 - Everything that does not qualify, including repositories without a remote,
-  today's local projects, shallow or partial clones, submodules, alternates,
-  unknown extensions, and any `gitdir` or symlink pointing outside the project,
+  today's local projects, shallow or partial clones, grafts, replace refs,
+  submodules, alternates, unknown extensions, and any `gitdir` or symlink
+  pointing outside the project,
   is captured `self-contained` or, where Git cannot safely run, as plain files
   with a "not validated" warning.
 - Rehydration at restore imports the local-only pack, fetches from the code
   host into a fresh bare repository with a Verity-written allowlisted
   configuration and the credential in the child's environment, moves the packs
-  over, rewrites remote-tracking refs in one `update-ref` transaction, checks
+  over (with `fetch.unpackLimit=1`, so nothing arrives loose), rewrites
+  remote-tracking refs in one `update-ref` transaction, checks
   the prerequisite and runs `fsck`. It needs the secret store unlocked and the
   host reachable. Failure leaves the project suspended with a "Code incomplete"
   warning, its working files on disk and its local commits preserved as the
@@ -235,7 +237,8 @@ hours and would turn a nightly backup into a maintenance window. Instead:
   segmented logical export). This is the authoritative state.
 - Hold a lifecycle lock only while repositories are frozen and working files
   copied, not during verification, packing or upload; it refuses provision,
-  deprovision, sleep, wake, mount changes and project deletion. Turns, file
+  deprovision, sleep, wake, mount changes, project deletion and rehydration of
+  a pending project. Turns, file
   edits and commits continue.
 - Copy worktrees live with before/after change detection and bounded retries.
   This is not an atomic filesystem snapshot: Git validation cannot recover
