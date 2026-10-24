@@ -156,7 +156,11 @@ not from a trusted tip: the default branch commit Verity itself last saw on the
 code host, recorded in the database by the server-side clone, fetch and push
 paths that run outside the sandbox. Remote-tracking refs are not trusted for
 this, because everything under `.git` is writable from the sandbox and a ref
-moved onto a local-only commit would silently drop history from the pack. Only
+moved onto a local-only commit would silently drop history from the pack. The
+objects behind the tip are sandbox-writable too, so capture verifies them with
+`git fsck <trusted-tip>` before the pack and falls back to a self-contained copy
+on any mismatch; the full read of pushed history per snapshot is the accepted
+price. Only
 the default branch is excluded, not every remote branch: feature branches are
 routinely squash-merged and deleted on the host, and a stale tip for a deleted
 branch would exclude commits the host no longer holds. Without a recorded tip
@@ -176,9 +180,8 @@ The manifest marks each project as `remote-dependent` or `self-contained`, with
 the remote URL, the code host connection it belongs to and the single trusted
 tip with its branch as the prerequisite. Restore rehydrates a remote-dependent repository by
 restoring `.git` without objects, importing the local-only packfile, fetching
-from the code host through the restored connection with `--refetch` so dangling
-local refs do not steer the negotiation, checking the prerequisite and running
-`git fsck`. The credential travels as an in-memory `http.extraheader` for that
+from the code host through the restored connection into a fresh bare repository,
+moving the packs over, checking the prerequisite and running `git fsck`. The credential travels as an in-memory `http.extraheader` for that
 one command, as the provisioner does today, passed through the child's
 `GIT_CONFIG_*` environment rather than argv, never through a helper or a file.
 No Git command the backup runs reads a sandbox-written `config` or `hooks`:
@@ -203,22 +206,26 @@ remote-tracking refs are rewritten from the staging refs in one `update-ref`
 transaction, so no sandbox-written file can redirect the credential and no
 second fetch is needed. Classification and the remote URL
 come from the project record in the database, not from `.git/config`.
-Rehydration additionally sets the restored `config`,
-per-worktree `config.worktree` files and `hooks` aside durably next to the
-project and puts a sanitized configuration in its place that carries only the
-remote URL from the project record, the repository-format keys
-(`core.repositoryformatversion`, `core.bare`, `extensions.*`) and the standard
+Rehydration additionally sets the restored `config`, the main and per-worktree
+`config.worktree` files and `hooks` aside in server-owned staging outside the
+sandbox-writable tree and puts a sanitized configuration in its place that
+carries only the remote URL from the project record, the repository-format keys
+(`core.repositoryformatversion`, `core.bare`, and the explicit extensions
+`objectFormat`, `worktreeConfig`, `refStorage`) and the standard
 `remote.origin.fetch` refspec. Users and agents can edit `config` and `hooks`,
 and settings such as `core.sshCommand`, `core.fsmonitor`, `credential.helper`
 or `url.*.insteadOf` would otherwise run code or redirect the fetch credential
-during restore. The restored `config` and
-`hooks` are put back only after `fsck` passes, and never run during restore.
+during restore. The restored `config`, `config.worktree` files and `hooks` are
+put back only after `fsck` passes, and never run during restore.
 Rehydration needs the secret store unlocked, because the connection credentials
 live there, and it needs the code host reachable. When the host is unreachable,
 the connection is revoked, or the prerequisites no longer exist because history
 was rewritten or the repository was deleted, the project stays suspended with a
 "Code incomplete" warning, its working files on disk and its local commits
-preserved as the unimported packfile. The user can retry rehydration after
+preserved as the unimported packfile. That pending state is included in later
+snapshots and the source snapshot is pinned against retention until the project
+has rehydrated or been captured once more, so the new installation's own
+backups never lose those commits. The user can retry rehydration after
 reconnecting, or resume the project in a defined "working files only" state in
 which the unusable `.git` is renamed aside and Code shows no history. The restore never reports such a
 project as recovered.
@@ -358,8 +365,9 @@ pointer files and the `worktrees/<name>/gitdir` entries before validation.
 
 A server update is the one moment Verity itself puts the data at risk: the
 promoted Server runs forward-only schema migrations on start, and there is no
-downgrade path. Every update therefore attempts a snapshot first. By default an
-update without a destination still runs and is recorded as unbacked; the
+downgrade path. Every update on an installation with a backup destination
+therefore takes a snapshot first. An update without a destination runs and is
+recorded as unbacked; the
 administrator setting "require a backup before updates" makes it a refusal.
 
 The hook lives in the existing update sequence (ADR 0008). While the old Server
