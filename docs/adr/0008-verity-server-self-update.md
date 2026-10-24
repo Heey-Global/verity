@@ -1337,7 +1337,10 @@ update the rollback point for data, because the promoted Server runs forward-onl
 4. The host gains a second Verity component beside `verity-host-runtime`: a root-owned backup
    identity helper with the same shape (script plus systemd path unit, installed by
    `verity-install`, root-owned request directory). It only encrypts the root-only TLS CA key to the
-   recipient key the Server provides and writes it into the backup directory. Amendment 2's "exactly
+   recipient key the Server provides and writes it into the backup directory. Because the Server
+   chooses that key, this is safe only while the Server is host-root-equivalent through the raw
+   Docker socket; when the policy gateway removes that, the helper accepts only a recipient key
+   registered by root through the installer. Amendment 2's "exactly
    one component" is amended accordingly.
 
 **Limits.** The snapshot is taken before quiescing, so changes between it and the switch are not in

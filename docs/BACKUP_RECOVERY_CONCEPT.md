@@ -299,8 +299,19 @@ back, and replace the recovery key there.
 The recovery key protects more than snapshot contents. Snapshots carry device
 tokens and the TLS identity, and the backup directory carries the CA key, so the
 directory plus the key is enough to stand up a host that paired devices accept.
-Setup says the key "opens your backups and can restore this server". After a
-key compromise, replace the key and use `--new-identity` for any later restore.
+Setup says the key "opens your backups and can restore this server".
+
+After a recovery key leaks, replacing it is not enough, because every existing
+snapshot and the old CA key file still carry the live identity. The response
+is:
+
+1. "Replace recovery key" with the reason "the old key was exposed". This
+   deletes the old generation's CA key file at once instead of at expiry.
+2. `sudo verity-install --rotate-identity` on the live host: a new CA, TLS and
+   pairing identity, all device tokens revoked, every device pairs again. The
+   identity in old snapshots and in off-host copies is then worthless.
+3. Use `--new-identity` for any later restore from a snapshot taken before the
+   rotation.
 
 Restore accepts the recovery key by clipboard paste, QR scan in the app, or
 typed entry with checksum validation; paste over SSH is the installer path.
@@ -696,6 +707,14 @@ different owners (`deploy/bin/verity-pairing-material:95`, `:96`):
   server hands the recipient key to the helper only after the confirmation
   paste, so an abandoned replacement leaves no file behind.
 
+  The server chooses the recipient key, so a compromised server could submit
+  its own key and receive the CA key. That does not widen today's compromise
+  case: the server holds the raw Docker socket, which is host-root-equivalent
+  (`deploy/docker-compose.yml`, ADR 0017), so it can read the CA key anyway.
+  When the Docker policy gateway removes that equivalence, the helper must stop
+  trusting the server's choice and accept only a recipient key registered by
+  root through the installer.
+
 Nothing else from `/etc/verity` enters a backup; the updater token and the
 PostgreSQL password stay host-specific. The encrypted CA key is not signed, because the
 helper holds no signing key. Restore authenticates it instead by checking that
@@ -730,24 +749,31 @@ current recipient and signed with the current signing key; the sequence makes a
 deleted entry visible as a gap.
 
 A revocation that cannot be written, because the directory is unwritable,
-unmarked or full, or backups are paused or not set up, stays queued in the
-database and is retried; every backup run also writes any database revocation
-missing from the journal. A queued revocation raises the "backup needs
-attention" status.
+unmarked or full, or backups are paused, stays queued in the database and is
+retried; every backup run also writes any database revocation missing from the
+journal. A queued revocation raises the "backup needs attention" status only
+while backups are active. Without configured backups nothing is queued, because
+there is no backup that could bring the token back. Each snapshot manifest also
+records, signed, the highest journal sequence written so far, so restore
+detects entries deleted before that snapshot.
 
 Fresh-host restore and same-host rollback read every entry the entered recovery
 key can open and verify, from every installation in the directory, and apply
 them before the restored server starts; a token id unknown to the restored
 database is a no-op, so applying a sibling installation's revocation is safe
 and wanted. Entries written under a later key generation cannot be opened with
-an older key. Restore reports entries it could not read and gaps in any
-installation's sequence.
+an older key; restore therefore accepts the newer recovery keys as well, for
+reading the journal only, and asks for them when it finds such entries. Restore
+reports entries it could not read and gaps in any installation's sequence.
 
 A backup directory copy older than a revocation cannot know it either, and a
 host-writable directory can lose entries. Every restore therefore ends with a
 mandatory review: the first app screen lists all paired devices with a "Revoke"
 action, and devices paired after the snapshot are reported as needing to pair
-again.
+again. When the journal had unreadable entries or gaps, every device whose
+revocation status cannot be proven is marked "unverified" and stays blocked
+until the administrator keeps it explicitly. This review is the control for
+entries deleted after the newest snapshot, which nothing else can detect.
 
 ## Operations
 
@@ -757,6 +783,7 @@ again.
 | Retention | Every snapshot of the last 48 hours, then 7 daily, 4 weekly and 6 monthly |
 | Pre-update retention | The last two pre-update snapshots, in addition |
 | Run timeout | 6 hours |
+| Garbage collection grace period | 24 hours |
 | Priority | Low CPU and IO priority (`nice`, `ionice` class idle where available) |
 
 - Catch-up: after downtime that skipped a scheduled run, one run starts shortly
@@ -883,7 +910,10 @@ replayed automatically. The restore summary lists integration credentials that
 need reconnection, including the provider sign-ins lost with the gateway state.
 
 Backups on the restored host are active and write into a new repository under
-its new installation id, with the same recovery key. When the restore source is
+its new installation id, with the same recovery key, into the backup directory
+configured for this host (`--backup-dir`, default `/var/lib/verity/backups`).
+The installer adopts that directory's marker or writes a new one and records
+the target id in the fresh `backup-state/`. When the restore source is
 the host's own backup directory, the predecessor's repository stays beside the
 new one and is never pruned automatically; the restore summary shows its size,
 and `verity-install --delete-repository <installationId>` removes it after a

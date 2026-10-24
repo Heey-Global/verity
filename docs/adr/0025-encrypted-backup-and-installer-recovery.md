@@ -80,7 +80,11 @@ host can capture it then. The app says so where it asks for the key. After a
 suspected compromise the host's own snapshots are untrustworthy, because the
 attacker held the signing key; the user restores onto a clean host from an
 off-host copy made before the compromise, with `--new-identity`, and replaces
-the key there.
+the key there. After a leak of the recovery key itself, the user replaces the
+key with the reason "exposed", which deletes the old generation's CA key file
+at once, and runs `verity-install --rotate-identity` on the live host, which
+issues a new CA, TLS and pairing identity and revokes every device token, so
+the identity in old snapshots and copies becomes worthless.
 
 Every manifest is signed; the signature covers the whole manifest including
 each object's ID, digest and length, the repository identity, format version and
@@ -193,7 +197,11 @@ manifest section. The CA private key is root-only by design; a host helper that
 the installer installs, in the pattern of the host runtime helper of ADR 0008
 Amendment 2, encrypts it to the recipient key and writes it into the backup
 directory whenever backups are set up, the key is replaced or the CA changes.
-Restore authenticates that file against the CA certificate in the signed
+The server chooses that recipient key; while the server holds the raw Docker
+socket, which is host-root-equivalent, this does not widen the compromise
+case, and once the policy gateway removes that, the helper accepts only a
+recipient key registered by root through the installer. Restore authenticates
+that file against the CA certificate in the signed
 snapshot. A fresh-host restore always reinstates the identity, with the device
 tokens, so devices reconnect without pairing and without a question in the flow.
 
@@ -355,8 +363,13 @@ the master password, with the original host and its index destroyed: settings,
 usable credentials after unlock, knowledge, all worktrees, active, sleeping and
 paused projects, and devices reconnecting without pairing. Prove that
 `--new-identity` requires pairing, that a device revoked after the snapshot
-stays revoked after restore and rollback, and that a CA key file not matching
-the snapshot's certificate is refused.
+stays revoked after restore and rollback, that a device whose revocation
+cannot be proven stays blocked until kept explicitly, and that a CA key file
+not matching the snapshot's certificate is refused. Prove that only
+administrators can set up, run, restore, probe and delete, and that project
+users and agents are refused. Prove that restore never revives preview links,
+capability generations, enrollment recovery records or queued jobs, and never
+executes work automatically.
 
 Test wrong keys, tampering, truncation, an unsigned manifest encrypted to the
 recipient, unsafe paths and links, a sealed secret store, a full disk, a missing
