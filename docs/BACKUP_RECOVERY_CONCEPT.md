@@ -122,8 +122,10 @@ complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
 first freezes the repository: it copies the whole `.git`, objects included,
 into the server-owned capture staging area
 (`<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`, where `repoKey` is a
-hash of the repository's path relative to the project workspace so a project
-with several repositories or submodules never collides in staging; a sibling of
+hash of the Git directory's path relative to the project workspace, including
+the directory name itself, so a project with several repositories or
+submodules never collides in staging and a live `.git` and a
+`.git.verity-pending-<snapshotId>` at the same location get distinct keys; a sibling of
 `workspaces` that
 no sandbox bind mount contains; the sandbox sees only volume subpaths under
 `workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
@@ -176,7 +178,12 @@ accepted; remote-dependent copies additionally get the tip `fsck`, `rev-list`
 and `pack-objects`, which detect the same condition. Missing objects trigger a
 re-freeze with bounded retries, and after the last attempt the repository is
 captured from its latest copy as plain files with an `unstable` flag, never
-silently without its local-only history. Repositories that Git cannot safely
+silently without its local-only history. A repository already known to be
+incomplete at the freeze, because its alternates file was dropped
+(`alternates-dropped`) or it is copied without validation, skips the
+connectivity check and the retry loop: its failure is expected, repeating the
+copy under the lock would gain nothing, and the known flag wins over
+`unstable`. Repositories that Git cannot safely
 run on (unknown extensions, out-of-project pointers) go through the same
 fd-relative freeze but are flagged "not validated", because nothing can check
 their consistency. The freeze is not free: without reflinks (ext4) it is a
@@ -398,11 +405,14 @@ unlocked the secret store so the code host connection credentials are usable:
    means rehydration failed and the project stays pending. For a self-contained
    repository a failure is recorded and the project is marked "Code incomplete";
    for one flagged `alternates-dropped` that failure is the expected terminal
-   outcome, not something a retry can change. In every case the user's
-   `config`, the main and every per-worktree `config.worktree` and `hooks` are
-   put back from staging once the last Git command of the restore has run,
-   because nothing in the restore executes them afterwards and they are user
-   content, not restore input; the staging copy is removed only then. A default branch renamed on the
+   outcome, not something a retry can change. For a repository whose restore completed, a validated or
+   known-incomplete self-contained one or a successfully rehydrated one, the
+   user's `config`, the main and every per-worktree `config.worktree` and
+   `hooks` are put back from staging once the last Git command of the restore
+   has run, because nothing in the restore executes them afterwards and they are
+   user content, not restore input; the staging copy is removed only then. A
+   repository whose rehydration failed keeps its staging copy untouched, since
+   the pending state depends on it. A default branch renamed on the
    host since capture needs no handling: the rename keeps the commit, the fetch
    brings it under its new name, and the prerequisite check is by OID.
 
