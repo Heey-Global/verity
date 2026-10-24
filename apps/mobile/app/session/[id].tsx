@@ -4511,7 +4511,7 @@ export const SessionChat = memo(function SessionChat({
               <VulnerabilityStarterCard
                 client={client}
                 projectId={projectId}
-                sessionId={sessionId}
+                onFix={sendQuickReply}
               />
             ) : null}
           </View>
