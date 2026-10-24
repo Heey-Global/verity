@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.77.4](https://github.com/Heey-Global/verity/compare/mobile-v1.77.3...mobile-v1.77.4) (2026-10-24)
+
+
+### Features
+
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+
+
+### Bug Fixes
+
+* **mobile:** expose local connection test failure receipts ([#1860](https://github.com/Heey-Global/verity/issues/1860)) ([8d6cbe2](https://github.com/Heey-Global/verity/commit/8d6cbe24d871efa7250bab6518d10a0344b2b272))
+
 ## [1.77.3](https://github.com/Heey-Global/verity/compare/mobile-v1.77.2...mobile-v1.77.3) (2026-10-24)
 
 
