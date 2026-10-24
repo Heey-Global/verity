@@ -279,7 +279,11 @@ snapshot into the existing installation, keeps identity, pairing and the
 host's own backup state (keys, index, target id), applies the revocation
 journal, pins the snapshot's release and writes the automatic update hold into
 the restored database before starting it, all within the staging and
-acceptance rules above. The Updater's own rollback phases stay the first line.
+acceptance rules above. Preflight must also prove that the pinned release can
+read current host backup state and write the current repository format and key
+envelope; otherwise refuse the rollback as an unsupported downgrade before
+changing data, backup state or the update journal. The Updater's own rollback
+phases stay the first line.
 
 The app offers restoring one project from a snapshot as a new project and
 downloading a single file. Both ask for the recovery key for that operation and

@@ -972,10 +972,13 @@ the staging volumes first and keeps the current volumes until the rolled-back
 installation has started and the administrator has accepted it; a failure
 before that leaves the current installation untouched. It then starts staging
 with the snapshot's release pinned and, on acceptance, swaps it in. Automatic updates stay held until the administrator resumes them
-in the app. Backups continue in the installation's current repository, the one
-`backup-state/` belongs to, which may be newer than the snapshot's own if the
-key or format changed since; snapshots taken after the pre-update snapshot
-remain listed and restorable.
+in the app. Before staging or aborting a journaled update, check that the pinned release
+can read the current host backup state and write its current repository format
+and key envelope. Refuse the rollback as an unsupported downgrade if it cannot;
+report the incompatible format and leave the installation and backups untouched.
+For a compatible rollback, backups continue in the current repository, which
+may be newer than the snapshot's own after a key or compatible format change.
+Snapshots taken after the pre-update snapshot remain listed and restorable.
 
 ### Partial restore in the app
 
