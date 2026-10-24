@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { useLocalSearchParams } from 'expo-router';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
@@ -66,14 +66,14 @@ const meeting: MeetingRecord = {
 const clock = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function client() {
+function client(insights: unknown[] = []) {
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
     getSession: jest.fn().mockResolvedValue({ model: 'claude-opus-5-5', projectId: 'project' }),
     listModels: jest.fn().mockResolvedValue({ models: ['claude-opus-5-5', 'claude-sonnet-5-5'] }),
     getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
-    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue(insights),
     getSessionHistory: jest.fn().mockResolvedValue({ events: [], queued: [] }),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   return sendTurn;
@@ -147,4 +147,31 @@ it('asks Verity with the model picked for this meeting instead of the faster def
   expect(
     screen.getByTestId('meeting-card-working', { includeHiddenElements: true }),
   ).toBeOnTheScreen();
+});
+
+it('offers questions Verity noticed in its pane and turns them into research there', async () => {
+  const sendTurn = client([
+    {
+      id: 'question-height',
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: 'How tall is the Eiffel Tower?',
+      evidenceA: 'How tall is the Eiffel Tower?',
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: startedAt + 60_000,
+    },
+  ]);
+  render(<MeetingScreen />);
+  const pane = await screen.findByTestId('verity-pane');
+  expect(await within(pane).findByText('How tall is the Eiffel Tower?')).toBeOnTheScreen();
+  expect(within(pane).getByText(clock(startedAt + 60_000))).toBeOnTheScreen();
+  fireEvent.press(within(pane).getByLabelText('Research meeting question'));
+  await waitFor(() =>
+    expect(sendTurn).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ prompt: expect.stringContaining('How tall is the Eiffel Tower?') }),
+    ),
+  );
+  expect(await within(pane).findByText('Researching…')).toBeOnTheScreen();
 });

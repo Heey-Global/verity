@@ -19,10 +19,10 @@ test('uses the project model catalog and retains the session model on discovery 
   const getSession = jest.fn().mockResolvedValue({ model: 'codex/default', projectId: 'project' });
   const listModels = jest.fn().mockResolvedValue({ models: ['codex/gpt-6-luna'] });
   const client = { getSession, listModels } as unknown as VerityClient;
-  expect(await meetingResearchModel(client, 'session')).toBe('codex/gpt-6-luna');
+  expect(await meetingResearchModel(client, 'session', 'meeting')).toBe('codex/gpt-6-luna');
   expect(listModels).toHaveBeenCalledWith('project');
   listModels.mockRejectedValueOnce(new Error('offline'));
-  expect(await meetingResearchModel(client, 'session')).toBeUndefined();
+  expect(await meetingResearchModel(client, 'session', 'meeting')).toBeUndefined();
 });
 
 test('a model picked in a meeting wins over the faster default for that meeting only', async () => {

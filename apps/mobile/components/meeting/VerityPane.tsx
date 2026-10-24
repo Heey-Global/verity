@@ -130,7 +130,7 @@ export function AskVerityField({
         returnKeyType="send"
         value={value}
         onChangeText={onChangeText}
-        onSubmitEditing={onSubmit}
+        onSubmitEditing={disabled ? undefined : onSubmit}
         style={styles.input}
       />
       {model ? (

@@ -51,7 +51,7 @@ export async function meetingModelChoice(
 export async function meetingResearchModel(
   client: VerityClient,
   sessionId: string,
-  meetingId = '',
+  meetingId: string,
 ): Promise<string | undefined> {
   return (await meetingModelChoice(client, sessionId, meetingId))?.model;
 }

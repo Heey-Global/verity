@@ -2636,7 +2636,6 @@ const styles = StyleSheet.create((theme) => {
       borderColor: tint(colors.action, 'border'),
     },
     column: { flex: 1, gap: theme.spacing.md },
-    divider: { width: 1, backgroundColor: colors.border },
     setupSection: { gap: theme.spacing.sm },
     setupCard: { flex: 1, gap: theme.spacing.sm },
     setupInline: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
