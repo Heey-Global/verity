@@ -19,6 +19,8 @@ import { Button } from './Button';
 
 // How far the sheet has to be dragged down before letting go closes it.
 const DISMISS_DISTANCE = 80;
+// The Modal's fade; platforms without a native dismiss event wait this long.
+const FADE_OUT_MS = 300;
 
 /**
  * The one bottom sheet (docs/design-system.md § 5.6): a single scrim, a grab
@@ -35,6 +37,7 @@ export function Sheet({
   footer,
   showClose = true,
   dismissible = true,
+  onDismissed,
 }: {
   visible: boolean;
   title: string;
@@ -43,7 +46,23 @@ export function Sheet({
   footer?: ReactNode;
   showClose?: boolean;
   dismissible?: boolean;
+  /**
+   * Runs once the sheet has finished hiding. Use it for an action that unmounts the
+   * screen holding the sheet: unmounting a Modal mid-dismiss can leave a touch-blocking
+   * overlay on iOS.
+   */
+  onDismissed?: () => void;
 }) {
+  const onDismissedRef = useRef(onDismissed);
+  onDismissedRef.current = onDismissed;
+  const shown = useRef(visible);
+  useEffect(() => {
+    const was = shown.current;
+    shown.current = visible;
+    if (!was || visible || Platform.OS === 'ios') return;
+    const timer = setTimeout(() => onDismissedRef.current?.(), FADE_OUT_MS);
+    return () => clearTimeout(timer);
+  }, [visible]);
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const drag = useRef(new Animated.Value(0)).current;
@@ -79,6 +98,7 @@ export function Sheet({
       transparent
       animationType="fade"
       onRequestClose={close}
+      onDismiss={Platform.OS === 'ios' ? () => onDismissedRef.current?.() : undefined}
       statusBarTranslucent
       navigationBarTranslucent
     >
