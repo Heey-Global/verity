@@ -11,6 +11,10 @@ projects. Application state spans PostgreSQL, the `verity-data` volume
 (workspaces, session worktrees, knowledge folders) and a few service volumes; a
 database dump alone is insufficient. Large regenerable dependencies should not
 inflate backups, but library originals and authored notes may be irreplaceable.
+Code projects are clones of repositories on a connected code host, GitHub or
+Forgejo, so their pushed history has a system of record outside Verity. Server
+updates run forward-only schema migrations, which makes the moment before an
+update the one where only a backup can undo damage.
 
 Backups must be encrypted on the self-hosted Verity host before transport or
 storage. Local recovery must remain available independently of Premium Uplink.
@@ -33,7 +37,7 @@ it mattered argues for a recurring restore probe, not a one-time proof.
 The only credential that opens a backup is a locally generated, cryptographically
 random 256-bit recovery key. It is the private half of an asymmetric recipient
 pair (X25519 or an equivalent reviewed scheme in the style of `age`). The host
-stores only the public recipient key. Each archive uses a fresh random data key,
+stores only the public recipient key. Each immutable object and manifest uses a fresh random data key,
 wrapped to that public key; decryption needs the private recovery key, which
 exists only in the user's recovery kit.
 
@@ -48,8 +52,8 @@ Consequences of this choice:
   stay resident on the host.
 - Rotating the recovery key means generating a new pair. Old archives still
   need the old private key. The settings UI lists which key generation each
-  retained archive requires; rewrapping old archives is optional and must never
-  overwrite the only usable envelope.
+  retained archive requires; cross-generation rewrapping is deferred. Start a new repository generation
+  with a full upload and retain the old private key for older snapshots.
 
 Do not support the master password, another passphrase or account recovery as
 alternative decryption paths. Neither Verity's hosted service nor a Uplink
@@ -88,13 +92,17 @@ even with a valid archive and recovery key.
 
 ### Scope
 
-Initially create complete, standalone archives containing:
+From the first release, create complete logical snapshots in an incremental
+encrypted repository, with self-contained exports available for portability.
+Every snapshot includes:
 
 - the complete application database (settings, projects, memberships, sessions,
   histories, permissions, attachments, knowledge revisions, backup policy);
-- every project workspace and session worktree under `VERITY_ROOT`, including
-  Git metadata, local commits, untracked files and ignored user files such as
-  `.env`;
+- every project workspace and session worktree under `VERITY_ROOT`: working
+  files, untracked files and ignored user files such as `.env`, Git metadata
+  (refs, index, stash, reflogs, worktree registrations, hooks and config), and
+  the Git objects that only exist locally. Objects the connected code host
+  already holds are not copied; see "Git history and code hosts" below;
 - knowledge folder contents on disk;
 - the manifest: scope, per-project desired lifecycle state, the server release
   and schema version (`SERVER_COMPAT`), capture timestamps, excluded paths with
@@ -132,19 +140,144 @@ Later selective content profiles must show omissions and size estimates. Selecti
 knowledge/database export needs dependency-aware import/export; do not filter rows
 out of an ordinary dump. A partial backup must never appear to be a full backup.
 
+### Git history and code hosts
+
+History that is already pushed to the project's code host, GitHub or Forgejo, is
+recoverable from that host and is not copied into the backup. This is the one
+exclusion that is derived per repository rather than listed by path, and it is
+the largest size saving after dependency directories: `.git/objects` is the bulk
+of a clone, and Git repacks it periodically into differently compressed packs
+that defeat chunk deduplication even when no commit changed.
+
+For a repository with a configured `origin`, capture excludes `.git/objects` and
+replaces it with a Git bundle of every object reachable from local refs but not
+from the remote-tracking refs as last fetched. The bundle records those
+remote-tracking commits as prerequisites. Everything else in `.git` is included,
+so branches, stash, index, reflogs, session worktree registrations and the
+remote URL survive. The provisioner never writes tokens into the remote URL, so
+the URL is safe to carry. Repositories without a remote, including today's local
+projects that still hold an empty initial commit, are copied completely.
+
+The manifest marks each project as `remote-dependent` or `self-contained`, with
+the remote URL, the code host connection it belongs to and the set of
+prerequisite commits. Restore rehydrates a remote-dependent repository by
+restoring `.git` without objects, fetching from the code host through the
+restored connection, unbundling the local-only objects and running `git fsck`.
+Rehydration needs the secret store unlocked, because the connection credentials
+live there, and it needs the code host reachable. When the host is unreachable,
+the connection is revoked, or the prerequisites no longer exist because history
+was rewritten or the repository was deleted, the project stays suspended with a
+"Code incomplete" warning and its working files and local commits intact. The
+user can retry rehydration after reconnecting. The restore never reports such a
+project as recovered.
+
+This makes the backup of a code project complete only together with the code
+host. The ADR accepts that: the host already is the system of record for pushed
+history, and the installations Verity targets keep their code there by design.
+The restore UI states this dependency per project before activation. A
+stale remote-tracking ref errs on the safe side and includes more objects; a
+remote whose history was force-rewritten after the last fetch is the residual
+loss case and is surfaced, not hidden.
+
+### Mandatory incremental repository
+
+Incremental transfer and storage are first-release requirements. The first
+snapshot uploads all included content; later snapshots reuse unchanged encrypted
+objects and upload only new objects and a new manifest. Each snapshot describes
+its complete logical state and references objects directly, rather than requiring
+a replay of every intervening backup. Shared objects remain necessary for restore;
+a manifest alone is not a standalone backup.
+
+Use content-defined chunking for files so insertions do not shift every later
+block boundary. Deduplicate before encryption, within one repository and recovery
+key generation only. Never use plaintext hashes as public object names, derive
+encryption keys from content, or use deterministic encryption. The host keeps a
+restricted local index mapping content fingerprints to random opaque object IDs.
+That index contains sensitive information and must not be uploaded unencrypted.
+Destination observers can still infer sizes, timing and reuse patterns.
+
+Each new object receives an independent random data key, authenticated encryption
+and an envelope to the public recovery recipient. Encrypt manifests the same way.
+Manifests carry ordered object references, envelopes, integrity information,
+file metadata and the repository/key-generation identity. Bind those identities,
+object type and format version into authentication. Reusing an object reuses its
+existing ciphertext and envelope; encrypting new objects never reuses a nonce or
+key. Use reviewed maintained primitives; the exact container format, chunk sizes
+and library selection require implementation review and cross-version fixtures.
+
+The host holds only the public recovery key and the fingerprint/reference index,
+not persistent object decryption keys. It can create new encrypted manifests by
+copying opaque envelopes from its index without opening old objects. The index is
+a cache, not restore authority: every committed snapshot contains the encrypted
+information needed to reconstruct its files and rebuild the index. After index
+loss, supply the private key in a controlled recovery process to rebuild it, or
+start a new repository with a full upload. Never silently persist the private key
+for unattended deduplication. A new recovery key starts a new repository generation
+with a full upload; sharing old objects across generations is deferred. Old
+snapshots still need their original private key.
+
+Publish immutable objects first and an immutable snapshot commit last, after the
+destination durably acknowledges all references. Resume uploads by opaque object
+ID, verify stored ciphertext checksums and lengths, and serialize publication and
+pruning with repository concurrency control. Missing or corrupt dependencies make
+a snapshot incomplete and trigger repair or re-upload when source data is
+available. A partial job never replaces a committed snapshot. Checksums detect
+transfer faults; they do not replace authenticated decryption during restore.
+
+Retention removes snapshots first; garbage collection removes objects only when
+no retained snapshot references them, no upload or restore lease needs them, and
+a safety grace period has elapsed. Reference tracking and deletion must survive
+crashes and concurrent jobs. Premium's destination-side protection covers both
+manifests and every referenced object for the entire protected lifetime; a host
+cannot erase shared dependencies to bypass snapshot retention. Other destinations
+must explicitly report whether equivalent protection is available. Write-only
+credentials alone do not provide immutable retention or enough listing/read
+access for repository reconciliation.
+
+Restore reads a selected manifest and all its referenced objects, authenticates
+them and stages a complete installation. App export assembles a self-contained
+bundle of that manifest and its reachable encrypted objects, without decrypting
+on the source host; downloading that bundle transfers the full selected state.
+Repository-to-repository replication transfers only objects missing at the target.
+The UI distinguishes incremental repository backups from full portable downloads
+and reports scanned bytes, new ciphertext bytes and total retained storage.
+
+### Incremental application database
+
+Do not equate chunking a compressed PostgreSQL dump with efficient database
+backup: small row changes can rewrite large portions of that stream. In the first
+release, use a versioned complete logical export under one repeatable-read
+snapshot, with stable table/primary-key ordering and bounded deterministic
+segments. Deduplicate segments before per-object compression and encryption.
+Include schema/migration metadata, sequence state, all stored secret ciphertext
+and a supported transactional import path. Define deterministic encodings for
+binary values, nulls and types; tables without stable keys require an explicit
+ordering strategy. Do not promise unchanged segment boundaries across schema or
+export-format changes: those may require a new full database upload.
+
+This approach still scans the database each time; it reduces transfer and retained
+storage, not necessarily capture time. Acceptance must measure a representative
+large database after a small row edit, insertion and deletion and prove that
+unrelated tables are not uploaded again. No incremental success claim without
+those measurements and a full restore. Physical base backups plus WAL are a
+possible later optimization, with different privileges, PostgreSQL-version
+coupling and retention dependencies; they are not silently added to version one.
+
 ### Consistency without a global drain
 
 Do not drain turns or block all mutations for capture; an agent loop can run for
 hours and would turn a nightly backup into a maintenance window. Instead:
 
 - Take one transaction-consistent logical snapshot of PostgreSQL (repeatable-read
-  dump). This is the authoritative state.
-- Hold a short lifecycle lock during capture that refuses provision, deprovision,
+  segmented logical export). This is the authoritative state.
+- Hold a lifecycle lock during local capture (not remote upload) that refuses provision, deprovision,
   sleep, wake, mount changes and project deletion. Turns, file edits and commits
   continue.
-- Copy worktrees live. A Git repository tolerates a copy taken during a write;
-  restore runs `git fsck` and `git worktree repair` and reports repositories it
-  cannot repair rather than failing the whole restore.
+- Copy worktrees live with before/after change detection and bounded retries.
+  This is not an atomic filesystem snapshot: Git validation cannot recover
+  missing objects or guarantee coherent application files. Flag unstable paths
+  and incomplete projects explicitly; never label them fully recoverable. Restore
+  runs `git fsck` and `git worktree repair` and reports unrecoverable repositories.
 - Record in the manifest the database snapshot time and the file-copy window, and
   mark every turn that was active in that window. Restore already has to mark
   interrupted turns and refuse to replay them; capture relies on that instead of
@@ -158,6 +291,35 @@ state on the original host.
 Session worktrees point to their main repository through an absolute `gitdir`
 path. Restore either reinstates the same `VERITY_ROOT` or rewrites the `.git`
 pointer files and the `worktrees/<name>/gitdir` entries before validation.
+
+### Backup before server updates
+
+A server update is the one moment Verity itself puts the data at risk: the
+promoted Server runs forward-only schema migrations on start, and there is no
+downgrade path. Every update therefore takes a snapshot first, and the Updater
+does not proceed without it unless the administrator has explicitly opted out.
+
+The hook lives in the existing update sequence (ADR 0008). While the old Server
+is still serving, before the Updater creates the standby, it requests a full
+incremental snapshot over the Server-Updater control channel; this warms the
+destination and usually takes only the delta since the last scheduled backup.
+After `quiescing-old`, when no turn is writing anymore and before
+`handing-off-key` and `activating-candidate`, the Updater requests a final
+incremental snapshot. That second pass contains seconds of changes and is the
+exact pre-migration state. The snapshot is tagged `pre-update` with the previous
+and target release and is retained by a separate rule, at least the last two
+pre-update snapshots, independent of the ordinary schedule's retention.
+
+If no destination is configured, the update continues and the update history
+records that it ran without a backup. An administrator setting "require a backup
+before updates" turns that into a refusal. A failed or timed-out snapshot
+aborts the update before any irreversible step, never after it. The snapshot is
+written through the same code path as scheduled backups, so it is incremental,
+encrypted to the public recovery key and works with a sealed secret store for
+destinations that do not need it. Rolling back an update uses the pre-update
+snapshot through the installer's restore path and is documented as such; the
+Updater's own rollback phases remain the first line, because they do not touch
+data.
 
 ### Authorization and execution identity
 
@@ -179,7 +341,7 @@ boundary.
 ### Destinations and retention
 
 Server-side destinations are the default: a configured local path such as an
-explicitly mounted NAS, a user-controlled object store, or Premium Uplink. The
+explicitly mounted NAS, a user-controlled object store, Google Drive, or Premium Uplink. The
 server writes ciphertext there without the app being open. Scheduled backups and
 large instances use these paths; an archive with many projects is not pulled
 through a phone.
@@ -205,6 +367,15 @@ never replace the last good backup.
 Premium archives belong to the user's account, not to the deployment identity
 that produced them. A fresh installation enrolled under the same account can
 list and download them; the lost installation never has to approve anything.
+
+Google Drive delivery uses a dedicated administrator-owned folder and resumable
+uploads. Its token remains in the live secret store: sealed capture can spool
+ciphertext locally, but upload waits for unlock. Report pending delivery and
+bounded spool capacity. Drive does not offer the protected retention promised by
+Premium. Restore on a fresh host uses a portable bundle or a complete repository
+copy without depending on the lost installation's Google credentials. NAS writes
+must validate the mounted destination before capture, avoiding accidental local
+writes when the mount is absent.
 
 ### Installer recovery
 
@@ -250,16 +421,19 @@ retention, quotas and billing in the separate hosted service. Both destinations
 use the same recoverable format; Premium never receives plaintext or recovery
 keys.
 
-Deliver manual local export and proven installer recovery first, then scheduling,
-server-side destinations and Premium integration. Defer incremental archives and
-selective database content until dependency tracking, deletion and recovery are
-proven.
+The goal is an unattended backup that simply runs, so the first release delivers
+the scheduled, incremental, encrypted backup to a host-path or mounted-NAS
+destination together with the pre-update hook, and the installer restore that
+proves it. App download, Google Drive and Premium follow once the round trip is
+proven. Reference tracking, atomic publication, index recovery and safe deletion
+are first-release requirements. Defer selective database content and physical
+database/WAL optimizations.
 
 ## Consequences
 
 Users must preserve their recovery key independently. Losing every copy makes
-archives unrecoverable. Recovery-key rotation does not change old archives unless
-they are safely rewrapped. Master-password changes do not change archive access,
+archives unrecoverable. Recovery-key rotation starts a new repository generation and does not change
+old snapshots. Master-password changes do not change archive access,
 but each archive's stored credentials require the master password that was
 current at capture time; the restore flow must state this before unlock.
 
@@ -270,7 +444,11 @@ with the private key, performed where the user supplies it.
 Complete backups need privileged read coverage and local capacity. Recreating
 containers requires network access, compatible images and usable integration
 credentials; in-container services and custom mounts are the user's own
-responsibility in the first release and are flagged as such. Live worktree copies
+responsibility in the first release and are flagged as such. Code projects
+depend on their code host for pushed history: a restore without a reachable
+GitHub or Forgejo leaves their Code area incomplete until rehydration succeeds.
+Every update is preceded by a snapshot, which adds its duration to the update
+and makes a configured destination part of a healthy installation. Live worktree copies
 may need repair at restore. Staging restore on an occupied host needs roughly
 twice the disk.
 
@@ -286,7 +464,15 @@ for project users and agents. Test wrong keys, tampering, truncation, unsafe
 paths, sealed secret stores, full disks, interrupted captures/downloads/uploads,
 incompatible versions, revoked access, and repositories copied mid-write.
 Demonstrate that restore cannot revive obsolete authority or automatically
-execute work. Deliberately break each guard before trusting it.
+execute work. Deliberately break each guard before trusting it. Prove that a restored code
+project equals the original after rehydration from GitHub and from Forgejo, that
+an unreachable or revoked code host, a deleted repository and rewritten history
+each leave the project suspended and flagged rather than silently truncated, and
+that a repository without a remote restores without any network. Prove that an
+update takes the final pre-update snapshot after quiescing and before the
+candidate runs migrations, that a failed snapshot aborts the update before the
+key hand-off, and that the opt-out and the "require backup" setting behave as
+specified.
 
 Add a restore probe in the pattern of `deploy/bin/verity-clean-install-smoke`:
 it restores the newest archive into throwaway containers, checks database
@@ -304,3 +490,10 @@ is shown as unverified.
 - [Knowledge realms and namespaces](0018-knowledge-realms-and-namespaces.md)
 - [Project sandbox sleep and automatic wake](0020-project-sandbox-sleep-and-automatic-wake.md)
 - [Enrollment storage and recovery lifetime](../protocols/uplink-enrollment-storage-v1.md)
+
+Incremental verification must measure uploaded and retained bytes after small
+file edits and database row edits, insertions and deletions. Prove restoration of
+older snapshots after source deletion, recovery without the host index, safe key
+rotation, interrupted publication, concurrent pruning and shared-object retention.
+Missing dependencies must never appear as a complete backup. Portable export must
+restore without the originating repository or host.
