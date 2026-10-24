@@ -87,7 +87,11 @@ can read at capture time.
 
 The app screens are mocked up in [`docs/assets/backup/`](assets/backup/)
 (`mockup.html` is the source; the PNG files are its renders). The user-facing
-term is always "recovery key"; there is no separate "kit".
+term is always "recovery key"; there is no separate "kit". The mockups show
+the main path and are not complete: the recovery key entry and the
+compromised-host note before a restore test (screen 10), the paired-device
+review after a restore (before screen 12) and the length of a real recovery key
+(screen 2 shows a shortened sample) are specified here but not drawn yet.
 
 ### Set up
 
@@ -274,7 +278,9 @@ None of these decrypts a snapshot. Scheduled capture therefore works with a
 sealed secret store and after an unattended restart. A compromised host can
 read current data and forge new snapshots, which is the accepted host-compromise
 case. It cannot open snapshots already written as long as nobody enters the
-recovery key on it.
+recovery key on it. With the fingerprint key and the index it can, however,
+test whether a known chunk of content is present in the repository; that is an
+accepted risk of host-side deduplication.
 
 The recovery key is entered on the host for explicit operations only: restore,
 rollback, the restore probe and partial restore. The server holds it in memory
@@ -427,8 +433,12 @@ source is available.
 Retention (see "Operations") removes snapshots first. Garbage collection removes
 an object only when no retained snapshot references it, no running capture,
 restore or probe holds a lease on it, and a grace period has passed. Publication
-and pruning are serialized by an `flock` on the repository lock file. Reference
-tracking and deletion must survive crashes.
+and pruning are serialized by an `flock` on the repository lock file. Garbage
+collection removes an object's index entry under that lock before it deletes the
+object, and a run re-checks under the lock, before publishing, that every
+object its manifest references still exists, so a published snapshot never
+references a deleted object. Reference tracking and deletion must survive
+crashes.
 
 The host cannot decrypt manifests, so it cannot read references back from them.
 At publish time the server records each snapshot's set of object IDs in
@@ -826,8 +836,12 @@ directory on local media. It needs no Uplink account and no subscription.
 4. Restore into staging volumes: the database through the import path, the data
    volume with the Git restore steps above, and the identity.
 5. Validate: paths and links, size limits, scope, version compatibility,
-   worktree repair. Then promote staging, write a new installation id,
-   regenerate host-specific state (updater token, PostgreSQL password, host
+   worktree repair. Then promote staging and write the new host state into a
+   staging copy of `/etc/verity`, which replaces the live directory in one
+   rename only after the restored installation has started and the
+   administrator has accepted it; until then the existing installation stays
+   intact. The new host state is a new installation id and regenerated
+   host-specific state (updater token, PostgreSQL password, host
    runtime under `/var/lib/verity/host-runtime`, image pins and gVisor
    configuration), reinstate the CA key from `identity/` after checking it
    against the snapshot's CA certificate, apply the revocation journal, install
@@ -850,7 +864,11 @@ replayed automatically. The restore summary lists integration credentials that
 need reconnection, including the provider sign-ins lost with the gateway state.
 
 Backups on the restored host are active and write into a new repository under
-its new installation id, with the same recovery key.
+its new installation id, with the same recovery key. When the restore source is
+the host's own backup directory, the predecessor's repository stays beside the
+new one and is never pruned automatically; the restore summary shows its size,
+and `verity-install --delete-repository <installationId>` removes it after a
+typed confirmation.
 
 ### Installer: same-host rollback
 
@@ -862,7 +880,8 @@ and that later changes are lost, then for the recovery key, and verifies the
 signed manifest before it touches anything.
 
 The installation id, the identity and the host-specific state stay as they are,
-so everything stays paired. The recovery key asked for is the one of the
+so everything stays paired, except devices paired after the snapshot, whose
+tokens it does not contain; those pair again. The recovery key asked for is the one of the
 snapshot's key generation; if the key was replaced since, the prompt names that
 generation. `VERITY_ROOT/backup-state/` is not in the snapshot
 and is carried over unchanged from the current data volume into staging, so the
@@ -934,7 +953,8 @@ the alerting reminds after 90 days.
 - Delete a single snapshot from the snapshot sheet, after confirmation. Its
   objects are removed by garbage collection when no other snapshot needs them.
 - "Pause backups" stops the schedule and the pre-update snapshot and keeps every
-  snapshot. The update gate does not hold updates while paused.
+  snapshot: retention and garbage collection pause as well, so no snapshot
+  expires while paused. The update gate does not hold updates while paused.
 - "Delete all backups" removes this installation's repositories, its CA key
   files under `identity/` and its entries under `revocations/` after a typed
   confirmation, and turns backups off. Repositories and files of other

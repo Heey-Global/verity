@@ -213,7 +213,8 @@ never revived.
 Defaults: a run every six hours, configurable from hourly to daily; retention of
 every snapshot of the last 48 hours, then 7 daily, 4 weekly and 6 monthly, plus
 the last two pre-update snapshots; one catch-up run after downtime; a six-hour
-run timeout and a one-hour timeout for the pre-update snapshot; no overlapping runs; retry with backoff when the directory is
+run timeout and a one-hour timeout for the pre-update snapshot, except while
+the first full run is still in progress, when the update holds until it ends; no overlapping runs; retry with backoff when the directory is
 unwritable or full; low CPU and IO priority. The snapshot sequence number is
 authoritative for order and retention; timestamps are for display.
 
@@ -313,7 +314,10 @@ keys, and the backup directory carries the CA key: whoever holds the directory
 and the recovery key can stand up a host that the paired devices accept. That
 is the price of restoring without pairing, and `--new-identity` is the way out
 when it is unwanted. Snapshot file names reveal count, kind and order of
-snapshots in plaintext, so the app can list them without the key. Each snapshot's stored credentials need the master password that
+snapshots in plaintext, so the app can list them without the key; times shown
+before the key is entered come from file modification times, which a copy may
+not preserve. With the fingerprint key and the index, a compromised host can
+test whether known content is present in the repository. Each snapshot's stored credentials need the master password that
 was current at capture time.
 
 Version one does not survive loss of the host disk unless the administrator

@@ -1324,7 +1324,8 @@ update the rollback point for data, because the promoted Server runs forward-onl
 1. After `preflight` and before `creating-standby`, the Updater asks the old Server over the
    control channel for one backup snapshot tagged `pre-update`, while the old Server still serves.
 2. With backups configured, "Updates wait for a backup" is on by default. A failed or timed-out
-   snapshot (one-hour timeout) holds the update in that phase, which has not touched data, and the app shows the
+   snapshot (one-hour timeout; while the first full backup is still running, the update holds until it
+   ends instead) holds the update in that phase, which has not touched data, and the app shows the
    reason. The administrator may choose "Update anyway", which runs the update and records it as
    unbacked in the update history. Automatic updates never override the hold. The hold is journaled
    as a reason on the `preflight` phase, so an Updater restart resumes in `preflight` and asks for the
