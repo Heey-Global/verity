@@ -861,6 +861,11 @@ describe('mobile native patch CI', () => {
     expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
   });
 
+  it('requires installed Expo CLI compatibility checks in the mobile job', () => {
+    const guard = steps.find((step) => step.run?.includes('scripts/expo-cli-zod-compat.test.ts'));
+    expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
+  });
+
   it('checks release and OTA contracts without pulling mobile config into backend shards', () => {
     const contract = workflow.jobs['contract-test'].steps.find((step) =>
       step.run?.includes('vitest run scripts'),
@@ -4687,6 +4692,7 @@ describe('changed-area detector', () => {
       'apps/mobile/package.json',
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       expect(
@@ -4723,6 +4729,7 @@ describe('changed-area detector', () => {
     for (const file of [
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       for (const area of broad) {

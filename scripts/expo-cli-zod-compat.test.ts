@@ -1,21 +1,33 @@
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const require = createRequire(import.meta.url);
-const cliRequire = createRequire(require.resolve('@expo/cli/package.json'));
-const schemaPath = './build/src/start/server/';
-const { PluginSchema, DevToolsPluginOutputSchema } = cliRequire(
-  `${schemaPath}DevToolsPlugin.schema.js`,
-) as { PluginSchema: z.ZodType; DevToolsPluginOutputSchema: z.ZodType };
-const { createMCPDevToolsExtensionSchema } = cliRequire(
-  `${schemaPath}createMCPDevToolsExtensionSchema.js`,
-) as { createMCPDevToolsExtensionSchema: (plugin: unknown) => z.ZodObject };
+let cliManifest: string | undefined;
+try {
+  cliManifest = require.resolve('@expo/cli/package.json');
+} catch (error) {
+  // Server-only installs omit Expo; the full mobile CI job must exercise this guard.
+  if (process.env.VERITY_REQUIRE_MOBILE_NATIVE === '1') throw error;
+}
+let cliRequire: NodeJS.Require;
+let PluginSchema: z.ZodType;
+let DevToolsPluginOutputSchema: z.ZodType;
+let createMCPDevToolsExtensionSchema: (plugin: unknown) => z.ZodObject;
 
 // A major-version override must retain the CLI's plugin and MCP contracts.
-describe('Expo CLI Zod override', () => {
+describe.skipIf(cliManifest === undefined)('Expo CLI Zod override', () => {
+  beforeAll(() => {
+    cliRequire = createRequire(cliManifest!);
+    ({ PluginSchema, DevToolsPluginOutputSchema } = cliRequire(
+      './build/src/start/server/DevToolsPlugin.schema.js',
+    ) as { PluginSchema: z.ZodType; DevToolsPluginOutputSchema: z.ZodType });
+    ({ createMCPDevToolsExtensionSchema } = cliRequire(
+      './build/src/start/server/createMCPDevToolsExtensionSchema.js',
+    ) as { createMCPDevToolsExtensionSchema: (plugin: unknown) => z.ZodObject });
+  });
   it('resolves the root Zod and excludes the vulnerable nested copy', () => {
     expect(cliRequire.resolve('zod')).toBe(require.resolve('zod'));
     const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
