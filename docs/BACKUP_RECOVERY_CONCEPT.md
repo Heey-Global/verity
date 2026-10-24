@@ -484,9 +484,13 @@ sandbox cannot reach them, and the project screen shows that Code has no history
 until the code host is reconnected and rehydration is retried. Nothing local is
 discarded by that choice; it is not a self-contained repository.
 
-Pending state is itself backed up, under its own manifest class. A project that
-a restore left in "Code incomplete" or "working files only" state is captured as
-`pending-rehydration`, not as self-contained: the snapshot carries its working
+Pending remote rehydration is itself backed up, under its own manifest class.
+Only a remote-dependent restore left in "Code incomplete" or "working files only"
+state is captured as
+`pending-rehydration`. A self-contained repository marked "Code incomplete",
+including `alternates-dropped`, keeps its original manifest class and findings;
+the UI status alone never changes its classification or invents a prerequisite.
+For pending remote rehydration, the snapshot carries its working
 files, its Git directory in whatever state the restore left it (an object-less
 `.git` for "Code incomplete", the renamed `.git.verity-incomplete` for
 "working files only"; classification is driven by the project's recorded
@@ -745,7 +749,13 @@ dialog offers "include pushed history"; that is not the same manifest with more
 objects attached, because those objects are not in the repository. It is a
 separate export run that freezes and checks the repositories like a capture,
 chunks and encrypts their full `.git/objects`, and signs a new export manifest
-that references both the snapshot's objects and the added ones. The dialog shows
+that references both the snapshot's objects and the added ones. Before publishing
+it as self-contained, verify connectivity for the selected snapshot's refs and
+recorded prerequisite against the combined object set, not merely current refs.
+If historical objects were deleted or garbage-collected and cannot be recovered
+from the authenticated code host, fail this export explicitly and leave the
+original snapshot unchanged; never label an incomplete export self-contained.
+The dialog shows
 the size difference before the run starts. The UI
 distinguishes incremental repository backups from full portable downloads and
 reports scanned bytes, new ciphertext bytes and total retained storage.
