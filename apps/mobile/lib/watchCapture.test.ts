@@ -1,5 +1,6 @@
 import {
   createWatchInboxDrainer,
+  showWatchSettings,
   WATCH_PROJECT_LIMIT,
   watchCaptureProject,
   watchProjectList,
@@ -162,5 +163,19 @@ describe('watch capture project', () => {
     await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('another account');
     expect(saved).toEqual(['b:p1']);
     expect(box.entries.map((entry) => entry.id)).toEqual(['a']);
+  });
+});
+
+describe('watch settings visibility', () => {
+  it('hides the section without a paired watch, unless captures are still waiting', () => {
+    expect(showWatchSettings(null)).toBe(false);
+    expect(showWatchSettings({ supported: false })).toBe(false);
+    expect(showWatchSettings({ supported: true, activated: true, paired: false, waiting: 0 })).toBe(
+      false,
+    );
+    expect(showWatchSettings({ supported: true, activated: true, paired: true })).toBe(true);
+    expect(showWatchSettings({ supported: true, activated: true, paired: false, waiting: 2 })).toBe(
+      true,
+    );
   });
 });

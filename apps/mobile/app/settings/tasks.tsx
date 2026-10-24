@@ -16,6 +16,7 @@ import {
 } from '../../lib/taskScreenshot';
 import {
   discardWaitingWatchCaptures,
+  showWatchSettings,
   watchBridgeAvailable,
   watchInboxLog,
   watchStatus,
@@ -53,16 +54,21 @@ export default function TasksSettingsScreen() {
   const [watch, setWatch] = useState<WatchStatus | null>(null);
   useEffect(() => {
     let active = true;
+    // Pairing is only known once the session has activated; right after launch
+    // that can lag behind this screen, so look once more before hiding the section.
+    const loadWatch = (retry: boolean) =>
+      void watchStatus()
+        .then((next) => {
+          if (!active) return;
+          setWatch(next);
+          if (retry && next.supported && !next.activated) setTimeout(() => loadWatch(false), 1000);
+        })
+        .catch(() => undefined);
     const refresh = () => {
       void screenshotAccess().then((next) => {
         if (active) setAccess(next);
       });
-      if (watchBridgeAvailable)
-        void watchStatus()
-          .then((next) => {
-            if (active) setWatch(next);
-          })
-          .catch(() => undefined);
+      if (watchBridgeAvailable) loadWatch(true);
     };
     refresh();
     const subscription = AppState.addEventListener('change', (state) => {
@@ -127,7 +133,7 @@ export default function TasksSettingsScreen() {
           </SettingsListPanel>
         ) : null}
       </SettingsGroup>
-      {watch ? (
+      {showWatchSettings(watch) ? (
         <SettingsGroup
           title="Apple Watch"
           description="Record on the watch; your iPhone transcribes the audio and saves it as a task. Prototype."

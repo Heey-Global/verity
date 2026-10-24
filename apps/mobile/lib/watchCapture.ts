@@ -191,6 +191,12 @@ export function startWatchInbox(): () => void {
 
 export const watchBridgeAvailable = native !== null;
 
+/** Settings only show the watch section to people who use a watch, or who still
+ * have captures waiting from one they have since unpaired. */
+export function showWatchSettings(status: WatchStatus | null): status is WatchStatus {
+  return Boolean(status && (status.paired || status.waiting));
+}
+
 export function watchStatus(): Promise<WatchStatus> {
   return native ? native.status() : Promise.resolve({ supported: false });
 }
