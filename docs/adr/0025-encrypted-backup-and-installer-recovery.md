@@ -169,7 +169,8 @@ are not repeated here, so that one text stays authoritative.
 - A repository is `remote-dependent` only when the server's project record ties
   it to the connected code host and the server has recorded a trusted tip: the
   default branch commit it last saw on the host through its own clone, fetch or
-  brokered push. Nothing read from `.git` decides classification; everything
+  brokered push. Nothing read from `.git` can make a repository
+  remote-dependent, it can only force a self-contained copy; everything
   under `.git` is writable from the sandbox.
 - For a remote-dependent repository the snapshot replaces `.git/objects` with a
   packfile of the objects reachable from local refs, reflogs and every
@@ -182,10 +183,12 @@ are not repeated here, so that one text stays authoritative.
   snapshot, outside the lifecycle lock, is the accepted price.
 - No Git command the backup runs reads a sandbox-written file. Capture freezes
   the repository first: an fd-relative, no-follow copy of the whole `.git` into
-  server-owned staging that a concurrently running sandbox cannot redirect, with user `config`, `config.worktree`, `hooks`, alternates, shallow,
-  graft and replace files moved out of Git's reach and carried as user content.
-  Restore sets the same files aside before its first command and returns them
-  after `fsck`. A hardened invocation with overrides for executable keys is
+  server-owned staging that a concurrently running sandbox cannot redirect, with
+  user `config`, `config.worktree`, `hooks` and alternates moved out of Git's
+  reach and carried as user content, and regenerable reachability bitmaps
+  dropped; `shallow`, graft and replace files are data and stay in the copy.
+  Restore sets the same configuration files aside before its first command and
+  returns them after `fsck`. Staging is keyed per project and per repository. A hardened invocation with overrides for executable keys is
   defense in depth, not the protection. The Git floor on server and installer
   images is 2.39.
 - Everything that does not qualify, including repositories without a remote,
@@ -492,7 +495,8 @@ local-only commit from inside the sandbox does not remove anything from the
 pack, that a malicious
 `config.worktree` in the main or a linked worktree never executes during
 restore, that a symlink or `gitdir` entry pointing outside the project is
-refused at freeze and before `worktree repair`, that a commit-graph, replace
+refused at freeze and before `worktree repair`, that a commit-graph, reachability
+bitmap, replace
 ref, graft or shallow file written by the
 sandbox cannot shrink the pack, and that a repository without a remote restores
 without any network. Prove that an

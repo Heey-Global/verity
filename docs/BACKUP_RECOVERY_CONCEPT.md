@@ -121,7 +121,10 @@ complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
 `includeIf` are examples of what a list tends to miss). At capture, the backup
 first freezes the repository: it copies the whole `.git`, objects included,
 into the server-owned capture staging area
-(`<VERITY_ROOT>/capture/<runId>/<projectId>/`, a sibling of `workspaces` that
+(`<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`, where `repoKey` is a
+hash of the repository's path relative to the project workspace so a project
+with several repositories or submodules never collides in staging; a sibling of
+`workspaces` that
 no sandbox bind mount contains; the sandbox sees only volume subpaths under
 `workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
 a scheduled run, the warm pre-update run and a restore in progress never share
@@ -129,7 +132,8 @@ a path, and the directory is removed on every exit path of the run because it
 holds plaintext refs, index and user `config`; a SIGKILL or host crash bypasses
 exit paths, so the server sweeps `capture/<runId>/` directories whose run lock
 is no longer held at startup. "Orphaned" is defined by run lock ownership, never
-by age, and the sweep never touches `restore/<projectId>/`: that directory is
+by age, and the sweep never touches `restore/<projectId>/<repoKey>/`: that
+directory is
 durable pending-rehydration data, owned by project state, and is removed only
 when the project has rehydrated or the user has reconciled it. This staging is the one documented exception to the rule against
 plaintext staging: it stays on the host, in a server-owned directory, for the
@@ -206,7 +210,11 @@ keys known to execute or redirect in the commands used (`rev-list`,
 directory, `core.fsmonitor=false`, `core.sshCommand=/bin/false`,
 `credential.helper=`, `core.askPass=/bin/false`, `core.alternateRefsCommand=`,
 `protocol.allow=never`, `gc.auto=0`, `maintenance.auto=false`,
-`core.commitGraph=false`, `core.multiPackIndex=false`, and `safe.directory` set
+`core.commitGraph=false`, `core.multiPackIndex=false`, `pack.useBitmaps=false`
+(and the freeze drops `objects/pack/*.bitmap`, which is regenerable, so neither
+`rev-list --use-bitmap-index` nor `pack-objects --revs` can trust a forged
+bitmap that marks local-only objects as reachable from the tip), and
+`safe.directory` set
 to the exact repository path. The command scope counts as protected
 configuration for `safe.directory`, so the `-c` form is honored. `shallow`,
 `info/grafts` and `refs/replace/*` found at the freeze classify the repository
@@ -329,7 +337,8 @@ unlocked the secret store so the code host connection credentials are usable:
    Move the restored `config`, the main worktree's `config.worktree`, every
    `worktrees/<name>/config.worktree` and `hooks` into the server-owned restore
    staging area outside the sandbox-writable tree
-   (`<VERITY_ROOT>/restore/<projectId>/git-user-config/`), where they persist
+   (`<VERITY_ROOT>/restore/<projectId>/<repoKey>/git-user-config/`, keyed per
+   repository like capture staging), where they persist
    across failed attempts and retries and nothing in the sandbox can alter them,
    and write a sanitized `config` that contains the repository-format keys
    copied from the original, `core.repositoryformatversion`, `core.bare` and an
@@ -379,11 +388,11 @@ unlocked the secret store so the code host connection credentials are usable:
    repository without a trusted tip at capture time was already classified
    self-contained and does not reach this step. Remote-tracking refs restored
    from the snapshot are untrusted and are overwritten here.
-4. Reinstate `shallow`, `info/grafts` and `refs/replace/*` from staging first:
-   they are data, not executable configuration, and `GIT_NO_REPLACE_OBJECTS=1`
-   in the hardened invocation keeps replace refs from steering traversal; a
-   shallow or grafted repository cannot pass a connectivity check without them.
-   Then `git fsck --connectivity-only` and `git worktree repair`, the latter on
+4. `shallow`, `info/grafts` and `refs/replace/*` are already in the restored
+   `.git`, because capture left them in the frozen copy; nothing reinstates
+   them, and `GIT_NO_REPLACE_OBJECTS=1` in the hardened invocation keeps replace
+   refs from steering traversal. `git fsck --connectivity-only` and
+   `git worktree repair`, the latter on
    the pointers already validated in step 1. What `fsck` decides depends on the
    class. For a remote-dependent or pending-rehydration repository a failure
    means rehydration failed and the project stays pending. For a self-contained
@@ -401,7 +410,8 @@ A user who gives up on rehydration can resume the project in a "working files
 only" state. That state is defined, not implied: the restored `.git` is renamed
 to `.git.verity-incomplete` so no tool mistakes it for a usable repository, the
 working files stay in place, the local-only packfile and the set-aside user
-config stay in the server-owned `<VERITY_ROOT>/restore/<projectId>/` where the
+config stay in the server-owned `<VERITY_ROOT>/restore/<projectId>/<repoKey>/`
+where the
 sandbox cannot reach them, and the project screen shows that Code has no history
 until the code host is reconnected and rehydration is retried. Nothing local is
 discarded by that choice; it is not a self-contained repository.
@@ -410,7 +420,8 @@ Pending state is itself backed up, under its own manifest class. A project that
 a restore left in "Code incomplete" or "working files only" state is captured as
 `pending-rehydration`, not as self-contained: the snapshot carries its working
 files, the renamed `.git.verity-incomplete`, its
-`<VERITY_ROOT>/restore/<projectId>/` staging directory with the unimported
+`<VERITY_ROOT>/restore/<projectId>/<repoKey>/` staging directories with the
+unimported
 local-only packfile and the set-aside user config, and, copied forward
 unchanged from the original manifest, the remote URL, connection id, trusted
 tip and branch. A later restore treats a `pending-rehydration` project like a
@@ -862,11 +873,14 @@ inside the sandbox, a symlink under `.git` pointing at another project, a
 before `worktree repair`, a planted object under the trusted tip's OID with forged
 parents, a renamed default branch, a repository renamed or transferred on the
 host so that the recorded URL now redirects (the restore reports the redirect
-target instead of following it and asks the administrator to update the project
+instead of following it, showing the `Location` target only when an
+unauthenticated probe without the credential can read it, and asks the
+administrator to update the project
 record), a `git gc` in the sandbox during the freeze, a forged manifest encrypted
 to the recipient key but unsigned, a server restart while a project is pending
 rehydration (the staging directory must survive), a malicious `config.worktree` in
-the main and in a linked worktree, a sandbox-written commit-graph, replace ref,
+the main and in a linked worktree, a sandbox-written commit-graph, reachability
+bitmap, replace ref,
 graft or shallow file added between classification and pack, a repository with
 alternates or submodules, and a fetch into a repository whose refs still dangle. For
 updates, prove that
