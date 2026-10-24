@@ -796,8 +796,13 @@ function promote() {
   const native = releaseRows().find(
     (release) => release.tag_name === `mobile-v${candidate.runtime}` && !release.draft,
   );
-  if (!native || native.prerelease)
-    throw new Error('Approve the native production runtime before promoting its OTA');
+  if (!native || native.prerelease) {
+    const message = `OTA ${candidate.version} waits for native production runtime ${candidate.runtime}; the release reconciler will resume promotion after publication.`;
+    console.log(message);
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY ?? '/dev/null', `${message}\n`);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    return;
+  }
   const latest = published(candidate.runtime);
   if (!compatibleBaseline(candidate, latest))
     throw new Error('Candidate is stale; stage against the delivered release');

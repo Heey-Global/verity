@@ -219,6 +219,7 @@ interface ServiceState {
   deliveredWork?: string;
   largeReleasePayload?: boolean;
   stagedVersion?: string;
+  nativeRuntime?: 'missing' | 'draft' | 'staging';
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -288,7 +289,7 @@ if(tool === 'gh') {
       s.releaseReads++;
       if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
-      const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
+      const releases=[...(s.nativeRuntime==='missing'?[]:[{tag_name:'mobile-v1.33.0',draft:s.nativeRuntime==='draft',prerelease:s.nativeRuntime==='staging'}]),{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
       if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
       out([releases]);
@@ -459,6 +460,30 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.stderr).toContain('changed during staging');
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
   });
+
+  it.each(['missing', 'draft', 'staging'] as const)(
+    'defers promotion without publishing while the native runtime is %s',
+    (nativeRuntime) => {
+      const candidate = artifact();
+      const service = serviceFixture({
+        nativeRuntime,
+        tags: {
+          [`ota-artifact/${candidate.tag}/${sha}`]: {
+            commit: sha,
+            message: JSON.stringify(candidate),
+          },
+        },
+      });
+      const result = service.run('promote');
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('waits for native production runtime 1.33.0');
+      expect(service.state().released).toBe('mobile-v1.33.2');
+      expect(service.state().calls.some((call) => call.startsWith('npx '))).toBe(false);
+      expect(
+        service.state().calls.some((call) => /^gh release (create|edit|upload) /.test(call)),
+      ).toBe(false);
+    },
+  );
 
   it('finishes the GitHub release after a successful channel edit without rebuilding', () => {
     const candidate = artifact();

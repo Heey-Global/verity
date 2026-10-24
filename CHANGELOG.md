@@ -6,6 +6,35 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.56.1](https://github.com/Heey-Global/verity/compare/v4.56.0...v4.56.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** use patched zod in Expo CLI ([#1848](https://github.com/Heey-Global/verity/issues/1848)) ([e85a5d8](https://github.com/Heey-Global/verity/commit/e85a5d87d0b5388e753c041d0dcd2e8fa18b43d3))
+
+## [4.56.0](https://github.com/Heey-Global/verity/compare/v4.55.0...v4.56.0) (2026-10-24)
+
+
+### Features
+
+* **diagnostics:** add selected recording admission and bounded attempt ([#1831](https://github.com/Heey-Global/verity/issues/1831)) ([0f29617](https://github.com/Heey-Global/verity/commit/0f29617d2659eacc68f36dd30df86b70cd8772fb))
+* **scripts:** render App Store screenshots from the web demo ([#1830](https://github.com/Heey-Global/verity/issues/1830)) ([9db4040](https://github.com/Heey-Global/verity/commit/9db40409cb04ba52d86ab461f29297b19dfe2b49))
+* **security:** improve vulnerability indicators and scan lifecycle ([#1828](https://github.com/Heey-Global/verity/issues/1828)) ([079ec9f](https://github.com/Heey-Global/verity/commit/079ec9f7258b44b7c938f577e602e79643e4f62e))
+* **security:** integrate scan UI and harden release handoff ([#1824](https://github.com/Heey-Global/verity/issues/1824)) ([b7870c1](https://github.com/Heey-Global/verity/commit/b7870c1a4fa840e3736e8c6e49f669f628e03474))
+
+
+### Bug Fixes
+
+* **deps:** bump fast-uri ([#1843](https://github.com/Heey-Global/verity/issues/1843)) ([45c4d73](https://github.com/Heey-Global/verity/commit/45c4d736465fd386bd4c7cf7faa0daba94c9ac3f))
+* **deps:** bump fast-uri ([#1844](https://github.com/Heey-Global/verity/issues/1844)) ([3837025](https://github.com/Heey-Global/verity/commit/38370259a8c5677f3d2cc1b9fc15f42bac9a5ede))
+* **deps:** update agent clis ([#1835](https://github.com/Heey-Global/verity/issues/1835)) ([3a70a76](https://github.com/Heey-Global/verity/commit/3a70a764e780cd4b415d4384a6bc3b031b803e28))
+* **deps:** update dependency @napi-rs/canvas to v1.0.12 ([#1836](https://github.com/Heey-Global/verity/issues/1836)) ([2beb867](https://github.com/Heey-Global/verity/commit/2beb867c05001019ebdd3dd601431db9c745828c))
+* **forgejo:** isolate session credentials and authenticate worktree fetches ([#1839](https://github.com/Heey-Global/verity/issues/1839)) ([f29de54](https://github.com/Heey-Global/verity/commit/f29de54691ca4a59ba881341727856a6bf00e5e2))
+* **release:** author release PRs as the release app ([#1832](https://github.com/Heey-Global/verity/issues/1832)) ([9094de4](https://github.com/Heey-Global/verity/commit/9094de4ade67f5f6043146cd58c4c84c8b4565e5))
+* **release:** read app ID from the configured secret ([#1846](https://github.com/Heey-Global/verity/issues/1846)) ([2cc864c](https://github.com/Heey-Global/verity/commit/2cc864c19a7148933976ff5b1327d6399ddb858d))
+* **session:** release session homes after interrupted agent exits ([#1845](https://github.com/Heey-Global/verity/issues/1845)) ([cd70366](https://github.com/Heey-Global/verity/commit/cd7036602077ef09339498ff064b25f6ffceec26))
+
 ## [4.55.0](https://github.com/Heey-Global/verity/compare/v4.54.0...v4.55.0) (2026-10-23)
 
 
