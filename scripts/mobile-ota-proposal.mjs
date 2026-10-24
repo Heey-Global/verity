@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { captureJson } from './capture-json.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 export const otaVersionPath = 'apps/mobile/ota/version.txt';
 export const otaManifestPath = '.release-please-manifest.mobile-ota.json';
@@ -114,20 +115,11 @@ async function plan(runtime) {
   if (!token) throw new Error('GH_TOKEN is required for OTA release planning');
   const github = await GitHub.create({ owner, repo: name, token });
   const manifest = await createOtaManifest(github, baselineSha, next.version);
+  // The app token behind GH_TOKEN authors the PR, so its pull_request events
+  // run CI and Gitleaks on the generated branch without an explicit dispatch.
   const prs = await manifest.createPullRequests();
   for (const pr of prs) {
     if (!pr) continue;
-    run('gh', [
-      'workflow',
-      'run',
-      'ci.yml',
-      '--ref',
-      pr.headBranchName,
-      '-f',
-      'release-train=mobile-ota',
-      '-f',
-      `release-pr=${pr.number}`,
-    ]);
     console.log(`Staging OTA ${next.version}: release PR #${pr.number}`);
   }
 }
@@ -258,7 +250,7 @@ function mergedVersion(runtime) {
       pr.merged_at &&
       pr.base.ref === 'main' &&
       pr.head.ref === 'release-please--branches--main--components--mobile-ota' &&
-      ['github-actions[bot]', 'app/github-actions'].includes(pr.user?.login ?? ''),
+      isReleaseBotLogin(pr.user?.login),
   );
   if (!pr) throw new Error('OTA publication requires a merged Release Please Staging PR');
   const checked = /** @type {{content: string}} */ (

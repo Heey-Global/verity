@@ -49,6 +49,11 @@ on:
         required: false
         default: false
         type: boolean
+      website-replan:
+        description: Plan pending website changes after a completed publication
+        required: false
+        default: false
+        type: boolean
       reconcile:
         description: Publish merged release PRs that no push run reconciled
         required: false
@@ -158,13 +163,14 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    # Release Please creates releases and PRs; this job also dispatches the
-    # checks that GITHUB_TOKEN-created PRs do not trigger automatically.
+    # Release Please authenticates as the release app (`app-token` below), so
+    # the PRs it opens trigger pull_request CI and Gitleaks like any other PR
+    # and need no dispatch from here. GITHUB_TOKEN only reads in this job;
+    # `contents: write` stays because GitHub lists draft releases, which the
+    # lifecycle and recovery steps inspect, only to callers with write access.
     permissions:
-      actions: write
       contents: write
-      issues: write
-      pull-requests: write
+      pull-requests: read
     outputs:
       backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs['release_created'] }}
       backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['major'], steps.release-backend.outputs['minor'], steps.release-backend.outputs['patch']) }}
@@ -207,7 +213,7 @@ jobs:
       - name: Validate backend re-plan request
         env:
           MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
-          REPLAN: ${{ inputs.backend-replan }}
+          REPLAN: ${{ inputs.backend-replan || inputs.website-replan }}
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
           MOBILE_TAG: ${{ inputs.mobile-tag }}
@@ -229,7 +235,7 @@ jobs:
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
                   "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
                   "${RECONCILE:-false}" == true || "${MOBILE_REPLAN:-false}" == true ]]; then
-              echo '::error::A backend re-plan is a manual planning run and must carry no recovery input.' >&2
+              echo '::error::A backend or website re-plan is a manual planning run and must carry no recovery input.' >&2
               exit 1
             fi
           fi
@@ -237,7 +243,7 @@ jobs:
       - name: Validate mobile re-plan request
         env:
           REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
-          OTHER_REPLAN: ${{ inputs.backend-replan || format('{0}', github.event.inputs['backend-replan']) == 'true' }}
+          OTHER_REPLAN: ${{ inputs.backend-replan || inputs.website-replan || format('{0}', github.event.inputs['backend-replan']) == 'true' }}
           REF: ${{ github.ref }}
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
@@ -270,7 +276,7 @@ jobs:
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
           MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
-          REPLAN: ${{ inputs.backend-replan }}
+          REPLAN: ${{ inputs.backend-replan || inputs.website-replan }}
           MOBILE_TAG: ${{ inputs.mobile-tag }}
           VERSION: ${{ inputs.backend-version }}
           SOURCE_REF: ${{ inputs.backend-ref }}
@@ -336,7 +342,7 @@ jobs:
       # hiding a manifest or a file that does not belong to the selected train.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'push' || inputs.backend-replan || inputs.mobile-replan || inputs.reconcile
+        if: github.event_name == 'push' || inputs.backend-replan || inputs.mobile-replan || inputs.website-replan || inputs.reconcile
         with:
           fetch-depth: 0
 
@@ -505,15 +511,28 @@ jobs:
           DIFF_WEBSITE: ${{ steps.release-trains.outputs.website }}
         run: node scripts/pending-release-trains.mjs
 
+      # PRs created with GITHUB_TOKEN never emit pull_request events, so the app
+      # authors release PRs instead. Its slug names the trusted PR author for
+      # the steps below; `github-actions[bot]` stays trusted for merged history.
+      - name: Mint release app token
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Reconcile release lifecycle
         id: lifecycle
         if: >-
           ((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs[inputs.train] == 'true') ||
           (inputs.backend-replan && inputs.train == 'backend') ||
-          (inputs.mobile-replan && inputs.train == 'mobile')
+          (inputs.mobile-replan && inputs.train == 'mobile') ||
+          (inputs.website-replan && inputs.train == 'website')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/release-lifecycle.mjs '${{ inputs.train }}' '${{ github.sha }}'
 
       # The dispatcher now registers tags before entering the train queue.
@@ -526,12 +545,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
           BACKEND_SELECTED: ${{ inputs.train == 'backend' && steps.selected-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
           MOBILE_SELECTED: ${{ inputs.train == 'mobile' && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
           WEBSITE_SELECTED: ${{ inputs.train == 'website' && steps.selected-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip' }}
         shell: bash
         run: |
           set -euo pipefail
+          # Merged release PRs were authored by GitHub Actions before the release
+          # app existed and by the app since; both are trusted release identities.
+          is_release_bot() {
+            local login="$1" candidate
+            IFS=, read -ra candidates <<<"github-actions[bot],${RELEASE_BOT_LOGINS:-}"
+            for candidate in "${candidates[@]}"; do
+              [[ -n "$candidate" && "$login" == "$candidate" ]] && return 0
+            done
+            return 1
+          }
           pretag_delayed_release() {
             local selected="$1" component="$2" manifest="$3" path="$4" prefix="$5"
             [[ "$selected" == true ]] || return 0
@@ -548,8 +578,7 @@ jobs:
             pr="$(jq -r '.[0].number' <<<"$prs")"
             author="$(jq -r '.[0].author.login' <<<"$prs")"
             release_sha="$(jq -r '.[0].mergeCommit.oid' <<<"$prs")"
-            if [[ "$author" != 'app/github-actions' && "$author" != 'github-actions' ]] ||
-              [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            if ! is_release_bot "$author" || [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
               echo "::error::Pending $component release PR #$pr has an unexpected author or merge commit." >&2
               exit 1
             fi
@@ -599,7 +628,7 @@ jobs:
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.backend.json
           manifest-file: .release-please-manifest.backend.json
           skip-github-release: ${{ steps.lifecycle.outputs.mode != 'release' }}
@@ -614,7 +643,7 @@ jobs:
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.mobile.json
           manifest-file: .release-please-manifest.mobile.json
           skip-github-release: ${{ steps.lifecycle.outputs.mode != 'release' }}
@@ -622,11 +651,13 @@ jobs:
 
       - name: Open website release PR or create release
         id: release-website
-        if: (github.event_name == 'push' || inputs.reconcile) && inputs.train == 'website' && steps.selected-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        if: >-
+          ((github.event_name == 'push' || inputs.reconcile) && inputs.train == 'website' && steps.selected-trains.outputs.website == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
+          (inputs.website-replan && inputs.train == 'website' && steps.lifecycle.outputs.mode == 'plan')
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.website.json
           manifest-file: .release-please-manifest.website.json
           skip-github-release: ${{ steps.lifecycle.outputs.mode != 'release' }}
@@ -770,69 +801,6 @@ jobs:
             echo "version=$VERSION"
             echo "sha=$source_sha"
           } >> "$GITHUB_OUTPUT"
-
-      # Pull requests created with GITHUB_TOKEN intentionally do not emit another
-      # pull_request workflow event. Dispatch CI explicitly for every release PR
-      # branch instead of introducing a long-lived PAT. Each isolated train can
-      # create a PR in the same run, so collect all three `prs` outputs.
-      # renovate: datasource=github-actions depName=actions/setup-node
-      - if: >-
-          steps.release-backend.outputs.prs_created == 'true' ||
-          steps.release-mobile.outputs.prs_created == 'true' ||
-          steps.release-website.outputs.prs_created == 'true'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '26.12.1'
-
-      - name: Run checks for release PRs
-        if: >-
-          steps.release-backend.outputs.prs_created == 'true' ||
-          steps.release-mobile.outputs.prs_created == 'true' ||
-          steps.release-website.outputs.prs_created == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          BACKEND_PRS_JSON: ${{ steps.release-backend.outputs.prs }}
-          MOBILE_PRS_JSON: ${{ steps.release-mobile.outputs.prs }}
-          WEBSITE_PRS_JSON: ${{ steps.release-website.outputs.prs }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          node -e '
-            const prs = [["backend", "BACKEND_PRS_JSON"], ["mobile", "MOBILE_PRS_JSON"], ["website", "WEBSITE_PRS_JSON"]]
-              .flatMap(([train, name]) => {
-                const value = JSON.parse(process.env[name] || "[]");
-                return (Array.isArray(value) ? value : [value]).map((pr) => ({ train, pr }));
-              });
-            for (const { train, pr } of prs) {
-              const branch = pr.headBranchName || pr.headRefName || pr.branchName;
-              if (!branch) throw new Error("release-please PR has no head branch");
-              process.stdout.write(`${train}\t${branch}\n`);
-            }
-          ' | while IFS=$'\t' read -r train branch; do
-            pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
-            if [[ -z "$pr_number" ]]; then
-              echo "::error::Could not resolve the release PR for $branch." >&2
-              exit 1
-            fi
-            echo "Dispatching $train CI for $branch"
-            gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"
-            echo "Dispatching Gitleaks for $branch"
-            gh workflow run gitleaks-dispatch.yml --ref "$branch"
-            # Release Please normally changes only these three mobile metadata
-            # files. Native source changes were compiled on their originating
-            # PRs, and the final signed device archive is built from the merged
-            # release SHA below. Keep a defensive fallback in case future
-            # release configuration starts editing another mobile file.
-            changed_files="$(gh pr diff "$pr_number" --name-only)"
-            unexpected_mobile_files="$(grep '^apps/mobile/' <<< "$changed_files" \
-              | grep -Ev '^apps/mobile/(CHANGELOG\.md|app\.config\.ts|version\.txt)$' || true)"
-            if [[ -n "$unexpected_mobile_files" ]]; then
-              echo "Release PR changes native-relevant mobile files; dispatching iOS compile:"
-              echo "$unexpected_mobile_files"
-              gh workflow run mobile-native-verify.yml --ref "$branch" -f ref="$branch"
-            fi
-          done
 
       # Preserve the removed handoff's validation before any backend job can start.
       - name: Validate backend publication identity
@@ -2973,29 +2941,37 @@ jobs:
       needs.publish-preview-images.result == 'success' &&
       needs.publish-matrix-connector.result == 'success'
     runs-on: ubuntu-26.04
+    # Every write below (promotion branch push, signed proposal commit, PR,
+    # release PR labels, release edit, re-plan dispatch) uses the release app
+    # token, so the promotion PR triggers pull_request CI; GITHUB_TOKEN only
+    # needs to read the repository.
     permissions:
-      actions: write
-      contents: write
-      issues: write
-      # The release PR labels below are moved through the issues endpoint, but
-      # GitHub authorizes labels on a pull request against this scope; with
-      # read access the move fails with 403 after every artifact is published.
-      pull-requests: write
+      contents: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Pin the repository independently of the promotion branch checkout.
       GH_REPO: ${{ github.repository }}
       TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
+      - name: Mint release app token
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # The proposer pushes the promotion branch with the checkout credentials.
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Open production approval for staged Server
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
           VERSION: ${{ needs.release-please.outputs.backend-version }}
           SOURCE: ${{ github.sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
