@@ -181,21 +181,29 @@ local refs do not steer the negotiation, checking the prerequisite and running
 `git fsck`. The credential travels as an in-memory `http.extraheader` for that
 one command, as the provisioner does today, passed through the child's
 `GIT_CONFIG_*` environment rather than argv, never through a helper or a file.
-Every Git command the backup runs, at capture as much as at restore, uses one
-hardened invocation: the backup execution identity, no system or global config,
-and command-line overrides for every key that can execute or redirect
-(`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `credential.helper`,
+No Git command the backup runs reads a sandbox-written `config` or `hooks`:
+capture works on a sanitized metadata copy of `.git` in server-owned staging
+with `GIT_OBJECT_DIRECTORY` pointing at the live objects, and restore sets the
+user's `config`, `config.worktree` and `hooks` aside before the first command,
+for every repository. A denylist of dangerous keys cannot be complete, so this
+is the primary protection. On top of it, every command uses one hardened
+invocation: the backup execution identity, no system or global config, and
+command-line overrides for the keys known to execute or redirect in the commands
+used (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
+`credential.helper`, `core.askPass`, `core.alternateRefsCommand`,
 `protocol.allow`, `gc.auto`, `maintenance.auto`, `core.commitGraph`,
-`safe.directory`, plus `GIT_NO_REPLACE_OBJECTS`), because `.git/config` is
-writable from the sandbox; shallow, graft, alternates and replace files are
-checked before and after the pack and force a self-contained copy. The one
+`safe.directory`, plus `GIT_NO_REPLACE_OBJECTS`). Shallow, graft and replace
+files are checked before and after the pack and force a self-contained copy.
+Alternates are never honored: the pack excludes borrowed objects, restore
+removes the file, and the repository is flagged incomplete. The one
 credentialed fetch never runs against the restored repository: it fetches into
 a fresh bare repository with an allowlisted configuration written by Verity, and
-the packs are then moved into the restored `.git/objects`, so no sandbox-written
-file can redirect the credential. Classification and the remote URL
+the packs are then moved into the restored `.git/objects` and the restored
+remote-tracking refs are rewritten from the staging refs in one `update-ref`
+transaction, so no sandbox-written file can redirect the credential and no
+second fetch is needed. Classification and the remote URL
 come from the project record in the database, not from `.git/config`.
-The pack is built with `--local` so objects borrowed through alternates cannot
-enter a project's backup. Rehydration additionally sets the restored `config`,
+Rehydration additionally sets the restored `config`,
 per-worktree `config.worktree` files and `hooks` aside durably next to the
 project and puts a sanitized configuration in its place that carries only the
 remote URL from the project record, the repository-format keys
@@ -371,14 +379,17 @@ Server to serving through the journal's existing rollback path from
 release and is retained by a separate rule, at least the last two pre-update
 snapshots, independent of the ordinary schedule's retention.
 
-One rule decides whether the Updater continues after the final snapshot. It
-continues when the snapshot is durably committed at a configured destination.
-If every configured destination needs the unlocked secret store and the store is
-sealed, which can happen because an update may run sealed and the promoted
-Server then starts sealed too, the Updater continues once the snapshot is
-durably in the local spool and records the update as "backed up locally only".
-Anything else, a failed or timed-out snapshot or a spool that is full, aborts the
-update before any irreversible step, never after it. "Require a backup" tightens
+One rule, in three cases, decides whether the Updater continues after the final
+snapshot. With no destination configured, no snapshot is attempted and the
+update runs, recorded as unbacked. With a destination, the Updater continues
+when the final snapshot is durably committed at one of them. If every configured
+destination needs the unlocked secret store and the store is sealed, which can
+happen because an update may run sealed and the promoted Server then starts
+sealed too, the Updater continues once the snapshot is durably in the local
+spool and records the update as "backed up locally only". Anything else, a
+failed or timed-out final snapshot or a spool that is full, aborts the update
+before any irreversible step, never after it. The warm snapshot's failure is
+logged and never aborts by itself. "Require a backup" tightens
 the rule: only a destination commit satisfies it, a spool-only snapshot is a
 refusal, and the refusal names the destination that blocked. The snapshot is
 written through the same code path as scheduled backups, so it is incremental,
@@ -516,7 +527,8 @@ credentials; in-container services and custom mounts are the user's own
 responsibility in the first release and are flagged as such. Code projects
 depend on their code host for pushed history: a restore without a reachable
 GitHub or Forgejo leaves their Code area incomplete until rehydration succeeds.
-Every update is preceded by a snapshot, which adds its duration to the update.
+Every update on an installation with a destination is preceded by a snapshot,
+which adds its duration to the update.
 A missing destination is a persistent settings warning and an entry in the update
 history, not a degraded health state, unless "require a backup before updates"
 is set. Live worktree copies

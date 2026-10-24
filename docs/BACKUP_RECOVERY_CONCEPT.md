@@ -114,27 +114,46 @@ re-upload even when nothing was committed. Pushed history already lives on the
 code host, GitHub or Forgejo, and is recoverable from there. The backup therefore
 carries only what exists nowhere else.
 
-Every Git command the backup runs, at capture, at self-contained restore and at
-rehydration, uses one hardened invocation, because `.git` is writable from the
-sandbox and its `config` can name programs to run: the backup execution identity
-without network except for the one fetch; `GIT_CONFIG_NOSYSTEM=1`,
-`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`; and
-command-line overrides, which take precedence over the repository `config`, for
-every key that can execute or redirect: `core.hooksPath` to an empty directory,
-`core.fsmonitor=false`, `core.sshCommand=/bin/false`, `credential.helper=`,
+No Git command the backup runs ever reads a sandbox-written `config` or
+`hooks`. That is the primary protection, because `.git` is writable from the
+sandbox and its `config` can name programs to run, and no denylist of keys is
+complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
+`includeIf` are examples of what a list tends to miss). At capture, the backup
+first copies `.git` without `objects` into the server-owned staging area
+(`<VERITY_ROOT>/restore/<projectId>/`, a sibling of `workspaces` that no
+sandbox bind mount contains; the sandbox sees only volume subpaths under
+`workspaces/<repo>` and `secrets`), replaces `config` there with a sanitized
+file holding only the repository-format keys, drops `hooks`, and runs
+`rev-list` and `pack-objects` with `GIT_DIR` set to that copy and
+`GIT_OBJECT_DIRECTORY` set to the live `.git/objects`. The linked worktrees'
+`HEAD`, index and reflogs live under `.git/worktrees/<name>` and travel with
+the copy. At restore, step 1 below sets the user's `config`, `config.worktree`
+and `hooks` aside before any command runs, for self-contained and
+remote-dependent repositories alike.
+
+On top of that, every command uses one hardened invocation as defense in depth:
+the backup execution identity without network except for the one fetch;
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`,
+`GIT_PAGER=cat`, `GIT_NO_REPLACE_OBJECTS=1`; and command-line overrides for the
+keys known to execute or redirect in the commands used (`rev-list`,
+`pack-objects`, `index-pack`, `fsck`, `worktree`, `for-each-ref`, `update-ref`,
+`cat-file`, and `fetch` in the fresh repository): `core.hooksPath` to an empty
+directory, `core.fsmonitor=false`, `core.sshCommand=/bin/false`,
+`credential.helper=`, `core.askPass=/bin/false`, `core.alternateRefsCommand=`,
 `protocol.allow=never`, `gc.auto=0`, `maintenance.auto=false`,
-`core.commitGraph=false` and `GIT_NO_REPLACE_OBJECTS=1` so a sandbox-written
-commit-graph or `refs/replace/*` entry cannot forge parent links, and
-`safe.directory` set to the exact repository path so a server uid can read a
-sandbox-owned repository without widening the policy. `.git/shallow`,
-`info/grafts`, `objects/info/alternates` and `refs/replace/*` are checked before
-and after the pack; any of them present at either check discards the pack and
-classifies the repository self-contained, because each can hide commits behind a
-fake history boundary. The one credentialed fetch does not use the restored
-repository at all; see restore step 3. Classification and the remote URL come from the server's
-project record in the database, never from `.git/config`, so the sandbox cannot
-choose the host that receives the connection credential or confuse the
-qualification check with a look-alike URL.
+`core.commitGraph=false`, and `safe.directory` set to the exact repository path.
+The command scope counts as protected configuration for `safe.directory`, so the
+`-c` form is honored. `.git/shallow`, `info/grafts`, `objects/info/alternates`
+and `refs/replace/*` are checked before and after the pack; any of them present
+at either check discards the pack and classifies the repository self-contained,
+because each can hide commits behind a fake history boundary. The one
+credentialed fetch does not use the restored repository at all; see restore
+step 3. Classification and the remote URL come from the server's project record
+in the database, never from `.git/config`, so the sandbox cannot choose the host
+that receives the connection credential or confuse the qualification check with
+a look-alike URL. The server and installer images check their Git version at
+startup against the floors this design relies on (2.15 for worktree-aware
+`--all`, `--reflog` and `--indexed-objects`).
 
 Capture, per repository that the project record ties to the connected code host:
 
@@ -157,7 +176,8 @@ Capture, per repository that the project record ties to the connected code host:
    commit that Verity itself last saw on the code host, recorded in the
    database by the server-side clone, fetch and push paths that run outside the
    sandbox with the connection credential, including pushes brokered for the
-   sandbox; a push that bypasses them leaves the tip stale, which only makes the
+   sandbox, and recorded only after the host has accepted the push or served the
+   fetch; a push that bypasses them leaves the tip stale, which only makes the
    pack larger. It is deliberately not
    `refs/remotes/origin/HEAD`: everything under `.git` is writable from the
    sandbox, and a remote-tracking ref moved onto a local-only commit with
@@ -181,9 +201,17 @@ Capture, per repository that the project record ties to the connected code host:
 Repositories that do not qualify are copied completely, including
 `.git/objects`, and marked `self-contained`: no remote, an `origin` that is not
 the connected code host, no recorded trusted tip, a shallow or partial clone
-with a promisor remote, `objects/info/alternates`, or submodules under
-`.git/modules`, whose object sets cannot be reasoned about locally. Submodule
-`config` files are set aside at restore like the main one. Today's local projects, which
+with a promisor remote, or submodules under `.git/modules`, whose object sets
+cannot be reasoned about locally. Submodule `config` files are set aside at
+restore like the main one. Alternates are never honored: the provisioner does
+not create shared clones, so an `objects/info/alternates` file is either a
+user's `clone --shared` or an attempt to pull another server-readable
+repository into this project's backup. The repository is captured
+self-contained with `--local`, which excludes the borrowed objects; restore
+removes the alternates file before any command runs, so `fsck` never follows a
+host path into another project, and the repository is flagged "Code
+incomplete" because the borrowed objects are missing. The manifest records that
+the file existed. Today's local projects, which
 still start from an empty initial commit, fall under this; after the "project
 files without a repository" concept lands they have no Git at all and nothing
 changes here.
@@ -231,15 +259,14 @@ the secret store so the code host connection credentials are usable:
    relied on for the credentialed command: the fresh repository has no
    sandbox-written file at all, so no `include.path`, `config.worktree`,
    alternates or replace ref can reach it. The resulting packs are moved into
-   the restored `.git/objects`, and `git fetch --refetch <staging-path>` (Git
-   2.36 or newer, a requirement on the server and installer images, not the
-   sandbox) updates the restored remote-tracking refs from the staging
-   repository over the local filesystem, ignoring the dangling refs that would
-   otherwise steer a negotiation. Then check the prerequisite with
-   `git cat-file -e`. A repository without a trusted tip at capture time was
-   already classified self-contained and does not reach this step.
-   Remote-tracking refs restored from the snapshot are untrusted and are
-   overwritten here.
+   the restored `.git/objects`. No second fetch follows: the objects are already
+   present, so the restored `refs/remotes/origin/*` are rewritten from the
+   staging repository with `git for-each-ref refs/remotes/origin` piped into
+   `git update-ref --stdin` as one transaction, which needs no protocol and no
+   negotiation. Then check the prerequisite with `git cat-file -e`. A
+   repository without a trusted tip at capture time was already classified
+   self-contained and does not reach this step. Remote-tracking refs restored
+   from the snapshot are untrusted and are overwritten here.
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
    `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
@@ -460,13 +487,16 @@ over the private control socket. The hook adds two requests to that sequence:
 Both snapshots use the ordinary capture path: incremental, encrypted to the
 public recovery key, no secret needed for host-path and NAS destinations. Capture
 always runs; for a Drive destination only delivery waits for an unlocked secret
-store. One rule decides whether the Updater continues: the final snapshot is
-durably committed at a configured destination, or, when every configured
-destination needs the unlocked store and the store is sealed, durably in the
-local spool with the update recorded as "backed up locally only". A sealed
-server at this point is possible: an update may run sealed, and the promoted
-Server then starts sealed as well. Everything else, including a full spool,
-aborts. The final snapshot is tagged
+store. One rule, in three cases, decides whether the Updater continues. With no
+destination configured, no snapshot is attempted; the update runs and is
+recorded as unbacked. With at least one destination, the final snapshot must be
+durably committed at one of them. If every configured destination needs the
+unlocked store and the store is sealed, a snapshot durably in the local spool
+suffices and the update is recorded as "backed up locally only"; a sealed server
+at this point is possible, because an update may run sealed and the promoted
+Server then starts sealed as well. Everything else, a failed or timed-out final
+snapshot or a full spool, aborts. The warm snapshot never aborts an update by
+itself; its failure is logged and the final snapshot decides. The final snapshot is tagged
 `pre-update` with previous and target digest, and retention keeps at least the
 last two pre-update snapshots regardless of the schedule's policy.
 
