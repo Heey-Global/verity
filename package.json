@@ -15,6 +15,9 @@
     "apps/*"
   ],
   "overrides": {
+    "@expo/cli": {
+      "zod": "$zod"
+    },
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",

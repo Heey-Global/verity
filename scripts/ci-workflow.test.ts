@@ -161,12 +161,32 @@ describe('release-please train isolation', () => {
     expect(steps.find((step) => step.name === 'Run checks for release PRs')).toBeUndefined();
     expect(JSON.stringify(steps)).not.toContain('gh workflow run ci.yml');
     expect(steps.find((step) => step.id === 'app-token')?.with?.['app-id']).toBe(
-      '${{ vars.RELEASE_APP_ID }}',
+      '${{ secrets.RELEASE_APP_ID }}',
     );
     for (const train of trains) {
       const action = steps.find((step) => step.id === `release-${train}`);
       expect(action?.with?.token, train).toBe('${{ steps.app-token.outputs.token }}');
     }
+  });
+
+  it('loads every release app token ID from the configured secret', () => {
+    // A variable reference resolves empty when deployment only supplies the
+    // secret, stopping publication before any release logic can execute.
+    const tokenSteps = readdirSync('.github/workflows')
+      .filter((file) => file.endsWith('.yml'))
+      .flatMap((file) => {
+        const workflow = parse(readFileSync(`.github/workflows/${file}`, 'utf8')) as {
+          jobs?: Record<string, { steps?: WorkflowStep[] }>;
+        };
+        return Object.values(workflow.jobs ?? {}).flatMap((job) =>
+          (job.steps ?? [])
+            .filter((step) => step.uses?.startsWith('actions/create-github-app-token@'))
+            .map((step) => ({ file, step })),
+        );
+      });
+    expect(tokenSteps.length).toBeGreaterThan(0);
+    for (const { file, step } of tokenSteps)
+      expect(step.with?.['app-id'], file).toBe('${{ secrets.RELEASE_APP_ID }}');
   });
 
   it('never plans a next PR in the invocation that creates a release', () => {
@@ -858,6 +878,11 @@ describe('mobile native patch CI', () => {
     const guard = steps.find((step) =>
       step.run?.includes('vitest run scripts/unistyles-reload.test.ts'),
     );
+    expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
+  });
+
+  it('requires installed Expo CLI compatibility checks in the mobile job', () => {
+    const guard = steps.find((step) => step.run?.includes('scripts/expo-cli-zod-compat.test.ts'));
     expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
   });
 
@@ -4687,6 +4712,7 @@ describe('changed-area detector', () => {
       'apps/mobile/package.json',
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       expect(
@@ -4723,6 +4749,7 @@ describe('changed-area detector', () => {
     for (const file of [
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       for (const area of broad) {
