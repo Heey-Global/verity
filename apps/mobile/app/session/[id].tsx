@@ -1,5 +1,6 @@
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
+import { VulnerabilityStarterCard } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
@@ -4506,6 +4507,13 @@ export const SessionChat = memo(function SessionChat({
               badge="New"
               text="Say what should happen and when, for example every Monday at 9:00. You confirm it before it starts."
             />
+            {client && projectId ? (
+              <VulnerabilityStarterCard
+                client={client}
+                projectId={projectId}
+                sessionId={sessionId}
+              />
+            ) : null}
           </View>
         </ScrollView>
       ) : (
@@ -4734,7 +4742,10 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
+      {/* An empty session has changed nothing yet; its starter card speaks for main. */}
+      {client && messages.length > 0 ? (
+        <SessionVulnerabilityCard client={client} sessionId={sessionId} />
+      ) : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
