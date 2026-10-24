@@ -69,3 +69,62 @@ it.each([
     }
   },
 );
+
+it('retains Core association and first-frame metadata without inferred proxy joins', () => {
+  const association = {
+    schemaVersion: 1,
+    bindingSource: 'authenticated_control_session_request',
+    processBootId: '00000000-0000-4000-8000-000000000001',
+    socketLifetimeId: '00000000-0000-4000-8000-000000000002',
+    session: core.session,
+    request: 'a'.repeat(16),
+    coverageStart: 'after_socket_creation',
+    activatedAt: '2026-10-23T12:00:00.000Z',
+    socketEndpoints: {
+      local: { address: '127.0.0.1', port: 1234 },
+      remote: { address: '2001:db8::1', port: 443 },
+    },
+    uplinkConnectionId: null,
+    natAssociation: 'unknown',
+    envoyAssociation: 'unknown',
+  };
+  expect(
+    recordingCoreRecordSchema.safeParse({
+      ...core,
+      association: { ...association, session: 'f'.repeat(16) },
+    }).success,
+  ).toBe(false);
+  const parsed = recordingCoreRecordSchema.parse({
+    ...core,
+    association,
+    callbackMeaning: 'local_acceptance_not_peer_receipt',
+    streams: [
+      {
+        stream: 'b'.repeat(16),
+        enqueuedFrames: 1,
+        completedFrames: 1,
+        errorFrames: 0,
+        encodedBytes: 50,
+        decodedBytes: 5,
+        firstSend: {
+          type: 'stream.data',
+          eventOrder: 1,
+          elapsedMs: 0,
+          encodedBytes: 50,
+          decodedBytes: 5,
+        },
+      },
+    ],
+  });
+  expect(parsed).toMatchObject({
+    association,
+    callbackMeaning: 'local_acceptance_not_peer_receipt',
+    streams: [{ firstSend: { type: 'stream.data' } }],
+  });
+  expect(
+    recordingCoreRecordSchema.safeParse({
+      ...core,
+      association: { ...association, uplinkConnectionId: association.socketLifetimeId },
+    }).success,
+  ).toBe(false);
+});

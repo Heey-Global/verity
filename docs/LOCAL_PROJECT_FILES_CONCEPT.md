@@ -1,11 +1,69 @@
 # Local projects without Git
 
+**Status:** Implemented in this change; rollout requires legacy migration.
+**Scope:** Verity server, provisioner, store, agent runtime, mobile explorer, documentation
+**Related:** [ADR 0022](adr/0022-knowledge-folder-and-retrieval.md),
+[session worktree lifecycle](SESSION_WORKTREE_LIFECYCLE_CONCEPT.md),
+[knowledge folders](knowledge.md), [connections](connections.md)
+
 ## Goal
 
 A local project provides durable Sources, Documents and Global files. Sessions can
 work in parallel without Git, branches, commits or a manual Save to project step.
 Code exists only after connecting GitHub or Forgejo. Retrieval and RAG are outside
 this change.
+
+## Background
+
+Before this change, a local project was a Git repository with an empty initial commit. Each session receives
+a Git worktree on its own branch, and the only way to make a session's work visible to the
+project is a "Save to project" turn that asks the agent to review, commit, and approve the
+tip, followed by a `--no-ff` merge into the base checkout. The session explorer shows three
+roots, "Repository", "Project Knowledge", and "Global Knowledge", and the knowledge root is
+subdivided into `sources/documents`, `sources/meetings`, and `insights`.
+
+Users who create a local project to work on documents, research, or meetings never asked for
+version control and have no model for what "Repository" means next to "Knowledge", or why a
+finished text is an "insight". The Git layer adds conflicts, dirty-worktree refusals, and
+agent turns spent on commit hygiene, while the features it enables are either unused or
+achievable without it:
+
+- Session isolation through branches suits code, where a half-finished change breaks a build.
+  Document work expects one current version per file plus a version history, which the
+  explorer's private file history already provides independently of Git.
+- The push-gated review and secrets scan never run for a local project, because there is
+  no remote.
+- Linking a local project to GitHub later merges its entire history into the repository, so
+  documents and meeting notes end up in a code repository by default.
+
+The previous implementation required the repository for one technical reason for the repository: `git worktree add` requires a commit
+to branch from. No design record explains a product reason.
+
+## File areas
+
+Internal folder names stay as they are; the user-facing labels change. The table lists the
+user-facing name first.
+
+| Area | Content | Writers | Storage |
+| --- | --- | --- | --- |
+| Sources | Immutable input: uploads, meeting recordings and transcripts, Drive and web imports | Imports only; agents read | `knowledge/<projectId>/sources/` |
+| Documents | Everything produced in the project: notes, drafts, reports, distilled knowledge | Users through the explorer, agents through session working copies | `knowledge/<projectId>/insights/` |
+| Code | The project's repository on a connected code host | Agents through session worktrees and pull requests | project clone and session worktrees |
+
+Two further elements complete the tree:
+
+- **About this project** is `overview.md`, the bounded context given to fresh sessions.
+  It stays append-only through `verity-memory`.
+- **Global** is the library readable by every project, with the same Sources and Documents
+  organization. The label stays "Global" rather than "Shared": in Verity, sharing means
+  giving external people access through Uplink, and the global library involves no one
+  outside the installation. The folder keeps its internal name `shared/`.
+
+The Sources/Documents split is deliberate and is kept. It is the model users know from
+notebook-style research tools: originals are never edited, and generated material is kept
+apart from them. It also protects originals from agent edits and gives later retrieval a
+stable notion of provenance. What changes is that the split is no longer presented as a
+second tree next to a repository, and that the writable area is no longer called "insights".
 
 ## Storage and working directories
 
@@ -85,3 +143,33 @@ deletions, binary preservation, file history, journal recovery, retained session
 working copies, interrupted migration and interrupted Code checkout. Runtime and
 Explorer integration must preserve the same lock and mount boundaries. Connected
 Code worktrees and pull-request workflows retain their existing Git behavior.
+
+## Retrieval readiness
+
+ADR 0022 defers indexed retrieval and requires any index to remain derived state. The model
+in this concept is what such an index will be built on, so three properties are fixed now:
+
+- **Addressing.** Every indexed file is identified by project, area, and path, where area is
+  Sources, Documents, or Global. Code is indexed separately or not at all. Citations in agent
+  answers use this address, which is also what the explorer opens.
+- **Provenance.** Each Sources file carries metadata about its origin, import time, and
+  digest; the extraction metadata under `.text/` already records most of it. A later index must also attribute Documents changes to their producing session or user;
+  existing file history retains prior content but does not guarantee that attribution.
+  Retrieval must use explicit provenance instead of inferring authorship from file paths.
+- **Change scope.** Sources are immutable, so their extracted text and embeddings are
+  computed once per digest. Only Documents change after import and need incremental
+  reindexing. Session working copies are not indexed as canonical content.
+
+Nothing here requires the index to exist. Filesystem search over the extracted text remains
+the retrieval path until the folder sizes justify more.
+
+## Open questions
+
+- Whether Documents should keep the internal folder name `insights/` indefinitely or be
+  renamed in a later migration. The label change does not depend on it.
+- Whether the explorer should offer a dedicated conversion from Documents to Sources, making
+  a generated document immutable input beyond the explicit source-import workflow.
+- How long archived repositories from migration are retained before an operator is prompted
+  to remove them.
+- Whether the per-turn version capture for agent writes should also cover Global Documents,
+  which agents publish through the project-bound tool rather than writing directly.

@@ -7,7 +7,7 @@
 #
 # Options arrive as devcontainer-injected env vars (uppercased option ids):
 #   TZ, INSTALLCLAUDE, CLAUDECODEVERSION, GHVERSION, DOPPLERVERSION,
-#   GITLEAKSVERSION, SSHSIGNINGKEY, SSHSIGNINGKEYPRIVATE, CLAUDECONFIGDIR,
+#   GITLEAKSVERSION, OSVSCANNERVERSION, SSHSIGNINGKEY, SSHSIGNINGKEYPRIVATE, CLAUDECONFIGDIR,
 #   HOOKSPATH
 # Each falls back to the pinned default (kept in lock-step with
 # devcontainer-feature.json) so the script is runnable standalone too.
@@ -45,6 +45,8 @@ GH_VERSION="${GHVERSION:-2.100.0}"
 DOPPLER_VERSION="${DOPPLERVERSION:-3.77.0}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
+# renovate: datasource=github-releases depName=google/osv-scanner
+OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
 CODEX_VERSION="${CODEXVERSION:-0.163.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
@@ -143,12 +145,14 @@ fi
 case "$ARCH" in
   amd64)
     GH_ARCH=amd64; DOPPLER_ARCH=amd64; GITLEAKS_ARCH=x64
+    OSV_SCANNER_SHA256=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
     GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
     DOPPLER_SHA256=92587cb89c2ff82fc2ddec2b2a9f275ff320994a44e16cd9310b55a429a82084
     GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     ;;
   arm64)
     GH_ARCH=arm64; DOPPLER_ARCH=arm64; GITLEAKS_ARCH=arm64
+    OSV_SCANNER_SHA256=2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4
     GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
     DOPPLER_SHA256=3aa603d60bc8502ec67d9a57e917925f357ac2822eead484acda3875fe6a4d95
     GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
@@ -275,6 +279,16 @@ verify_release_tarball "$GITLEAKS_SHA256" "$DOWNLOAD_DIR/gitleaks.tar.gz"
 tar --no-same-owner -xzf "$DOWNLOAD_DIR/gitleaks.tar.gz" -C /usr/local/bin gitleaks
 install_trusted_cli_ownership /usr/local/bin/gitleaks
 gitleaks version
+
+# OSV publishes standalone executables rather than tarballs. Verify before install.
+echo ">> verity-sandbox-toolkit: installing osv-scanner $OSV_SCANNER_VERSION"
+fetch_release_tarball \
+  "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${ARCH}" \
+  "$DOWNLOAD_DIR/osv-scanner"
+verify_release_tarball "$OSV_SCANNER_SHA256" "$DOWNLOAD_DIR/osv-scanner"
+install -m 0755 "$DOWNLOAD_DIR/osv-scanner" /usr/local/bin/osv-scanner
+install_trusted_cli_ownership /usr/local/bin/osv-scanner
+osv-scanner --version
 
 # Harden npm before the first root-owned global install. Individual pinned agent
 # packages opt into lifecycle scripts explicitly below when their installation

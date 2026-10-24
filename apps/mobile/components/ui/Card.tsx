@@ -116,7 +116,9 @@ export function Group({ children }: { children: ReactNode }) {
  *  Feather glyph (an agent's logo), drawn in the same tile. `signature` draws
  *  the icon in the brand pink — reserved for the Premium mark (§ 2). */
 type Leading =
-  { icon: IconName; signature?: boolean } | { dot: StatusIntent } | { element: ReactNode };
+  | { icon: IconName; signature?: boolean; intent?: StatusIntent }
+  | { dot: StatusIntent }
+  | { element: ReactNode };
 
 // Rows already warned about a button inside a pressable row, so a list that
 // re-renders often warns once per row instead of on every render.
@@ -304,18 +306,30 @@ function RowContent({
           <View
             style={[
               styles.tile,
-              leading.signature === true ? styles.tileSignature : acts ? styles.tileAction : null,
+              leading.intent === 'needsSetup'
+                ? styles.tileAttention
+                : leading.intent === 'ready'
+                  ? styles.tileReady
+                  : leading.signature === true
+                    ? styles.tileSignature
+                    : acts
+                      ? styles.tileAction
+                      : null,
             ]}
           >
             <Icon
               name={leading.icon}
               size={16}
               color={
-                leading.signature === true
-                  ? theme.colors.signature
-                  : acts
-                    ? theme.colors.action
-                    : theme.colors.textMuted
+                leading.intent === 'needsSetup'
+                  ? theme.colors.attention
+                  : leading.intent === 'ready'
+                    ? theme.colors.success
+                    : leading.signature === true
+                      ? theme.colors.signature
+                      : acts
+                        ? theme.colors.action
+                        : theme.colors.textMuted
               }
             />
           </View>
@@ -411,6 +425,8 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: tint(theme.colors.text, 'neutral'),
   },
   tileAction: { backgroundColor: tint(theme.colors.action, 'fill') },
+  tileAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
+  tileReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
   dotSlot: { width: 32, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },

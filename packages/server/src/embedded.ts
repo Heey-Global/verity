@@ -2633,7 +2633,8 @@ export async function buildEmbeddedServer(
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
         onReturnPathSnapshot: (snapshot) => coordinatedRecording?.observe(snapshot),
-        returnPathExpiry: (): number | undefined => returnPath.expiry(),
+        returnPathExpiry: (sessionHash, connectorId): number | undefined =>
+          returnPath.expiry(sessionHash, connectorId),
         returnPathInstallation: (): string | undefined => {
           const descriptor = uplinkControl?.remoteControlDescriptor();
           return descriptor?.enabled ? descriptor.installationId : undefined;
@@ -2686,6 +2687,8 @@ export async function buildEmbeddedServer(
       : undefined;
   if (uplinkControl && remoteConnector) {
     coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
+      selectedConnectorId: (targetSessionId) =>
+        uplinkControl.selectedRecordingConnectorId(targetSessionId),
       start: (runId, durationMs, version, targetSessionId) =>
         uplinkControl.startRecording(runId, durationMs, version, targetSessionId),
       status: (runId) => uplinkControl.recordingStatus(runId),
@@ -3446,12 +3449,31 @@ export async function buildEmbeddedServer(
     // changes still invalidate the cache immediately.
     refreshProjectToken = (project: ProjectRecord): Promise<void> =>
       refreshProjectGitHubToken(project, cachedProjectTokenMint.strict);
-    // Per-project session worktree factory (see {@link createProjectWorktreeFactory}):
-    // its `refreshBase` fetch authenticates with the SAME project-scoped token the
-    // mint issues for `refreshProjectToken`. Guarded by the same mint + docker/
-    // clone-root config; the server's own `/work` worktrees keep no
-    // `fetchAuthHeader` (unchanged).
-    projectWorktrees = createProjectWorktreeFactory(projectTokenMint);
+    // Session worktrees use their project's provider: GitHub App tokens or the
+    // current Forgejo connection token and CA. Neither credential is persisted
+    // in the clone or worktree.
+    projectWorktrees = createProjectWorktreeFactory(projectTokenMint, async (project) => {
+      const access = await forgeRepositoryAccess(project);
+      if (!access) throw new Error('Forgejo connection unavailable');
+      let caPath: string | undefined;
+      if (access.customCaPem) {
+        const directory = join(secretRoot, 'git');
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        caPath = join(directory, `forge_ca.${project.forgeConnectionId ?? project.id}`);
+        const temporary = `${caPath}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, access.customCaPem, { mode: 0o600 });
+          await rename(temporary, caPath);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      }
+      return {
+        url: access.url,
+        authorization: access.authorization,
+        ...(caPath ? { caPath } : {}),
+      };
+    });
     // Claude-egress identity material is refreshed on every issue/revoke and
     // projected to the standalone gateway. The provisioner uses the same service
     // to issue per-project client certificates and the deprovisioner revokes them.
@@ -5901,7 +5923,12 @@ export async function refreshProjectGitHubToken(
  * narrow global token and fails with `remote: Repository not found`.
  */
 
-export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
+export function createProjectWorktreeFactory(
+  mint: GitHubProjectTokenMint,
+  forgeConnection?: (
+    project: ProjectRecord,
+  ) => ReturnType<NonNullable<GitWorktreeOptions['fetchConnection']>>,
+): (
   project: ProjectRecord,
   projectClone: string,
   // `git` is an optional injection seam (tests); production omits it and the
@@ -5914,7 +5941,16 @@ export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
       ...worktreeOpts,
       repoDir: projectClone,
       worktreeRoot: join(projectClone, '.verity-sessions'),
+      ...(project.kind === 'forgejo'
+        ? {
+            fetchConnection: async () => {
+              if (!forgeConnection) throw new Error('Forgejo connection unavailable');
+              return forgeConnection(project);
+            },
+          }
+        : {}),
       fetchAuthHeader: async () => {
+        if (project.kind === 'forgejo') return undefined;
         // On-demand mint only — no project-clone `.gh-token` file exists anymore
         // (it would sit in the sandbox's /work; the sandbox uses the token broker).
         const token = await mint(project);

@@ -578,6 +578,55 @@ describe('createProjectWorktreeFactory', () => {
   const b64 = (token: string): string =>
     Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
 
+  it('fetches Forgejo worktrees with rotated connection credentials and scoped CA without minting GitHub tokens', async () => {
+    const mint = vi.fn(async () => {
+      throw new Error('unexpected GitHub request');
+    });
+    let revision = 0;
+    const connection = vi.fn(async () => ({
+      url: 'https://127.0.0.1:3000/owner/repo.git',
+      authorization: `Authorization: Basic token-${++revision}`,
+      caPath: '/private/connection-ca.pem',
+    }));
+    const calls: string[][] = [];
+    const git: GitRunner = async (args) => {
+      calls.push([...args]);
+    };
+    const factory = createProjectWorktreeFactory(mint, connection);
+    const provisioner = factory({ ...sampleAppProject(), kind: 'forgejo' }, clone, {
+      refreshBase: true,
+      git,
+    });
+    await provisioner.add('agent/forgejo-one');
+    await provisioner.add('agent/forgejo-two');
+    const fetches = calls.filter((args) => args.includes('fetch'));
+    expect(fetches).toHaveLength(2);
+    for (const [index, args] of fetches.entries()) {
+      expect(args).toContain('http.followRedirects=false');
+      expect(args).toContain(
+        'http.https://127.0.0.1:3000/owner/repo.git.sslCAInfo=/private/connection-ca.pem',
+      );
+      expect(args).toContain(
+        `http.https://127.0.0.1:3000/owner/repo.git.extraheader=Authorization: Basic token-${index + 1}`,
+      );
+    }
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when Forgejo worktree credentials are unavailable', async () => {
+    const mint = vi.fn(async () => 'github-token');
+    const git: GitRunner = async () => {};
+    const factory = createProjectWorktreeFactory(mint);
+    const provisioner = factory({ ...sampleAppProject(), kind: 'forgejo' }, clone, {
+      refreshBase: true,
+      git,
+    });
+    await expect(provisioner.add('agent/no-forgejo')).rejects.toThrow(
+      'Forgejo connection unavailable',
+    );
+    expect(mint).not.toHaveBeenCalled();
+  });
+
   it('produces a provisioner whose refreshBase fetch carries the minted project token', async () => {
     const calls: string[][] = [];
     const git: GitRunner = async (args) => {

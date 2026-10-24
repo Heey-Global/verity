@@ -1,8 +1,9 @@
+import { SelectedConnectionTest } from './SelectedConnectionTest';
 import type { ConnectionRecordingExport, VerityClient } from '@verity/mobile';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { CardRow, Eyebrow, RowCard } from '../premium/PremiumChrome';
 import { getServerProfile } from '../../lib/serverProfile';
@@ -122,11 +123,19 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const key = serverId ? `verity.connectionRecording.v1.${serverId}` : null;
   const captureDeadline = useRef<number | null>(null);
   const runRef = useRef<SavedRun | null>(null);
+  const [selectedBusy, setSelectedBusy] = useState(false);
+  const selectedBusyRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const collectingRef = useRef<number | null>(null);
   const preparingRef = useRef<number | null>(null);
+  const ownSelected = useCallback((busy: boolean) => {
+    if (busy && (preparingRef.current !== null || collectingRef.current !== null)) return false;
+    selectedBusyRef.current = busy;
+    setSelectedBusy(busy);
+    return true;
+  }, []);
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [message, setMessage] = useState(
@@ -274,7 +283,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   }, [client]);
 
   const start = async () => {
-    if (!loaded || preparing || collectingRef.current || !key || !client) return;
+    if (selectedBusyRef.current || !loaded || preparing || collectingRef.current || !key || !client)
+      return;
     const token = ++revision.current;
     const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
@@ -396,6 +406,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   };
 
   const collect = async () => {
+    if (selectedBusyRef.current) return;
     // Duplicate taps still stop locally, but never create competing exports.
     if (collectingRef.current !== null) {
       await stopRemoteDataRecording();
@@ -501,14 +512,21 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     <View>
       <Eyebrow>Connection recording</Eyebrow>
       <RowCard>
+        <SelectedConnectionTest
+          disabled={!loaded || preparing || collecting || remaining > 0 || !client}
+          onBusy={ownSelected}
+        />
         <CardRow
           title="Record connection"
           subtitle={message}
-          disabled={!loaded || preparing || collecting || !key || !client || remaining > 0}
+          disabled={
+            selectedBusy || !loaded || preparing || collecting || !key || !client || remaining > 0
+          }
           onPress={() => void start()}
         />
         <CardRow
           title="Stop and collect"
+          disabled={selectedBusy}
           subtitle="Stops this device immediately. Turn VPN back on to collect Core and Uplink; otherwise a partial report is copied."
           onPress={() => void collect()}
         />

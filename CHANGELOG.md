@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.55.0](https://github.com/Heey-Global/verity/compare/v4.54.0...v4.55.0) (2026-10-23)
+
+
+### Features
+
+* **sandbox:** install pinned OSV vulnerability scanner ([#1816](https://github.com/Heey-Global/verity/issues/1816)) ([f75c925](https://github.com/Heey-Global/verity/commit/f75c925f7be824154cf807198335be4ebdfc86b6))
+* **security:** add vulnerability scan storage and service ([#1817](https://github.com/Heey-Global/verity/issues/1817)) ([a852db4](https://github.com/Heey-Global/verity/commit/a852db4ac25a8ff0a70f6999f5145ed5b5da76df))
+* **security:** add vulnerability scan storage and service ([#1817](https://github.com/Heey-Global/verity/issues/1817)) ([a7d6fbf](https://github.com/Heey-Global/verity/commit/a7d6fbf2d6e981030223db24bfa3f60419fa507c))
+* **security:** scan session changes and surface vulnerability diffs ([#1819](https://github.com/Heey-Global/verity/issues/1819)) ([6275bce](https://github.com/Heey-Global/verity/commit/6275bce4878566b2816e7f3a2b63bc5bf5dab32a))
+
+
+### Bug Fixes
+
+* **sandbox:** let nested sandboxes map their uid and use a private /tmp ([#1815](https://github.com/Heey-Global/verity/issues/1815)) ([2e9216e](https://github.com/Heey-Global/verity/commit/2e9216e93fb0ac77df85e3805d386e6d08f41318))
+
 ## [4.54.0](https://github.com/Heey-Global/verity/compare/v4.53.0...v4.54.0) (2026-10-23)
 
 

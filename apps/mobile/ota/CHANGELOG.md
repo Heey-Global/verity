@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.77.1](https://github.com/Heey-Global/verity/compare/mobile-v1.77.0...mobile-v1.77.1) (2026-10-23)
+
+
+### Features
+
+* **mobile:** calmer update progress and channel settings in the header ([#1823](https://github.com/Heey-Global/verity/issues/1823)) ([fd3529d](https://github.com/Heey-Global/verity/commit/fd3529dd1db2c50903589af9df6124e97234d187))
+* **security:** integrate scan UI and harden release handoff ([#1824](https://github.com/Heey-Global/verity/issues/1824)) ([b7870c1](https://github.com/Heey-Global/verity/commit/b7870c1a4fa840e3736e8c6e49f669f628e03474))
+
+
+### Bug Fixes
+
+* **mobile:** compact meters and session rows in narrow split views ([#1827](https://github.com/Heey-Global/verity/issues/1827)) ([c65b476](https://github.com/Heey-Global/verity/commit/c65b476c8050905282e9450dbd280a3c47919cdc))
+
 ## [1.76.1](https://github.com/Heey-Global/verity/compare/mobile-v1.76.0...mobile-v1.76.1) (2026-10-23)
 
 

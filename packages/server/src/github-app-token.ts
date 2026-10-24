@@ -215,6 +215,7 @@ export function createGitHubAppProjectTokenMint(
     // point for that: the provisioner's clone/fetch path, the worktree factory
     // and the token-refresh path all mint through here.
     if (
+      project.kind === 'forgejo' ||
       project.kind === 'local' ||
       project.kind === 'control_plane' ||
       project.owner === LOCAL_PROJECT_OWNER
@@ -279,6 +280,7 @@ export function createCachedProjectTokenMint(
     project: Parameters<GitHubProjectTokenMint>[0],
     strict: boolean,
   ): Promise<string | undefined> => {
+    if (project.kind === 'forgejo') return undefined;
     let authority: string | undefined;
     try {
       authority = opts.authorityKey === undefined ? '' : await opts.authorityKey();

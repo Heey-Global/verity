@@ -166,7 +166,10 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - **Row anatomy** (minimum height 52):
   - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral
-    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`.
+    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
+    `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
+    the shared fill tint. Vulnerability finding rows use this to retain their severity
+    while still allowing navigation.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the

@@ -1,3 +1,4 @@
+import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
@@ -1393,6 +1394,7 @@ export class EventStore implements EventSink {
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
     this.managedDevServers = new ManagedDevServerStore(db);
+    this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
   }
 
@@ -1401,6 +1403,7 @@ export class EventStore implements EventSink {
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly managedDevServers: ManagedDevServerStore;
+  readonly vulnerabilityScans: VulnerabilityScanStore;
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
     const result = await sql<{

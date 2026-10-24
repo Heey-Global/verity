@@ -1,3 +1,5 @@
+import { sessionLayout } from '../lib/sessionLayout';
+import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
 import { DeferredSessionPane } from '../components/DeferredSessionPane';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
@@ -155,7 +157,7 @@ function SessionList({ client }: { client: VerityClient }) {
   usePushNotifications(client, baseUrl);
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const { wide, sidebarWidth } = sessionLayout(width);
   // A `selected` route param preselects a session into the right pane — this is how
   // a freshly-started session (new.tsx → /session/[id] → Redirect on wide) and any
   // deep link land in the unified split layout instead of the old per-route sidebar.
@@ -168,6 +170,11 @@ function SessionList({ client }: { client: VerityClient }) {
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
+  useSessionLayoutNavigation(wide, selectedId, {
+    targetMessageId: selected === selectedId ? targetMessageId : undefined,
+    targetSearchQuery: selected === selectedId ? targetSearchQuery : undefined,
+    retrySecret: selected === selectedId ? retrySecret : undefined,
+  });
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -784,7 +791,9 @@ function SessionList({ client }: { client: VerityClient }) {
       ) : null}
       {/* Pinned above the list, not rendered as its header: the usage meters are
           the one thing on this screen that must not scroll, drag or fold away. */}
-      {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
+      {providerLimitRows.length > 0 ? (
+        <ProviderLimitMeters rows={providerLimitRows} compact={wide && sidebarWidth < 380} />
+      ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
           ref={reorder.hostRef}
@@ -947,7 +956,7 @@ function SessionList({ client }: { client: VerityClient }) {
 
   return (
     <View style={styles.splitRow}>
-      <View style={styles.leftPane}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane
@@ -1286,6 +1295,20 @@ const ProjectGroup = memo(function ProjectGroup({
                   {group.status ? (
                     <Text
                       style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
+                      onPress={
+                        group.project?.vulnerabilitySummary?.count
+                          ? (event) => {
+                              event.stopPropagation();
+                              router.push({
+                                pathname: '/project/[id]/vulnerability-scan',
+                                params: { id: group.project!.id },
+                              });
+                            }
+                          : undefined
+                      }
+                      accessibilityRole={
+                        group.project?.vulnerabilitySummary?.count ? 'link' : undefined
+                      }
                       numberOfLines={1}
                     >
                       {group.status.label}
@@ -1495,7 +1518,13 @@ function isVerityControlPlaneProject(project: ProjectRecord): boolean {
 
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
-function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
+function ProviderLimitMeters({ rows, compact }: { rows: ProviderLimitRow[]; compact: boolean }) {
+  const segments = (row: ProviderLimitRow) => (
+    <>
+      <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} compact={compact} />
+      <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} compact={compact} />
+    </>
+  );
   return (
     <View style={styles.limitMeters}>
       {rows.map((row) => (
@@ -1503,8 +1532,7 @@ function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
           <Text style={styles.limitProvider} numberOfLines={1}>
             {row.providerLabel}
           </Text>
-          <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} />
-          <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} />
+          {segments(row)}
         </View>
       ))}
     </View>
@@ -1515,14 +1543,16 @@ function ProviderLimitSegment({
   label,
   window,
   limit,
+  compact,
 }: {
   label: string;
   window: 'five_hour' | 'weekly';
   limit: ProviderLimitState | null;
+  compact: boolean;
 }) {
   const { theme } = useUnistyles();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const usesWideSpacing = screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
+  const usesWideSpacing = !compact && screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
   const chartRef = useRef<View>(null);
   const [showPaceInfo, setShowPaceInfo] = useState(false);
   const [paceInfoAnchor, setPaceInfoAnchor] = useState<{
@@ -1630,6 +1660,7 @@ function ProviderLimitSegment({
     <View
       style={[
         styles.limitSegment,
+
         usesWideSpacing
           ? window === 'weekly'
             ? styles.limitWeeklySegmentWide
@@ -1640,14 +1671,14 @@ function ProviderLimitSegment({
       <Text style={styles.limitWindowLabel} numberOfLines={1} ellipsizeMode="clip">
         {label}
       </Text>
-      {pace !== null ? (
+      {compact || pace !== null ? (
         <Pressable
           ref={chartRef}
           style={styles.limitChart}
           onPress={showPaceInfo ? closePaceInfo : openPaceInfo}
           accessibilityRole="button"
           accessibilityLabel={`${windowLabel} token pace. ${accessibilityText}. ${paceStatus}`}
-          accessibilityHint="Shows or hides an explanation of the pace marker"
+          accessibilityHint="Shows or hides reset and pace details"
           accessibilityState={{ expanded: showPaceInfo }}
           hitSlop={11}
         >
@@ -1656,13 +1687,15 @@ function ProviderLimitSegment({
       ) : (
         <View style={styles.limitChart}>{chartContent}</View>
       )}
-      <Text
-        style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
-        numberOfLines={1}
-      >
-        {text}
-      </Text>
-      {pace !== null && paceInfoAnchor !== null ? (
+      {!compact ? (
+        <Text
+          style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
+          numberOfLines={1}
+        >
+          {text}
+        </Text>
+      ) : null}
+      {paceInfoAnchor !== null ? (
         <Modal
           visible={showPaceInfo}
           transparent
@@ -1692,13 +1725,19 @@ function ProviderLimitSegment({
                   {windowLabel === 'weekly' ? 'Weekly' : '5-hour'} usage pace
                 </Text>
                 <Text style={styles.limitPaceInfoText}>
-                  {Math.round(usage)}% used · {Math.round(pace)}% at even pace
+                  {percentText ?? 'Usage unknown'} · Resets {text}
                 </Text>
-                <Text style={styles.limitPaceInfoText}>{paceStatus}</Text>
-                <Text style={styles.limitPaceInfoHint}>
-                  The triangle shows where usage would be if your {windowLabel} limit were spread
-                  evenly.
-                </Text>
+                {pace !== null ? (
+                  <>
+                    <Text style={styles.limitPaceInfoText}>
+                      {Math.round(pace)}% at even pace. {paceStatus}
+                    </Text>
+                    <Text style={styles.limitPaceInfoHint}>
+                      The triangle shows where usage would be if your {windowLabel} limit were
+                      spread evenly.
+                    </Text>
+                  </>
+                ) : null}
                 <Pressable
                   style={styles.limitPaceInfoClose}
                   onPress={closePaceInfo}
@@ -1771,6 +1810,9 @@ const SessionRow = memo(function SessionRow({
   onMoveUp?: (() => void) | undefined;
   onMoveDown?: (() => void) | undefined;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const layout = sessionLayout(windowWidth);
+  const compactSidebar = layout.wide && layout.sidebarWidth < 380;
   const finishRowWork = beginRenderWork('sidebar-row-body');
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
@@ -1829,7 +1871,11 @@ const SessionRow = memo(function SessionRow({
     // Pressable: in the narrow layout that Pressable is cloned by `<Link asChild>`,
     // which drops its `style` — so a flex-row set there silently falls back to a
     // column and stacks the dot ABOVE the name. A plain child View keeps its style.
-    <View ref={dragHandleRef} collapsable={false} style={styles.rowInner}>
+    <View
+      ref={dragHandleRef}
+      collapsable={false}
+      style={[styles.rowInner, compactSidebar ? styles.rowInnerCompact : null]}
+    >
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
@@ -1838,7 +1884,7 @@ const SessionRow = memo(function SessionRow({
           here; the dot column holds the single left indicator: a pulsing magenta dot
           while the agent works, else a stable blue dot if there are unread messages (a
           finished session with something new to read), else nothing. */}
-      <View style={styles.colChevron} />
+      {!compactSidebar ? <View style={styles.colChevron} /> : null}
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
       {/* Name with the lifecycle label at its right end; below it the model,
           followed by the issue and its PR status. Attached to the model, they use
@@ -2324,7 +2370,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
   },
   leftPane: {
-    width: 380,
     backgroundColor: theme.colors.background,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: theme.colors.border,
@@ -2562,6 +2607,9 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     paddingVertical: theme.spacing.sm,
     paddingLeft: theme.spacing.lg,
+  },
+  rowInnerCompact: {
+    paddingLeft: theme.spacing.sm,
   },
   selectedRow: {
     backgroundColor: theme.colors.surfaceAlt,

@@ -80,6 +80,7 @@ interface Pending {
 }
 
 export interface RemoteConnectorReservation {
+  readonly diagnosticId?: string;
   /** Resolves only after the data attachment succeeds; owns the fixed TLS destination. */
   attach(ticket: string, expiresAt: number, signal: AbortSignal): Promise<void>;
   release(reason: string): void;
@@ -634,12 +635,26 @@ export class UplinkControlClient implements PreviewEdgeControl {
     return result;
   }
 
+  selectedRecordingConnectorId(targetSessionId: string): string {
+    const session = this.remoteSessions.get(targetSessionId);
+    const id = session?.reservation?.diagnosticId;
+    if (
+      !this.diagnosticsV3Negotiated ||
+      !this.remoteControlDescriptor().enabled ||
+      !session?.ticketReceived ||
+      session.controller.signal.aborted ||
+      !id
+    )
+      throw new Error('diagnostics_session_unavailable');
+    return id;
+  }
+
   async startRecording(
     runId: string,
     durationMs: number,
     diagnosticsVersion: 1 | 2 | 3 = 1,
     targetSessionId?: string,
-  ): Promise<void> {
+  ) {
     if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
       throw new Error('invalid_recording');
     if (
@@ -670,15 +685,42 @@ export class UplinkControlClient implements PreviewEdgeControl {
         ...(targetSessionId !== undefined ? { targetSessionId } : {}),
       },
     );
+    const selectedSession =
+      targetSessionId === undefined ? undefined : this.remoteSessions.get(targetSessionId);
+    const installation = this.remoteInstallation?.installationId;
+    if (diagnosticsVersion === 3) this.selectedRecordingConnectorId(targetSessionId!);
     const result = await this.recordingRequest('start', runId, {
       durationMs,
       ...(diagnosticsVersion !== 1 ? { diagnosticsVersion } : {}),
       ...(diagnosticsVersion === 3 ? { targetSessionId } : {}),
     });
-    if (
-      !['recording', ...(diagnosticsVersion === 3 ? ['preparing'] : [])].includes(result.state) ||
-      (diagnosticsVersion !== 3 && Date.parse(result.expiresAt) <= Date.now())
-    )
+    if (diagnosticsVersion === 3) {
+      if (
+        result.type !== 'diagnostics.started' ||
+        result.state !== 'preparing' ||
+        !('version' in result) ||
+        result.version !== 3 ||
+        result.captureDurationMs !== durationMs ||
+        result.readiness.app.bound ||
+        result.readiness.app.active ||
+        Date.parse(result.preparationExpiresAt) <= Date.now() ||
+        Date.parse(result.expiresAt) <= Date.now() ||
+        Date.parse(result.preparationExpiresAt) - Date.parse(result.startedAt) > 15000 ||
+        Date.parse(result.expiresAt) - Date.parse(result.startedAt) > durationMs + 15000 ||
+        this.remoteSessions.get(targetSessionId!) !== selectedSession ||
+        selectedSession?.controller.signal.aborted ||
+        this.remoteInstallation?.installationId !== installation
+      )
+        throw new Error('diagnostics_selection_unconfirmed');
+      return selectedEvidenceMetadataSchema.parse(
+        Object.fromEntries(
+          Object.entries(result).filter(
+            ([key]) => !['type', 'requestId', 'exportHash'].includes(key),
+          ),
+        ),
+      );
+    }
+    if (result.state !== 'recording' || Date.parse(result.expiresAt) <= Date.now())
       throw new Error('diagnostics_not_recording');
   }
 
