@@ -4582,8 +4582,13 @@ migrations['0164_vulnerability_session_base'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table vuln_scan_state add column base_content_hash text
       references vuln_scan_results(content_hash) on delete set null`.execute(db);
+    // False for rows written before branch points were recorded; those are rescanned once.
+    await sql`alter table vuln_scan_state add column base_checked boolean not null default false`.execute(
+      db,
+    );
   },
   async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_state drop column base_checked`.execute(db);
     await sql`alter table vuln_scan_state drop column base_content_hash`.execute(db);
   },
 };
