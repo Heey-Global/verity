@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
+import { isDocumentWorkspace } from './document-workspace.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
   markInternalConnections,
@@ -33,11 +34,14 @@ const TEST_UID = process.getuid?.() ?? 1000;
 const TEST_GID = process.getgid?.() ?? 1000;
 
 let ctx: TestDb;
+let projectRoot: string;
 beforeAll(async () => {
   ctx = await createTestDb();
+  projectRoot = mkdtempSync(join(tmpdir(), 'verity-mcp-projects-'));
 });
 afterAll(async () => {
   await ctx.close();
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 beforeEach(async () => {
   await truncateAll(ctx.db);
@@ -269,7 +273,8 @@ function build(
     secretCipher: cipher,
     ...(options.projectSpawns
       ? {
-          projectCloneRoot: '/data/dev',
+          dataRoot: join(projectRoot, 'data'),
+          projectCloneRoot: join(projectRoot, 'projects'),
           projectBackend: (_project: unknown, selected: Backend) => selected,
           projectWorktrees: () => ({
             add: async () => `/wt/new-handoff-${crypto.randomUUID()}`,
@@ -1451,7 +1456,9 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       };
       expect(body.result.isError, body.result.content[0]?.text).toBeUndefined();
       const result = JSON.parse(body.result.content[0]!.text) as { sessionId: string };
-      expect((await harness.store.getSession(result.sessionId))?.model).toBe('codex/default');
+      const session = await harness.store.getSession(result.sessionId);
+      expect(session?.model).toBe('codex/default');
+      expect(isDocumentWorkspace(session!.worktree)).toBe(true);
       expect(harness.dispatches).toHaveLength(1);
       await harness.store.updateProjectSettings('website', {
         allowedAgents: ['opencode'],
