@@ -66,7 +66,7 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'Use create_source_folder for an empty subfolder, or move_source to move an existing file within project Sources; sourcePath is relative to sources and path is relative to the destination folder. ' +
   'After verifying the imported file, remove the original from the worktree when the user asked to move it. ' +
   'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. Each publication requires a separate approval. ' +
-  'For publish_shared, path is relative to `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
+  'For publish_shared, path is relative to the session Documents working copy when supplied, otherwise `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
   'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 

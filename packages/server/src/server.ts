@@ -6704,7 +6704,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
-          return publishSharedInsight(deps.dataRoot, input.projectId, request);
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (session?.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError(
+              'Knowledge access requires an active session in the calling project',
+            );
+          return publishSharedInsight(
+            deps.dataRoot,
+            input.projectId,
+            request,
+            documentViewForSession(session),
+          );
         }
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
