@@ -7734,13 +7734,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project === undefined || project.hiddenAt !== null) {
         return { code: 404, error: `project ${id} not found` };
       }
-      if (project.state === 'active') {
-        // An explicit wake takes ownership from a temporary background scan.
-        await deps.provisioner.ensureProjectSandboxAwake?.(id);
-        return {
-          code: 200,
-          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
+      if (
+        project.state === 'active' ||
+        (project.state === 'waking' && deps.provisioner.ensureProjectSandboxAwake)
+      ) {
+        // An explicit wake takes ownership from a temporary background scan, also while
+        // that scan's own wake is still in flight: it joins the wake and marks activity,
+        // so the scan does not put the sandbox back to sleep afterwards.
+        try {
+          const awake = (await deps.provisioner.ensureProjectSandboxAwake?.(id)) ?? project;
+          return {
+            code: 200,
+            project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+          };
+        } catch (error) {
+          request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
+          throw error;
+        }
       }
       if (project.state !== 'sleeping') {
         return { code: 409, error: `project ${id} is ${project.state}` };

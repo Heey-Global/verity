@@ -16413,7 +16413,7 @@ describe('vulnerability scan session integration', () => {
     }
   });
 
-  it.each(['success', 'failure', 'takeover'] as const)(
+  it.each(['success', 'failure', 'takeover', 'takeover-while-waking'] as const)(
     'temporarily wakes a sleeping project for a manual scan: %s',
     async (scenario) => {
       const id = `vuln-sleeper-${scenario}`;
@@ -16468,6 +16468,14 @@ describe('vulnerability scan session integration', () => {
         ) => {
           if (input.script.includes('mktemp')) {
             if (scenario === 'failure') throw new Error('scan preparation failed');
+            if (scenario === 'takeover-while-waking') {
+              // The user taps Wake while the scan's own wake has not finished yet.
+              await ctx.store.updateProjectState(id, 'waking');
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+              await ctx.store.updateProjectState(id, 'active');
+            }
             if (scenario === 'takeover')
               expect(
                 (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
@@ -16505,10 +16513,9 @@ describe('vulnerability scan session integration', () => {
           ),
         );
         expect(wakeProject).toHaveBeenCalledOnce();
-        expect((await ctx.store.getProject(id))?.state).toBe(
-          scenario === 'takeover' ? 'active' : 'sleeping',
-        );
-        expect(sleepProject).toHaveBeenCalledTimes(scenario === 'takeover' ? 0 : 1);
+        const takenOver = scenario === 'takeover' || scenario === 'takeover-while-waking';
+        expect((await ctx.store.getProject(id))?.state).toBe(takenOver ? 'active' : 'sleeping');
+        expect(sleepProject).toHaveBeenCalledTimes(takenOver ? 0 : 1);
         expect(startSession).not.toHaveBeenCalled();
         expect(sendTurn).not.toHaveBeenCalled();
       } finally {
