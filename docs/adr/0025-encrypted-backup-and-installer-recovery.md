@@ -79,8 +79,11 @@ and index, copies the objects its first snapshot needs rather than referencing
 the old epoch, prunes the fenced epoch only after a grace period with
 confirmation, and leaves a signed fence that stops a still-living old host from
 publishing or pruning beside it; a write-only destination credential cannot see
-that fence, so list access is required. Probe and verification restores never
-activate the schedule, open an epoch or write a fence. Restore refuses an unsigned or wrongly signed manifest.
+that fence, so list access is required. A host restored without that
+confirmation has backups inactive on every capture path, scheduled, manual and
+pre-update, until an administrator takes over or points it at another
+repository. The signature binds repository identity, key generation and writer
+epoch. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
@@ -204,7 +207,8 @@ are not repeated here, so that one text stays authoritative.
   reach and carried as user content, and regenerable reachability bitmaps
   dropped; `shallow`, graft and replace files are data and stay in the copy.
   Restore sets the same configuration files aside before its first command and
-  returns them after `fsck`. Staging is keyed per project and per repository. A hardened invocation with overrides for executable keys is
+  returns them after `fsck` on success; a repository whose rehydration failed
+  keeps them staged, because the pending state depends on them. Staging is keyed per project and per repository. A hardened invocation with overrides for executable keys is
   defense in depth, not the protection. The Git floor on server and installer
   images is 2.39.
 - Everything that does not qualify, including repositories without a remote,
@@ -333,8 +337,9 @@ release and is retained by a separate rule, at least the last two pre-update
 snapshots, independent of the ordinary schedule's retention.
 
 One rule, in three cases, decides whether the Updater continues after the final
-snapshot. With no destination configured, no snapshot is attempted and the
-update runs, recorded as unbacked. With a destination, the Updater continues
+snapshot. With no destination configured, or on a host restored without the
+takeover confirmation, whose backups are inactive on every path, no snapshot is
+attempted and the update runs, recorded as unbacked. With a destination, the Updater continues
 when the final snapshot is durably committed at one of them. If every configured
 destination needs the unlocked secret store and the store is sealed, which can
 happen because an update may run sealed and the promoted Server then starts

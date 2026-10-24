@@ -128,12 +128,16 @@ sees only volume subpaths under `workspaces/<repo>` (which holds the project's
 own session worktrees under `.verity-sessions/`) and `secrets`. `repoKey` is a
 random identifier that Verity assigns the first time it sees a Git directory
 and records in project state and in the manifest together with the directory's
-path relative to `VERITY_ROOT`; the path is informational and the key is never
-derived from it. A Git directory that appears at a path whose recorded key
-belongs to a different repository, for example a `git init` beside a pending
-`.git.verity-incomplete`, receives a fresh key, and a rename to
-`.git.verity-incomplete` or `.git.verity-pending-<snapshotId>` keeps the key it
-had. Several repositories or submodules in one project, the same subpath under
+current path relative to `VERITY_ROOT`. Identity is kept by Verity's own
+bookkeeping, not by anything inside the sandbox-writable directory: every
+rename of a Git directory in this design (`.git` to `.git.verity-incomplete`,
+to `.git.verity-pending-<snapshotId>`, and back) is performed by Verity, which
+updates the recorded path of the existing key in the same transaction. At
+capture, a Git directory found at a path that matches a current record uses
+that key; one found at a path with no current record, for example a `git init`
+at the original location while the record now points at
+`.git.verity-incomplete`, receives a fresh key. No marker file or inode is
+consulted, because the sandbox can forge or recreate both. Several repositories or submodules in one project, the same subpath under
 two roots and a live repository beside a pending one therefore never share
 staging. Each run has its own directory and a lock,
 so a scheduled run, the warm pre-update run and a restore in progress never
@@ -148,7 +152,13 @@ held; "orphaned" is defined by run lock ownership, never by age. The run lock is
 an `flock` on a file inside the run directory on the shared data volume, so it
 is visible across containers: the candidate Server of an update, which starts
 while the old Server may still be capturing, cannot acquire the lock of a live
-run and therefore cannot sweep it. The sweep never
+run and therefore cannot sweep it. Creation is ordered so the sweep can never
+see a live run without its lock: the run creates `capture/.tmp-<runId>/`,
+creates and locks the lock file inside it, then renames the directory to
+`capture/<runId>/`; the sweep removes only a directory whose lock file exists
+and can be acquired, treats a directory without a lock file or with one it
+cannot acquire as live, and ignores `.tmp-*` directories younger than the lock
+acquisition timeout. The sweep never
 touches `restore/<projectId>/<repoKey>/`: that directory is durable
 pending-rehydration data, owned by project state, and is removed only when the
 project has rehydrated or the user has reconciled it.
@@ -514,10 +524,15 @@ that another installation has taken over.
 Only a takeover restore does this, and only after the administrator confirmed
 "Take over backups from this installation" in the installer. A restore probe, a
 verification restore, a trial restore on another machine and any restore that
-did not receive that confirmation restores the data but never activates the
-schedule, never opens an epoch and never writes a fence, although the restored
-database carries the backup policy and destination; otherwise a routine probe
-could silence production backups.
+did not receive that confirmation restores the data with backups inactive on
+every capture path: the schedule does not run, manual backup is refused with
+the reason shown, and the pre-update hook treats the host as having no
+destination, so an update of a trial-restored host runs recorded as unbacked
+instead of publishing into the source host's epoch with the same signing key.
+The restored database still carries the policy and destination; they are marked
+"inactive after non-takeover restore" until an administrator either runs the
+takeover or configures a different repository. Otherwise a routine probe or a
+trial host could silence or corrupt production backups.
 
 The new epoch never references objects of the fenced epoch: a reference across
 epochs would race a prune the old host may already have under way, and the old
@@ -602,7 +617,7 @@ equals the kit's verification key or is reachable through the signed rotation
 chain, and only then installs it on the new host; a planted key object that
 fails that check is reported and the restored host generates a fresh signing
 key, signs it with nothing, and tells the user that the kit must be reissued.
-The recovered key signs only the new generation the restored host opens; see
+The recovered key signs only the new writer epoch a takeover restore opens; see
 "Git history and code hosts" for the fence that keeps a still-living old host
 from writing beside it. Later snapshots from the restored host therefore still verify against the
 same kit, which `pending-rehydration` restores depend on. Rotating the signing
@@ -665,8 +680,9 @@ Manifests carry ordered object references, envelopes, integrity information,
 file metadata and the repository/key-generation identity. Bind those identities,
 object type and format version into authentication. The manifest signature
 covers the entire manifest, including every object reference's opaque ID,
-ciphertext digest and length, the repository and generation identity, a
-monotonically increasing snapshot sequence number and a timestamp, and it is
+ciphertext digest and length, the repository identity, the recovery-key
+generation and the writer epoch, a monotonically increasing snapshot sequence
+number and a timestamp, and it is
 verified before any manifest field is parsed or acted on. Without that, a party
 holding the recipient key could substitute object contents under valid IDs,
 including the encrypted copies of the signing and fingerprint keys, and a
