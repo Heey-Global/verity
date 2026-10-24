@@ -325,6 +325,7 @@
       <div class="shead"><span class="stitle">Restore “website”</span><span class="sx"><i data-i="x"></i></span></div>
       <div class="ssub">Restored as a new project. The current one stays as it is.</div>
       <div class="fwrap"><span class="flabel">Recovery key</span><span class="field focus"><span class="fv mono">••••••••••••••••D4XZ</span><span class="eye"><i data-i="eye"></i></span></span></div>
+      <div class="foot">Only enter this key on a host you trust. This server can capture it.</div>
       <span class="btn primary full">Restore</span>
     </div>
     <div class="home" style="z-index:80"></div>
@@ -380,20 +381,18 @@
 
 <!-- ───────── 10 · Test restore ───────── -->
 <div class="shot" id="s10-test">
-  <div class="cap">10 · Wiederherstellung testen<small>Liest und entschlüsselt den neuesten Snapshot, ändert nichts. Ergebnis als Status-Zeile.</small></div>
+  <div class="cap">10 · Test restore<small>Enter the recovery key for each test. The test leaves application data unchanged.</small></div>
   <div class="phone"><div class="island"></div>
     <div class="sbar"><span>14:40</span><span class="r">●●● <span class="bat"></span></span></div>
     <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Test restore</span></div>
     <div class="pbody">
       <div class="label">Last test</div>
-      <div class="group">
-        <div class="row"><span class="body"><span class="rt">Result</span></span><span class="trail"><span class="dotw"><i class="dot ok"></i>Backup works</span></span></div>
-        <div class="row"><span class="body"><span class="rt">Tested</span></span><span class="trail">Today 14:38</span></div>
-        <div class="row"><span class="body"><span class="rt">Snapshot</span></span><span class="trail">Today 14:00</span></div>
-      </div>
-      <div class="foot" style="margin-top:4px">Nothing on the server changes during the test.</div>
+      <div class="group"><div class="row"><span class="body"><span class="rt">Backup works</span><span class="sub">Today 14:38 · Snapshot 14:00</span></span><span class="trail"><i class="dot ok"></i></span></div></div>
+      <div class="label">Test again</div>
+      <div class="fwrap"><span class="flabel">Recovery key</span><span class="field focus"><span class="fv mono">Paste your recovery key</span></span></div>
+      <div class="foot">Only enter this key on a host you trust. This server can capture it.</div>
     </div>
-    <div class="pfoot"><span class="btn primary full">Test again</span></div>
+    <div class="pfoot"><span class="btn primary full">Test restore</span></div>
     <div class="home"></div>
   </div>
 </div>
@@ -426,16 +425,18 @@
 
 <!-- ───────── 12 · After restore ───────── -->
 <div class="shot" id="s12-after-restore">
-  <div class="cap">12 · App nach einem Restore<small>Das Handy ist weiter gekoppelt. Übrig bleibt nur das Master-Passwort, wie nach jedem Neustart.</small></div>
+  <div class="cap">12 · Review devices after restore<small>Installer recovery session. Restored tokens stay blocked until explicitly kept; recorded revocations stay enforced.</small></div>
   <div class="phone"><div class="island"></div>
     <div class="sbar"><span>10:12</span><span class="r">●●● <span class="bat"></span></span></div>
-    <div class="pnav"><span class="ptitle">Secret store</span></div>
+    <div class="pnav"><span class="ptitle">Server restored</span></div>
     <div class="pbody">
-      <div class="phead">Server restored,<br><em>still paired.</em></div>
-      <div class="plead">Enter your master password to unlock your secrets.</div>
-      <div class="fwrap" style="margin-top:16px"><span class="flabel">Master password</span><span class="field focus"><span class="fv">••••••••••••</span><span class="eye"><i data-i="eye"></i></span></span></div>
+      <div class="peb">Review devices</div>
+      <div class="plead">Keep only devices you still trust. An older backup may include a device you revoked.</div>
+      <div class="card stacked"><div class="sec"><div class="rt">Your iPhone</div><div class="sub">Blocked until you choose</div><div class="brow"><span class="btn secondary compact">Keep</span><span class="btn destructive compact">Revoke</span></div></div></div>
+      <div class="card stacked"><div class="sec"><div class="rt">iPad</div><div class="sub">Blocked until you choose</div><div class="brow"><span class="btn secondary compact">Keep</span><span class="btn destructive compact">Revoke</span></div></div></div>
+      <div class="foot">Devices added after this backup need to pair again.</div>
     </div>
-    <div class="pfoot"><span class="btn primary full">Unlock</span></div>
+    <div class="pfoot"><div class="foot">Next: unlock secrets with your master password. A forgotten password leaves saved credentials locked. Sign in to providers again; projects stay paused.</div><span class="btn secondary full" aria-disabled="true" style="opacity:.45">Review each device to continue</span></div>
     <div class="home"></div>
   </div>
 </div>
@@ -453,14 +454,15 @@ Recovery key:
 <span class="a">›</span> <span class="f">••••••••••••••••••••••••••••••••••••</span>
 
 <span class="m">Restoring …</span> done
-<span class="ok">✓ Restored.</span> Your devices reconnect by themselves.
-  Open the app and enter your master password.</pre>
+<span class="ok">✓ Restored.</span> Open the one-time recovery session to review devices.
+  Then unlock secrets with the master password used at backup time.
+  Provider sign-ins need reconnecting. Projects remain paused.</pre>
   </div>
 </div>
 
 <!-- ───────── 14 · Installer rollback ───────── -->
 <div class="shot wide" id="s14-installer-rollback">
-  <div class="cap">14 · Installer: Update zurücknehmen<small>Gleicher Rechner, alles bleibt gekoppelt. Automatische Updates pausieren danach.</small></div>
+  <div class="cap">14 · Installer: Update zurücknehmen<small>Same host: review restored devices; newer devices pair again. Automatic updates remain paused.</small></div>
   <div class="term">
     <div class="tb"><i></i><i></i><i></i><span>verity-install</span></div>
 <pre><span class="f">$</span> <span class="in">sudo verity-install --rollback</span>

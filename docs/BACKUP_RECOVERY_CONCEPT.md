@@ -88,11 +88,9 @@ can read at capture time.
 The app screens are mocked up in [`docs/assets/backup/`](assets/backup/)
 (`mockup.html` is the source; the PNG files are its renders). The user-facing
 term is always "recovery key"; there is no separate "kit". The mockups show
-the main path and are not complete: the recovery key entry and the
-compromised-host note before a restore test (screen 10), the paired-device
-review after a restore (before screen 12), including devices that must pair
-again because they were paired after the snapshot, and the length of a real recovery key
-(screen 2 shows a shortened sample) are specified here but not drawn yet.
+the main path, including the restore-test key prompt (screen 10) and the
+mandatory paired-device review (screen 12). Screen 2 uses a shortened sample
+recovery key; production must show the complete encoded key.
 
 ### Set up
 
@@ -154,10 +152,14 @@ up again.
    others.
 4. Paste the recovery key at the prompt.
 5. The installer restores data and identity, starts the release the snapshot
-   was taken with, and reports that devices reconnect by themselves.
-6. The phone reconnects without pairing. The app shows "Server restored, still
-   paired" and asks for the master password (screen 12), as after any restart.
-7. Projects come back suspended; the user resumes them one by one.
+   was taken with, and opens the mandatory device review before normal access.
+6. Using a one-time installer-issued recovery session restricted to the
+   administrator's device review, explicitly keep or revoke each restored device
+   (screen 12). Restored device tokens remain blocked until individually kept;
+   the installer supplies this session without relying on a restored token.
+7. Unlock the secret store with the master password current at capture time.
+   A forgotten password leaves stored credentials unrecoverable. Reconnect
+   provider sign-ins. Projects stay suspended until resumed individually.
 
 ### Same-host rollback
 
@@ -188,7 +190,7 @@ confirmation. See "Deletion and shutdown".
 | 9 | Update waiting | Retry backup or update anyway |
 | 10 | Test restore | Result of the last probe |
 | 11 | Options | Schedule, update gate, key, pause, delete |
-| 12 | After restore | Still paired, master password unlock |
+| 12 | After restore | Review devices before unlock and resuming projects |
 | 13 | Installer restore | Fresh host from a backup directory |
 | 14 | Installer rollback | Back to the pre-update snapshot |
 
@@ -774,12 +776,17 @@ reports entries it could not read and gaps in any installation's sequence.
 
 A backup directory copy older than a revocation cannot know it either, and a
 host-writable directory can lose entries. Every restore therefore ends with a
-mandatory review: the first app screen lists all paired devices with a "Revoke"
-action, and devices paired after the snapshot are reported as needing to pair
-again. When the journal had unreadable entries or gaps, every device whose
-revocation status cannot be proven is marked "unverified" and stays blocked
-until the administrator keeps it explicitly. This review is the control for
-entries deleted after the newest snapshot, which nothing else can detect.
+mandatory review: the first app screen lists all restored devices with
+"Keep" and "Revoke" actions. Every restored device token stays blocked until
+explicitly kept, even when the journal has no detectable gaps: an older copy
+can omit trailing revocations without evidence. The installer issues a one-time
+administrator recovery session restricted to this review, independent of
+restored device tokens; consume it when the review ends. Revocations found in
+the journal remain enforced and cannot be undone by "Keep". Devices paired
+after the snapshot must pair again; an old copy cannot enumerate those devices.
+Unreadable entries or gaps are shown as additional warnings. This review is the
+control for entries deleted after the newest snapshot, which nothing else can
+detect.
 
 ## Operations
 
@@ -885,22 +892,23 @@ directory on local media. It needs no Uplink account and no subscription.
 3. Verify signatures, then decrypt and authenticate every referenced object.
 4. Restore into staging volumes: the database through the import path, the data
    volume with the Git restore steps above, and the identity.
-5. Validate: paths and links, size limits, scope, version compatibility,
-   worktree repair. Then write the new host state into a staging copy of
-   `/etc/verity` and start the restored installation from staging, with the
-   staging copy mounted where the server expects `/etc/verity`, so it boots
-   with the restored identity and the new installation id. Once the
-   administrator accepts it, the staging copy replaces the live directory in
-   one rename and staging is promoted; until then the existing installation
-   stays intact and can be started again. The new host state is a new
-   installation id and regenerated host-specific state (updater token, PostgreSQL password, host
-   runtime under `/var/lib/verity/host-runtime`, image pins and gVisor
-   configuration), reinstate the CA key from `identity/` after checking it
-   against the snapshot's CA certificate, apply the revocation journal, install
-   the recovered backup keys, and start the snapshot's release. The installer
-   runs as root and holds the recovery key at this point, so it also writes the
-   CA key file for the new installation id into `identity/`; the restored host
-   therefore never starts with "identity missing".
+5. Validate paths, links, size limits, scope, version compatibility and worktree
+   repair. Prepare a staging copy of `/etc/verity` with a new installation id,
+   regenerated host-specific state (updater token and PostgreSQL password), and
+   the restored deployment identity. Check the recovered CA key against the
+   snapshot's CA certificate. Stage host runtime configuration and image pins
+   without replacing the existing installation's state.
+6. Apply the revocation journal and block restored device tokens pending review.
+   Install the recovered backup keys into staging. Start the pinned release
+   from staging, mounting staged identity and host configuration at their
+   expected paths. Keep backups and the identity helper disabled for this trial;
+   do not write a new CA key file into the destination yet.
+7. After the administrator accepts the restored installation, promote the staged
+   volumes and host configuration, retaining the previous state until promotion
+   succeeds. Write the encrypted CA key file for the new installation id and
+   record the destination marker before enabling backups and the identity
+   helper. A rejected trial removes staging and leaves the existing installation
+   startable, without a new repository or destination CA key file.
 
 Refuse snapshots the installer cannot run and unsupported downgrades. On a host
 with an existing installation, staging roughly doubles the database and data

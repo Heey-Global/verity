@@ -203,17 +203,22 @@ case, and once the policy gateway removes that, the helper accepts only a
 recipient key registered by root through the installer. Restore authenticates
 that file against the CA certificate in the signed
 snapshot. A fresh-host restore always reinstates the identity, with the device
-tokens, so devices reconnect without pairing; the flow asks nothing about the
+tokens, so explicitly kept devices reconnect without pairing; the flow asks nothing about the
 identity, and its only question is the mandatory device review at the end.
 
 Every device revocation is also written, when it happens, as a signed entry into
 the backup directory outside any snapshot. Fresh-host restore and same-host
 rollback apply every entry the entered key can open before the restored server
-starts, so a device revoked after the snapshot stays revoked; entries under a
+starts, so journaled revocations stay enforced; entries under a
 later key generation are reported and the restore requires a review of paired
 devices. Entries carry a per-installation sequence so deleted ones show as
 gaps, revocations that cannot be written are queued and re-synced on every run,
-and every restore ends with a mandatory paired-device review. Devices paired
+and every restore ends with a mandatory paired-device review. Every restored
+device token stays blocked until the administrator explicitly keeps it, even
+when an old copy has no detectable journal gaps. Journaled revocations cannot
+be undone by keeping a device. The installer issues a one-time administrator
+recovery session restricted to this review, independent of restored tokens,
+and consumes it when the review ends. Devices paired
 after the snapshot have to pair again. The installer flag `--new-identity`
 generates a new identity and revokes device tokens locally, without journaling,
 for a
@@ -228,8 +233,9 @@ every snapshot of the last 48 hours, then 7 daily, 4 weekly and 6 monthly, plus
 the last two pre-update snapshots; one catch-up run after downtime; a six-hour
 run timeout and a one-hour timeout for the pre-update snapshot, except while
 the first full run is still in progress, when the update holds until it ends; no overlapping runs; retry with backoff when the directory is
-unwritable or full; low CPU and IO priority. The snapshot sequence number is
-authoritative for order and retention; timestamps are for display.
+unwritable or full; low CPU and IO priority. Repository number and snapshot
+sequence determine order; signed capture timestamps place snapshots in daily,
+weekly and monthly retention buckets.
 
 Alerts use the existing push sender and stay on the backup screen until
 resolved: no committed snapshot for twice the interval (at most 48 hours),
@@ -263,7 +269,9 @@ Every restore, fresh-host or same-host, checks free space for the staging
 database and data volumes first, refuses a snapshot newer than the installer
 can run and unsupported downgrades, restores into staging, and keeps the
 existing installation intact until the restored one has started and the
-administrator has accepted it. A failure at any point before that leaves the
+administrator has accepted it. During the trial, backups and the identity
+helper stay disabled; new destination CA key files are written only after
+acceptance, before backups turn on. A failure at any point before that leaves the
 existing installation untouched and startable.
 
 The installer's same-host rollback restores database and data from a pre-update
