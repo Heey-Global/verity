@@ -62,7 +62,11 @@ account can recover a lost key.
 Encrypting to a public key does not prove who wrote a manifest, so the public
 recipient key is confidential host state that never reaches a destination, and
 every manifest is signed with a host-local signing key whose verification key is
-part of the recovery kit. Restore refuses an unsigned or wrongly signed manifest.
+part of the recovery kit; the signed payload binds repository and generation
+identity, a snapshot sequence number and a timestamp so a replayed older
+manifest is visible. The private signing key is never in a snapshot but travels
+in the repository encrypted to the recipient, so a restored host keeps signing
+against the same kit. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
@@ -201,9 +205,13 @@ are not repeated here, so that one text stays authoritative.
   trusted tip forward, so a later restore can still rehydrate it; that restore
   strips and stages the renamed directory like any other, because the project
   may have been resumed in the meantime. No pin on the source snapshot is
-  attempted, because it could not be enforced. A repository whose frozen copy
-  lost objects to a concurrent `git gc` is re-frozen with bounded retries and
-  otherwise captured as plain files with an `unstable` flag.
+  attempted, because it could not be enforced. Every frozen copy Git can run on
+  passes a connectivity check before it is accepted; one that lost objects to a
+  concurrent `git gc` is re-frozen with bounded retries and otherwise captured
+  as plain files with an `unstable` flag. The freeze is a full copy of `.git`
+  where reflinks are unavailable, held under the lifecycle lock and counted in
+  the capacity check; the staging directory is the documented exception to the
+  no-plaintext-staging rule and is swept at startup.
 
 This makes the backup of a code project complete only together with the code
 host. The ADR accepts that: the host already is the system of record for pushed
@@ -267,8 +275,9 @@ Release the lifecycle lock on every exit path and restore the prior lifecycle
 state on the original host.
 
 Session worktrees point to their main repository through an absolute `gitdir`
-path. Restore either reinstates the same `VERITY_ROOT` or rewrites the `.git`
-pointer files and the `worktrees/<name>/gitdir` entries before validation.
+path. Restore validates every such pointer against the project's own restore
+paths before the first Git command, rewrites it for a moved `VERITY_ROOT` and
+refuses any that points elsewhere; the concept's restore steps are binding.
 
 ### Backup before server updates
 

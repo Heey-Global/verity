@@ -126,7 +126,11 @@ no sandbox bind mount contains; the sandbox sees only volume subpaths under
 `workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
 a scheduled run, the warm pre-update run and a restore in progress never share
 a path, and the directory is removed on every exit path of the run because it
-holds plaintext refs, index and user `config`). The copy uses reflinks where the
+holds plaintext refs, index and user `config`; a SIGKILL or host crash bypasses
+exit paths, so the server sweeps orphaned `capture/` and `restore/` directories
+at startup. This staging is the one documented exception to the rule against
+plaintext staging: it stays on the host, in a server-owned directory, for the
+duration of a run). The copy uses reflinks where the
 filesystem offers them and a plain copy otherwise, never hardlinks, which would
 still share the sandbox-writable inode. The copy never follows a symlink, and
 it does not rely on a check that a running sandbox could race: traversal is
@@ -156,11 +160,20 @@ the snapshot stores as the repository's metadata and, for self-contained
 repositories, as its objects, so refs, objects and pack are read from one copy.
 The copy itself is live and not atomic: a `git gc` running in the sandbox can
 delete a pack after its refs were copied, so the frozen copy can name objects it
-does not hold. The tip `fsck`, `rev-list` and `pack-objects` detect that as
-missing objects; the response is a re-freeze with bounded retries, and after the
-last attempt the repository is captured from its latest copy as plain files with
-an `unstable` flag, never silently without its local-only history. Only working
-files are copied live. The linked worktrees' `HEAD`, index and
+does not hold. Every frozen copy on which Git can safely run, self-contained
+ones included, therefore gets `git fsck --connectivity-only` before it is
+accepted; remote-dependent copies additionally get the tip `fsck`, `rev-list`
+and `pack-objects`, which detect the same condition. Missing objects trigger a
+re-freeze with bounded retries, and after the last attempt the repository is
+captured from its latest copy as plain files with an `unstable` flag, never
+silently without its local-only history. Repositories that Git cannot safely
+run on (unknown extensions, out-of-project pointers) go through the same
+fd-relative freeze but are flagged "not validated", because nothing can check
+their consistency. The freeze is not free: without reflinks (ext4) it is a
+full byte copy of every `.git`, the lock is held for its duration, and the
+capacity inventory in capture step 1 must include the staging size of every
+repository's `.git` alongside the destination estimate; a run that cannot stage
+fails before it starts, not mid-copy. Only working files are copied live. The linked worktrees' `HEAD`, index and
 reflogs live under `.git/worktrees/<name>` and travel with the copy. Where
 classification needs the original `config`, for example to detect a promisor
 remote or a partial clone, it is read as data with
@@ -169,8 +182,10 @@ and follows no include. At restore, step 1 below sets the user's `config`,
 `config.worktree` and `hooks` aside before any command runs, for
 self-contained and remote-dependent repositories alike. The lifecycle lock is
 held while repositories are frozen and working files are copied, as capture
-step 2 states; verification and packing run on the frozen copy after it is
-released, so a large history does not block sleep, wake or provisioning.
+step 2 states, which on a filesystem without reflinks means the full copy of
+every `.git`; verification and packing run on the frozen copy after it is
+released. The lock therefore scales with history size, and the status shows its
+duration per run.
 
 On top of that, every command uses one hardened invocation as defense in depth:
 the backup execution identity (in the first release the server process, which
@@ -394,7 +409,13 @@ differences spelled out. It renames `.git.verity-incomplete` back to `.git`
 before step 1, and step 1 then runs in full on that directory: the project may
 have been resumed in "working files only" state, so everything inside it is
 sandbox-written and is stripped and staged like any other restored `.git`, and
-a fresh sanitized `config` is written. The user `config`, `config.worktree`
+a fresh sanitized `config` is written. If a `.git` already exists because a user
+or agent ran `git init` in the resumed project, nothing is overwritten: the new
+repository stays `.git` and is restored by the normal rules for its own class,
+and the pending directory is restored as `.git.verity-pending-<snapshotId>`
+beside it for the user to reconcile. Capture of a project that holds both
+classifies the live `.git` normally and the pending directory as
+`pending-rehydration` data, so neither is lost. The user `config`, `config.worktree`
 files and `hooks` carried forward from the first restore's staging directory
 are the authoritative copies that step 4 reinstates; the versions stripped from
 the renamed directory are kept beside them for the user and are never
@@ -457,8 +478,18 @@ depth, object count) and validate archive paths and links against the staging
 root before writing, so a malicious manifest cannot exhaust memory or escape
 the restore directory. Version the format and keep cross-version fixtures.
 
-Recovery kit: key as text with checksum and as QR code, printable. Setup requires
-a successful re-entry check. Restore accepts QR scan, clipboard paste and typed
+Recovery kit: the private recovery key as text with checksum and as QR code,
+printable, plus the manifest verification key, which is public and needs no
+re-entry check but is required to restore. The signing key pair is generated at
+setup together with the recipient pair; the private signing key lives in
+restricted host-local storage, is never part of a snapshot, and a copy encrypted
+to the recipient is stored in the repository, so a restore, which holds the
+private recovery key at that moment, recovers it and installs it on the new
+host. Later snapshots from the restored host therefore still verify against the
+same kit, which `pending-rehydration` restores depend on. Rotating the signing
+key is done by signing the new verification key with the old one and recording
+the chain in the manifest; the kit's verification key remains the root. Setup
+requires a successful re-entry check of the recovery key. Restore accepts QR scan, clipboard paste and typed
 entry with checksum validation. Recommend a password manager plus an independent
 offline copy. A Uplink login authorizes downloading ciphertext; it never
 substitutes for the key. Losing every copy makes the backups unrecoverable by us.
@@ -513,7 +544,12 @@ Each new object receives an independent random data key, authenticated encryptio
 and an envelope to the public recovery recipient. Encrypt manifests the same way.
 Manifests carry ordered object references, envelopes, integrity information,
 file metadata and the repository/key-generation identity. Bind those identities,
-object type and format version into authentication. Reusing an object reuses its
+object type and format version into authentication, and into the manifest
+signature as well, together with a monotonically increasing snapshot sequence
+number and a signed timestamp: a destination can otherwise replay an older,
+validly signed manifest or one from another generation. Restore shows sequence
+and timestamp of the newest manifest it found and warns when a later sequence
+is known from the host's own records or from the user. Reusing an object reuses its
 existing ciphertext and envelope; encrypting new objects never reuses a nonce or
 key. Use reviewed maintained primitives; the exact container format, chunk sizes
 and library selection require implementation review and cross-version fixtures.
@@ -582,8 +618,9 @@ coupling and retention dependencies; they are not silently added to version one.
 
 ## Consistent capture
 
-1. Inventory scope, data locations, capacity and uncovered storage before work;
-   write the warnings into the manifest up front.
+1. Inventory scope, data locations, capacity (destination estimate plus the
+   local staging size of every repository's `.git`) and uncovered storage before
+   work; write the warnings into the manifest up front.
 2. Acquire the lifecycle lock: refuse provision, deprovision, sleep, wake, mount
    changes, project deletion, and rehydration retries or resumption of a pending
    project while repositories are frozen and working files copied, not during
