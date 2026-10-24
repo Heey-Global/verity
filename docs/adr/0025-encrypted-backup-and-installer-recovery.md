@@ -151,12 +151,15 @@ that defeat chunk deduplication even when no commit changed.
 
 For a repository whose `origin` points at the connected code host, capture
 excludes `.git/objects` and replaces it with a packfile of every object that is
-reachable from local refs, from reflogs or from the index but not from the
-remote-tracking refs as last fetched. Reflogs and the index matter: staged but
-uncommitted blobs, older stash entries and commits left behind by reset, rebase
-or amend are reachable only from there, and the restored `index` and `logs`
-would point at missing objects otherwise. The manifest records the
-remote-tracking tips as prerequisites. Everything else in `.git` is included, so
+reachable from local refs, from reflogs or from the index of any worktree but
+not from the remote default branch tip as last fetched. Only the default branch
+is excluded, not every remote-tracking ref: feature branches are routinely
+squash-merged and deleted on the host, and a stale remote-tracking ref would
+exclude commits the host no longer holds. Reflogs and the index matter: staged
+but uncommitted blobs, older stash entries and commits left behind by reset,
+rebase or amend are reachable only from there, and the restored `index` and
+`logs` would point at missing objects otherwise. The manifest records the
+default branch tip as the prerequisite. Everything else in `.git` is included, so
 branches, stash, index, reflogs, session worktree registrations and the remote
 URL survive. Repositories without a remote, including today's local projects
 that still hold an empty initial commit, shallow or partial clones, and
@@ -169,8 +172,11 @@ prerequisite commits. Restore rehydrates a remote-dependent repository by
 restoring `.git` without objects, fetching from the code host through the
 restored connection, importing the local-only packfile and running `git fsck`.
 Rehydration runs in the backup execution identity with hooks disabled, with the
-restored `config` set aside and a sanitized configuration in its place, and with
-the remote URL taken from the manifest rather than the restored file. Users and
+restored `config` and `hooks` set aside durably next to the project and a
+sanitized configuration in its place that carries only the remote URL from the
+manifest and the repository-format keys (`core.repositoryformatversion`,
+`extensions.*`), which do not execute code but without which Git misreads
+SHA-256 and worktree-config repositories. Users and
 agents can edit `config` and `hooks`, and settings such as `core.sshCommand`,
 `core.fsmonitor`, `credential.helper` or `url.*.insteadOf` would otherwise run
 code or redirect the fetch credential during restore. The restored `config` and
@@ -187,9 +193,11 @@ This makes the backup of a code project complete only together with the code
 host. The ADR accepts that: the host already is the system of record for pushed
 history, and the installations Verity targets keep their code there by design.
 The restore UI states this dependency per project before activation. A
-stale remote-tracking ref errs on the safe side and includes more objects; a
-remote whose history was force-rewritten after the last fetch is the residual
-loss case and is surfaced, not hidden.
+stale default branch tip errs on the safe side and includes more objects; a
+default branch that was force-rewritten after the last fetch is the residual
+loss case and is surfaced, not hidden. Self-contained repositories keep
+re-uploading their packs after `git gc`; the saving applies to remote-dependent
+repositories.
 
 ### Mandatory incremental repository
 
@@ -326,7 +334,10 @@ incremental snapshot. That second pass contains seconds of changes and is the
 exact pre-migration state. The Updater continues only after the destination has
 durably acknowledged that final snapshot, because it is the rollback point; the
 warm pass exists so this wait is short, and the update status shows it as its
-own phase. The snapshot is tagged `pre-update` with the previous and target
+own phase. Quiescing must therefore leave the old Server's control socket and
+database connection usable, and a failed or timed-out snapshot returns the old
+Server to serving through the journal's existing rollback path from
+`quiescing-old`. The snapshot is tagged `pre-update` with the previous and target
 release and is retained by a separate rule, at least the last two pre-update
 snapshots, independent of the ordinary schedule's retention.
 
@@ -488,8 +499,10 @@ Demonstrate that restore cannot revive obsolete authority or automatically
 execute work. Deliberately break each guard before trusting it. Prove that a restored code
 project equals the original after rehydration from GitHub and from Forgejo, that
 an unreachable or revoked code host, a deleted repository and rewritten history
-each leave the project suspended and flagged rather than silently truncated, and
-that a repository without a remote restores without any network. Prove that an
+each leave the project suspended and flagged rather than silently truncated,
+that a session worktree with staged-only blobs and a branch deleted on the host
+after a squash merge both restore intact, and that a repository without a
+remote restores without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
 candidate runs migrations, that a failed snapshot aborts the update before the
 key hand-off, that the default records an unbacked update, and that the

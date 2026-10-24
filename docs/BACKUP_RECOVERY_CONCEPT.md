@@ -120,15 +120,23 @@ Capture, per repository whose `origin` is the connected code host:
    `hooks`, `info`, `worktrees/*` and the stash. The remote URL never contains a
    token (`packages/server/src/provisioner.ts:37`), so `config` is safe to carry.
 2. Write a packfile of the local-only objects, equivalent to
-   `git rev-list --objects --all --reflog --indexed-objects --not --remotes=origin | git pack-objects`.
-   `--reflog` and `--indexed-objects` are what make the restored `index` and
-   `logs` consistent: staged blobs, older stash entries and commits reachable
-   only from a reflog after reset, rebase or amend have no ref, and a plain
-   `--all` bundle would leave dangling pointers behind. The pack is small
-   because it holds only unpushed work. Chunk and encrypt it like any other file.
-3. Record in the manifest: remote URL, the code host connection id, the
-   remote-tracking tips as prerequisites, the local ref list, and the project as
-   `remote-dependent`.
+   `git rev-list --objects --all --reflog --indexed-objects --not refs/remotes/origin/HEAD | git pack-objects`,
+   run once per worktree (`git worktree list`), because the index, `HEAD` and
+   reflogs of a session worktree are per worktree and one invocation from the
+   main checkout does not see them. The exclusion set is only the remote default
+   branch tip as last fetched, not every remote-tracking ref: feature branches
+   are routinely squash-merged and deleted on the host, so a stale
+   `refs/remotes/origin/<branch>` would exclude commits the host no longer has.
+   Pushed but unmerged branches are therefore included; they are small, and they
+   drop out of the pack on the next snapshot after they merge. `--reflog` and
+   `--indexed-objects` are what make the restored `index` and `logs`
+   consistent: staged blobs, older stash entries and commits reachable only from
+   a reflog after reset, rebase or amend have no ref, and a plain `--all` pack
+   would leave dangling pointers behind. Chunk and encrypt the pack like any
+   other file.
+3. Record in the manifest: remote URL, the code host connection id, the remote
+   default branch tip as the prerequisite, the local ref list, and the project
+   as `remote-dependent`.
 
 Repositories that do not qualify are copied completely, including
 `.git/objects`, and marked `self-contained`: no remote, an `origin` that is not
@@ -139,17 +147,24 @@ files without a repository" concept lands they have no Git at all and nothing
 changes here.
 
 No fetch runs during capture: the backup has no network and no credentials. A
-remote-tracking ref that is behind the real remote only makes the packfile larger.
-A remote-tracking ref that is ahead of the real remote, because the remote was
-force-pushed or deleted after the last fetch, is the one case that loses
-history; restore detects it through the recorded prerequisites and reports it.
+default branch tip that is behind the real remote only makes the packfile larger.
+A default branch that was force-rewritten after the last fetch is the one case
+that loses history; restore detects it through the recorded prerequisite and
+reports it. Self-contained repositories keep their whole `.git/objects` and
+re-upload it after every `git gc`, so the size saving applies to remote-dependent
+repositories only.
 
 Restore, per remote-dependent repository, after the master password has unlocked
 the secret store so the code host connection credentials are usable:
 
 1. Restore `.git` without objects and the working files from the snapshot. Move
-   the restored `config` and `hooks` aside and write a sanitized `config` that
-   contains only the remote URL from the manifest. Run every Git command below
+   the restored `config` and `hooks` into `.git/verity-restore/` next to the
+   project, where they persist across failed attempts and retries, and write a
+   sanitized `config` that contains the remote URL from the manifest plus the
+   repository-format keys copied from the original: `core.repositoryformatversion`,
+   `core.bare`, and every `extensions.*` key such as `objectFormat` and
+   `worktreeConfig`, without which fetch, `index-pack` and `fsck` misbehave on
+   SHA-256 or worktree-config repositories. Run every Git command below
    in the backup execution identity with `core.hooksPath` pointing at an empty
    directory, `GIT_CONFIG_NOSYSTEM` and an empty global config. Users and agents
    can edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
@@ -162,7 +177,10 @@ the secret store so the code host connection credentials are usable:
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
    `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
-   `hooks` back; they are user content, not restore input.
+   `hooks` back from `.git/verity-restore/` and remove that directory; they are
+   user content, not restore input. On failure they stay there, a retry starts
+   again from the sanitized state without overwriting them, and a user who gives
+   up on rehydration gets them back by resuming the project as self-contained.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -317,8 +335,9 @@ coupling and retention dependencies; they are not silently added to version one.
 3. Take one transaction-consistent logical PostgreSQL snapshot (repeatable-read
    deterministically segmented logical export through the read-only backup role). Record its timestamp.
 4. Copy worktrees and knowledge folders live, streaming through the encryptor,
-   skipping `.git/objects` for repositories with a remote and writing their
-   local-only packfile instead. Record the copy window and the turns active in it.
+   skipping `.git/objects` only for repositories that qualify as
+   remote-dependent under "Git history and code hosts" and writing their
+   local-only packfile instead; every other repository keeps its objects. Record the copy window and the turns active in it.
 5. Release the lock on every exit path; never wake a sleeping project to copy
    its files. Commit the snapshot only after the destination has
    durably acknowledged every referenced object and the encrypted manifest.
@@ -348,13 +367,17 @@ over the private control socket. The hook adds two requests to that sequence:
    destination has durably acknowledged this snapshot, not after local capture,
    because it is the rollback point. This extends the quiesced window by the
    upload of that delta; the warm pass keeps it short, and the update status
-   shows the wait as its own phase.
+   shows the wait as its own phase. Two requirements on the Updater follow:
+   quiescing must leave the old Server's control socket and database connection
+   usable for this request, and a failed or timed-out snapshot must return the
+   old Server to serving through the journal's existing rollback path from
+   `quiescing-old`, so the abort is a normal rolled-back update, not a stuck one.
 
 Both snapshots use the ordinary capture path: incremental, encrypted to the
-public recovery key, no secret needed for host-path and NAS destinations. For a
-Drive destination the pass runs only if the secret store is unlocked; otherwise
-the Updater records that the pre-update snapshot went to the local spool and the
-update is treated as "backed up locally only". The final snapshot is tagged
+public recovery key, no secret needed for host-path and NAS destinations. Capture
+always runs; for a Drive destination only delivery waits for an unlocked secret
+store, so a sealed server leaves the pre-update snapshot in the local spool and
+the Updater records the update as "backed up locally only". The final snapshot is tagged
 `pre-update` with previous and target digest, and retention keeps at least the
 last two pre-update snapshots regardless of the schedule's policy.
 
