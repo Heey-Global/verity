@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.57.1](https://github.com/Heey-Global/verity/compare/v4.57.0...v4.57.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** patch body-parser and ctutils vulnerabilities ([#1866](https://github.com/Heey-Global/verity/issues/1866)) ([3cf1c65](https://github.com/Heey-Global/verity/commit/3cf1c65e20978b8035f00d66767f68e7394c7b8e))
+* **forgejo:** support brokered TLS connections to IP addresses ([#1869](https://github.com/Heey-Global/verity/issues/1869)) ([67cf874](https://github.com/Heey-Global/verity/commit/67cf8743b591b96773aa162b97d2eec876bdd901))
+
 ## [4.57.0](https://github.com/Heey-Global/verity/compare/v4.56.1...v4.57.0) (2026-10-24)
 
 
