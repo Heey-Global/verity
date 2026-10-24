@@ -1109,6 +1109,71 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
   });
 
+  it('marks no activity after a scan wake but on every joining wake', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker } = fakeDocker({
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, running: true }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const relay = defaultProjectRelay();
+    const reactivate = vi.fn(async () => {
+      await gate;
+      return {
+        identity: { projectId: id, containerGeneration: 'generation-1' },
+        signingCapability: 'fresh-signing',
+        githubCapability: 'fresh-github',
+      };
+    });
+    relay.reactivate = reactivate;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+
+    // The scan lease puts a sandbox back to sleep only while the activity mark it saw
+    // after waking is unchanged. A wake that marks activity later would keep every
+    // scanned sandbox awake; a joining wake that marks none would be put to sleep.
+    const solo = provisioner.wakeProjectForScan(id);
+    release();
+    const woken = await solo;
+    expect(woken.owned).toBe(true);
+    expect(provisioner.projectSandboxLastActivityAt(id)).toBe(woken.activityAt);
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const scan = provisioner.wakeProjectForScan(id);
+    // An explicit wake arriving while the project still reads as sleeping starts the
+    // wake itself, so the scan does not own it and never restores sleep.
+    const explicit = provisioner.wakeProject(id);
+    const joined = await scan;
+    await explicit;
+    expect(joined.owned).toBe(false);
+  });
+
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {
     const id = await seedProject('active');
     const retained = {
@@ -1174,6 +1239,9 @@ describe('ProvisionerImpl (#174)', () => {
     ]);
     await expect(scanJoin).resolves.toMatchObject({ owned: false, project: { state: 'active' } });
     expect(reactivate).toHaveBeenCalledOnce();
+    // A wake joining the scan's own wake marks activity, which the lease reads as takeover.
+    const owned = await first;
+    expect(provisioner.projectSandboxLastActivityAt(id)).toBeGreaterThan(owned.activityAt!);
   });
 
   it.each([false, true])(
