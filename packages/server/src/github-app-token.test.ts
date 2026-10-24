@@ -60,6 +60,9 @@ describe('createGitHubAppProjectTokenMint', () => {
       });
 
       await expect(
+        mint({ owner: 'example', repo: 'private-repo', kind: 'forgejo' }),
+      ).resolves.toBeUndefined();
+      await expect(
         mint({ owner: '__local__', repo: 'my-project', kind: 'local' }),
       ).resolves.toBeUndefined();
       await expect(
@@ -369,6 +372,34 @@ describe('createGitHubAppProjectTokenMint', () => {
 });
 
 describe('createCachedProjectTokenMint', () => {
+  it('never reuses a GitHub token or reads GitHub authority for a Forgejo project with the same coordinates', async () => {
+    let mints = 0;
+    let authorityReads = 0;
+    const cached = createCachedProjectTokenMint(
+      async () => {
+        mints++;
+        return 'github-token';
+      },
+      {
+        authorityKey: async () => {
+          authorityReads++;
+          return 'github-app';
+        },
+      },
+    );
+    await expect(cached({ owner: 'owner', repo: 'repo', kind: 'github' })).resolves.toBe(
+      'github-token',
+    );
+    await expect(
+      cached({ owner: 'owner', repo: 'repo', kind: 'forgejo' }),
+    ).resolves.toBeUndefined();
+    await expect(
+      cached.strict({ owner: 'owner', repo: 'repo', kind: 'forgejo' }),
+    ).resolves.toBeUndefined();
+    expect(mints).toBe(1);
+    expect(authorityReads).toBe(1);
+  });
+
   const R = { owner: 'o', repo: 'r' } as const;
   const R2 = { owner: 'o', repo: 'other' } as const;
 

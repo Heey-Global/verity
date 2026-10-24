@@ -1,3 +1,7 @@
+import {
+  createCachedProjectTokenMint,
+  createGitHubAppProjectTokenMint,
+} from './github-app-token.js';
 import { createHash } from 'node:crypto';
 import { ResourceObserver } from './live/resource-observer.js';
 import {
@@ -12360,6 +12364,84 @@ describe('POST /sessions with project field (#174)', () => {
         payload: { prompt: 'go', project: 'heey-global/verity' },
       });
       expect(res.statusCode).toBe(201);
+      const { sessionId }: { sessionId: string } = res.json();
+      expect(projectWorktrees.add).toHaveBeenCalled();
+      expect(refreshProjectToken).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-active' }));
+      expect(refreshProjectToken.mock.invocationCallOrder[0]).toBeLessThan(
+        projectWorktrees.add.mock.invocationCallOrder[0]!,
+      );
+      const session = await ctx.store.getSession(sessionId);
+      expect(session?.projectId).toBe('p-active');
+      expect(session?.worktree).toBe('/data/dev/heey-global-verity/.verity-sessions/agent-abc');
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('creates a persisted Forgejo session alongside GitHub without contacting GitHub', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'forgejo-session',
+      provider: 'forgejo',
+      baseUrl: 'https://forge.example:3000',
+      label: 'Forgejo',
+      personalToken: 'forgejo-fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'p-active',
+      kind: 'forgejo',
+      forgeConnectionId: 'forgejo-session',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.upsertProject({
+      id: 'parallel-github',
+      owner: 'heey-global',
+      repo: 'github-repo',
+      containerName: 'dev-github-repo',
+      state: 'active',
+      kind: 'github',
+    });
+    const githubFetch = vi.fn(async () => ({ ok: false, status: 422, json: async () => ({}) }));
+    const cachedMint = createCachedProjectTokenMint(
+      createGitHubAppProjectTokenMint({
+        appId: '123',
+        defaultInstallationId: '456',
+        privateKeyPath: '/unused/github.pem',
+        fetch: githubFetch,
+      }),
+    );
+    const projectWorktrees = fakeProjectWorktrees();
+    projectWorktrees.add.mockResolvedValueOnce(
+      '/data/dev/heey-global-verity/.verity-sessions/agent-abc',
+    );
+    const refreshProjectToken = vi.fn(async (project: Parameters<typeof cachedMint>[0]) => {
+      await cachedMint.strict(project);
+    });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: fakeProvisioner(),
+      projectCloneRoot: '/data/dev/',
+      projectBackend: fakeProjectBackend,
+      refreshProjectToken,
+      projectWorktrees: () => projectWorktrees,
+      worktrees: { add: vi.fn(async () => '/wt/s-proj'), remove: vi.fn(async () => {}) },
+    });
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { prompt: 'go', projectId: 'p-active' },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(githubFetch).not.toHaveBeenCalled();
       const { sessionId }: { sessionId: string } = res.json();
       expect(projectWorktrees.add).toHaveBeenCalled();
       expect(refreshProjectToken).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-active' }));
