@@ -13781,6 +13781,34 @@ describe('POST /projects/:id/sleep and /wake', () => {
     }
   });
 
+  it('rejects an active wake when a sandbox mutation prevents takeover', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-wake-mutation',
+      owner: 'test',
+      repo: 'wake-mutation',
+      containerName: 'wake-mutation',
+      state: 'active',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      wakeProject: vi.fn(),
+      tryBeginProjectSandboxActivity: vi.fn(() => false),
+      endProjectSandboxActivity: vi.fn(),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-wake-mutation/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.endProjectSandboxActivity).not.toHaveBeenCalled();
+      expect(provisioner.wakeProject).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('keeps a stuck waking project a conflict when no wake is in flight', async () => {
     await ctx.store.upsertProject({
       id: 'p-stuck-waking',

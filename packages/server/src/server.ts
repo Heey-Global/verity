@@ -7742,8 +7742,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (project.state === 'active') {
             // Only the activity mark matters here, which a scan lease reads as takeover;
             // the readiness gate is not needed for a sandbox that is already running.
-            if (deps.provisioner.tryBeginProjectSandboxActivity?.(id))
-              deps.provisioner.endProjectSandboxActivity?.(id);
+            const acquired = deps.provisioner.tryBeginProjectSandboxActivity?.(id);
+            if (acquired === false)
+              return { code: 409, error: `project ${id} has a sandbox mutation in progress` };
+            if (acquired) deps.provisioner.endProjectSandboxActivity?.(id);
             return {
               code: 200,
               project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
