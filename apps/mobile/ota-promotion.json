@@ -1,17 +1,20 @@
 {
   "schema": 1,
-  "version": "1.76.1",
-  "runtime": "1.76.0",
+  "version": "1.77.2",
+  "runtime": "1.77.0",
   "channel": "production",
-  "commit": "b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
-  "tag": "mobile-v1.76.1",
-  "branch": "staging-mobile-v1.76.1-b86b9c61283c92ecd174ca3043f78c27dfbff5c3",
-  "baseline": "mobile-v1.76.0",
-  "group": "8bfe628c-24b5-47c8-b0b2-408eb214e5bc",
+  "commit": "48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
+  "tag": "mobile-v1.77.2",
+  "branch": "staging-mobile-v1.77.2-48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
+  "baseline": "mobile-v1.77.0",
+  "group": "23713617-8dde-4b49-955d-5437ba1c0078",
   "notes": [
-    "let the update banner be dismissed until the next version (#1807)",
-    "show app updates next to server updates (#1806)",
-    "integrate connections and mobile repository workflows (#1805)",
-    "show up to date on the installed row and drop the generation counter (#1804)"
+    "improve vulnerability indicators and scan lifecycle (#1828)",
+    "expose bounded selected connection test (#1840)",
+    "isolate session credentials and authenticate worktree fetches (#1839)",
+    "add selected recording admission and bounded attempt (#1831)",
+    "compact meters and session rows in narrow split views (#1827)",
+    "integrate scan UI and harden release handoff (#1824)",
+    "calmer update progress and channel settings in the header (#1823)"
   ]
 }

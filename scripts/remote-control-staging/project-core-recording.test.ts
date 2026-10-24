@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { coreDataAssociation } from '../../packages/server/src/core-data-association.js';
 import { recordingTransportState } from '../../packages/server/src/recording-transport-state.js';
 import { RemoteReturnPathDiagnostics } from '../../packages/server/src/remote-return-path-diagnostics.js';
 import { projectCoreRecording, MAX_INPUT_BYTES } from './project-core-recording.mjs';
@@ -22,7 +23,17 @@ function emittedSummary(): Record<string, unknown> & {
     10,
   );
   recorder.record('close_requested', 'observed');
-  return { ...recorder.exportSummary()!, transport: recordingTransportState(undefined) };
+  return {
+    ...recorder.exportSummary()!,
+    transport: recordingTransportState(undefined),
+    association: coreDataAssociation(
+      'test-session',
+      'request',
+      null,
+      'before_socket_creation',
+      new Date().toISOString(),
+    ),
+  };
 }
 
 describe('Core recording projection', () => {
@@ -100,6 +111,21 @@ describe('Core recording projection', () => {
         ).coverage.rejectedRecords,
       ).toBe(1);
     }
+  });
+
+  it('rejects an association from another session', () => {
+    const record = emittedSummary();
+    const foreign = coreDataAssociation(
+      'foreign',
+      'request',
+      null,
+      'before_socket_creation',
+      new Date().toISOString(),
+    );
+    expect(
+      projectCoreRecording(JSON.stringify({ ...record, association: foreign })).coverage
+        .rejectedRecords,
+    ).toBe(1);
   });
 
   it('bounds input and rejects unsupported schemas', () => {

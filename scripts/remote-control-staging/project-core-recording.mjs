@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { isIP } from 'node:net';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -48,7 +49,34 @@ const errorCode = z.enum([
   'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
 ]);
 const position = { eventOrder: count, elapsedMs: elapsed };
+const frameType = z.enum([
+  'stream.open',
+  'stream.data',
+  'stream.end',
+  'stream.reset',
+  'attached',
+  'unknown',
+]);
+const endpoint = z.object({
+  address: z.string().refine((value) => isIP(value) !== 0),
+  port: z.number().int().min(1).max(65535),
+});
+const association = z.object({
+  schemaVersion: z.literal(1),
+  bindingSource: z.literal('authenticated_control_session_request'),
+  processBootId: z.string().uuid(),
+  socketLifetimeId: z.string().uuid().nullable(),
+  session: hash,
+  request: hash,
+  coverageStart: z.enum(['before_socket_creation', 'after_socket_creation']),
+  activatedAt: z.string().datetime(),
+  socketEndpoints: z.object({ local: endpoint.nullable(), remote: endpoint.nullable() }),
+  uplinkConnectionId: z.null(),
+  natAssociation: z.literal('unknown'),
+  envoyAssociation: z.literal('unknown'),
+});
 const first = z.object({
+  type: frameType.optional(),
   ...position,
   encodedBytes: count,
   decodedBytes: count,
@@ -69,43 +97,50 @@ const event = z.object({
 });
 // Object schemas deliberately project fixed fields. Never copy a logger envelope,
 // arbitrary error text, or newly added payload fields into a support export.
-const summary = z.object({
-  time: count.optional(),
-  event: z.literal('remote.return_path'),
-  schemaVersion: z.literal(1),
-  transport: recordingTransportSchema.optional(),
-  session: hash,
-  generation: hash,
-  party: z.literal('installation'),
-  ...position,
-  outcome: z.literal('observed'),
-  stage: z.literal('summary'),
-  summaryOrder: count,
-  droppedEvents: count,
-  emittedMessages: count,
-  emittedBytes: count,
-  lastError: z.object({ ...position, errorCode }).nullable(),
-  lastCloseRequest: z.object(position).nullable().optional(),
-  lastClose: z
-    .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
-    .nullable(),
-  droppedStreamObservations: count,
-  streams: z
-    .array(
-      z.object({
-        stream: hash,
-        enqueuedFrames: count,
-        completedFrames: count,
-        errorFrames: count,
-        encodedBytes: count,
-        decodedBytes: count,
-        firstSend: first.optional(),
-        firstCallback: first.optional(),
-      }),
-    )
-    .max(64),
-  events: z.array(event).max(128),
-});
+const summary = z
+  .object({
+    time: count.optional(),
+    event: z.literal('remote.return_path'),
+    schemaVersion: z.literal(1),
+    transport: recordingTransportSchema.optional(),
+    association: association.optional(),
+    callbackMeaning: z.literal('local_acceptance_not_peer_receipt').optional(),
+    session: hash,
+    generation: hash,
+    party: z.literal('installation'),
+    ...position,
+    outcome: z.literal('observed'),
+    stage: z.literal('summary'),
+    summaryOrder: count,
+    droppedEvents: count,
+    emittedMessages: count,
+    emittedBytes: count,
+    lastError: z.object({ ...position, errorCode }).nullable(),
+    lastCloseRequest: z.object(position).nullable().optional(),
+    lastClose: z
+      .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
+      .nullable(),
+    droppedStreamObservations: count,
+    streams: z
+      .array(
+        z.object({
+          stream: hash,
+          enqueuedFrames: count,
+          completedFrames: count,
+          errorFrames: count,
+          encodedBytes: count,
+          decodedBytes: count,
+          firstSend: first.optional(),
+          firstCallback: first.optional(),
+        }),
+      )
+      .max(64),
+    events: z.array(event).max(128),
+  })
+  .refine(
+    (value) => value.association === undefined || value.association.session === value.session,
+    { message: 'Association session mismatch' },
+  );
 export const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 
 /** Project Core Pino JSONL or Docker json-file envelopes without copying raw logs. */

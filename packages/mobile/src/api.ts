@@ -1165,13 +1165,47 @@ export const returnPathStatusSchema = z
     currentUtc: z.string(),
     remainingMs: z.number().nonnegative(),
     matchedConnectors: z.number().int().nonnegative(),
+    sessionHash: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/u)
+      .optional(),
   })
   .strict();
 export type ReturnPathStatus = z.infer<typeof returnPathStatusSchema>;
 
+const selectedPeerSchema = z
+  .object({
+    bound: z.boolean(),
+    active: z.boolean(),
+    socketLifetimeId: z.string().uuid().nullable(),
+    generation: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/u)
+      .nullable(),
+  })
+  .strict();
+const selectedRecordingSelectionSchema = z
+  .object({
+    sessionHash: z.string().regex(/^[a-f0-9]{16}$/u),
+    confirmed: z.boolean(),
+    preparationExpiresAt: z.string().datetime().nullable(),
+    readiness: z
+      .object({
+        revision: z.number().int().nonnegative(),
+        checkedAt: z.string().datetime(),
+        monotonicMs: z.number().finite().nonnegative(),
+        ready: z.boolean(),
+        installation: selectedPeerSchema,
+        app: selectedPeerSchema,
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
 export const connectionRecordingStatusSchema = z
   .object({
     evidence: selectedEvidenceMetadataSchema.optional(),
+    selection: selectedRecordingSelectionSchema.optional(),
     version: z.literal(1),
     runId: z.string().uuid(),
     phase: z.enum(['starting', 'recording', 'stopped', 'expired', 'failed']),
@@ -1199,6 +1233,13 @@ export const connectionRecordingStatusSchema = z
   })
   .strict();
 export type ConnectionRecordingStatus = z.infer<typeof connectionRecordingStatusSchema>;
+export const selectedConnectionRecordingStatusSchema = connectionRecordingStatusSchema.extend({
+  selection: selectedRecordingSelectionSchema,
+});
+export type SelectedConnectionRecordingStatus = z.infer<
+  typeof selectedConnectionRecordingStatusSchema
+>;
+
 export const connectionRecordingExportSchema = z
   .object({
     version: z.literal(1),
@@ -3623,6 +3664,63 @@ export class VerityClient {
     return returnPathStatusSchema.parse(
       await (await this.request('/api/remote-control/diagnostics', { method: 'DELETE' })).json(),
     );
+  }
+
+  async startSelectedConnectionRecording(
+    runId: string,
+    durationMs: number,
+    targetSessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    z.number().int().min(1).max(30000).parse(durationMs);
+    z.string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/u)
+      .parse(targetSessionId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          '/api/remote-control/recordings',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId, durationMs, diagnosticsVersion: 3, targetSessionId }),
+            ...(signal ? { signal } : {}),
+          },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
+  }
+  async getSelectedConnectionRecording(runId: string): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          `/api/remote-control/recordings/${runId}/selection`,
+          { method: 'GET' },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
+  }
+  async stopSelectedConnectionRecording(runId: string): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          `/api/remote-control/recordings/${runId}`,
+          { method: 'DELETE' },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
   }
 
   async startConnectionRecording(

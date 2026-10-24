@@ -128,6 +128,11 @@ describe('Connect Forgejo', () => {
     const createForgejoConnection = jest.fn().mockResolvedValue(forgejo);
     useClient({ extra: { createForgejoConnection } });
     render(<NewForgejoConnectionScreen />);
+    expect(
+      await screen.findByText(
+        /Repository-specific tokens are supported; user access is not required/,
+      ),
+    ).toBeOnTheScreen();
     fireEvent.changeText(await screen.findByLabelText('Server URL'), ' https://git.example.org ');
     fireEvent.changeText(screen.getByLabelText('Access token'), 'token-fixture');
     fireEvent.press(screen.getByRole('button', { name: 'Connect Forgejo' }));
