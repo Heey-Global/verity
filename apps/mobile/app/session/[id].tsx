@@ -6018,6 +6018,21 @@ function SessionFilesSheet({
           },
         ];
 
+  const navigateRoot = (candidate: typeof root): void => {
+    if (mutating || (!driveActive && candidate === root && path === '')) return;
+    previewRequest.current += 1;
+    endSelection();
+    setDriveActive(false);
+    setRoot(candidate);
+    setPath('');
+    setEntries([]);
+    setTruncated(false);
+    setLoading(true);
+    setPreview(null);
+    setPreviewLoading(false);
+    setError(null);
+  };
+
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
@@ -6100,18 +6115,7 @@ function SessionFilesSheet({
                   key={candidate}
                   disabled={mutating}
                   onPress={() => {
-                    if (mutating || (!driveActive && candidate === root && path === '')) return;
-                    previewRequest.current += 1;
-                    endSelection();
-                    setDriveActive(false);
-                    setRoot(candidate);
-                    setPath('');
-                    setEntries([]);
-                    setTruncated(false);
-                    setLoading(true);
-                    setPreview(null);
-                    setPreviewLoading(false);
-                    setError(null);
+                    navigateRoot(candidate);
                   }}
                   accessibilityRole="tab"
                   accessibilityState={{
@@ -6242,10 +6246,8 @@ function SessionFilesSheet({
                     ? 'My edits (not yet published)'
                     : 'My working copy (published)'
             }
-            onPress={() => {
-              setRoot(root === 'worktree' ? 'documents' : 'worktree');
-              setPath('');
-            }}
+            disabled={mutating}
+            onPress={() => navigateRoot(root === 'worktree' ? 'documents' : 'worktree')}
           />
         ) : null}
         {!driveActive && (root === 'documents' || root === 'drafts') ? (
@@ -6255,10 +6257,8 @@ function SessionFilesSheet({
                 ? 'Back to Documents'
                 : 'Session edits (including retained sessions)'
             }
-            onPress={() => {
-              setRoot(root === 'drafts' ? 'documents' : 'drafts');
-              setPath('');
-            }}
+            disabled={mutating}
+            onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}
           />
         ) : null}
         {driveActive ? (
