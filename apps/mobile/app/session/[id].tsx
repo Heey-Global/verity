@@ -1,11 +1,14 @@
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
-import { VulnerabilityStarterCard } from '../../components/vulnerability/VulnerabilityStarterCard';
+import {
+  VulnerabilityFixSheet,
+  VulnerabilityStarterCard,
+} from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
-import type { ProjectDriveFolder } from '@verity/mobile';
+import type { FindingGroup, ProjectDriveFolder, VulnerabilityFinding } from '@verity/mobile';
 import {
   useGoogleAccountPicker,
   googleAccountSupports,
@@ -977,6 +980,9 @@ export const SessionChat = memo(function SessionChat({
   }, [applyAutomation, automation, client, sessionId]);
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  const [mainFixGroups, setMainFixGroups] = useState<FindingGroup<VulnerabilityFinding>[] | null>(
+    null,
+  );
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
@@ -4236,6 +4242,14 @@ export const SessionChat = memo(function SessionChat({
           onClose={() => setBookmarksOpen(false)}
         />
       ) : null}
+      <VulnerabilityFixSheet
+        groups={mainFixGroups}
+        onClose={() => setMainFixGroups(null)}
+        onFix={(prompt) => {
+          setMainFixGroups(null);
+          sendQuickReply(prompt);
+        }}
+      />
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
           onAskHelp={askHelp}
@@ -4511,7 +4525,7 @@ export const SessionChat = memo(function SessionChat({
               <VulnerabilityStarterCard
                 client={client}
                 projectId={projectId}
-                onFix={sendQuickReply}
+                onOpen={setMainFixGroups}
               />
             ) : null}
           </View>
