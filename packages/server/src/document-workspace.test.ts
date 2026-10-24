@@ -1,5 +1,15 @@
-import { afterEach, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
+import { afterEach, expect, it, vi } from 'vitest';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  writeFile,
+  rm,
+  readdir,
+  symlink,
+  open,
+  appendFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DocumentWorkspace } from './document-workspace.js';
@@ -141,4 +151,57 @@ it('transfers outstanding edits idempotently without overwriting destination edi
   await expect(a.transferPending(b, 'Transferred')).rejects.toThrow('already changed');
   expect(await readFile(join(b.view, 'Transferred', 'note.md'), 'utf8')).toBe('destination edit');
   expect(await readFile(join(a.view, 'note.md'), 'utf8')).toBe('draft');
+});
+
+it.each(['file-to-directory', 'directory-to-file'] as const)(
+  'retains both trees and permits repeated preparation after a %s replacement',
+  async (transition) => {
+    const { documents, a } = await fixture();
+    const directoryFirst = transition === 'directory-to-file';
+    if (directoryFirst) await mkdir(join(documents, 'entry'));
+    const original = directoryFirst ? 'entry/note.md' : 'entry';
+    await writeFile(join(documents, original), 'original');
+    await a.prepare();
+    await rm(join(documents, 'entry'), { recursive: true });
+    if (!directoryFirst) await mkdir(join(documents, 'entry'));
+    const replacement = directoryFirst ? 'entry' : 'entry/note.md';
+    await writeFile(join(documents, replacement), 'replacement');
+    await a.prepare();
+    await a.prepare();
+    expect(await readFile(join(a.view, original), 'utf8')).toBe('original');
+    expect(await readFile(join(documents, replacement), 'utf8')).toBe('replacement');
+    await writeFile(join(a.view, original), 'local edit');
+    expect((await a.publish()).conflicts).toHaveLength(1);
+  },
+);
+it('bounds a snapshot read even when the file grows after stat', async () => {
+  const { documents, a } = await fixture();
+  const path = join(documents, 'growing.md');
+  await writeFile(path, 'base');
+  const handle = await open(path, 'r');
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  // The spy forwards the actual FileHandle receiver with apply below.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const originalRead = prototype.read;
+  let grew = false;
+  const reads: number[] = [];
+  const spy = vi.spyOn(prototype, 'read').mockImplementation(async function (
+    this: typeof handle,
+    ...args: Parameters<typeof handle.read>
+  ) {
+    if (!grew) {
+      grew = true;
+      await appendFile(path, Buffer.alloc(1024 * 1024));
+    }
+    if (!Buffer.isBuffer(args[0])) throw new Error('Expected a bounded buffer read');
+    reads.push(args[0].length);
+    return originalRead.apply(this, args);
+  });
+  try {
+    await expect(a.prepare()).rejects.toThrow('still being written');
+    expect(reads).toEqual([5]);
+  } finally {
+    spy.mockRestore();
+  }
 });

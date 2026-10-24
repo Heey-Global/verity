@@ -43,7 +43,9 @@ Concurrent changes preserve the canonical file and put the proposed version in
 path, base and competing versions. Deletions are explicit proposals. Renames are
 represented as deletion and creation; binary files receive the same comparison
 and preservation behavior. A file/directory collision never recursively replaces
-another writer's directory. Conflict resolution must be explicit.
+another writer's directory. Conflict resolution must be explicit. Refresh retains both trees and their base
+versions when a file/directory replacement would collide with a working copy;
+subsequent turns can proceed and edits to that retained copy produce conflicts.
 
 Working-copy refresh retains both a byte snapshot and the previous inode in
 private file history so writes through an already-open descriptor remain

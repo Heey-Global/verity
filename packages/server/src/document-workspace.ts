@@ -93,9 +93,19 @@ async function readDocument(root: string, path: string): Promise<Buffer | undefi
       // allowing an agent to exhaust the server's memory during publication.
       if (before.size > 64 * 1024 * 1024)
         throw new Error(`document exceeds snapshot limit: ${path}`);
-      const bytes = await file.readFile();
+      // Read at most the observed size plus one byte. A growing file must never
+      // make readFile allocate beyond the snapshot limit before we can reject it.
+      const buffer = Buffer.alloc(before.size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const bytes = buffer.subarray(0, length);
       const after = await file.stat();
       if (
+        length !== before.size ||
         before.size !== after.size ||
         before.mtimeMs !== after.mtimeMs ||
         before.ctimeMs !== after.ctimeMs
@@ -247,13 +257,20 @@ export class DocumentWorkspace {
       for (const path of new Set([...Object.keys(state.files), ...Object.keys(current)])) {
         if ((local[path] ?? null) !== (state.files[path] ?? null)) continue;
         if ((local[path] ?? null) === (current[path] ?? null)) continue;
-        const actual = await readDocument(this.view, path);
-        if ((actual === undefined ? null : digest(actual)) !== (local[path] ?? null)) continue;
-        const bytes = await readDocument(this.documents, path);
-        await this.replace(this.view, path, bytes);
-        if (bytes === undefined) delete state.files[path];
-        else state.files[path] = digest(bytes);
-        await this.save(state);
+        try {
+          const actual = await readDocument(this.view, path);
+          if ((actual === undefined ? null : digest(actual)) !== (local[path] ?? null)) continue;
+          const bytes = await readDocument(this.documents, path);
+          await this.replace(this.view, path, bytes);
+          if (bytes === undefined) delete state.files[path];
+          else state.files[path] = digest(bytes);
+          await this.save(state);
+        } catch (error) {
+          if (!['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+            throw error;
+          // Retain both trees and their bases on a structural collision. Refresh
+          // must not recursively erase a working directory or block future turns.
+        }
       }
       await this.save(state);
     } finally {
