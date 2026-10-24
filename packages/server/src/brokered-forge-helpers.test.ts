@@ -1,3 +1,4 @@
+import { agentLaunchSpec } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
@@ -42,6 +43,58 @@ async function fixture(seed: string) {
 }
 
 describe.each(roots)('%s forge test mode', (seed) => {
+  it.each(['codex-acp', 'claude-agent-acp', 'opencode-acp'] as const)(
+    'supplies Forgejo credentials through the actual %s environment',
+    async (command) => {
+      const { env } = await fixture(seed);
+      const launched = agentLaunchSpec(
+        { command, args: [], cwd: '/work/project' },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: {
+            ...env,
+            VERITY_FORGE_AUTHORITY: '192.0.2.10:3000',
+            VERITY_PROJECT_REPO_URL: 'http://relay:8080/internal/project/repo',
+          },
+        },
+      ).spawnOptions.env!;
+      expect(launched.VERITY_PROJECT_REPO_URL).toBe('http://relay:8080/internal/project/repo');
+      const result = await exec(
+        'bash',
+        [
+          '-c',
+          'printf "protocol=https\\nhost=192.0.2.10:3000\\npath=owner/repo.git\\n\\n" | "$1" get',
+          'helper-test',
+          resolve(seed, 'verity-gh-cred'),
+        ],
+        { env: { ...launched, PATH: env.PATH } },
+      );
+      expect(result.stdout).toBe(
+        'username=x-access-token\npassword=verity-broker-' + 'c'.repeat(43) + '\n',
+      );
+    },
+  );
+  it('reports a mismatched authority without revealing credentials', async () => {
+    const { env } = await fixture(seed);
+    await expect(
+      exec(
+        'bash',
+        [
+          '-c',
+          'printf "protocol=https\\nhost=unrelated.example\\n\\n" | "$1" get',
+          'helper-test',
+          resolve(seed, 'verity-gh-cred'),
+        ],
+        { env },
+      ),
+    ).rejects.toMatchObject({
+      code: 1,
+      stdout: '',
+      stderr: expect.stringContaining('configured HTTPS forge authority'),
+    });
+  });
   it('returns a capability placeholder and replaces inherited gh credentials', async () => {
     const { dir, env } = await fixture(seed);
     const cap = (await readFile(join(dir, 'cap'), 'utf8')).trim();

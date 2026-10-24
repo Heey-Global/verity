@@ -596,6 +596,8 @@ describe('verity-runner supervisor runtime', () => {
     (command) => {
       const forge = {
         VERITY_FORGE_MODE: 'proxy-test',
+        VERITY_FORGE_AUTHORITY: 'forge.example:3000',
+        VERITY_PROJECT_REPO_URL: 'http://verity-project-relay:8080/internal/project/repo',
         VERITY_FORGE_PROXY_URL: 'http://verity-project-relay:8080',
         VERITY_FORGE_PROXY_CA_FILE: '/run/verity/forge-proxy/ca.crt',
         GIT_TERMINAL_PROMPT: '0',
