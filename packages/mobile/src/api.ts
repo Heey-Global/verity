@@ -458,6 +458,8 @@ export const projectRecordSchema = z.object({
   // rendered; the rest are carried for a follow-up detail view / link-out.
   vulnerabilitySummary: z
     .object({
+      maintenance: z.number().optional(),
+      unclassified: z.number().optional(),
       count: z.number().int().nonnegative(),
       critical: z.number().int().nonnegative(),
       high: z.number().int().nonnegative(),

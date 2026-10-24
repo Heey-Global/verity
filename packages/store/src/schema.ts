@@ -1495,6 +1495,7 @@ interface AttendeeStateTable {
 }
 
 export interface VulnScanResultsTable {
+  classification_version: Generated<number>;
   content_hash: string;
   findings: string;
   scanned_at: ColumnType<Date, Date | undefined, Date>;

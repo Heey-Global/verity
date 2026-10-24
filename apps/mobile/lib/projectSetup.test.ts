@@ -401,3 +401,18 @@ describe('toolkit drift notice', () => {
     }
   });
 });
+
+it('keeps unresolved classification visible alongside security counts', () => {
+  expect(
+    projectOverviewStatus({
+      ...project,
+      vulnerabilitySummary: { count: 0, critical: 0, high: 0, maintenance: 2, unclassified: 1 },
+    })?.label,
+  ).toBe('1 findings need classification');
+  expect(
+    projectOverviewStatus({
+      ...project,
+      vulnerabilitySummary: { count: 3, critical: 0, high: 2, maintenance: 2, unclassified: 1 },
+    })?.label,
+  ).toBe('3 vulnerabilities · 1 need classification');
+});
