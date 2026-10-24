@@ -2,555 +2,331 @@
 
 - Status: accepted (architecture decision; functionality not implemented)
 - Date: 2026-10-03
+- Amended: 2026-10-24 (simplified first release)
 
 ## Context
 
 Verity needs recoverable backups of configuration, credentials, project files,
 sessions and knowledge, including retained data of active, sleeping and paused
 projects. Application state spans PostgreSQL, the `verity-data` volume
-(workspaces, session worktrees, knowledge folders) and a few service volumes; a
-database dump alone is insufficient. Large regenerable dependencies should not
-inflate backups, but library originals and authored notes may be irreplaceable.
-Code projects are clones of repositories on a connected code host, GitHub or
-Forgejo, so their pushed history has a system of record outside Verity. Server
-updates run forward-only schema migrations, which makes the moment before an
-update the one where only a backup can undo damage.
+(workspaces, session worktrees, knowledge folders), a few service volumes, and
+the installation identity under `/etc/verity`; a database dump alone is
+insufficient. Server updates run forward-only schema migrations, which makes the
+moment before an update the one where only a backup can undo damage.
 
-Backups must be encrypted on the self-hosted Verity host before transport or
-storage. Local recovery must remain available independently of Premium Uplink.
-The existing master password protects the live secret store; it is derived with
-scrypt and held only in memory (`packages/store/src/crypto.ts`,
-`packages/server/src/secret-key.ts`). The server offers `/secret/init` and
-`/secret/unlock`, but no password change and no rekeying of stored secrets.
+Backups must be encrypted on the self-hosted host before they are stored. Local
+recovery must work without Premium Uplink. The master password protects the live
+secret store; its derived key is held in memory only
+(`packages/store/src/crypto.ts`), and the server offers `/secret/init` and
+`/secret/unlock` but no password change or rekeying.
 
-Two threats shape the design beyond provider disclosure. First, a compromised
-or ransomed host: whatever key material the host holds for scheduled backups is
-available to an attacker on that host, and whatever the host may delete at the
-destination, the attacker may delete too. Second, a backup that was never
-restored: every prior incident class in this repository that stayed green until
-it mattered argues for a recurring restore probe, not a one-time proof.
+An earlier version of this ADR specified several destinations, a code-host
+dependent Git capture, writer epochs with fences and a two-pass update hook in
+the first release. Review found that scope too large to deliver and to verify.
+This amendment fixes a smaller first release and moves the rest to later steps
+without discarding it. The mechanics live in the
+[concept](../BACKUP_RECOVERY_CONCEPT.md), which is authoritative for detail.
 
 ## Decision
 
-### Recovery key as a private recipient key
+### Destinations and protection level
 
-The only credential that opens a backup is the recovery kit: one encoded string
-carrying a locally generated, cryptographically random 256-bit recovery key,
-the private half of an asymmetric recipient pair (X25519 or an equivalent
-reviewed scheme in the style of `age`), together with the public key that
-verifies manifest signatures. The host stores nothing that opens a backup: the
-public recipient key, a host-local signing key and a fingerprint key, none of
-which decrypts anything. Each immutable object and manifest uses a fresh random data key,
-wrapped to that public key; decryption needs the private recovery key, which
-exists only in the user's recovery kit.
+The first release has one destination: a host directory, managed by the
+installer (default `/var/lib/verity/backups`, set with `--backup-dir` at install
+time and later), bind-mounted into the server. The path is set on the host, not
+from the phone. A marker file with a random target id is checked before every
+write, so an unmounted disk under the same path fails the run instead of filling
+the host disk, and every run checks free space first.
 
-Consequences of this choice:
+Premium Uplink is the second destination, in a later step. Google Drive, a
+user-controlled object store, a NAS or SMB adapter and app download of a
+portable export are out of scope; the concept names them as possible later
+destinations.
 
-- Scheduled backups need no secret on the host. Encrypting to a public key works
-  while the secret store is sealed, after an unattended restart, and without
-  any key file that a host compromise could exfiltrate.
-- A host compromise still exposes everything the host can read at that time. It
-  does not give the attacker the ability to open archives already sitting at a
-  destination, and it does not give them future archives' data keys unless they
-  stay resident on the host.
-- Rotating the recovery key means generating a new pair. Old archives still
-  need the old private key. The settings UI lists which key generation each
-  retained archive requires; cross-generation rewrapping is deferred. Start a new repository generation
-  with a full upload and retain the old private key for older snapshots.
+The protection level is stated in the product: a backup on the host protects
+against failed updates, mistakes and partial loss, not against loss of the host
+disk. The supported way to survive that is copying the backup directory
+off-host, for example with `rsync`, or Premium Uplink once available. The
+repository format makes such a copy safe: objects and manifests are immutable
+and a manifest is written after its objects.
+
+### Recovery key
+
+The only credential that opens a backup is the user's recovery key: one encoded
+string with a checksum carrying the private half of an asymmetric recipient pair
+(X25519 in the style of `age`, or an equivalent reviewed scheme) and the public
+key that verifies manifest signatures. The user-facing term is "recovery key".
+It is shown once at setup, offered for copy, save and print with an optional QR
+code for another device, and confirmed by pasting it back before backups turn
+on. An abandoned setup discards the keys.
+
+The host keeps the public recipient key (confidential host state, never written
+to a destination), the private signing key and a fingerprint key in
+`VERITY_ROOT/backup-state/`, outside every snapshot. None of them decrypts a
+snapshot, so scheduled capture works with a sealed secret store and after an
+unattended restart. A compromised host can read current data and forge new
+snapshots; it cannot open snapshots already written.
+
+Every manifest is signed; the signature covers the whole manifest including
+each object's ID, digest and length, the repository identity, format version and
+sequence number, and is verified before any field is used. A copy of the signing
+key, encrypted to the recipient, lives in the repository, so a restored host
+recovers it, checks it against the verification key in the recovery key, and
+keeps writing snapshots that the same recovery key opens.
 
 Do not support the master password, another passphrase or account recovery as
-alternative decryption paths. Neither Verity's hosted service nor a Uplink
-account can recover a lost key.
-
-Encrypting to a public key does not prove who wrote a manifest, so the public
-recipient key is confidential host state that never reaches a destination, and
-every manifest is signed with a host-local signing key whose verification key is
-part of the recovery kit; the signature covers the entire manifest, every object
-reference's ciphertext digest and length included, binds repository identity, key generation and writer epoch, a snapshot sequence number and a timestamp, and is verified before
-any field is used, so neither substituted objects nor a replayed older manifest
-pass. The private signing key is never in a snapshot but travels
-in the repository encrypted to the recipient; a restore installs it only after
-checking its public half against the kit, so a restored host keeps signing
-against the same kit and a planted key is reported. A takeover restore, and
-only a takeover restore confirmed by the administrator, never writes into the
-writer epoch it was restored from: it opens a new epoch with its own sequence
-and index, copies the objects its first snapshot needs rather than referencing
-the old epoch, prunes the fenced epoch only after a grace period with
-confirmation, and leaves a signed fence that stops a still-living old host from
-publishing or pruning beside it; a write-only destination credential cannot see
-that fence, so list access is required. A host restored without that
-confirmation has backups inactive on every capture path, scheduled, manual and
-pre-update, until an administrator takes over or points it at another
-repository. Restore refuses an unsigned or wrongly signed manifest.
-A compromised host can forge both, which is the accepted host-compromise case; a
-destination cannot.
-
-The recovery kit shows the key as text with a checksum and as a QR code. Setup
-requires a successful re-entry check. Restore accepts QR scan, clipboard paste
-and typed entry with checksum validation; the kit string, which carries both
-keys and a checksum, must never have to be typed by hand on a phone as the only
-option, and typed entry is the fallback, not the design path. Recommend a password manager plus
-an independent offline copy.
-
-Use a maintained authenticated streaming-encryption implementation for payload
-and manifest, with ordering, truncation and completeness checks. Version the
-format and bound parsing resources. Final algorithm suite and nonce handling
-require implementation review. Encrypt sensitive names and metadata as well as
-content; storage providers can still observe sizes and upload times. TLS remains
-required in addition to archive encryption. Do not log keys or pass them as
-command-line arguments.
+decryption paths. Neither Verity's hosted service nor a Uplink account can
+recover a lost key. Use a maintained authenticated streaming-encryption
+implementation with ordering, truncation and completeness checks, encrypt names
+and metadata as well as content, bound parsing resources, and never log keys or
+pass them as arguments.
 
 ### Inner secret store unchanged
 
-Keep the inner secret-store encryption as it is. The archive carries the
-database with its encrypted secret columns, the stored salt and the password
-verifier, exactly as they exist at capture time. The archive does not carry the
-derived secret key, and the backup does not call the self-update key export.
-After a restore, the user unlocks the secret store with the master password that
-was in effect when the backup was taken, through the existing unlock route, just
-as after any server restart. The recovery key protects the archive; the master
-password protects the stored credentials inside it. Offline guessing against the
-archive is not possible without the recovery key, so the master password's
-strength does not weaken backup security. A sealed secret store can still be
-backed up completely, because capture copies ciphertext without needing the key.
-Restore must report that credentials remain locked until the master password is
-entered, and a forgotten master password leaves stored credentials unrecoverable
-even with a valid archive and recovery key.
+Snapshots carry the database with its encrypted secret columns, salt and
+verifier as they are. No derived key is exported and the self-update key export
+is not used. After restore the user unlocks with the master password that was
+current at capture time, through the existing route. A forgotten master
+password leaves stored credentials unrecoverable even with a valid snapshot and
+recovery key; restore says so before unlock.
+
+### Format and key lifecycle
+
+Manifests carry a format version, and every format version gets a test fixture.
+A repository is never rewritten in place: a new format or a replaced recovery
+key starts a new repository with a full first run, and the old one expires under
+normal retention. The app shows which recovery key generation each snapshot
+needs. One recovery key per installation; the envelope format stays extensible
+to several recipients.
 
 ### Scope
 
-From the first release, create complete logical snapshots in an incremental
-encrypted repository; self-contained portable exports follow in a later step.
-Every snapshot includes:
+Every snapshot includes the complete application database, everything under
+`VERITY_ROOT/workspaces`, `VERITY_ROOT/sessions` and the knowledge folders, the
+installation identity, and a manifest with scope, lifecycle states, release and
+schema version (`SERVER_COMPAT`), excluded paths with sizes, per-project size
+and warnings.
 
-- the complete application database (settings, projects, memberships, sessions,
-  histories, permissions, attachments, knowledge revisions, backup policy);
-- every project workspace and session worktree under `VERITY_ROOT`: working
-  files, untracked files and ignored user files such as `.env`, Git metadata
-  (refs, index, stash, reflogs, worktree registrations, hooks and config), and
-  the Git objects that only exist locally. Objects the connected code host
-  already holds are not copied; see "Git history and code hosts" below;
-- knowledge folder contents on disk;
-- the manifest: scope, per-project desired lifecycle state, the server release
-  and schema version (`SERVER_COMPAT`), capture timestamps, excluded paths with
-  counts and sizes, and every warning described below.
+Exclusions are one fixed, source-controlled list (regenerable dependency and
+cache directories, managed dependency volumes, Docker images and caches, control
+sockets, materialized secrets, Verity's own backup state and capture staging),
+reviewed like a schema change; every skipped path is listed with its size.
+Version one has no user-defined exclusions. The status shows captured size per
+project and warns above 2 GB.
 
-Record retained deprovisioned projects where data still exists. Phone-only
-preferences are outside a server backup unless separately exported.
+Not included, each warned per project: writable container layers (restore always
+provisions fresh containers, ADR 0020), services inside project containers and
+custom mounts outside `VERITY_ROOT`, and the agent gateway state with provider
+sign-ins.
 
-Exclusions are a fixed, documented list, not a heuristic. The initial list covers
-managed dependency directories and build caches that a toolchain regenerates
-from included sources (for example `node_modules`, `.venv`, `target`,
-`.next/cache`, `__pycache__`, `.gradle`), managed dependency volumes, Docker
-images and build caches, control sockets, and the short-lived materialized files
-under `<VERITY_ROOT>/secrets`. Every skipped path is listed in the manifest with
-its size. Nothing else is excluded: no folder named `library`, no ignored file
-outside the list. The list lives in one source-controlled place and changes to it
-are reviewed like schema changes.
+### Self-contained Git capture
 
-Deliberately not included, each reported as a per-project warning in the
-manifest and at restore:
+Every Git repository is captured self-contained, with all its objects. Nothing
+depends on a code host at restore time. No Git command the backup runs reads a
+sandbox-written file: capture freezes each `.git` with an fd-relative, no-follow
+copy into server-owned staging, replaces `config` with a sanitized one, moves the
+user's `config`, `config.worktree`, hooks and alternates out of Git's reach and
+stores them as user content, and checks connectivity on the frozen copy with
+bounded re-freezes. Restore validates every worktree pointer before the first
+Git command, keeps user configuration staged until the last Git command has run,
+and then reinstates it. Every command also uses a hardened invocation as defense
+in depth.
 
-- Writable container layers. ADR 0020 treats the stopped container as reusable
-  cache with a full-provisioning fallback; `docker export` output is large and
-  not portable across hosts. Anything that must survive belongs in the worktree
-  or the devcontainer definition. Restore always provisions fresh containers.
-- Databases and other services running inside project containers, and custom
-  bind mounts outside `VERITY_ROOT`. The first release does not ship export
-  adapters. The manifest names the project and the mount, and the backup is
-  shown as complete for Verity state and incomplete for that project's
-  in-container services.
-- The agent gateway state volume with spilled provider tokens. Restore requires
-  the user to sign in to Claude and Codex again.
+Leaving pushed history on the code host is a later optimization, enabled only
+when measured sizes justify it.
 
-Later selective content profiles must show omissions and size estimates. Selective
-knowledge/database export needs dependency-aware import/export; do not filter rows
-out of an ordinary dump. A partial backup must never appear to be a full backup.
+### Database export
 
-### Git history and code hosts
+The server exports the database through its existing PostgreSQL client with
+per-table `COPY` in fixed table and key order under one repeatable-read
+transaction, through a dedicated read-only role whose credential lives outside
+the secret store. The server image does not ship `pg_dump`. Segmentation for
+row-level deduplication is deferred.
 
-History that is already pushed to the project's code host, GitHub or Forgejo, is
-recoverable from that host and is not copied into the backup. This is the one
-exclusion derived per repository rather than listed by path, and the largest
-size saving after dependency directories: `.git/objects` is the bulk of a clone
-and Git repacks it periodically, which defeats chunk deduplication even when no
-commit changed. The decisions below are binding; the mechanics, command lines
-and edge cases live in the concept's "Git history and code hosts" section and
-are not repeated here, so that one text stays authoritative.
+### Incremental, installation-owned repositories
 
-- A repository is `remote-dependent` only when the server's project record ties
-  it to a connected code host that survives the loss of the Verity host (GitHub,
-  or a Forgejo the administrator asserted at connection setup to run in a
-  different failure domain; a Forgejo on the Verity host itself never qualifies)
-  and the server has recorded a trusted tip: the default branch commit it last
-  saw on the host through its own clone, fetch or brokered push; those paths run
-  hardened against a Verity-written configuration and take the tip from the
-  transport result, never from a ref read afterwards. The dependency is shown
-  at connection setup and in backup status, not only at restore. Nothing read from `.git` can make a repository
-  remote-dependent, it can only force a self-contained copy; everything
-  under `.git` is writable from the sandbox.
-- For a remote-dependent repository the snapshot replaces `.git/objects` with a
-  packfile of the objects reachable from local refs, reflogs and every
-  worktree's index but not from the trusted tip. Only the default branch is
-  excluded, because deleted feature branches leave stale remote-tracking refs.
-  Reflogs and the index are included so staged blobs, stash entries and
-  reflog-only commits survive.
-- The objects behind the tip are verified with `git fsck` before the pack and
-  a mismatch forces a self-contained copy; the full read of pushed history per
-  snapshot, outside the lifecycle lock, is the accepted price.
-- No Git command the backup runs reads a sandbox-written file. Capture freezes
-  the repository first: an fd-relative, no-follow copy of the whole `.git` into
-  server-owned staging that a concurrently running sandbox cannot redirect, with
-  user `config`, `config.worktree`, `hooks` and alternates moved out of Git's
-  reach and carried as user content, and regenerable reachability bitmaps
-  dropped; `shallow`, graft and replace files are data and stay in the copy.
-  Restore sets the same configuration files aside before its first command and
-  returns them after `fsck` on success; a repository whose rehydration failed
-  keeps them staged, because the pending state depends on them. Staging is keyed per project and per repository. A hardened invocation with overrides for executable keys is
-  defense in depth, not the protection. The Git floor on server and installer
-  images is 2.39.
-- Everything that does not qualify, including repositories without a remote,
-  today's local projects, shallow or partial clones, grafts, replace refs,
-  submodules, alternates, unknown extensions, and any `gitdir` or symlink
-  pointing outside the project,
-  is captured `self-contained` or, where Git cannot safely run, as plain files
-  with a "not validated" warning.
-- Rehydration at restore imports the local-only pack, fetches from the code
-  host into a fresh bare repository with a Verity-written allowlisted
-  configuration and the credential in the child's environment, moves the packs
-  over (with `fetch.unpackLimit=1`, so nothing arrives loose), rewrites
-  remote-tracking refs in one `update-ref` transaction, checks
-  the prerequisite and runs `fsck`. It needs the secret store unlocked and the
-  host reachable. Failure leaves the project suspended with a "Code incomplete"
-  warning, its working files on disk and its local commits preserved as the
-  unimported pack; the user may retry or resume in a defined "working files
-  only" state.
-- Pending state is captured by later snapshots under its own
-  `pending-rehydration` class, carrying the original remote URL, connection and
-  trusted tip forward, so a later restore can still rehydrate it; that restore
-  strips and stages the renamed directory like any other, because the project
-  may have been resumed in the meantime. No pin on the source snapshot is
-  attempted, because it could not be enforced. Every frozen copy Git can run on
-  passes a connectivity check before it is accepted; one that lost objects to a
-  concurrent `git gc` is re-frozen with bounded retries and otherwise captured
-  as plain files with an `unstable` flag. The freeze is a full copy of `.git`
-  where reflinks are unavailable, held under the lifecycle lock and counted in
-  the capacity check; the capture staging directory is the documented exception
-  to the no-plaintext-staging rule and is swept at startup by run-lock
-  ownership, while restore staging holding pending data is never swept.
+The repository is incremental from the first release: content-defined chunking,
+deduplication before encryption within one repository, a keyed host-local index
+that is a cache and never restore authority, a fresh data key per object,
+objects published before the immutable manifest, and garbage collection that
+honours every retained snapshot, every lease and a grace period.
 
-This makes the backup of a code project complete only together with the code
-host. The ADR accepts that: the host already is the system of record for pushed
-history, and the installations Verity targets keep their code there by design.
-The restore UI states this dependency per project before activation. A stale
-tip errs on the safe side and includes more objects; a default branch that was
-force-rewritten after the last recorded tip is the residual loss case and is
-surfaced, not hidden. Self-contained repositories keep re-uploading their packs
-after `git gc`; the saving applies to remote-dependent repositories.
-
-### Mandatory incremental repository
-
-Incremental transfer and storage are first-release requirements. Decisions:
-content-defined chunking and deduplication before encryption, within one
-repository and key generation; keyed fingerprints in a host-local index that is
-a cache, never restore authority, rebuildable with the private key; a fresh
-random data key per object wrapped to the public recipient, no deterministic
-encryption and no content-derived keys; every snapshot a complete logical
-description that references objects directly; objects published before the
-immutable snapshot commit, and garbage collection that honours every retained
-snapshot, in-flight leases and a grace period; key rotation starts a new
-repository generation, cross-generation rewrapping is deferred. Portable exports
-carry the same content as a snapshot and may optionally include pushed history.
-The concept's section of the same name holds the detailed format and retention
-rules.
-
-### Incremental application database
-
-The database is captured as a transaction-consistent, deterministically
-segmented logical export through a read-only role whose credential lives
-outside the secret store, so a sealed server can still capture. Segments are
-stable across runs so that unchanged rows deduplicate; physical or WAL-based
-optimizations are deferred. Details are in the concept's section of the same
-name.
+Each installation writes only to its own repository, identified by an
+installation id that the installer writes on every fresh install and every
+fresh-host restore and that is never restored from a backup. A restored host
+opens a new repository and never writes or prunes another installation's.
+A same-host rollback keeps the installation id and continues its repository.
+The next sequence number is read from the repository, not from restorable state.
 
 ### Consistency without a global drain
 
-Do not drain turns or block all mutations for capture; an agent loop can run for
-hours and would turn a nightly backup into a maintenance window. Instead:
+Take one transaction-consistent database export, hold the lifecycle lock only
+while `.git` directories are frozen, copy working files live with change
+detection, and record the copy window and active turns, which restore marks
+interrupted. Do not drain turns, pause containers or wake sleeping projects.
 
-- Take one transaction-consistent logical snapshot of PostgreSQL (repeatable-read
-  segmented logical export). This is the authoritative state.
-- Hold a lifecycle lock only while repositories are frozen and working files
-  copied, not during verification, packing or upload; it refuses provision,
-  deprovision, sleep, wake, mount changes, project deletion and rehydration of
-  a pending project. Turns, file
-  edits and commits continue.
-- Copy worktrees live with before/after change detection and bounded retries.
-  This is not an atomic filesystem snapshot: Git validation cannot recover
-  missing objects or guarantee coherent application files. Flag unstable paths
-  and incomplete projects explicitly; never label them fully recoverable. Restore
-  runs `git fsck` and `git worktree repair` and reports unrecoverable repositories.
-- Record in the manifest the database snapshot time and the file-copy window, and
-  mark every turn that was active in that window. Restore already has to mark
-  interrupted turns and refuse to replay them; capture relies on that instead of
-  duplicating it with a drain.
+### Identity in snapshots
 
-Docker pause is not used; it neither establishes application consistency nor is
-needed under this model. Do not wake sleeping projects to copy retained files.
-Release the lifecycle lock on every exit path and restore the prior lifecycle
-state on the original host.
+Each run reads the allowlisted identity files (deployment id, pairing identity
+key, TLS key, certificate and CA) from the server's read-only mount of
+`/etc/verity` and stores them as a separate encrypted manifest section. A
+fresh-host restore always reinstates them, with the device tokens, so devices
+reconnect without pairing and without a question in the flow. The installer
+flag `--new-identity` generates a new identity and revokes device tokens, for a
+compromised source host or a trial restore beside a running original. Preview
+links, capability generations, enrollment recovery records and queued jobs are
+never revived.
 
-Session worktrees point to their main repository through an absolute `gitdir`
-path. Restore validates every such pointer against the project's own restore
-paths before the first Git command, rewrites it for a moved `VERITY_ROOT` and
-refuses any that points elsewhere; the concept's restore steps are binding.
+### Operations and alerting
+
+Defaults: a run every six hours, configurable from hourly to daily; retention of
+every snapshot of the last 48 hours, then 7 daily, 4 weekly and 6 monthly, plus
+the last two pre-update snapshots; one catch-up run after downtime; a six-hour
+run timeout; no overlapping runs; retry with backoff when the directory is
+unwritable or full; low CPU and IO priority. The snapshot sequence number is
+authoritative for order and retention; timestamps are for display.
+
+Alerts use the existing push sender and stay on the backup screen until
+resolved: no committed snapshot for twice the interval or 48 hours, two
+consecutive failed runs, an unwritable, unmarked or nearly full directory,
+unreadable identity files, and a restore probe older than 90 days.
 
 ### Backup before server updates
 
-A server update is the one moment Verity itself puts the data at risk: the
-promoted Server runs forward-only schema migrations on start, and there is no
-downgrade path. Every update on an installation with a backup destination
-therefore takes a snapshot first. An update without a destination runs and is
-recorded as unbacked; the
-administrator setting "require a backup before updates" makes it a refusal.
+The Updater requests one snapshot over the control channel after `preflight`
+and before `creating-standby` ([ADR 0008](0008-verity-server-self-update.md)),
+while the old Server still serves. With backups configured, "Updates wait for a
+backup" is on by default: a failed snapshot holds the update with the reason in
+the app. The administrator may choose "Update anyway", which records the update
+as unbacked. Automatic updates never override the gate. Without configured
+backups, or while paused, the update runs with a note in the update history.
+Changes made between the snapshot and the switch are not in it; the rollback
+prompt says so.
 
-The hook lives in the existing update sequence (ADR 0008). While the old Server
-is still serving, before the Updater creates the standby, it requests a full
-incremental snapshot over the Server-Updater control channel; this warms the
-destination and usually takes only the delta since the last scheduled backup.
-After `quiescing-old`, when no turn is writing anymore and before
-`handing-off-key` and `activating-candidate`, the Updater requests a final
-incremental snapshot. That second pass is the exact pre-migration state; its
-delta is small, but the quiesced window is bounded by the freeze of every
-`.git`, the tip verification of remote-dependent repositories and the database
-export, not by the delta, and acceptance measures it. The Updater continues only after that final snapshot
-is durable under the rule below, normally acknowledged by the destination,
-because it is the rollback point; the
-warm pass exists so this wait is short, and the update status shows it as its
-own phase. Quiescing must therefore leave the old Server's control socket and
-database connection usable, and a failed or timed-out snapshot returns the old
-Server to serving through a rollback path from `quiescing-old`; both are new
-Updater work, and the Updater's request preempts a running scheduled capture. The snapshot is tagged `pre-update` with the previous and target
-release and is retained by a separate rule, at least the last two pre-update
-snapshots, independent of the ordinary schedule's retention.
+### Restore
 
-One rule, in three cases, decides whether the Updater continues after the final
-snapshot. With no destination configured, or on a host restored without the
-takeover confirmation, whose backups are inactive on every path, no snapshot is
-attempted and the update runs, recorded as unbacked, unless "Require a backup"
-is enabled, which refuses the update in both cases. With a destination, the Updater continues
-when the final snapshot is durably committed at one of them. If every configured
-destination needs the unlocked secret store and the store is sealed, which can
-happen because an update may run sealed and the promoted Server then starts
-sealed too, the Updater continues once the snapshot is durably in the local
-spool and records the update as "backed up locally only". This spool is a complete,
-fsynced local repository snapshot with all referenced objects, directly readable
-by the installer through a local-path input without Drive credentials or a live
-server; it is pinned until delivery and pre-update retention allow removal. It
-protects against migration failure, not loss of the host disk. Anything else, a
-failed or timed-out final snapshot or a spool that is full, aborts the update
-before any irreversible step, never after it. The warm snapshot's failure is
-logged and never aborts by itself. "Require a backup" tightens
-the rule: only a destination commit satisfies it, a spool-only snapshot is a
-refusal, and the refusal names the destination that blocked. The snapshot is
-written through the same code path as scheduled backups, so it is incremental,
-encrypted to the public recovery key and works with a sealed secret store for
-destinations that do not need it. Rolling back an update uses the pre-update
-snapshot through the installer's restore path and is documented as such; the
-Updater's own rollback phases remain the first line, because they do not touch
-data.
+The installer offers fresh-host restore from a backup directory on local media,
+without Uplink or a subscription: pick a snapshot, paste the recovery key over
+SSH, check that the snapshot's release has an image for the host's architecture
+before touching anything, restore into staging, validate, write a new
+installation id, regenerate host-specific state, reinstate the identity and
+start the pinned release. Projects come back suspended and are resumed by the
+user.
+
+The installer's same-host rollback restores database and data from a pre-update
+snapshot into the existing installation, keeps identity and pairing, pins the
+snapshot's release and holds automatic updates until the administrator resumes
+them. The Updater's own rollback phases stay the first line.
+
+The app offers restoring one project from a snapshot as a new project and
+downloading a single file. Both ask for the recovery key for that operation and
+hold it in server memory only.
+
+### Restore probe
+
+A backup counts as verified only after a probe passed. The app starts it with
+the recovery key entered for that run and held in memory only; it authenticates
+every object of the newest snapshot, imports the database into a throwaway
+container, checks Git connectivity in temporary staging and compares with the
+manifest, without changing the installation. CI runs the probe on fixtures of
+every format version. Backups show "unverified" until a probe passes, and the
+alerting reminds after 90 days.
+
+### Deletion and shutdown
+
+A single snapshot can be deleted with confirmation. "Pause backups" stops the
+schedule and the pre-update snapshot and keeps the data. "Delete all backups"
+removes this installation's repositories after typed confirmation. There is no
+per-file purge in version one.
 
 ### Authorization and execution identity
 
-Full backup creation, download, deletion and policy changes require installation
-administrator authorization; project-level access alone is insufficient. Enforce
-this server-side on every request, including resumed downloads. Agents and project
-containers receive no backup authority.
-
-In the first release, capture runs inside the server process with streaming and
-bounded memory, using a dedicated read-only PostgreSQL role for the dump whose
-credential is provisioned like the server's own database credential, outside
-the secret store, so sealed capture works. A
-separate backup worker would buy little isolation today: the server still holds
-the raw Docker socket (ADR 0017) and can already read every byte the worker
-would read, while a sidecar adds a trust boundary and a coordination protocol to
-maintain. Keep the capture interface free of server internals so capture can
-move behind the Docker policy gateway when that lands. Reading all backup data is
-itself highly privileged regardless of UID; the authorization above is the real
-boundary.
-
-### Destinations and retention
-
-Server-side destinations are the default: a configured local path such as an
-explicitly mounted NAS, a user-controlled object store, Google Drive, or Premium Uplink. The
-server writes ciphertext there without the app being open. Scheduled backups and
-large instances use these paths; an archive with many projects is not pulled
-through a phone.
-
-App download is the convenience path for manual exports on small instances. The
-server keeps a temporary encrypted archive; the app shows progress, downloads
-ciphertext directly to a file with bounded memory and resumable transfer, and
-hands it to the platform file-save or share flow. Downloads are authenticated
-administrator requests bound to one immutable archive, never permanent links.
-The UI shows server-copy expiry, offers deletion, and distinguishes a copy on
-the original server from an independent off-host copy. A completed download
-proves neither an independent durable copy nor a successful restore.
-
-Retention must not be shortenable by the source host. Premium enforces a
-server-side minimum retention and delete protection that no credential held on
-the host can override; this is a core part of what Premium offers, not a
-billing detail. For user-controlled destinations, document that a share the
-host can write and delete gives no protection against a ransomed host, and
-support append-only credentials with list access and target-side snapshots
-where the destination offers them. Interrupted jobs, full disks and failed uploads
-never replace the last good backup.
-
-Premium archives belong to the user's account, not to the deployment identity
-that produced them. A fresh installation enrolled under the same account can
-list and download them; the lost installation never has to approve anything.
-
-Google Drive delivery uses a dedicated administrator-owned folder and resumable
-uploads. Its token remains in the live secret store: sealed capture can spool
-ciphertext locally, but upload waits for unlock. Report pending delivery and
-bounded spool capacity. Drive does not offer the protected retention promised by
-Premium. Restore on a fresh host uses a portable bundle or a complete repository
-copy without depending on the lost installation's Google credentials. NAS writes
-must validate the mounted destination before capture, avoiding accidental local
-writes when the mount is absent.
-
-### Installer recovery
-
-Offer "New installation" and "Restore encrypted backup" in the installer and CLI.
-Local-file recovery requires no Uplink service or subscription. Premium download
-requires account authorization plus the locally supplied recovery key.
-
-The archive names the server release and schema version it was taken from. The
-installer pins that release, restores into it, verifies, and then moves forward
-through the normal self-update path. Refuse archives newer than the installer
-can run and unsupported downgrades.
-
-Restore into isolated staging volumes. Authenticate the complete archive and
-validate paths, links, resource limits, scope and version compatibility before
-activation. On a host with an existing installation, staging means a second
-PostgreSQL volume and a second data volume exist at the same time; the installer
-checks free space for both before starting and tells the user the requirement.
-Preserve the existing installation for rollback until acceptance.
-
-The installer regenerates host-specific state rather than restoring it: the
-`/etc/verity` state directory and updater token, the host runtime under
-`/var/lib/verity/host-runtime`, image pins and gVisor configuration from the
-pinned release, TLS and pairing material, and the deployment identity. What
-travels in the archive is application state only. Require device pairing and
-Uplink re-enrollment. Preserve durable users, roles and integration credentials,
-but do not reactivate old device tokens, ephemeral capabilities, preview links,
-enrollment recovery records or queued jobs. Reconcile external revocations
-before enabling remote access. Validate integrations and report credentials that
-require reconnection, including the provider logins lost with the gateway state
-volume.
-
-Restore projects suspended, with their desired prior state recorded. Sleeping and
-paused projects remain inactive; resume active projects only after verification
-and user action. Mark interrupted turns without automatically replaying work.
-Same-identity migration is deferred until it can fence the original installation.
+Setup, runs, restore operations, the probe, deletion and policy changes require
+installation administrator authorization, enforced server-side on every
+request; agents and project containers receive no backup authority. Capture runs
+inside the server process with bounded memory. A separate worker would add a
+trust boundary without removing the server's Docker socket access (ADR 0017);
+the capture interface stays free of server internals so it can move behind the
+policy gateway later.
 
 ### Core and Premium boundary
 
-Core owns local capture, encryption, archive format, recovery, scheduling,
-user-controlled destinations and the open ciphertext transfer contract. Premium
-Uplink adds managed off-site storage, account-owned archives, host-independent
-retention, quotas and billing in the separate hosted service. Both destinations
-use the same recoverable format; Premium never receives plaintext or recovery
-keys.
+Core owns capture, encryption, the format, the host-path destination, restore,
+the probe and an open ciphertext transfer contract. Premium Uplink adds managed
+off-site storage, account-owned repositories, host-independent minimum
+retention, quotas and billing in the separate hosted service, and never receives
+plaintext or recovery keys.
 
-The goal is an unattended backup that simply runs, so the first release delivers
-the scheduled, incremental, encrypted backup to a host-path or mounted-NAS
-destination together with the pre-update hook, and the installer restore that
-proves it. App download, Google Drive and Premium follow once the round trip is
-proven. Reference tracking, atomic publication, index recovery and safe deletion
-are first-release requirements. Defer selective database content and physical
-database/WAL optimizations.
+### Sequence
+
+1a: self-contained capture, host-path destination, schedule, recovery key,
+identity in snapshots, minimal installer restore and restore probe. 1b:
+pre-update snapshot with the gate and "Update anyway". 1c: alerting, retention
+and snapshot list, snapshot deletion, project and file restore, same-host
+rollback. 2: Premium Uplink upload and account-based installer download,
+enrollment continuity. 3: remote-dependent Git, takeover, quiesced pre-update
+snapshot, database segmentation, several recovery keys, per-project exclusions.
 
 ## Consequences
 
-Users must preserve their recovery key independently. Losing every copy makes
-archives unrecoverable. Recovery-key rotation starts a new repository generation and does not change
-old snapshots. Master-password changes do not change archive access,
-but each archive's stored credentials require the master password that was
-current at capture time; the restore flow must state this before unlock.
+Users must keep their recovery key; losing every copy makes the backups
+unrecoverable. Each snapshot's stored credentials need the master password that
+was current at capture time.
 
-Because the host holds only a public key, it cannot verify an archive by
-decrypting it. Verification of a backup therefore always means a restore probe
-with the private key, performed where the user supplies it.
+Version one does not survive loss of the host disk unless the administrator
+copies the backup directory elsewhere; the product says so at setup and in the
+status. Self-contained Git capture costs storage and lock time, because a repack
+re-writes the objects and the freeze copies every `.git` where reflinks are
+unavailable; both are measured and shown.
 
-Complete backups need privileged read coverage and local capacity. Recreating
-containers requires network access, compatible images and usable integration
-credentials; in-container services and custom mounts are the user's own
-responsibility in the first release and are flagged as such. Code projects
-depend on their code host for pushed history: a restore without a reachable
-GitHub or Forgejo leaves their Code area incomplete until rehydration succeeds.
-Every update on an installation with a destination is preceded by a snapshot,
-which adds its duration to the update.
-A missing destination is a persistent settings warning and an entry in the update
-history, not a degraded health state, unless "require a backup before updates"
-is set. Live worktree copies
-may need repair at restore. Staging restore on an occupied host needs roughly
-twice the disk.
+Fresh-host restore keeps the installation identity, so two hosts restored from
+the same snapshot would answer as one installation; `--new-identity` is the
+documented way around that. Two restored hosts never damage each other's
+backups, because each owns its repository. The pre-update snapshot misses
+changes made between the snapshot and the switch.
 
-A successful export or download is not a verified restore. Show last completed
-backup, scope, destination and last restore verification separately.
+Because the host holds no private key, verifying a backup always means a restore
+probe with the recovery key. A successful run is not a verified restore; status
+shows last backup, last passed probe and scope separately.
+
+Deferred, with their mechanics kept in the concept's "Later" part:
+remote-dependent Git capture with trusted tips, local-only packs and
+rehydration; takeover of another installation's repository with fences;
+the quiesced final pre-update snapshot and the two Updater changes it needs;
+database segmentation; further destinations; several recovery keys; per-project
+exclusions; Premium minimum retention.
 
 ## Verification requirements
 
-Prove fresh-host recovery with only archive, recovery key and master password,
-including encrypted credentials, settings, knowledge revisions, all worktrees and
-active/sleeping/paused projects. Verify administrator authorization and denial
-for project users and agents. Test wrong keys, tampering, truncation, unsafe
-paths, sealed secret stores, full disks, interrupted captures/downloads/uploads,
-incompatible versions, revoked access, and repositories copied mid-write.
-Demonstrate that restore cannot revive obsolete authority or automatically
-execute work. Deliberately break each guard before trusting it. Prove that a restored code
-project equals the original after rehydration from GitHub and from Forgejo, that
-an unreachable or revoked code host, a deleted repository and rewritten history
-each leave the project suspended and flagged rather than silently truncated,
-that a session worktree with staged-only blobs and a branch deleted on the host
-after a squash merge both restore intact, that a missing trusted tip falls
-back to a self-contained copy, that a remote-tracking ref moved onto a
-local-only commit from inside the sandbox does not remove anything from the
-pack, that a malicious
-`config.worktree` in the main or a linked worktree never executes during
-restore, that a symlink or `gitdir` entry pointing outside the project is
-refused at freeze and before `worktree repair`, that a commit-graph, reachability
-bitmap, replace
-ref, graft or shallow file written by the
-sandbox cannot shrink the pack, and that a repository without a remote restores
-without any network. Prove that an
-update takes the final pre-update snapshot after quiescing and before the
-candidate runs migrations, that a failed snapshot aborts the update before the
-key hand-off, that the default records an unbacked update, and that the
-"require backup" setting refuses an update whose snapshot only reached the local
-spool.
+Prove fresh-host recovery with only the copied directory, the recovery key and
+the master password, with the original host and its index destroyed: settings,
+usable credentials after unlock, knowledge, all worktrees, active, sleeping and
+paused projects, and devices reconnecting without pairing. Prove that
+`--new-identity` requires pairing.
 
-Incremental verification must measure uploaded and retained bytes after small
-file edits and database row edits, insertions and deletions. Prove restoration of
-older snapshots after source deletion, recovery without the host index, safe key
-rotation, interrupted publication, concurrent pruning and shared-object retention.
-Missing dependencies must never appear as a complete backup. A portable export
-must restore without the originating repository or host; a remote-dependent code
-project in it additionally needs its code host unless the export included pushed
-history.
+Test wrong keys, tampering, truncation, an unsigned manifest encrypted to the
+recipient, unsafe paths and links, a sealed secret store, a full disk, a missing
+marker, interrupted runs and unsupported formats; each must fail safely and
+never replace the last good snapshot. For Git, prove that staged-only blobs,
+stash and reflog entries survive, that malicious `config`, `config.worktree` or
+hooks never execute, that pointers outside the project are refused, and that a
+concurrent `git gc` is detected. Prove that two restored hosts never prune each
+other's repositories, that the pre-update snapshot precedes `creating-standby`,
+that a failed one holds the update, that "Update anyway" records an unbacked
+update and that automatic updates never override the gate.
 
-Add a restore probe in the pattern of `deploy/bin/verity-clean-install-smoke`:
-it restores the newest archive into throwaway containers, checks database
-integrity, worktree `git fsck`, settings presence and the manifest against what
-was restored, then reports a timestamp that settings show as "last restore
-verification". CI runs it against a fixture archive; operators can schedule it
-on the host or run it from the installer. A backup whose probe has never passed
-is shown as unverified.
+Measure transferred and retained bytes after small edits, and the lock duration
+on a large installation without reflinks. Prove retention, shared-object
+survival on snapshot deletion, same-host rollback including the architecture
+abort, and that a recovery key entered for a probe or partial restore never
+reaches disk or logs. Deliberately break each guard before trusting it.
 
 ## References
 
 - [Detailed backup and recovery concept](../BACKUP_RECOVERY_CONCEPT.md)
+- [App mockups](../assets/backup/)
 - [Credential and isolation architecture](0002-credential-and-isolation-architecture.md)
+- [Verity server self-update](0008-verity-server-self-update.md)
 - [Docker policy gateway](0017-docker-policy-gateway.md)
 - [Knowledge realms and namespaces](0018-knowledge-realms-and-namespaces.md)
 - [Project sandbox sleep and automatic wake](0020-project-sandbox-sleep-and-automatic-wake.md)
