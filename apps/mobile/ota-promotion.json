@@ -1,20 +1,15 @@
 {
   "schema": 1,
-  "version": "1.77.2",
+  "version": "1.77.4",
   "runtime": "1.77.0",
   "channel": "production",
-  "commit": "48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
-  "tag": "mobile-v1.77.2",
-  "branch": "staging-mobile-v1.77.2-48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
-  "baseline": "mobile-v1.77.0",
-  "group": "23713617-8dde-4b49-955d-5437ba1c0078",
+  "commit": "c4b29bc214be310463e55bb047177987a9a894de",
+  "tag": "mobile-v1.77.4",
+  "branch": "staging-mobile-v1.77.4-c4b29bc214be310463e55bb047177987a9a894de",
+  "baseline": "mobile-v1.77.3",
+  "group": "7bb56cc4-77b5-42bb-99a4-f4ab749a6b4e",
   "notes": [
-    "improve vulnerability indicators and scan lifecycle (#1828)",
-    "expose bounded selected connection test (#1840)",
-    "isolate session credentials and authenticate worktree fetches (#1839)",
-    "add selected recording admission and bounded attempt (#1831)",
-    "compact meters and session rows in narrow split views (#1827)",
-    "integrate scan UI and harden release handoff (#1824)",
-    "calmer update progress and channel settings in the header (#1823)"
+    "expose local connection test failure receipts (#1860)",
+    "expose scoped vulnerability scans to agents (#1854)"
   ]
 }
