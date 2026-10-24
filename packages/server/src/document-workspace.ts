@@ -224,7 +224,16 @@ export class DocumentWorkspace {
       if (missing(error)) return;
       throw error;
     }
-    const current = await readDocument(this.documents, intent.path);
+    let current: Buffer | undefined;
+    try {
+      current = await readDocument(this.documents, intent.path);
+    } catch (error) {
+      if (!['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      // Another writer replaced the path or an ancestor after the intent was
+      // recorded. Keep the old base so publication can retain a conflict.
+      await unlink(join(this.stateRoot, 'intent.json'));
+      return;
+    }
     const currentVersion = current === undefined ? null : digest(current);
     if (currentVersion === intent.after) {
       if (intent.after === null) delete state.files[intent.path];

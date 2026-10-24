@@ -205,3 +205,36 @@ it('bounds a snapshot read even when the file grows after stat', async () => {
     spy.mockRestore();
   }
 });
+
+it.each(['path', 'ancestor'] as const)(
+  'recovers a pending publication when its canonical %s changes type',
+  async (collision) => {
+    const { documents, a } = await fixture();
+    const path = collision === 'path' ? 'entry' : 'entry/note.md';
+    if (collision === 'ancestor') await mkdir(join(documents, 'entry'));
+    await writeFile(join(documents, path), 'base');
+    await a.prepare();
+    await writeFile(join(a.view, path), 'pending edit');
+    const state = JSON.parse(await readFile(join(a.stateRoot, 'state.json'), 'utf8'));
+    await writeFile(
+      join(a.stateRoot, 'intent.json'),
+      JSON.stringify({
+        path,
+        before: state.files[path],
+        after: 'interrupted-publication',
+      }),
+    );
+    await rm(join(documents, 'entry'), { recursive: true });
+    if (collision === 'path') await mkdir(join(documents, 'entry'));
+    const competingPath = collision === 'path' ? 'entry/competing.md' : 'entry';
+    await writeFile(join(documents, competingPath), 'other writer');
+    await a.prepare();
+    const publication = await a.publish();
+    expect(publication.conflicts).toHaveLength(1);
+    expect(await readFile(join(a.view, path), 'utf8')).toBe('pending edit');
+    expect(await readFile(join(documents, competingPath), 'utf8')).toBe('other writer');
+    await expect(readFile(join(a.stateRoot, 'intent.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  },
+);
