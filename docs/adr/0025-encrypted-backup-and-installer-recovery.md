@@ -65,15 +65,22 @@ account can recover a lost key.
 Encrypting to a public key does not prove who wrote a manifest, so the public
 recipient key is confidential host state that never reaches a destination, and
 every manifest is signed with a host-local signing key whose verification key is
-part of the recovery kit; the signed payload binds repository and generation
-identity, a snapshot sequence number and a timestamp so a replayed older
-manifest is visible. The private signing key is never in a snapshot but travels
+part of the recovery kit; the signature covers the entire manifest, every object
+reference's ciphertext digest and length included, binds repository and epoch
+identity, a snapshot sequence number and a timestamp, and is verified before
+any field is used, so neither substituted objects nor a replayed older manifest
+pass. The private signing key is never in a snapshot but travels
 in the repository encrypted to the recipient; a restore installs it only after
 checking its public half against the kit, so a restored host keeps signing
-against the same kit and a planted key is reported. A restored host never writes
-into the generation it was restored from: it opens a new generation with its own
-sequence and index, prunes only what it owns, and leaves a signed fence that
-stops a still-living old host from publishing or pruning beside it. Restore refuses an unsigned or wrongly signed manifest.
+against the same kit and a planted key is reported. A takeover restore, and
+only a takeover restore confirmed by the administrator, never writes into the
+writer epoch it was restored from: it opens a new epoch with its own sequence
+and index, copies the objects its first snapshot needs rather than referencing
+the old epoch, prunes the fenced epoch only after a grace period with
+confirmation, and leaves a signed fence that stops a still-living old host from
+publishing or pruning beside it; a write-only destination credential cannot see
+that fence, so list access is required. Probe and verification restores never
+activate the schedule, open an epoch or write a fence. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
@@ -175,8 +182,10 @@ are not repeated here, so that one text stays authoritative.
   or a Forgejo the administrator asserted at connection setup to run in a
   different failure domain; a Forgejo on the Verity host itself never qualifies)
   and the server has recorded a trusted tip: the default branch commit it last
-  saw on the host through its own clone, fetch or brokered push. The dependency
-  is shown at connection setup and in backup status, not only at restore. Nothing read from `.git` can make a repository
+  saw on the host through its own clone, fetch or brokered push; those paths run
+  hardened against a Verity-written configuration and take the tip from the
+  transport result, never from a ref read afterwards. The dependency is shown
+  at connection setup and in backup status, not only at restore. Nothing read from `.git` can make a repository
   remote-dependent, it can only force a self-contained copy; everything
   under `.git` is writable from the sandbox.
 - For a remote-dependent repository the snapshot replaces `.git/objects` with a
@@ -384,8 +393,8 @@ server-side minimum retention and delete protection that no credential held on
 the host can override; this is a core part of what Premium offers, not a
 billing detail. For user-controlled destinations, document that a share the
 host can write and delete gives no protection against a ransomed host, and
-support append-only or write-only credentials and target-side snapshots where
-the destination offers them. Interrupted jobs, full disks and failed uploads
+support append-only credentials with list access and target-side snapshots
+where the destination offers them. Interrupted jobs, full disks and failed uploads
 never replace the last good backup.
 
 Premium archives belong to the user's account, not to the deployment identity

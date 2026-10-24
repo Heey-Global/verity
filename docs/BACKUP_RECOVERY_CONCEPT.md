@@ -126,15 +126,16 @@ Capture staging lives at `<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`.
 It is a sibling of `workspaces` that no sandbox bind mount contains; the sandbox
 sees only volume subpaths under `workspaces/<repo>` (which holds the project's
 own session worktrees under `.verity-sessions/`) and `secrets`. `repoKey` is a
-hash of the Git directory's path relative to `VERITY_ROOT`, including the root
-(`workspaces/<repo>`, the server's own `sessions/<sessionId>` or
-`restore/<projectId>`) and the directory name itself, so several repositories
-or submodules in one project, the same subpath under two roots, and a live
-`.git` next to a `.git.verity-pending-<snapshotId>` all get distinct keys. The
-key is assigned once, when the repository is first seen, and recorded in project
-state and in the manifest; it is never re-derived from the current path, so a
-rename to `.git.verity-incomplete` or `.git.verity-pending-<snapshotId>` keeps
-pointing at the same staging data. Each run has its own directory and a lock,
+random identifier that Verity assigns the first time it sees a Git directory
+and records in project state and in the manifest together with the directory's
+path relative to `VERITY_ROOT`; the path is informational and the key is never
+derived from it. A Git directory that appears at a path whose recorded key
+belongs to a different repository, for example a `git init` beside a pending
+`.git.verity-incomplete`, receives a fresh key, and a rename to
+`.git.verity-incomplete` or `.git.verity-pending-<snapshotId>` keeps the key it
+had. Several repositories or submodules in one project, the same subpath under
+two roots and a live repository beside a pending one therefore never share
+staging. Each run has its own directory and a lock,
 so a scheduled run, the warm pre-update run and a restore in progress never
 share a path.
 
@@ -143,7 +144,11 @@ one documented exception to the rule against plaintext staging: it stays on the
 host, in a server-owned directory, for the duration of a run. It is removed on
 every exit path of the run. A SIGKILL or host crash bypasses exit paths, so the
 server sweeps at startup every `capture/<runId>/` whose run lock is no longer
-held; "orphaned" is defined by run lock ownership, never by age. The sweep never
+held; "orphaned" is defined by run lock ownership, never by age. The run lock is
+an `flock` on a file inside the run directory on the shared data volume, so it
+is visible across containers: the candidate Server of an update, which starts
+while the old Server may still be capturing, cannot acquire the lock of a live
+run and therefore cannot sweep it. The sweep never
 touches `restore/<projectId>/<repoKey>/`: that directory is durable
 pending-rehydration data, owned by project state, and is removed only when the
 project has rehydrated or the user has reconciled it.
@@ -153,7 +158,10 @@ filesystem offers them and a plain copy otherwise, never hardlinks, which would
 still share the sandbox-writable inode. The copy never follows a symlink, and
 it does not rely on a check that a running sandbox could race: traversal is
 fd-relative from the project root using `openat2` with `RESOLVE_BENEATH` and
-`RESOLVE_NO_SYMLINKS` and `O_NOFOLLOW`, every opened file is `fstat`ed and its
+`RESOLVE_NO_SYMLINKS` and `O_NOFOLLOW` (Linux 5.6 or newer; where `openat2` is
+unavailable the specified fallback is a per-component walk with
+`openat(O_NOFOLLOW | O_DIRECTORY)` and an `fstat` identity check at every
+component, which gives the same guarantee at more syscalls), every opened file is `fstat`ed and its
 identity compared with the directory entry before `FICLONE` or read, and a
 symlink anywhere under `.git` is recorded as a finding instead of being copied.
 A path component swapped for a symlink between two syscalls therefore fails the
@@ -492,29 +500,43 @@ starts a fresh repository, when the source was a portable bundle, or when the
 old host is still alive and running its own retention against the same
 destination.
 
-That last case also decides how a restored host writes. It never continues the
-original generation: it opens a new repository generation at the destination,
-with its own sequence space and its own index, under the same recipient and the
-recovered signing key, and its garbage collection only ever considers objects of
-generations it owns. Before publishing the first snapshot it writes a signed
-fence record naming the generation it was restored from; a host that finds a
-fence it did not write for its own generation stops publishing and pruning and
-reports that another installation has taken over. Two writers with one signing
-key and diverging indexes therefore never prune each other's objects, and the
-sequence number stays monotonic within every generation. Two consequences are
-stated rather than implied. A restore does not force a full re-upload: the
-restored host rebuilt its index from the snapshot with the private key present,
-so the new generation may reference objects of the fenced generation it was
-restored from, read-only, and uploads only what is new. The fenced generation is
-pruned by the host that fenced it and by nobody else, only after the fence has
-stood unanswered for a documented grace period and the administrator confirms,
-and always honouring the new generation's references; until then it costs
-storage, which the status shows. The fence works only if the writer reads the
-destination before every publish and prune, so a destination credential needs
-list and read access in addition to write; a write-only credential cannot
-detect takeover, and the UI says so and asks the administrator to stop the old
-host by hand in that case. Recommend list-and-write without delete over
-write-only.
+That last case also decides how a restored host writes. Two different things
+are called "generation" elsewhere in this document; here the term is epoch: a
+writer epoch is one installation's run of snapshots in a repository, and it is
+independent of the recovery-key generation. A takeover restore never continues
+the epoch it was restored from. It opens a new epoch at the destination, with
+its own sequence space and its own index, under the same recipient and the
+recovered signing key. Before publishing its first snapshot it writes a signed
+fence record naming the epoch it was restored from; a host that finds a fence
+it did not write for its own epoch stops publishing and pruning and reports
+that another installation has taken over.
+
+Only a takeover restore does this, and only after the administrator confirmed
+"Take over backups from this installation" in the installer. A restore probe, a
+verification restore, a trial restore on another machine and any restore that
+did not receive that confirmation restores the data but never activates the
+schedule, never opens an epoch and never writes a fence, although the restored
+database carries the backup policy and destination; otherwise a routine probe
+could silence production backups.
+
+The new epoch never references objects of the fenced epoch: a reference across
+epochs would race a prune the old host may already have under way, and the old
+host's garbage collection cannot see it. Instead the new epoch copies every
+object its first snapshot needs into its own object set before publishing,
+destination-side where the destination can copy an object (object stores, a
+NAS, Drive), by re-upload where it cannot, and the status shows that cost. The
+fenced epoch is pruned by the host that fenced it and by nobody else, only after
+the fence has stood unanswered for a documented grace period and the
+administrator confirms; until then it costs storage, which the status shows.
+Garbage collection in every epoch considers only that epoch's snapshots and
+objects, so two writers with one signing key never prune each other's data, and
+the sequence number stays monotonic within every epoch.
+
+The fence works only if the writer reads the destination before every publish
+and prune, so a destination credential needs list and read access in addition
+to write; a write-only credential cannot detect takeover, and the UI says so and
+asks the administrator to stop the old host by hand in that case. Recommend
+list-and-write without delete over write-only.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -691,9 +713,13 @@ bundle of that manifest and its reachable encrypted objects, without decrypting
 on the source host; downloading that bundle transfers the full selected state.
 Repository-to-repository replication transfers only objects missing at the target.
 An export carries the same content as its snapshot. A remote-dependent code
-project therefore still needs its code host after an export restore; the export
-dialog offers "include pushed history", which adds that project's full
-`.git/objects` to this export only and shows the size difference. The UI
+project therefore still needs its code host after an export restore. The export
+dialog offers "include pushed history"; that is not the same manifest with more
+objects attached, because those objects are not in the repository. It is a
+separate export run that freezes and checks the repositories like a capture,
+chunks and encrypts their full `.git/objects`, and signs a new export manifest
+that references both the snapshot's objects and the added ones. The dialog shows
+the size difference before the run starts. The UI
 distinguishes incremental repository backups from full portable downloads and
 reports scanned bytes, new ciphertext bytes and total retained storage.
 
@@ -734,12 +760,13 @@ coupling and retention dependencies; they are not silently added to version one.
    whose credential is provisioned by compose like the server's own
    `DATABASE_URL` and lives outside the secret store, so a sealed server can
    still capture). Record its timestamp.
-4. Copy worktrees and knowledge folders live, streaming through the encryptor,
-   with the same fd-relative no-follow traversal as the freeze, storing symlinks
-   as links; skip `.git/objects` only for repositories that qualify as
-   remote-dependent under "Git history and code hosts" and write their
-   local-only packfile instead; every other repository keeps its objects, and
-   projects in a pending restore state include their restore staging
+4. Take every repository's `.git` content from the frozen copy made under the
+   lock in step 2, never from the live directory: for a remote-dependent
+   repository the metadata plus the local-only packfile built from that copy,
+   for every other repository the metadata plus its objects. Copy working files
+   and knowledge folders live, streaming through the encryptor, with the same
+   fd-relative no-follow traversal as the freeze, storing symlinks as links.
+   Projects in a pending restore state include their restore staging
    directory. Record the copy window and the turns active in it.
 5. Release the lock on every exit path; never wake a sleeping project to copy
    its files. Commit the snapshot only after the destination has
