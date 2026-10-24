@@ -46,6 +46,11 @@ on:
         required: false
         default: false
         type: boolean
+      website-replan:
+        description: Plan pending website changes after a completed publication
+        required: false
+        default: false
+        type: boolean
       reconcile:
         description: Publish merged release PRs that no push run reconciled
         required: false
@@ -64,7 +69,7 @@ on:
 # failed re-plan or recovery run never counts against a stranded release and a
 # reconcile run that ended green without publishing is noticed. Every other
 # trigger keeps GitHub's default title.
-run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || (format('{0}', inputs['backend-replan']) == 'true' && format('Replan server {0}', github.sha) || '')) }}
+run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || (format('{0}', inputs['backend-replan']) == 'true' && format('Replan server {0}', github.sha) || (format('{0}', inputs['website-replan']) == 'true' && format('Replan website {0}', github.sha) || ''))) }}
 
 permissions: read-all
 
@@ -239,6 +244,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}
@@ -281,6 +287,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}
@@ -323,6 +330,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}

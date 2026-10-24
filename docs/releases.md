@@ -149,12 +149,35 @@ is unpublished and whose approval was followed by no promotion run, it
 dispatches `mobile-ota-promote.yml`. A reconcile run accepts no recovery or
 re-plan input, and a re-plan accepts no reconcile flag.
 
-The sweep does not retry what already ran and failed. A pending release PR
-whose draft already exists, a published tag whose PR still carries the pending
-label, or a promotion run that ended in failure each fail the sweep with the
-exact state, so that there is a red run naming what a human has to finish.
+It also recovers missing website planning from releasable commits since the
+published website boundary, using `website-replan=true`. Website exclusions
+from the Release Please configuration still apply, and an unsuccessful planning
+run is reported rather than dispatched indefinitely.
+
+It also recovers the later stages the same way:
+
+- an approved Server, native or OTA production promotion whose tag is still
+  unpublished and whose approval no promotion run followed dispatches
+  `server-production-promote.yml`, `mobile-production-promote.yml` or
+  `mobile-ota-promote.yml`;
+- a merged Staging OTA release whose `mobile-vX.Y.Z` tag does not exist yet
+  dispatches `mobile-ota.yml` at the main head, which stages it exactly like
+  its merge push would have.
+
+Ordering is waiting, not failure: an OTA promotion whose native runtime is not
+yet production, and a Staging OTA whose native runtime has not reached Staging,
+are left alone, and only attempts after that runtime arrived count.
+
+Failed attempts are retried once. Every recovered stage is idempotent: moving
+an EAS channel, copying signed Server image tags, staging an OTA, and the
+native promotion, which reuses a build Apple already holds instead of
+uploading it again. One failed attempt is therefore dispatched again before a
+human is asked. Everything else still stops: a pending
+release PR whose draft already exists, a published tag whose PR still carries
+the pending label, a promotion that ended green without publishing, or a
+second failed attempt each name the exact state for a human to finish.
 Recovery paths are unchanged: the draft recovery inputs on
-`release-dispatch.yml` and a manual run of `mobile-ota-promote.yml`.
+`release-dispatch.yml` and a manual run of the promotion workflow.
 
 A red cron run notifies nobody, so the sweep's `alarm` job turns its verdict
 into one issue labelled `release-stall` (`scripts/release-alarm.mjs`). The issue

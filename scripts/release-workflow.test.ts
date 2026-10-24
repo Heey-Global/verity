@@ -1752,4 +1752,23 @@ describe('publication reconciliation', () => {
     checkImports(resolve('scripts/release-reconcile.mjs'));
     checkImports(resolve('scripts/pending-release-trains.mjs'));
   });
+
+  it('forwards website planning through the dispatcher and gates it on planning mode', () => {
+    const forwarded = dispatch.jobs['release-website']?.with?.['website-replan'];
+    expect(forwarded).toContain("format('{0}', inputs['website-replan']) == 'true'");
+    expect(forwarded).toContain("matrix.train == 'website'");
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const lifecycle = steps.find((step) => step.name === 'Reconcile release lifecycle');
+    expect(lifecycle?.if).toContain("inputs.website-replan && inputs.train == 'website'");
+    const planner = steps.find(
+      (step) =>
+        step.uses?.startsWith('googleapis/release-please-action') &&
+        step.with?.['config-file'] === 'release-please-config.website.json',
+    );
+    expect(planner?.if).toContain(
+      "inputs.website-replan && inputs.train == 'website' && steps.lifecycle.outputs.mode == 'plan'",
+    );
+    const guard = steps.find((step) => step.name === 'Validate backend re-plan request');
+    expect(guard?.env?.REPLAN).toContain('inputs.website-replan');
+  });
 });
