@@ -1,5 +1,5 @@
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
-import { vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
+import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
 import {
   createVulnerabilitySessionMonitor,
@@ -3841,6 +3841,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
       return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
     },
+    canWakeSleeping: canWakeForScan(deps.provisioner),
     ...(deps.provisioner?.projectSandboxLastActivityAt &&
     deps.provisioner.tryBeginProjectSandboxActivity &&
     deps.provisioner.endProjectSandboxActivity
@@ -3908,6 +3909,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: deps.eventStore.vulnerabilityScans,
     listProjects: () => deps.eventStore.listProjects(),
     scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
+    accepts: (project) => vulnerabilityService.accepts(project),
     log: app.log,
   });
   registerVulnerabilityRoutes(app, {
