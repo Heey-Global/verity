@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -30,7 +31,8 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
         hostname: input.hostname,
         port: input.port ?? 443,
         ca: input.ca,
-        servername: input.hostname,
+        // IP identities are verified against IP SANs without sending DNS-only SNI.
+        servername: isIP(input.hostname) === 0 ? input.hostname : '',
         method: input.method,
         path: input.path,
         headers: input.headers,
