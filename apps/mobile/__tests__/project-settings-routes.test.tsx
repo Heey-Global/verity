@@ -51,6 +51,21 @@ afterEach(() => {
 });
 
 describe('project settings index — destinations', () => {
+  it.each(['local', 'control_plane'] as const)(
+    'hides the scan destination for %s',
+    async (kind) => {
+      const detail = makeDetail();
+      mockCreateVerityClient.mockReturnValue(
+        makeClient({
+          detail: { ...detail, project: { ...detail.project, kind } },
+        }),
+      );
+      render(<ProjectSettingsIndexScreen />);
+      await screen.findByLabelText(rowLabel('Sandbox'));
+      expect(screen.queryByLabelText(rowLabel('Vulnerability scan'))).toBeNull();
+      expect(screen.queryByText('Security')).toBeNull();
+    },
+  );
   // Each row opens its project-specific destination directly.
   it.each([
     ['Vulnerability scan', '/project/[id]/vulnerability-scan'],

@@ -228,3 +228,5 @@ export {
   boundedHistoryResultSchema,
 } from './history.js';
 export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
+
+export * from './vulnerability.js';

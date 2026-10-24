@@ -652,6 +652,10 @@ export type {
 } from './api.js';
 
 export {
+  groupVulnerabilityFindings,
+  findingCategory,
+  vulnerabilityCounts,
+  type FindingGroup,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,

@@ -5,13 +5,14 @@ set -euo pipefail
 
 [ "${1:-}" = "get" ] || exit 0
 
-[ "${VERITY_FORGE_MODE:-}" = "proxy-test" ] || exit 1
+fail() { printf 'verity-gh-cred: %s\n' "$1" >&2; exit 1; }
+[ "${VERITY_FORGE_MODE:-}" = "proxy-test" ] || fail "forge proxy mode is not configured"
 protocol=""; host=""
 while IFS='=' read -r key value; do
   case "$key" in protocol) protocol="$value" ;; host) host="$value" ;; esac
 done
 authority="${VERITY_FORGE_AUTHORITY:-github.com}"
-[ "$protocol" = "https" ] && { [ "$host" = "$authority" ] || [ "$host" = "$authority:443" ]; } || exit 1
-token="$(verity-gh-token)" || exit 1
+[ "$protocol" = "https" ] && { [ "$host" = "$authority" ] || [ "$host" = "$authority:443" ]; } || fail "request does not match the configured HTTPS forge authority"
+token="$(verity-gh-token)" || fail "forge broker capability or proxy configuration is unavailable"
 
 printf 'username=x-access-token\npassword=%s\n' "$token"

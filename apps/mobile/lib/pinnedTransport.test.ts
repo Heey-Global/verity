@@ -1053,6 +1053,7 @@ it('correlates pinned dispatch and native return with the originating switch', a
     'route-ready',
     'lane-admitted',
     'native-dispatch',
+    'native-promise-returned',
     'native-return',
   ]);
   expect(request.phases.at(-1)?.value).toEqual(expect.any(Number));
@@ -1082,6 +1083,37 @@ it('dispatches a bodyless interactive direct read without yielding to JS schedul
     'route-ready',
     'lane-admitted',
     'native-dispatch',
+    'native-promise-returned',
   ]);
   await pending;
+});
+
+it('marks promise return before settlement and keeps a rapid replacement trace separate', async () => {
+  const trace = beginSessionSwitch('old-target');
+  const requestId = beginSwitchTransportRequest(trace, 'events')!;
+  let resolve!: (response: { status: number; headers: {}; bodyBase64: string }) => void;
+  mockRemoteAvailable.mockReturnValueOnce(false);
+  mockRequest.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const pending = createPinnedFetch('pin', true)('https://verity.example/events', {
+    transportLane: 'interactive',
+    headers: { 'x-verity-switch-request': requestId },
+  } as RequestInit);
+  const phases = () =>
+    exportSessionSwitchTimings()
+      .find((item) => item.switchId === trace.id)!
+      .transportRequests[0]!.phases.map((phase) => phase.phase);
+  expect(phases()).toContain('native-promise-returned');
+  expect(phases()).not.toContain('native-return');
+  const replacement = beginSessionSwitch('new-target');
+  resolve({ status: 200, headers: {}, bodyBase64: 'e30=' });
+  await pending;
+  expect(
+    exportSessionSwitchTimings().find((item) => item.switchId === replacement.id)!
+      .transportRequests,
+  ).toHaveLength(0);
 });

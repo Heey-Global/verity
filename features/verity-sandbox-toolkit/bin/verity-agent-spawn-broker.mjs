@@ -792,6 +792,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
       : {}),
     ...copy('IS_SANDBOX'),
     ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_AUTHORITY'),
     ...copy('VERITY_FORGE_PROXY_URL'),
     ...copy('VERITY_FORGE_PROXY_CA_FILE'),
     ...copy('GIT_TERMINAL_PROMPT'),
@@ -803,6 +804,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     ...copy('VERITY_SIGNING_TOKEN_FILE'),
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
     ...copy('VERITY_PROJECT_MEMORY_URL'),
+    ...copy('VERITY_PROJECT_REPO_URL'),
   };
 }
 
