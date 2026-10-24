@@ -462,6 +462,15 @@ describe('release reconciliation sweep', () => {
     },
   );
 
+  it('resumes a green deferred OTA run after native production publication', () => {
+    const result = sweep({
+      promoteRuns: [run({ event: 'push', created_at: '2026-09-28T21:40:00Z' })],
+      nativePromoteRuns: [run({ created_at: '2026-09-28T23:00:00Z' })],
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([promote]);
+  });
+
   it('counts OTA attempts only after the native runtime reached production', () => {
     const result = sweep({
       promoteRuns: [

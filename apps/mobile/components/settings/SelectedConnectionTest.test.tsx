@@ -191,3 +191,63 @@ it('does not copy or clear when descriptor verification returns 404', async () =
   expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
   expect(mockExport).not.toHaveBeenCalled();
 });
+it('copies an allowlisted local receipt when server export fails, without clearing the run', async () => {
+  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
+  mockExport.mockRejectedValue(Object.assign(new Error('secret token payload'), { status: 503 }));
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(
+    'Saved bounded test available. Copy its report before starting another test.',
+  );
+  fireEvent.press(screen.getByText('Copy bounded test report'));
+  await screen.findByText('Copy local test failure');
+  fireEvent.press(screen.getByText('Copy local test failure'));
+  await screen.findByText('Local failure copied. This does not confirm server recording or Stop.');
+  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
+    kind: 'selected-test-local-failure',
+    stage: 'server-export',
+    httpStatus: 503,
+    runId,
+  });
+  expect(mockCopy.mock.calls[0][0]).not.toContain('secret');
+  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
+  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
+});
+it('reports direct verification failure locally without trying server export', async () => {
+  await AsyncStorage.setItem('verity.selectedConnectionTest.v1.paired', runId);
+  mockVerify.mockRejectedValue(new Error('private URL and token'));
+  render(<SelectedConnectionTest disabled={false} onBusy={jest.fn()} />);
+  await screen.findByText(
+    'Saved bounded test available. Copy its report before starting another test.',
+  );
+  fireEvent.press(screen.getByText('Copy bounded test report'));
+  await screen.findByText('Copy local test failure');
+  mockCopy.mockRejectedValueOnce(new Error('clipboard failed'));
+  fireEvent.press(screen.getByText('Copy local test failure'));
+  await screen.findByText('Clipboard unavailable. Failed step: export-direct-descriptor.');
+  expect(mockExport).not.toHaveBeenCalled();
+  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
+    kind: 'selected-test-local-failure',
+    stage: 'export-direct-descriptor',
+    httpStatus: null,
+    runId,
+  });
+});
+it('copies only local evidence after the bounded attempt fails and retains the run', async () => {
+  mockAttempt.mockRejectedValue(
+    Object.assign(new Error('secret admission ticket'), { status: 502 }),
+  );
+  await ready();
+  fireEvent.press(screen.getByText('Run bounded connection test'));
+  await screen.findByText('Copy local test failure');
+  fireEvent.press(screen.getByText('Copy local test failure'));
+  await screen.findByText('Local failure copied. This does not confirm server recording or Stop.');
+  expect(JSON.parse(mockCopy.mock.calls[0][0])).toEqual({
+    kind: 'selected-test-local-failure',
+    stage: 'bounded-attempt',
+    httpStatus: 502,
+    runId,
+  });
+  expect(await AsyncStorage.getItem('verity.selectedConnectionTest.v1.paired')).toBe(runId);
+  expect(mockExport).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Run bounded connection test' })).toBeDisabled();
+});
