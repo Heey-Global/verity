@@ -35,19 +35,30 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-26.04
+    # The Staging release PR, the rolling promotion PR, their labels, the
+    # candidate tags and the restage dispatch are written with the release app
+    # token so the generated PRs trigger pull_request CI and Gitleaks. The
+    # GITHUB_TOKEN only reads published releases.
     permissions:
-      actions: write
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
     # A stalled Metro export / EAS publish must not hold the serialized release
     # slot indefinitely.
     timeout-minutes: 30
     steps:
+      - name: Mint release app token
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # Staging pushes the rolling branch and candidate tags with these credentials.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Detect commits owned by another mobile workflow
         id: release-kind
@@ -77,7 +88,8 @@ jobs:
         if: steps.release-kind.outputs.skip != 'true'
         id: intent
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/mobile-ota-proposal.mjs detect
 
       - name: Check out the immutable merged release source
@@ -166,7 +178,8 @@ jobs:
       - name: Update Staging OTA Release Please PR
         if: steps.intent.outputs.mode == 'plan'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/mobile-ota-proposal.mjs plan "$(tr -d '[:space:]' < apps/mobile/version.txt)"
 
       - name: Stage immutable candidate and update rolling promotion PR
@@ -174,7 +187,8 @@ jobs:
         if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
         env:
           OTA_SOURCE_SHA: ${{ steps.intent.outputs.commit }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
           GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
@@ -183,5 +197,5 @@ jobs:
       - name: Record the delivered Staging release
         if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: node scripts/mobile-ota-proposal.mjs complete "${{ steps.intent.outputs.pr }}" "${{ steps.stage.outputs.deferred }}"

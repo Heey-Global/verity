@@ -38,20 +38,20 @@ describe('project setup presentation', () => {
           },
           detection,
         ),
-      ).toEqual({ label: '2 critical on main', tone: 'attention' });
+      ).toEqual({ label: '3 vulnerabilities', tone: 'attention' });
     }
     expect(
       projectOverviewStatus({
         ...project,
         vulnerabilitySummary: { count: 1, critical: 0, high: 1 },
       })?.label,
-    ).toBe('1 high on main');
+    ).toBe('1 vulnerability');
     expect(
       projectOverviewStatus({
         ...project,
         vulnerabilitySummary: { count: 1, critical: 0, high: 0 },
       })?.label,
-    ).toBe('1 vulnerability on main');
+    ).toBe('1 vulnerability');
   });
   it('maps internal lifecycle states to friendly progress', () => {
     expect(projectSetupStatus(project)).toMatchObject({

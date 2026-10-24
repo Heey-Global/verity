@@ -38,7 +38,7 @@ export function pendingReleasePrs(component) {
     )
     .map((pr) => ({
       number: pr.number,
-      author: { login: pr.user.login === 'github-actions[bot]' ? 'github-actions' : pr.user.login },
+      author: { login: pr.user.login },
       mergeCommit: { oid: pr.merge_commit_sha },
       mergedAt: /** @type {string} */ (pr.merged_at),
     }));

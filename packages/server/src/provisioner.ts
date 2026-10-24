@@ -1613,13 +1613,20 @@ export interface Provisioner {
    * used by Sandbox repair, and reject when existing work is active. */
   withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
-  sleepProject?(projectId: string): Promise<ProjectRecord>;
+  sleepProject?(
+    projectId: string,
+    options?: { shouldRestore?: () => boolean },
+  ): Promise<ProjectRecord>;
   /** Finish authority cleanup after a process died during an explicit sleep. */
   recoverInterruptedSleep?(projectId: string): Promise<ProjectRecord>;
   /** Revoke partially issued wake authority and return to retained sleep. */
   recoverInterruptedWake?(projectId: string): Promise<ProjectRecord>;
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
+  /** Temporary background wake: reports whether this caller started the wake. */
+  wakeProjectForScan?(
+    projectId: string,
+  ): Promise<{ project: ProjectRecord; owned: boolean; activityAt: number | undefined }>;
   /** Readiness gate used by turns and automations; concurrent callers share one wake. */
   ensureProjectSandboxAwake?(
     projectId: string,
@@ -2860,12 +2867,16 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  async sleepProject(projectId: string): Promise<ProjectRecord> {
+  async sleepProject(
+    projectId: string,
+    options?: { shouldRestore?: () => boolean },
+  ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
       const result = await this.withProjectExclusiveMutation(projectId, async () => {
         const project = await this.opts.store.getProject(projectId);
         if (project === undefined) throw new ProvisioningError('project gone mid-sleep');
+        if (options?.shouldRestore && !options.shouldRestore()) return project;
         if (project.state !== 'active') {
           throw new ProvisioningError(`project ${projectId} is not active`);
         }
@@ -2883,6 +2894,8 @@ export class ProvisionerImpl implements Provisioner {
             `project ${projectId} has no owned running Sandbox generation`,
           );
         }
+        // An explicit wake intent may arrive while Docker inspection is pending.
+        if (options?.shouldRestore && !options.shouldRestore()) return project;
         const fingerprint = sandboxSleepCompatibilityFingerprint(inspect);
         await this.opts.store.updateProjectSleepState(project.id, 'sleeping_starting', {
           sleepCompatibilityFingerprint: fingerprint,
@@ -3104,6 +3117,25 @@ export class ProvisionerImpl implements Provisioner {
         this.projectWakeAttempts.delete(projectId);
       }
     }
+  }
+
+  async wakeProjectForScan(
+    projectId: string,
+  ): Promise<{ project: ProjectRecord; owned: boolean; activityAt: number | undefined }> {
+    const current = await this.opts.store.getProject(projectId);
+    if (!current) throw new ProvisioningError('project gone before scan wake');
+    if (current.state === 'active')
+      return {
+        project: current,
+        owned: false,
+        activityAt: this.projectSandboxLastActivityAt(projectId),
+      };
+    if (current.state !== 'sleeping' && !this.projectWakeAttempts.has(projectId))
+      throw new ProvisioningError(`project ${projectId} is ${current.state}`);
+    const owned = !this.projectWakeAttempts.has(projectId);
+    const waking = this.wakeProject(projectId);
+    const activityAt = this.projectSandboxLastActivityAt(projectId);
+    return { project: await waking, owned, activityAt };
   }
 
   private async wakeProjectOnce(
@@ -3989,6 +4021,7 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     opts: { confirmWarnings?: boolean } = {},
   ): Promise<ProjectRecord> {
+    this.markProjectSandboxActivity(projectId);
     // Coalesce onto an already-running attempt (see inFlightProvisions). The
     // joining caller's own `opts` are intentionally ignored — it observes the
     // running attempt's outcome, exactly as if its request had arrived while

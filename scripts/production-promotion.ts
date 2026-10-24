@@ -1,5 +1,6 @@
 import { captureJson } from './capture-json.mjs';
 import { promotionChangelog, type PromotionRelease } from './promotion-changelog.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, createWriteStream, mkdirSync } from 'node:fs';
@@ -213,11 +214,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     ),
   ) as { number: number; headRefOid: string; author: { login: string }; baseRefName: string }[];
   for (const approval of approvals) {
-    if (
-      approval.baseRefName !== 'main' ||
-      !['app/github-actions', 'github-actions[bot]'].includes(approval.author.login)
-    )
-      continue;
+    if (approval.baseRefName !== 'main' || !isReleaseBotLogin(approval.author.login)) continue;
     const record = api<{ content: string }>(
       `repos/${repository}/contents/${manifest}?ref=${approval.headRefOid}`,
     );
@@ -248,10 +245,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     const owner = JSON.parse(
       gh('pr', 'list', '--head', branch, '--state', 'all', '--json', 'author'),
     ) as { author: { login: string } }[];
-    if (
-      owner.length &&
-      owner.some((pr) => !['app/github-actions', 'github-actions[bot]'].includes(pr.author.login))
-    )
+    if (owner.length && owner.some((pr) => !isReleaseBotLogin(pr.author.login)))
       throw new Error('Promotion branch is not workflow-owned');
   } else {
     api(
@@ -375,7 +369,8 @@ export function propose(inputPath = process.argv[3] ?? '') {
         'message=The production candidate changed. Review the current candidate again.',
       );
   }
-  gh('workflow', 'run', 'ci.yml', '--ref', branch);
+  // The app token behind GH_TOKEN authored the branch commit and the PR, so
+  // their pull_request events run CI on the new head without a dispatch.
 }
 
 function promote() {

@@ -1,3 +1,4 @@
+import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
@@ -4684,7 +4685,6 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
@@ -4736,6 +4736,8 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {/* Last above the composer: below the plan and the PR bar, never above them. */}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
@@ -9579,104 +9581,98 @@ function PullRequestBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={[styles.prBar, opening ? styles.prBarPressed : null]}>
+    <SessionBar pressed={opening}>
+      <SessionBarTarget
+        onPressIn={() => setOpening(true)}
+        onPressOut={() => setOpening(false)}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current)
+              void Linking.openURL(pullRequest.url).catch(() => undefined);
+          })
+        }
+        accessibilityRole="link"
+        accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
+      >
+        <SessionBarContent
+          color={statusColor}
+          title={`PR #${pullRequest.number} · ${pullRequest.title}`}
+          subtitle={`${merged ? 'merged' : pullRequest.phase} · ${checksText}`}
+        >
+          {visibleError ? (
+            <Text style={styles.prError} numberOfLines={1}>
+              {visibleError}
+            </Text>
+          ) : null}
+        </SessionBarContent>
+        <CodeHostIcon
+          provider={codeHost?.provider ?? 'github'}
+          size={16}
+          color={theme.colors.textMuted}
+        />
+      </SessionBarTarget>
+      {onDismiss ? (
         <Pressable
-          style={styles.prOpenTarget}
-          onPressIn={() => setOpening(true)}
-          onPressOut={() => setOpening(false)}
+          style={({ pressed }) => [
+            styles.prDismissButton,
+            pressed ? styles.prDismissButtonPressed : null,
+          ]}
           onPress={() =>
             void confirmHint().then((proceed) => {
-              if (proceed && mounted.current)
-                void Linking.openURL(pullRequest.url).catch(() => undefined);
+              if (proceed && mounted.current) onDismiss();
             })
           }
-          accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
         >
-          <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
-          <View style={styles.prMain}>
-            <Text style={styles.prTitle} numberOfLines={1}>
-              PR #{pullRequest.number} · {pullRequest.title}
-            </Text>
-            <Text style={styles.prSub} numberOfLines={1}>
-              {merged ? 'merged' : pullRequest.phase} · {checksText}
-            </Text>
-            {visibleError ? (
-              <Text style={styles.prError} numberOfLines={1}>
-                {visibleError}
-              </Text>
-            ) : null}
-          </View>
-          <CodeHostIcon
-            provider={codeHost?.provider ?? 'github'}
-            size={16}
-            color={theme.colors.textMuted}
-          />
+          <Text style={styles.prDismissText}>×</Text>
         </Pressable>
-        {onDismiss ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prDismissButton,
-              pressed ? styles.prDismissButtonPressed : null,
-            ]}
-            onPress={() =>
-              void confirmHint().then((proceed) => {
-                if (proceed && mounted.current) onDismiss();
-              })
-            }
-            accessibilityRole="button"
-            accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
-          >
-            <Text style={styles.prDismissText}>×</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prMergeButton,
-              button.kind === 'merge' || button.kind === 'merging'
-                ? { backgroundColor: theme.colors.success }
-                : button.kind === 'blocked'
-                  ? { backgroundColor: theme.colors.attention }
-                  : button.kind === 'waiting'
-                    ? styles.prMergeButtonWaiting
-                    : styles.prMergeButtonOutline,
-              pressed && (mergeButtonEnabled || button.kind === 'refresh')
-                ? styles.prMergeButtonPressed
-                : null,
-            ]}
-            onPress={
-              button.kind === 'refresh'
-                ? () =>
-                    void confirmHint().then((proceed) => {
-                      if (proceed && mounted.current) onRefresh();
-                    })
-                : merge
-            }
-            disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
-            accessibilityRole="button"
-            accessibilityState={{
-              disabled: !mergeButtonEnabled && button.kind !== 'refresh',
-              busy: button.kind === 'merging' || button.kind === 'waiting',
-            }}
-            accessibilityLabel={buttonLabel}
-          >
-            {button.kind === 'merging' ? (
-              <ActivityIndicator color={theme.colors.onAction} />
-            ) : button.kind === 'waiting' ? (
-              <View style={styles.prMergeWaiting}>
-                <SlowSpinner color={theme.colors.textMuted} />
-                <Text style={styles.prMergeWaitingText}>{button.label}</Text>
-              </View>
-            ) : button.kind === 'closed' ? null : (
-              <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
-                {button.label}
-              </Text>
-            )}
-          </Pressable>
-        )}
-      </View>
-    </View>
+      ) : (
+        <Pressable
+          style={({ pressed }) => [
+            styles.prMergeButton,
+            button.kind === 'merge' || button.kind === 'merging'
+              ? { backgroundColor: theme.colors.success }
+              : button.kind === 'blocked'
+                ? { backgroundColor: theme.colors.attention }
+                : button.kind === 'waiting'
+                  ? styles.prMergeButtonWaiting
+                  : styles.prMergeButtonOutline,
+            pressed && (mergeButtonEnabled || button.kind === 'refresh')
+              ? styles.prMergeButtonPressed
+              : null,
+          ]}
+          onPress={
+            button.kind === 'refresh'
+              ? () =>
+                  void confirmHint().then((proceed) => {
+                    if (proceed && mounted.current) onRefresh();
+                  })
+              : merge
+          }
+          disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
+          accessibilityRole="button"
+          accessibilityState={{
+            disabled: !mergeButtonEnabled && button.kind !== 'refresh',
+            busy: button.kind === 'merging' || button.kind === 'waiting',
+          }}
+          accessibilityLabel={buttonLabel}
+        >
+          {button.kind === 'merging' ? (
+            <ActivityIndicator color={theme.colors.onAction} />
+          ) : button.kind === 'waiting' ? (
+            <View style={styles.prMergeWaiting}>
+              <SlowSpinner color={theme.colors.textMuted} />
+              <Text style={styles.prMergeWaitingText}>{button.label}</Text>
+            </View>
+          ) : button.kind === 'closed' ? null : (
+            <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
+              {button.label}
+            </Text>
+          )}
+        </Pressable>
+      )}
+    </SessionBar>
   );
 }
 
@@ -9724,47 +9720,45 @@ function LocalMergeBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <View style={styles.prLocalMain}>
-          <Text style={styles.prTitle} numberOfLines={1}>
-            Changes from this session
+    <SessionBar>
+      <View style={styles.prLocalMain}>
+        <Text style={styles.prTitle} numberOfLines={1}>
+          Changes from this session
+        </Text>
+        <Text style={styles.prSub} numberOfLines={1}>
+          Save them as a version in your project.
+        </Text>
+        {error !== undefined ? (
+          <Text style={styles.prError} numberOfLines={2}>
+            {error}
           </Text>
-          <Text style={styles.prSub} numberOfLines={1}>
-            Save them as a version in your project.
-          </Text>
-          {error !== undefined ? (
-            <Text style={styles.prError} numberOfLines={2}>
-              {error}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.prMergeButton,
-            styles.prLocalMergeButton,
-            { backgroundColor: theme.colors.success },
-            saving || busy ? styles.prMergeButtonDisabled : null,
-            pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
-          ]}
-          onPress={() =>
-            void confirmHint().then((proceed) => {
-              if (proceed && mounted.current) save();
-            })
-          }
-          disabled={saving || busy}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: saving || busy, busy: saving }}
-          accessibilityLabel="Save this session's changes as a version in your project"
-        >
-          {saving ? (
-            <ActivityIndicator color={theme.colors.onAction} />
-          ) : (
-            <Text style={styles.prMergeText}>Save to project</Text>
-          )}
-        </Pressable>
+        ) : null}
       </View>
-    </View>
+      <Pressable
+        style={({ pressed }) => [
+          styles.prMergeButton,
+          styles.prLocalMergeButton,
+          { backgroundColor: theme.colors.success },
+          saving || busy ? styles.prMergeButtonDisabled : null,
+          pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
+        ]}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current) save();
+          })
+        }
+        disabled={saving || busy}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: saving || busy, busy: saving }}
+        accessibilityLabel="Save this session's changes as a version in your project"
+      >
+        {saving ? (
+          <ActivityIndicator color={theme.colors.onAction} />
+        ) : (
+          <Text style={styles.prMergeText}>Save to project</Text>
+        )}
+      </Pressable>
+    </SessionBar>
   );
 }
 
@@ -11196,46 +11190,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  prBarWrap: {
-    paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
-  },
-  prBar: {
-    minHeight: 54,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  prOpenTarget: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.sm,
-  },
-  prBarPressed: {
-    backgroundColor: theme.colors.border,
-  },
-  prStatusDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-  },
-  prMain: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
-  },
   /** The local merge bar has no status dot and nothing to open, so it carries the
-   *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
+   *  padding the shared session target gives the PR row — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
 
   prLocalMain: {
