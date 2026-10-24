@@ -167,9 +167,9 @@ async function requestNative(
   const diagnosticRequestId = args[3]['x-verity-switch-request'];
   markSwitchTransportRequest(diagnosticRequestId, 'native-dispatch', args[6] > 0 ? 1 : 0);
   try {
-    const response = await (transport.requestV2
-      ? transport.requestV2(...args)
-      : transport.request(...args));
+    const pending = transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+    markSwitchTransportRequest(diagnosticRequestId, 'native-promise-returned', Date.now());
+    const response = await pending;
     markSwitchTransportRequest(diagnosticRequestId, 'native-return', Date.now());
     return response;
   } catch (error) {

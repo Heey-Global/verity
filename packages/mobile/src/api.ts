@@ -10,7 +10,11 @@ import {
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
 } from '@verity/events';
-import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
+import {
+  beginRuntimeApiRequest,
+  runtimeRequestGroup,
+  runtimeOtherRequestGroup,
+} from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
   selectedEvidenceMetadataSchema,
@@ -5536,6 +5540,7 @@ export class VerityClient {
     let res: Response;
     const finishRuntimeRequest = beginRuntimeApiRequest(
       runtimeRequestGroup(path, init.method ?? 'GET'),
+      runtimeOtherRequestGroup(path),
     );
     try {
       res = await fetchImpl(`${this.baseUrl}${path}`, init);

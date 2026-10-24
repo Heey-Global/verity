@@ -21,6 +21,30 @@ const requestGroups: Record<
   session: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
   other: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
 };
+export type RuntimeOtherRequestGroup = 'google' | 'links' | 'models' | 'remaining';
+const otherRequestGroups: Record<RuntimeOtherRequestGroup, (typeof requestGroups)['other']> = {
+  google: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+  links: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+  models: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+  remaining: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+};
+
+/** Fixed families only; no dynamic keys or request data survive classification. */
+export function runtimeOtherRequestGroup(path: string): RuntimeOtherRequestGroup {
+  const pathname = path.split('?')[0]!;
+  if (
+    /^\/google(?:\/|$)/.test(pathname) ||
+    /^\/(?:sessions|projects)\/[^/]+\/(?:gmail|calendar|contacts|google-workspace)(?:\/|$)/.test(
+      pathname,
+    )
+  )
+    return 'google';
+  if (/^\/sessions\/[^/]+\/(?:links|linked-message-approvals)(?:\/|$)/.test(pathname))
+    return 'links';
+  if (pathname === '/models') return 'models';
+  return 'remaining';
+}
+
 let requestPeak = 0;
 
 /** Classify locally; paths, query parameters and identifiers are never retained. */
@@ -48,10 +72,22 @@ export function mobileRuntimeSnapshot(resetRequestPeaks = false) {
     session: { ...requestGroups.session },
     other: { ...requestGroups.other },
   };
-  const snapshot = { ...counters, apiRequestGroups: groups, apiRequestPeakInFlight: requestPeak };
+  const apiOtherRequestGroups = {
+    google: { ...otherRequestGroups.google },
+    links: { ...otherRequestGroups.links },
+    models: { ...otherRequestGroups.models },
+    remaining: { ...otherRequestGroups.remaining },
+  };
+  const snapshot = {
+    apiOtherRequestGroups,
+    ...counters,
+    apiRequestGroups: groups,
+    apiRequestPeakInFlight: requestPeak,
+  };
   if (resetRequestPeaks) {
     requestPeak = counters.inFlightApiRequests;
-    for (const group of Object.values(requestGroups)) group.peakInFlight = group.inFlight;
+    for (const group of [...Object.values(requestGroups), ...Object.values(otherRequestGroups)])
+      group.peakInFlight = group.inFlight;
   }
   return snapshot;
 }
@@ -81,23 +117,29 @@ export function recordRuntimeSessionEvent(accepted: boolean): void {
 /** Fetch invocation through response headers/error, excluding response-body processing. */
 export function beginRuntimeApiRequest(
   groupName: RuntimeRequestGroup = 'other',
+  otherGroupName: RuntimeOtherRequestGroup = 'remaining',
 ): (failed: boolean) => void {
   counters.inFlightApiRequests += 1;
   counters.apiRequestsStarted += 1;
   requestPeak = Math.max(requestPeak, counters.inFlightApiRequests);
   const group = requestGroups[groupName];
-  group.started++;
-  group.inFlight++;
-  group.peakInFlight = Math.max(group.peakInFlight, group.inFlight);
+  const subgroup = groupName === 'other' ? otherRequestGroups[otherGroupName] : undefined;
+  for (const entry of subgroup ? [group, subgroup] : [group]) {
+    entry.started++;
+    entry.inFlight++;
+    entry.peakInFlight = Math.max(entry.peakInFlight, entry.inFlight);
+  }
   let ended = false;
   return (failed) => {
     if (ended) return;
     ended = true;
     counters.inFlightApiRequests -= 1;
     counters.apiRequestsSettled += 1;
-    group.inFlight--;
-    group.settled++;
-    if (failed) group.failures++;
+    for (const entry of subgroup ? [group, subgroup] : [group]) {
+      entry.inFlight--;
+      entry.settled++;
+      if (failed) entry.failures++;
+    }
     if (failed) counters.apiRequestFailures += 1;
   };
 }
