@@ -127,8 +127,11 @@ no sandbox bind mount contains; the sandbox sees only volume subpaths under
 a scheduled run, the warm pre-update run and a restore in progress never share
 a path, and the directory is removed on every exit path of the run because it
 holds plaintext refs, index and user `config`; a SIGKILL or host crash bypasses
-exit paths, so the server sweeps orphaned `capture/` and `restore/` directories
-at startup. This staging is the one documented exception to the rule against
+exit paths, so the server sweeps `capture/<runId>/` directories whose run lock
+is no longer held at startup. "Orphaned" is defined by run lock ownership, never
+by age, and the sweep never touches `restore/<projectId>/`: that directory is
+durable pending-rehydration data, owned by project state, and is removed only
+when the project has rehydrated or the user has reconciled it. This staging is the one documented exception to the rule against
 plaintext staging: it stays on the host, in a server-owned directory, for the
 duration of a run). The copy uses reflinks where the
 filesystem offers them and a plain copy otherwise, never hardlinks, which would
@@ -147,12 +150,15 @@ and `commondir` entries under `worktrees/<name>` are resolved and must lie
 inside the project's own workspace or session paths; anything else is recorded
 and the repository is captured as plain files without running Git. In the copy,
 `config` is replaced by a sanitized file holding only the repository-format
-keys; the main and every per-worktree `config.worktree`, `hooks`,
-`objects/info/alternates`, `shallow`, `info/grafts` and `refs/replace/*` are
-moved out of Git's reach into a sibling `user-files/` directory of the staging
-copy. They are user content and go into the snapshot as such, so a shallow
-repository or user replace refs restore intact; they are only kept away from
-every Git command the backup runs. Every Git command then runs with `GIT_DIR`
+keys; the main and every per-worktree `config.worktree`, `hooks` and
+`objects/info/alternates` are moved out of Git's reach into a sibling
+`user-files/` directory of the staging copy, because they can execute or
+redirect. `shallow`, `info/grafts` and `refs/replace/*` are data, not
+configuration: they stay in the copy so the connectivity check below can pass
+on a shallow or grafted repository, `GIT_NO_REPLACE_OBJECTS=1` keeps replace
+refs from steering any walk, and their presence still classifies the repository
+self-contained. All of these files are user content and go into the snapshot as
+such. Every Git command then runs with `GIT_DIR`
 set to that copy and reads nothing from the live repository, so there is no
 window between a check
 and the pack in which the sandbox can change what Git sees. The copy is what
@@ -265,8 +271,11 @@ Capture, per repository that the project record ties to the connected code host:
    duration on a large repository and the pre-update quiesced window with it. Only the default branch is excluded, not every remote
    branch: feature branches are routinely squash-merged and deleted on the host,
    so a stale tip for `<branch>` would exclude commits the host no longer has.
-   Pushed but unmerged branches are therefore included; they are small, and they
-   drop out of the pack on the next snapshot after they merge. `--reflog` and
+   Pushed but unmerged branches are therefore included; they are small. After a
+   merge-commit merge they drop out of the pack on the next snapshot; after a
+   squash merge the original commits are unreachable from the default branch
+   and stay in the pack for as long as the local branch exists, which is the
+   price of the safe boundary. `--reflog` and
    `--indexed-objects` are what make the restored `index` and `logs`
    consistent: staged blobs, older stash entries and commits reachable only from
    a reflog after reset, rebase or amend have no ref, and a plain `--all` pack
@@ -392,7 +401,8 @@ A user who gives up on rehydration can resume the project in a "working files
 only" state. That state is defined, not implied: the restored `.git` is renamed
 to `.git.verity-incomplete` so no tool mistakes it for a usable repository, the
 working files stay in place, the local-only packfile and the set-aside user
-config stay next to it, and the project screen shows that Code has no history
+config stay in the server-owned `<VERITY_ROOT>/restore/<projectId>/` where the
+sandbox cannot reach them, and the project screen shows that Code has no history
 until the code host is reconnected and rehydration is retried. Nothing local is
 discarded by that choice; it is not a self-contained repository.
 
@@ -478,14 +488,19 @@ depth, object count) and validate archive paths and links against the staging
 root before writing, so a malicious manifest cannot exhaust memory or escape
 the restore directory. Version the format and keep cross-version fixtures.
 
-Recovery kit: the private recovery key as text with checksum and as QR code,
-printable, plus the manifest verification key, which is public and needs no
-re-entry check but is required to restore. The signing key pair is generated at
+Recovery kit: one encoded string, printed as text with checksum and as QR code,
+that carries both the private recovery key and the manifest verification key;
+the user handles one artifact, and "the recovery key" in the user interface
+means that string. The verification key is public, but without it a restore
+cannot accept any manifest, so it is never issued separately. The signing key pair is generated at
 setup together with the recipient pair; the private signing key lives in
 restricted host-local storage, is never part of a snapshot, and a copy encrypted
 to the recipient is stored in the repository, so a restore, which holds the
-private recovery key at that moment, recovers it and installs it on the new
-host. Later snapshots from the restored host therefore still verify against the
+private recovery key at that moment, recovers it, checks that its public half
+equals the kit's verification key or is reachable through the signed rotation
+chain, and only then installs it on the new host; a planted key object that
+fails that check is reported and the restored host generates a fresh signing
+key, signs it with nothing, and tells the user that the kit must be reissued. Later snapshots from the restored host therefore still verify against the
 same kit, which `pending-rehydration` restores depend on. Rotating the signing
 key is done by signing the new verification key with the old one and recording
 the chain in the manifest; the kit's verification key remains the root. Setup
@@ -530,7 +545,7 @@ key generation only. Never use plaintext hashes as public object names, derive
 encryption keys from content, or use deterministic encryption. The host keeps a
 restricted local index mapping content fingerprints to random opaque object IDs.
 Fingerprints are keyed, an HMAC under a random per-repository key, not plain
-hashes. Capture must run with a sealed secret store, so that key lives in the
+hashes. Capture must be able to run with a sealed secret store, so that key lives in the
 same restricted host-local storage as the index and the public recipient key,
 readable by the backup execution identity only; a copy is stored in the
 repository encrypted to the recipient so an index rebuild can recover it. The
@@ -663,8 +678,12 @@ over the private control socket. The hook adds two requests to that sequence:
    snapshot while the old Server serves normally. It transfers the delta since
    the last scheduled run and warms the destination.
 2. After `quiescing-old`, before `handing-off-key`: request a final incremental
-   snapshot. No turn writes anymore, so it captures the exact pre-migration state
-   and transfers seconds of change. The Updater continues only after the
+   snapshot. No turn writes anymore, so it captures the exact pre-migration
+   state. The delta it transfers is small, but the quiesced window is bounded by
+   the freeze of every `.git` (a full copy without reflinks), the tip `fsck` of
+   every remote-dependent repository and the database export, not by the delta;
+   the warm pass shortens only the upload. Acceptance measures this window on a
+   large installation and the status shows it. The Updater continues only after the
    snapshot is durable in the sense of the three-case rule below, normally the
    destination's acknowledgement and, for a sealed server whose only
    destinations need the unlocked store, the local spool, not after bare local
@@ -845,7 +864,8 @@ parents, a renamed default branch, a repository renamed or transferred on the
 host so that the recorded URL now redirects (the restore reports the redirect
 target instead of following it and asks the administrator to update the project
 record), a `git gc` in the sandbox during the freeze, a forged manifest encrypted
-to the recipient key but unsigned, a malicious `config.worktree` in
+to the recipient key but unsigned, a server restart while a project is pending
+rehydration (the staging directory must survive), a malicious `config.worktree` in
 the main and in a linked worktree, a sandbox-written commit-graph, replace ref,
 graft or shallow file added between classification and pack, a repository with
 alternates or submodules, and a fetch into a repository whose refs still dangle. For

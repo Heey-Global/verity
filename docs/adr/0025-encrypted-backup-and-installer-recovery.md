@@ -34,10 +34,13 @@ it mattered argues for a recurring restore probe, not a one-time proof.
 
 ### Recovery key as a private recipient key
 
-The only credential that opens a backup is a locally generated, cryptographically
-random 256-bit recovery key. It is the private half of an asymmetric recipient
-pair (X25519 or an equivalent reviewed scheme in the style of `age`). The host
-stores only the public recipient key. Each immutable object and manifest uses a fresh random data key,
+The only credential that opens a backup is the recovery kit: one encoded string
+carrying a locally generated, cryptographically random 256-bit recovery key,
+the private half of an asymmetric recipient pair (X25519 or an equivalent
+reviewed scheme in the style of `age`), together with the public key that
+verifies manifest signatures. The host stores nothing that opens a backup: the
+public recipient key, a host-local signing key and a fingerprint key, none of
+which decrypts anything. Each immutable object and manifest uses a fresh random data key,
 wrapped to that public key; decryption needs the private recovery key, which
 exists only in the user's recovery kit.
 
@@ -65,8 +68,9 @@ every manifest is signed with a host-local signing key whose verification key is
 part of the recovery kit; the signed payload binds repository and generation
 identity, a snapshot sequence number and a timestamp so a replayed older
 manifest is visible. The private signing key is never in a snapshot but travels
-in the repository encrypted to the recipient, so a restored host keeps signing
-against the same kit. Restore refuses an unsigned or wrongly signed manifest.
+in the repository encrypted to the recipient; a restore installs it only after
+checking its public half against the kit, so a restored host keeps signing
+against the same kit and a planted key is reported. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
@@ -210,8 +214,9 @@ are not repeated here, so that one text stays authoritative.
   concurrent `git gc` is re-frozen with bounded retries and otherwise captured
   as plain files with an `unstable` flag. The freeze is a full copy of `.git`
   where reflinks are unavailable, held under the lifecycle lock and counted in
-  the capacity check; the staging directory is the documented exception to the
-  no-plaintext-staging rule and is swept at startup.
+  the capacity check; the capture staging directory is the documented exception
+  to the no-plaintext-staging rule and is swept at startup by run-lock
+  ownership, while restore staging holding pending data is never swept.
 
 This makes the backup of a code project complete only together with the code
 host. The ADR accepts that: the host already is the system of record for pushed
@@ -294,8 +299,10 @@ incremental snapshot over the Server-Updater control channel; this warms the
 destination and usually takes only the delta since the last scheduled backup.
 After `quiescing-old`, when no turn is writing anymore and before
 `handing-off-key` and `activating-candidate`, the Updater requests a final
-incremental snapshot. That second pass contains seconds of changes and is the
-exact pre-migration state. The Updater continues only after that final snapshot
+incremental snapshot. That second pass is the exact pre-migration state; its
+delta is small, but the quiesced window is bounded by the freeze of every
+`.git`, the tip verification of remote-dependent repositories and the database
+export, not by the delta, and acceptance measures it. The Updater continues only after that final snapshot
 is durable under the rule below, normally acknowledged by the destination,
 because it is the rollback point; the
 warm pass exists so this wait is short, and the update status shows it as its
