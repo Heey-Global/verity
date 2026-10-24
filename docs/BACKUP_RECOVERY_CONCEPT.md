@@ -481,9 +481,13 @@ for that purpose, or a new repository with a full first run.
    there is no global drain.
 3. Under the lock, open the repeatable-read database transaction (see "Database
    export") and run its first statement, which is when PostgreSQL takes the
-   snapshot; record its timestamp. Then freeze every Git repository (see "Git
-   repositories"). Database state and frozen `.git` copies therefore see the
-   same set of projects and mounts.
+   snapshot; record its timestamp. While still holding the lock, acquire copy
+   leases for every project and mount included in that database snapshot,
+   reconciling the initial inventory against it. Retain those leases through
+   capture, so deletion and destructive mount changes cannot remove included
+   files during the export or before copying begins. Then freeze every Git
+   repository (see "Git repositories"). Database state and frozen `.git`
+   copies therefore see the same set of projects and mounts.
 4. Release the lock. The lock is held only for steps 2 and 3, not while the
    export streams or files are copied, chunked or written. Stream the database
    export from the open transaction and commit it as soon as the export is
@@ -491,8 +495,8 @@ for that purpose, or a new repository with a full first run.
    rest of the run and holds back vacuum. Then copy working files and knowledge
    folders live, through the encryptor, with the no-follow traversal described
    under "Git capture", storing symlinks as links. `.git` directories are
-   skipped here; they come only from the frozen copies. A project being copied
-   holds a per-project lease, so its deletion waits for that copy.
+   skipped here; they come only from the frozen copies. The leases acquired in
+   step 3 remain held even for projects whose file copy has not started.
 5. Chunk, encrypt and write the frozen Git copies, then publish the manifest.
 6. Release leases and remove capture staging on every exit path.
 
