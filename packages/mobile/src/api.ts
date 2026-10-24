@@ -1,4 +1,11 @@
 import {
+  vulnerabilitySettingsSchema,
+  vulnerabilityProjectSchema,
+  vulnerabilitySessionSchema,
+  vulnerabilityIgnoresSchema,
+  type VulnerabilitySettings,
+} from './vulnerability.js';
+import {
   boundedHistoryResultSchema,
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
@@ -449,6 +456,13 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  vulnerabilitySummary: z
+    .object({
+      count: z.number().int().nonnegative(),
+      critical: z.number().int().nonnegative(),
+      high: z.number().int().nonnegative(),
+    })
+    .optional(),
   latestReleaseTag: z.string().nullable().optional(),
   latestReleaseName: z.string().nullable().optional(),
   latestReleaseUrl: z.string().nullable().optional(),
@@ -1151,13 +1165,47 @@ export const returnPathStatusSchema = z
     currentUtc: z.string(),
     remainingMs: z.number().nonnegative(),
     matchedConnectors: z.number().int().nonnegative(),
+    sessionHash: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/u)
+      .optional(),
   })
   .strict();
 export type ReturnPathStatus = z.infer<typeof returnPathStatusSchema>;
 
+const selectedPeerSchema = z
+  .object({
+    bound: z.boolean(),
+    active: z.boolean(),
+    socketLifetimeId: z.string().uuid().nullable(),
+    generation: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/u)
+      .nullable(),
+  })
+  .strict();
+const selectedRecordingSelectionSchema = z
+  .object({
+    sessionHash: z.string().regex(/^[a-f0-9]{16}$/u),
+    confirmed: z.boolean(),
+    preparationExpiresAt: z.string().datetime().nullable(),
+    readiness: z
+      .object({
+        revision: z.number().int().nonnegative(),
+        checkedAt: z.string().datetime(),
+        monotonicMs: z.number().finite().nonnegative(),
+        ready: z.boolean(),
+        installation: selectedPeerSchema,
+        app: selectedPeerSchema,
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
 export const connectionRecordingStatusSchema = z
   .object({
     evidence: selectedEvidenceMetadataSchema.optional(),
+    selection: selectedRecordingSelectionSchema.optional(),
     version: z.literal(1),
     runId: z.string().uuid(),
     phase: z.enum(['starting', 'recording', 'stopped', 'expired', 'failed']),
@@ -1185,6 +1233,13 @@ export const connectionRecordingStatusSchema = z
   })
   .strict();
 export type ConnectionRecordingStatus = z.infer<typeof connectionRecordingStatusSchema>;
+export const selectedConnectionRecordingStatusSchema = connectionRecordingStatusSchema.extend({
+  selection: selectedRecordingSelectionSchema,
+});
+export type SelectedConnectionRecordingStatus = z.infer<
+  typeof selectedConnectionRecordingStatusSchema
+>;
+
 export const connectionRecordingExportSchema = z
   .object({
     version: z.literal(1),
@@ -3611,6 +3666,63 @@ export class VerityClient {
     );
   }
 
+  async startSelectedConnectionRecording(
+    runId: string,
+    durationMs: number,
+    targetSessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    z.number().int().min(1).max(30000).parse(durationMs);
+    z.string()
+      .regex(/^[A-Za-z0-9_-]{1,128}$/u)
+      .parse(targetSessionId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          '/api/remote-control/recordings',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ runId, durationMs, diagnosticsVersion: 3, targetSessionId }),
+            ...(signal ? { signal } : {}),
+          },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
+  }
+  async getSelectedConnectionRecording(runId: string): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          `/api/remote-control/recordings/${runId}/selection`,
+          { method: 'GET' },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
+  }
+  async stopSelectedConnectionRecording(runId: string): Promise<SelectedConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    const result = selectedConnectionRecordingStatusSchema.parse(
+      await (
+        await this.request(
+          `/api/remote-control/recordings/${runId}`,
+          { method: 'DELETE' },
+          this.recordingFetchImpl,
+        )
+      ).json(),
+    );
+    if (result.runId !== runId) throw new Error('Recording identity mismatch');
+    return result;
+  }
+
   async startConnectionRecording(
     runId: string,
     durationMs: number,
@@ -5291,6 +5403,77 @@ export class VerityClient {
     return res.arrayBuffer();
   }
 
+  async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {
+    const res = await this.request(
+      '/settings/vulnerability-scan',
+      patch
+        ? {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          }
+        : { method: 'GET' },
+    );
+    return vulnerabilitySettingsSchema.parse(
+      ((await res.json()) as { settings: unknown }).settings,
+    );
+  }
+  async projectVulnerabilities(id: string) {
+    return vulnerabilityProjectSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async sessionVulnerabilities(id: string) {
+    return vulnerabilitySessionSchema.parse(
+      await (
+        await this.request(`/sessions/${encodeURIComponent(id)}/vulnerability-scan`, {
+          method: 'GET',
+        })
+      ).json(),
+    );
+  }
+  async scanVulnerabilities(id: string) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan`, {
+      method: 'POST',
+    });
+  }
+  async vulnerabilityIgnores(id: string) {
+    return vulnerabilityIgnoresSchema.parse(
+      await (
+        await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+          method: 'GET',
+        })
+      ).json(),
+    ).ignores;
+  }
+  async ignoreVulnerability(
+    id: string,
+    body: {
+      advisoryId: string;
+      package: string;
+      source: string;
+      sessionId?: string;
+      days: 30 | 90;
+      untilFix: boolean;
+      reason: string;
+    },
+  ) {
+    await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  async restoreVulnerability(id: string, ignoreId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(id)}/vulnerability-scan/ignores/${encodeURIComponent(ignoreId)}`,
+      { method: 'DELETE' },
+    );
+  }
   private async request(
     path: string,
     init: TransportRequestInit,

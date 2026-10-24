@@ -2,7 +2,7 @@
   "id": "verity-sandbox-toolkit",
   "version": "0.0.0-managed",
   "name": "Verity Sandbox Toolkit",
-  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
+  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + osv-scanner + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
   "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
   "installsAfter": ["ghcr.io/devcontainers/features/node"],
   "customizations": {
@@ -109,7 +109,12 @@
     "hooksPath": {
       "type": "string",
       "default": "/opt/agent-seed/hooks",
-      "description": "git core.hooksPath — points at the agent-seed pre-commit secret hook and the pre-push secret + code review hook."
+      "description": "git core.hooksPath \u2014 points at the agent-seed pre-commit secret hook and the pre-push secret + code review hook."
+    },
+    "osvScannerVersion": {
+      "type": "string",
+      "default": "2.6.0",
+      "description": "Exact google/osv-scanner release version to pin (no leading v). Runs vulnerability scans without an AI backend."
     }
   }
 }

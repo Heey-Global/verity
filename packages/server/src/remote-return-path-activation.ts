@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { RETURN_PATH_LIMITS } from './remote-return-path-diagnostics.js';
 
-type Selection = { installationId: string; expiresAt: number };
+type Selection = {
+  installationId: string;
+  expiresAt: number;
+  sessionHash?: string;
+  connectorId?: string;
+};
 export interface ReturnPathStatus {
   enabled: boolean;
   source: 'runtime' | 'environment' | 'none';
@@ -11,6 +16,7 @@ export interface ReturnPathStatus {
   currentUtc: string;
   remainingMs: number;
   matchedConnectors: number;
+  sessionHash?: string;
 }
 
 /** Consent never survives restart, reconnect or a wall-clock rollback. */
@@ -52,7 +58,7 @@ export class ReturnPathActivation {
     this.finalizers.add(listener);
     return () => this.finalizers.delete(listener);
   }
-  expiry(): number | undefined {
+  expiry(sessionHash?: string, connectorId?: string): number | undefined {
     const selection = this.selection;
     if (!selection) return undefined;
     const descriptor = this.descriptor();
@@ -65,9 +71,24 @@ export class ReturnPathActivation {
       return undefined;
     }
     this.matched = true;
+    if (
+      sessionHash !== undefined &&
+      selection.sessionHash !== undefined &&
+      (sessionHash !== selection.sessionHash ||
+        selection.connectorId === undefined ||
+        connectorId !== selection.connectorId)
+    )
+      return undefined;
     return selection.expiresAt;
   }
-  start(expiresAt: string): ReturnPathStatus {
+  start(expiresAt: string, sessionHash?: string, connectorId?: string): ReturnPathStatus {
+    if (sessionHash !== undefined && !/^[a-f0-9]{16}$/u.test(sessionHash))
+      throw new Error('invalid_session');
+    if (
+      connectorId !== undefined &&
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(connectorId)
+    )
+      throw new Error('invalid_session');
     if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u.test(expiresAt))
       throw new Error('invalid_expiry');
     const expiry = Date.parse(expiresAt);
@@ -81,10 +102,23 @@ export class ReturnPathActivation {
     const descriptor = this.descriptor();
     if (!descriptor.enabled || !descriptor.installationId) throw new Error('remote_unavailable');
     if (this.expiry() !== undefined) {
-      if (this.selection?.expiresAt !== expiry) throw new Error('already_active');
+      if (
+        this.selection?.expiresAt !== expiry ||
+        this.selection?.sessionHash !== sessionHash ||
+        this.selection?.connectorId !== connectorId
+      )
+        throw new Error('already_active');
       return this.status();
     }
-    this.select({ installationId: descriptor.installationId, expiresAt: expiry }, 'runtime');
+    this.select(
+      {
+        installationId: descriptor.installationId,
+        expiresAt: expiry,
+        ...(sessionHash === undefined ? {} : { sessionHash }),
+        ...(connectorId === undefined ? {} : { connectorId }),
+      },
+      'runtime',
+    );
     return this.status();
   }
   stop(flush = true): void {
@@ -121,6 +155,9 @@ export class ReturnPathActivation {
           ? 0
           : Math.max(0, Math.min(expiry - this.wall(), this.deadline - this.monotonic())),
       matchedConnectors: expiry === undefined ? 0 : matchedConnectors,
+      ...(expiry === undefined || this.selection?.sessionHash === undefined
+        ? {}
+        : { sessionHash: this.selection.sessionHash }),
     };
   }
   dispose(): void {

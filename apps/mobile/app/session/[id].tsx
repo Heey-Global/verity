@@ -1,3 +1,6 @@
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
+import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
+import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -506,7 +509,6 @@ const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequ
 // translateY the stack onto the true vertical centre of the visible transcript. Keep
 // in sync with styles.msgNav(Btn).
 const NAV_STACK_HALF = 65;
-const SPLIT_SCREEN_MIN_WIDTH = 900;
 const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
   'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
@@ -558,42 +560,6 @@ export default function SessionScreen() {
       retrySecret={retrySecret}
     />
   );
-}
-
-// Send the wide-screen viewer to the split home with this session preselected.
-// Uses `dismissTo` (not `<Redirect>`/`replace`): when a home screen is already
-// below in the stack — the usual case, since sessions are reached via `/new`,
-// an issue, or a list tap that all sit on top of `/` — this pops
-// back to that existing home instead of stacking a *second* `/`. A duplicate
-// home was what surfaced the phantom "‹ Verity" back button on the home header.
-// If no home exists below (e.g. a cold deep-link straight to /session/[id]),
-// `dismissTo` falls back to replacing this route with `/`, exactly like the old
-// redirect did. Mirrors expo-router's own <Redirect>, which fires on focus.
-function SplitScreenRedirect({
-  id,
-  targetMessageId,
-  targetSearchQuery,
-  retrySecret,
-}: {
-  id: string;
-  targetMessageId?: string;
-  targetSearchQuery?: string;
-  retrySecret?: string;
-}) {
-  useFocusEffect(
-    useCallback(() => {
-      router.dismissTo({
-        pathname: '/',
-        params: {
-          selected: id,
-          ...(targetMessageId ? { targetMessageId } : {}),
-          ...(targetSearchQuery ? { targetSearchQuery } : {}),
-          ...(retrySecret ? { retrySecret } : {}),
-        },
-      });
-    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
-  );
-  return null;
 }
 
 /**
@@ -4715,6 +4681,7 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}

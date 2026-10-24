@@ -250,6 +250,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Known vulnerabilities in code projects"
+            onPress={() => router.push('/settings/vulnerability-scan')}
+          />
+          <SettingsNavRow
             icon="check-square"
             title="Tasks"
             subtitle="Capture bubble, screenshot tips"

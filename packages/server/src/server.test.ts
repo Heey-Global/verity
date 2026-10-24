@@ -16435,3 +16435,82 @@ it('replaces a meeting index entry by transcript path when the title changes', a
     rmSync(meetingDir, { recursive: true, force: true });
   }
 });
+
+describe('vulnerability scan session integration', () => {
+  it('hydrates summary warnings and scans after an interrupted turn without starting an agent', async () => {
+    await ctx.store.upsertProject({
+      id: 'vuln-project',
+      owner: 'test',
+      repo: 'vuln',
+      containerName: 'vuln',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'vuln-session',
+      worktree: '/work/session',
+      projectId: 'vuln-project',
+      model: 'm',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, sessionChanges: true });
+    const finding = {
+      advisoryId: 'GHSA-example',
+      aliases: [],
+      ecosystem: 'npm',
+      package: 'example',
+      version: '1',
+      severity: 'high' as const,
+      summary: '',
+      fixedVersions: [],
+      source: 'package-lock.json',
+      dev: false,
+      modified: null,
+    };
+    await ctx.store.vulnerabilityScans.putCached('integration-main', [finding]);
+    await ctx.store.vulnerabilityScans.putCached('integration-session', [
+      finding,
+      { ...finding, package: 'added' },
+    ]);
+    for (const sessionId of [null, 'vuln-session'])
+      await ctx.store.vulnerabilityScans.setState({
+        projectId: 'vuln-project',
+        sessionId,
+        contentHash: sessionId ? 'integration-session' : 'integration-main',
+        status: 'ready',
+        detail: null,
+        revision: 'abc',
+        attemptedAt: new Date(),
+      });
+    const server = buildServer({ eventStore: ctx.store, bus, conductor });
+    try {
+      await vi.waitFor(async () => {
+        const sessions = (await server.inject('/sessions')).json<
+          { sessionId: string; attention?: { code: string; message: string }[] }[]
+        >();
+        expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
+          code: 'vulnerability_new',
+          message: '1 new vulnerability',
+        });
+      });
+      const projects = (await server.inject('/projects')).json<
+        { id: string; vulnerabilitySummary?: unknown }[]
+      >();
+      expect(projects.find((p) => p.id === 'vuln-project')?.vulnerabilitySummary).toEqual({
+        count: 1,
+        critical: 0,
+        high: 1,
+      });
+      bus.publish('vuln-session', { seq: 1, ts: Date.now(), event: { t: 'interrupted' } });
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await ctx.store.vulnerabilityScans.getState('vuln-project', 'vuln-session'))?.status,
+          ).toBe('unavailable'),
+        { timeout: 5000 },
+      );
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});

@@ -6,12 +6,8 @@ import { useMemo } from 'react';
 
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
 import { AppUpdateSection } from '../../components/settings/AppUpdateSection';
-import {
-  SettingsGroup,
-  SettingsListPanel,
-  SettingsNavRow,
-  SettingsScaffold,
-} from '../../components/settings/SettingsChrome';
+import { HeaderIconButton } from '../../components/files/FileSheetHeader';
+import { SettingsGroup, SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { Card, CardHead } from '../../components/ui';
 import { createVerityClient } from '../../lib/client';
 import { retryFailedVeritySettings, useLoadVeritySettings } from '../../lib/settingsStore';
@@ -56,17 +52,18 @@ function ServerUpdateView({ client }: { client: VerityClient }) {
           if (!retried) reload();
         })
       }
+      // The channel is set once and rarely revisited, so it sits in the header
+      // rather than as a row competing with the update itself.
+      headerAction={
+        <HeaderIconButton
+          icon="settings"
+          accessibilityLabel="Update channel"
+          onPress={() => router.push('/settings/server-update-channel' as Href)}
+        />
+      }
     >
       <SettingsGroup title="Server">
         <ServerUpdateSection client={client} />
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="settings"
-            title="Update channel"
-            subtitle="Stable releases or prereleases"
-            onPress={() => router.push('/settings/server-update-channel' as Href)}
-          />
-        </SettingsListPanel>
       </SettingsGroup>
       <AppGroup />
     </SettingsScaffold>

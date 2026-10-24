@@ -43,7 +43,11 @@ import type { UpdateOperation } from './self-update/update-operation.js';
  * Both use this one type so the client has one renderer for both placements.
  */
 type AttentionCode =
-  'secret_sealed' | 'updater_unhealthy' | 'sandbox_disconnected' | 'usage_probe_unhealthy';
+  | 'vulnerability_new'
+  | 'secret_sealed'
+  | 'updater_unhealthy'
+  | 'sandbox_disconnected'
+  | 'usage_probe_unhealthy';
 
 /**
  * A remedy the client can offer as a tap, for the signals that have exactly one.
@@ -333,6 +337,7 @@ export const SANDBOX_DISCONNECTED_MESSAGE =
   'refused until it is rebuilt; end the turn to let Verity rebuild it';
 
 export interface SessionAttentionInputs {
+  readonly newVulnerabilities?: number | undefined;
   /** The project this session runs in, or null/absent for a project-less session. */
   readonly projectId: string | null | undefined;
   /**
@@ -349,8 +354,16 @@ export function sessionAttentionSignals(inputs: SessionAttentionInputs): Attenti
   const projectId = inputs.projectId;
   // A session with no project has no sandbox to be disconnected from.
   if (projectId === null || projectId === undefined) return [];
-  if (!inputs.disconnectedSandboxProjects.has(projectId)) return [];
-  return [{ code: 'sandbox_disconnected', message: SANDBOX_DISCONNECTED_MESSAGE }];
+  const signals: AttentionSignal[] = [];
+  if (inputs.disconnectedSandboxProjects.has(projectId))
+    signals.push({ code: 'sandbox_disconnected', message: SANDBOX_DISCONNECTED_MESSAGE });
+  const count = inputs.newVulnerabilities ?? 0;
+  if (count > 0)
+    signals.push({
+      code: 'vulnerability_new',
+      message: `${count} new ${count === 1 ? 'vulnerability' : 'vulnerabilities'}`,
+    });
+  return signals;
 }
 
 function stalledUpdate(inputs: AttentionInputs): UpdateOperation | null {

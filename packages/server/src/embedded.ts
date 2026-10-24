@@ -2632,7 +2632,8 @@ export async function buildEmbeddedServer(
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
         onReturnPathSnapshot: (snapshot) => coordinatedRecording?.observe(snapshot),
-        returnPathExpiry: (): number | undefined => returnPath.expiry(),
+        returnPathExpiry: (sessionHash, connectorId): number | undefined =>
+          returnPath.expiry(sessionHash, connectorId),
         returnPathInstallation: (): string | undefined => {
           const descriptor = uplinkControl?.remoteControlDescriptor();
           return descriptor?.enabled ? descriptor.installationId : undefined;
@@ -2685,6 +2686,8 @@ export async function buildEmbeddedServer(
       : undefined;
   if (uplinkControl && remoteConnector) {
     coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
+      selectedConnectorId: (targetSessionId) =>
+        uplinkControl.selectedRecordingConnectorId(targetSessionId),
       start: (runId, durationMs, version, targetSessionId) =>
         uplinkControl.startRecording(runId, durationMs, version, targetSessionId),
       status: (runId) => uplinkControl.recordingStatus(runId),

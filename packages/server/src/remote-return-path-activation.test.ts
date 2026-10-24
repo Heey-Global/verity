@@ -116,3 +116,20 @@ it('ends consent even when the final metadata exporter fails', () => {
   expect(consent.status()).toMatchObject({ enabled: false, source: 'none' });
   consent.dispose();
 });
+
+it('binds selected consent to the exact reservation even when session IDs are reused', () => {
+  const consent = new ReturnPathActivation(() => ({ enabled: true, installationId: 'paired' }));
+  const session = '0123456789abcdef';
+  const reservation = '00000000-0000-4000-8000-000000000001';
+  const expiry = Date.now() + 30000;
+  try {
+    consent.start(new Date(expiry).toISOString(), session, reservation);
+    expect(consent.expiry(session, reservation)).toBe(expiry);
+    expect(consent.expiry(session, '00000000-0000-4000-8000-000000000002')).toBeUndefined();
+    expect(consent.expiry(session)).toBeUndefined();
+    expect(consent.expiry('fedcba9876543210', reservation)).toBeUndefined();
+    expect(consent.expiry(session, reservation)).toBe(expiry);
+  } finally {
+    consent.dispose();
+  }
+});

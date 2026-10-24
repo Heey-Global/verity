@@ -7,9 +7,14 @@
 //   npm run build:web --workspace @verity/mobile-app -- --max-workers 1
 //   npx playwright install chromium-headless-shell
 //   npm run render:app-screens -- [--only <name>] [--out <dir>]
+//   npm run render:app-screens -- --app-store [--base-url <url>/app] [--out <dir>]
+// App Store scenes render iPhone at 1320×2868 and iPad at 2064×2752 into
+// .cache/app-store by default. --base-url renders against an already running
+// demo export instead of serving --dist locally.
 //
-// Each scene writes `app-<name>.png` at twice the CSS resolution unless it is
-// only there for its crops; a crop writes one PNG per component, cut to the
+// Each scene writes `app-<name>.png` at its device scale factor (twice the CSS
+// resolution unless the scene sets another) unless it is only there for its
+// crops; a crop writes one PNG per component, cut to the
 // smallest element containing all of the crop's text markers. The files sit
 // directly in the website's assets folder because the website's checks and
 // Dockerfile list every asset by its flat `assets/<file>` path.
@@ -24,8 +29,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values: args } = parseArgs({
   options: {
     dist: { type: 'string', default: join(root, 'apps/mobile/dist') },
-    out: { type: 'string', default: join(root, 'docs/website/site/assets') },
+    out: { type: 'string' },
     only: { type: 'string', multiple: true },
+    'base-url': { type: 'string' },
+    'app-store': { type: 'boolean', default: false },
   },
 });
 
@@ -38,7 +45,7 @@ const DESKTOP = { width: 1440, height: 900 };
 /**
  * @typedef {{ click: string } | { press: string } | { wait: number }} Step
  * @typedef {{ name: string, text: string[], pad?: number, maxHeight?: number }} Crop
- * @typedef {{ name: string, viewport: { width: number, height: number }, steps?: Step[], crops?: Crop[], cropsOnly?: boolean }} Scene
+ * @typedef {{ name: string, viewport: { width: number, height: number }, deviceScaleFactor?: number, steps?: Step[], crops?: Crop[], cropsOnly?: boolean }} Scene
  * @type {Scene[]}
  */
 const SCENES = [
@@ -215,7 +222,7 @@ async function cropBox(page, markers) {
 async function render(browser, base, scene, out) {
   const context = await browser.newContext({
     viewport: scene.viewport,
-    deviceScaleFactor: 2,
+    deviceScaleFactor: scene.deviceScaleFactor ?? 2,
     colorScheme: 'dark',
     locale: 'en-US',
     timezoneId: 'Europe/Berlin',
@@ -270,28 +277,64 @@ async function render(browser, base, scene, out) {
 }
 
 const dist = resolve(args.dist ?? '');
-if (!existsSync(join(dist, 'index.html')))
+if (!args['base-url'] && !existsSync(join(dist, 'index.html')))
   throw new Error(
     `No browser export in ${dist}. Run: npm run build:web --workspace @verity/mobile-app -- --max-workers 1`,
   );
-const out = resolve(args.out ?? '');
+// Store shots stay out of the published website assets unless --out says so.
+const out = resolve(
+  args.out ?? join(root, args['app-store'] ? '.cache/app-store' : 'docs/website/site/assets'),
+);
 mkdirSync(out, { recursive: true });
 const only = args.only ?? [];
+if (args['app-store'] && only.length) throw new Error('--only cannot be combined with --app-store');
 const unknown = only.filter((name) => !SCENES.some((scene) => scene.name === name));
 if (unknown.length)
   throw new Error(
     `Unknown scene ${unknown.join(', ')}. Known: ${SCENES.map((s) => s.name).join(', ')}`,
   );
-const scenes = only.length ? SCENES.filter((scene) => only.includes(scene.name)) : SCENES;
+const scenes = args['app-store']
+  ? [
+      {
+        name: 'store-iphone-projects',
+        viewport: { width: 440, height: 956 },
+        deviceScaleFactor: 3,
+      },
+      {
+        name: 'store-iphone-session',
+        viewport: { width: 440, height: 956 },
+        deviceScaleFactor: 3,
+        steps: [{ click: 'Fix payment retries' }],
+      },
+      // The iPad split view shows the project list beside the open session.
+      {
+        name: 'store-ipad-payment-retries',
+        viewport: { width: 1032, height: 1376 },
+        deviceScaleFactor: 2,
+        steps: [{ click: 'Fix payment retries' }],
+      },
+      {
+        name: 'store-ipad-checkout-redesign',
+        viewport: { width: 1032, height: 1376 },
+        deviceScaleFactor: 2,
+        steps: [{ click: 'Checkout redesign' }],
+      },
+    ]
+  : only.length
+    ? SCENES.filter((scene) => only.includes(scene.name))
+    : SCENES;
 
-const server = await serve(dist);
+const baseUrl = args['base-url']?.replace(/\/+$/, '');
+if (baseUrl !== undefined && !URL.canParse(baseUrl))
+  throw new Error(`--base-url must be an absolute URL, got '${args['base-url']}'`);
+const server = baseUrl ? null : await serve(dist);
 const browser = await chromium.launch();
 try {
-  const address = /** @type {import('node:net').AddressInfo} */ (server.address());
-  const base = `http://127.0.0.1:${address.port}/app`;
+  const address = /** @type {import('node:net').AddressInfo | undefined} */ (server?.address());
+  const base = baseUrl ?? `http://127.0.0.1:${address?.port}/app`;
   // One scene at a time: each export instance holds a full app in memory.
   for (const scene of scenes) await render(browser, base, scene, out);
 } finally {
   await browser.close();
-  server.close();
+  server?.close();
 }

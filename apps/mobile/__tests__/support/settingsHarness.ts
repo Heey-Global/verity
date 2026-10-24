@@ -47,15 +47,18 @@ export function refocus(): void {
 /**
  * expo-router, reduced to what the settings routes actually use.
  *
- * `Stack.Screen` is a navigation-config sink with no host output, so a
- * null-rendering stub keeps it out of the tree. `useFocusEffect` fires once on
+ * `Stack.Screen` is a navigation-config sink with no host output; the stub
+ * renders only `headerRight`, the one option that carries something to press. `useFocusEffect` fires once on
  * mount and stays registered, which is close enough to focus for screens that
  * use it to re-read server state.
  */
 export function expoRouterMock(): Record<string, unknown> {
   const react = require('react') as typeof import('react');
   return {
-    Stack: { Screen: () => null },
+    Stack: {
+      Screen: ({ options }: { options?: { headerRight?: () => unknown } }) =>
+        options?.headerRight?.() ?? null,
+    },
     router: {
       push: (href: string) => mockPush(href),
       replace: (href: string) => mockReplace(href),

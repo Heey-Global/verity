@@ -1309,3 +1309,54 @@ it('does not assign an old connector generation to a different installation', as
   activation.dispose();
   pool.disposeDiagnostics();
 });
+
+it('exports actual DATA tuples and a fresh socket identity with explicit late coverage', async () => {
+  const snapshots: Array<Record<string, unknown>> = [];
+  const activation = new ReturnPathActivation(() => ({ enabled: true, installationId: 'paired' }));
+  activation.start(new Date(Date.now() + 60000).toISOString());
+  const f = await fixture(undefined, {}, undefined, undefined, undefined, activation, (snapshot) =>
+    snapshots.push(snapshot as Record<string, unknown>),
+  );
+  const connect = async (sessionId: string) => {
+    const receivedBefore = f.received.length;
+    const session = await reserve(f, sessionId);
+    const attaching = session.attach(
+      'private-ticket',
+      Date.now() + 30000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(receivedBefore + 1));
+    f.peer().send(JSON.stringify({ type: 'attached', sessionId, capability: 'remote-control-v1' }));
+    await attaching;
+    return session;
+  };
+  try {
+    const first = await connect('first');
+    const before = snapshots.at(-1)!.association as Record<string, unknown>;
+    expect(before).toMatchObject({
+      coverageStart: 'before_socket_creation',
+      socketLifetimeId: expect.any(String),
+      socketEndpoints: {
+        local: { address: '127.0.0.1', port: expect.any(Number) },
+        remote: { address: '127.0.0.1', port: expect.any(Number) },
+      },
+      uplinkConnectionId: null,
+    });
+    first.release('test');
+    activation.stop();
+    const second = await connect('second');
+    activation.start(new Date(Date.now() + 60000).toISOString());
+    await vi.waitFor(() =>
+      expect(snapshots.at(-1)!.association).toMatchObject({
+        coverageStart: 'after_socket_creation',
+      }),
+    );
+    const after = snapshots.at(-1)!.association as Record<string, unknown>;
+    expect(after.socketLifetimeId).not.toBe(before.socketLifetimeId);
+    expect(after.processBootId).toBe(before.processBootId);
+    expect(JSON.stringify(snapshots)).not.toContain('private-ticket');
+    second.release('test');
+  } finally {
+    activation.dispose();
+  }
+});

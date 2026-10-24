@@ -308,6 +308,21 @@ function ProjectSettingsIndexView({
         </SettingsListPanel>
       </SettingsGroup>
 
+      <SettingsGroup title="Security">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Main branch and session findings"
+            onPress={() =>
+              router.push({
+                pathname: '/project/[id]/vulnerability-scan',
+                params: { id: projectId },
+              })
+            }
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Sandbox">
         <SettingsListPanel>
           <SettingsNavRow
