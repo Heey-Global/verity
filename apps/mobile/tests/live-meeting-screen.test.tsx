@@ -221,7 +221,7 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
         model: 'claude-sonnet-5-5',
       }),
     );
-    expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
+    expect(screen.getByText('Researching…')).toBeOnTheScreen();
   });
   // The suggestion turns into its research card instead of staying beside it.
   expect(screen.queryByLabelText('Research meeting question')).toBeNull();
@@ -286,7 +286,7 @@ it('shows the compact session answer in the meeting after reopening it', async (
     }),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  expect(await screen.findByText('ANSWER')).toBeOnTheScreen();
+  expect(await screen.findByTestId('meeting-answer')).toBeOnTheScreen();
   // Markdown renders as a bullet with bold text, never as raw markers.
   expect(screen.getByText('The roadmap confirms Tuesday.')).toBeOnTheScreen();
   expect(screen.getByText('•')).toBeOnTheScreen();
@@ -339,7 +339,7 @@ it('shows a spoken request as working without leaving the meeting', async () => 
     }),
   );
   expect(screen.getByText('check the deadline')).toBeOnTheScreen();
-  expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
+  expect(screen.getByText('Researching…')).toBeOnTheScreen();
   expect(router.push).not.toHaveBeenCalled();
 });
 
