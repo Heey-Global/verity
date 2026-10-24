@@ -7740,10 +7740,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // so the scan does not put the sandbox back to sleep afterwards.
         try {
           if (project.state === 'active') {
-            // Only the activity mark matters here; an already running sandbox stays a 200.
-            await deps.provisioner.ensureProjectSandboxAwake?.(id).catch((error: unknown) => {
-              request.log.warn({ err: error, projectId: id }, 'verity: wake activity mark failed');
-            });
+            // Only the activity mark matters here, which a scan lease reads as takeover;
+            // the readiness gate is not needed for a sandbox that is already running.
+            if (deps.provisioner.tryBeginProjectSandboxActivity?.(id))
+              deps.provisioner.endProjectSandboxActivity?.(id);
             return {
               code: 200,
               project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),

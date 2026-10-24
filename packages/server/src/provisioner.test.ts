@@ -1161,7 +1161,8 @@ describe('ProvisionerImpl (#174)', () => {
     expect(woken.owned).toBe(true);
     expect(provisioner.projectSandboxLastActivityAt(id)).toBe(woken.activityAt);
     // Wake on the now running project: the route's activity mark the lease reads as takeover.
-    await provisioner.ensureProjectSandboxAwake(id);
+    expect(provisioner.tryBeginProjectSandboxActivity(id)).toBe(true);
+    provisioner.endProjectSandboxActivity(id);
     expect(provisioner.projectSandboxLastActivityAt(id)).toBeGreaterThan(woken.activityAt!);
     await ctx.store.updateProjectSleepState(id, 'sleeping', {
       sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
