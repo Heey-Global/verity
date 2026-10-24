@@ -6,8 +6,13 @@ import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './
 import { loadTaskContextData, saveTaskContextData, taskAccountScope } from './tasksStore';
 
 type Overview = Awaited<ReturnType<VerityClient['listSessionOverview']>>;
-type Context = { projects: ProjectRecord[]; sessions: SessionSummary[]; projectsReady: boolean };
-const empty: Context = { projects: [], sessions: [], projectsReady: false };
+type Context = {
+  projects: ProjectRecord[];
+  sessions: SessionSummary[];
+  /** The account whose project list has loaded; null while it is still pending. */
+  projectsScope: string | null;
+};
+const empty: Context = { projects: [], sessions: [], projectsScope: null };
 const listeners = new Set<() => void>();
 function publish(): void {
   for (const listener of listeners) listener();
@@ -48,13 +53,13 @@ function install(target: typeof entry, patch: Partial<Context>): void {
   const sessions = patch.sessions
     ? retain(target.snapshot.sessions, patch.sessions)
     : target.snapshot.sessions;
-  const projectsReady = target.snapshot.projectsReady || patch.projects !== undefined;
+  const projectsScope = patch.projects !== undefined ? target.scope : target.snapshot.projectsScope;
   if (
     projects !== target.snapshot.projects ||
     sessions !== target.snapshot.sessions ||
-    projectsReady !== target.snapshot.projectsReady
+    projectsScope !== target.snapshot.projectsScope
   ) {
-    target.snapshot = { projects, sessions, projectsReady };
+    target.snapshot = { projects, sessions, projectsScope };
     publish();
   }
   if (!target.projectsLoaded || !target.sessionsLoaded) return;

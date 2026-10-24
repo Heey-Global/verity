@@ -61,7 +61,7 @@ export function QuickCaptureBubble() {
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
   const { tasks } = useTasks();
-  const { projects, sessions, projectsReady } = useTaskContext();
+  const { projects, sessions, projectsScope } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
@@ -199,11 +199,11 @@ export function QuickCaptureBubble() {
     () =>
       syncWatchProjects(
         accountScope,
-        projectsReady ? projects : null,
+        projectsScope === accountScope ? projects : null,
         tasks,
         preferences.projectId,
       ),
-    [accountScope, projectsReady, projects, tasks, preferences.projectId],
+    [accountScope, projectsScope, projects, tasks, preferences.projectId],
   );
   useEffect(() => startTaskContext(), []);
   useEffect(() => {

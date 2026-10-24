@@ -62,7 +62,7 @@ it('shares pending overview reads with capture and skips unchanged persistence a
   });
   expect(client.listProjects).toHaveBeenCalledTimes(1);
   expect(client.listSessionOverview).toHaveBeenCalledTimes(1);
-  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
+  expect(result.current).toEqual({ projects, sessions, projectsScope: mockScope });
   await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
   const previous = result.current;
   (client.listProjects as jest.Mock).mockResolvedValue(structuredClone(projects));
@@ -91,14 +91,16 @@ it('restores offline context without network polling and refreshes on explicit d
   mockLoad.mockResolvedValue({ projects, sessions });
   const stop = startTaskContext();
   const { result, unmount } = renderHook(useTaskContext);
-  await waitFor(() => expect(result.current).toEqual({ projects, sessions, projectsReady: true }));
+  await waitFor(() =>
+    expect(result.current).toEqual({ projects, sessions, projectsScope: mockScope }),
+  );
   expect(mockClient!.listProjects).not.toHaveBeenCalled();
   expect(mockSave).not.toHaveBeenCalled();
   (mockClient!.listProjects as jest.Mock).mockRejectedValue(new Error('offline'));
   await act(async () => {
     await expect(refreshTaskContext()).rejects.toThrow('offline');
   });
-  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
+  expect(result.current).toEqual({ projects, sessions, projectsScope: mockScope });
   unmount();
   stop();
 });
@@ -131,7 +133,7 @@ it('clears context on account/server changes and discards old read and storage c
     resolveCache({ projects, sessions });
     await read;
   });
-  expect(result.current).toEqual({ projects: [], sessions: [], projectsReady: false });
+  expect(result.current).toEqual({ projects: [], sessions: [], projectsScope: null });
   expect(mockSave).not.toHaveBeenCalled();
   unmount();
   stop();
@@ -152,7 +154,7 @@ it('never replaces successful network data with a late offline cache', async () 
   await act(async () => {
     resolveCache({ projects: [], sessions: [] });
   });
-  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
+  expect(result.current).toEqual({ projects, sessions, projectsScope: mockScope });
   unmount();
   stop();
 });
@@ -190,7 +192,7 @@ it('lets an overview refresh supersede reads that began before a mutation', asyn
     resolveOldSessions({ ...overview, sessions: [] });
     await oldRead;
   });
-  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
+  expect(result.current).toEqual({ projects, sessions, projectsScope: mockScope });
   unmount();
   stop();
 });
@@ -207,7 +209,7 @@ it('does not publish reads from an old server client after the account has switc
     await readContextProjects(oldClient, true);
     await contextOverviewClient(oldClient).listSessionOverview();
   });
-  expect(result.current).toEqual({ projects: [], sessions: [], projectsReady: false });
+  expect(result.current).toEqual({ projects: [], sessions: [], projectsScope: null });
   expect(mockSave).not.toHaveBeenCalled();
   unmount();
   stop();
@@ -217,13 +219,36 @@ it('does not publish reads from an old server client after the account has switc
 it('distinguishes pending projects from a successfully loaded empty list', async () => {
   const stop = startTaskContext();
   const { result, unmount } = renderHook(useTaskContext);
-  expect(result.current.projectsReady).toBe(false);
+  expect(result.current.projectsScope).toBeNull();
   (mockClient!.listProjects as jest.Mock).mockResolvedValue([]);
   await act(async () => {
     await readContextProjects(mockClient!);
   });
   expect(result.current.projects).toEqual([]);
-  expect(result.current.projectsReady).toBe(true);
+  expect(result.current.projectsScope).toBe(mockScope);
+  unmount();
+  stop();
+});
+
+// The Watch picker files captures under this scope; labelling the old account's projects
+// with the new scope would send a capture to a project of another account.
+it('never reports projects under an account they were not loaded for', async () => {
+  const stop = startTaskContext();
+  const { result, rerender, unmount } = renderHook(useTaskContext);
+  await act(async () => {
+    await readContextProjects(mockClient!);
+  });
+  const previous = mockScope;
+  expect(result.current.projectsScope).toBe(previous);
+  mockScope = `${previous}-next`;
+  rerender({});
+  expect(result.current.projectsScope).not.toBe(mockScope);
+  expect(result.current.projects).toEqual([]);
+  (mockClient!.listProjects as jest.Mock).mockResolvedValue([]);
+  await act(async () => {
+    await readContextProjects(mockClient!);
+  });
+  expect(result.current).toEqual({ projects: [], sessions: [], projectsScope: mockScope });
   unmount();
   stop();
 });
