@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { nativePathKind } from './mobile-native-compatibility.mjs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
+import { promotionIdentity, parseRecoveryReceipt } from './promotion-recovery.mjs';
 
 const repository = process.env.GITHUB_REPOSITORY;
 if (!repository) throw new Error('GITHUB_REPOSITORY is required');
@@ -100,7 +101,7 @@ function releases() {
  * a page, so paginate and cut to the exact time here.
  * @param {string} workflow
  * @param {number} since
- * @returns {{status: string, conclusion: string | null, event: string, created_at: string, html_url: string, display_title: string, head_sha: string, updated_at: string}[]}
+ * @returns {{status: string, conclusion: string | null, event: string, created_at: string, html_url: string, display_title: string, head_sha: string, updated_at: string, run_attempt:number}[]}
  */
 function workflowRuns(workflow, since) {
   const day = new Date(since).toISOString().slice(0, 10);
@@ -136,15 +137,27 @@ function workflowRuns(workflow, since) {
       typeof run.event !== 'string' ||
       !('created_at' in run) ||
       typeof run.created_at !== 'string' ||
+      !Number.isFinite(Date.parse(run.created_at)) ||
       !('html_url' in run) ||
       typeof run.html_url !== 'string'
     )
       throw new Error(`Invalid run listing for ${workflow}`);
+    if (
+      'run_attempt' in run &&
+      (!Number.isSafeInteger(run.run_attempt) || Number(run.run_attempt) < 1)
+    )
+      throw new Error('Invalid workflow attempt number');
     const conclusion =
       'conclusion' in run && typeof run.conclusion === 'string' ? run.conclusion : null;
     const title =
       'display_title' in run && typeof run.display_title === 'string' ? run.display_title : '';
     return {
+      run_attempt:
+        'run_attempt' in run &&
+        Number.isSafeInteger(run.run_attempt) &&
+        Number(run.run_attempt) >= 1
+          ? Number(run.run_attempt)
+          : 1,
       status: run.status,
       conclusion,
       event: run.event,
@@ -631,9 +644,88 @@ function promotionTag(kind, candidate) {
     : undefined;
 }
 
+/** GitHub's persisted receipt is authoritative for new runs; older runs are
+ * associated by their actual checked-out manifest and pipeline Git objects.
+ * @param {import('./promotion-recovery.mjs').PromotionKind} kind
+ * @param {{head_sha:string,html_url:string}} run
+ * @param {number | undefined} attempt
+ */
+function recoveryRun(kind, run, attempt = undefined) {
+  const match = /\/actions\/runs\/(\d+)$/.exec(run.html_url);
+  if (!match) throw new Error('Invalid promotion run URL');
+  const pages = /** @type {unknown} */ (
+    JSON.parse(
+      gh(
+        'api',
+        '--paginate',
+        '--slurp',
+        `repos/${repository}/actions/runs/${match[1]}${attempt ? `/attempts/${attempt}` : ''}/jobs?per_page=100`,
+      ),
+    )
+  );
+  if (!Array.isArray(pages)) throw new Error('Invalid promotion job metadata');
+  /** @type {{name?:string, conclusion?:string, completed_at?:string}[]} */
+  const steps = [];
+  for (const entry of pages) {
+    const page = /** @type {unknown} */ (entry);
+    if (typeof page !== 'object' || page === null || !('jobs' in page) || !Array.isArray(page.jobs))
+      throw new Error('Invalid promotion jobs');
+    for (const entry of page.jobs) {
+      const job = /** @type {unknown} */ (entry);
+      if (typeof job !== 'object' || job === null || !('steps' in job) || !Array.isArray(job.steps))
+        throw new Error('Invalid promotion steps');
+      for (const entry of job.steps) {
+        const step = /** @type {unknown} */ (entry);
+        if (
+          typeof step !== 'object' ||
+          step === null ||
+          !('name' in step) ||
+          typeof step.name !== 'string'
+        )
+          throw new Error('Invalid promotion step');
+        steps.push({
+          name: step.name,
+          ...('completed_at' in step && typeof step.completed_at === 'string'
+            ? { completed_at: step.completed_at }
+            : {}),
+          ...('conclusion' in step && typeof step.conclusion === 'string'
+            ? { conclusion: step.conclusion }
+            : {}),
+        });
+      }
+    }
+  }
+  const receipt = parseRecoveryReceipt(steps);
+  const receiptStep = steps.find(
+    (step) => step.conclusion !== 'skipped' && step.name?.startsWith('recovery-v1:'),
+  );
+  const nativeDelivery =
+    kind === 'native'
+      ? steps.find(
+          (step) =>
+            step.name === 'Upload approved production binary to TestFlight' &&
+            step.conclusion === 'success',
+        )
+      : undefined;
+  const completedAt = receiptStep?.completed_at ?? nativeDelivery?.completed_at;
+  const historical = promotionIdentity(kind, run.head_sha);
+  if (receipt && receipt.candidate !== historical.candidate)
+    throw new Error('Promotion receipt differs from its checked-out revision');
+  return {
+    ...historical,
+    pipeline: receipt?.pipeline ?? historical.pipeline,
+    state: receipt?.state,
+    completedAt,
+  };
+}
+
 /** @param {string} tag */
-const isProduction = (tag) =>
-  published.some((entry) => entry.tag_name === tag && !entry.draft && !entry.prerelease);
+function freshProduction(tag) {
+  const matches = releases().filter((entry) => entry.tag_name === tag);
+  if (matches.length > 1) throw new Error(`Ambiguous release metadata for ${tag}`);
+  const release = matches[0];
+  return release && !release.draft && !release.prerelease ? release : undefined;
+}
 
 for (const { kind, manifest, workflow, label } of [
   // Each promotion is idempotent: moving an EAS channel, copying signed image
@@ -658,60 +750,165 @@ for (const { kind, manifest, workflow, label } of [
     label: 'Native',
   }),
 ]) {
-  if (!existsSync(manifest)) continue;
-  const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(manifest, 'utf8')));
-  const tag = promotionTag(kind, candidate);
-  if (!tag) throw new Error(`Invalid ${label} promotion manifest`);
-  if (isProduction(tag)) continue;
-  // The manifest on main only changes through a merged promotion PR, so an
-  // unpublished tag means an approved candidate whose delivery never ran or
-  // never finished. The commit date is the merge time because main takes
-  // squash merges only, which the release-please job enforces before every
-  // release.
-  const approvedAt = Date.parse(git('log', '-1', '--format=%cI', '--', manifest));
-  if (!Number.isFinite(approvedAt)) throw new Error(`${label} promotion manifest has no history`);
-  if (approvedAt > now - graceMs) {
-    notes.push(
-      `${label}: ${tag} was approved less than the push run lag ago; waiting for its own run.`,
-    );
-    continue;
-  }
-  let readyAt = approvedAt;
-  if (kind === 'ota') {
-    // OTA promotion refuses to run ahead of its native runtime. That is an
-    // ordering, not a failure: wait, and count attempts only from the native
-    // promotion that made the runtime production.
-    const runtime = /** @type {{runtime: string}} */ (candidate).runtime;
-    if (!isProduction(`mobile-v${runtime}`)) {
-      notes.push(`${label}: ${tag} waits for native production approval of ${runtime}.`);
+  try {
+    if (!existsSync(manifest)) continue;
+    const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(manifest, 'utf8')));
+    const tag = promotionTag(kind, candidate);
+    if (!tag) throw new Error(`Invalid ${label} promotion manifest`);
+    if (freshProduction(tag)) continue;
+    // The manifest on main only changes through a merged promotion PR, so an
+    // unpublished tag means an approved candidate whose delivery never ran or
+    // never finished. The commit date is the merge time because main takes
+    // squash merges only, which the release-please job enforces before every
+    // release.
+    const approvedAt = Date.parse(git('log', '-1', '--format=%cI', '--', manifest));
+    if (!Number.isFinite(approvedAt)) throw new Error(`${label} promotion manifest has no history`);
+    if (approvedAt > now - graceMs) {
+      notes.push(
+        `${label}: ${tag} was approved less than the push run lag ago; waiting for its own run.`,
+      );
       continue;
     }
-    const native = workflowRuns(nativePromoteWorkflow, approvedAt).find(
-      (run) => run.conclusion === 'success',
-    );
-    if (native) readyAt = Math.max(readyAt, Date.parse(native.updated_at));
-  }
-  const runs = workflowRuns(workflow, readyAt);
-  const latest = runs.find((run) => run.status !== 'completed') ?? runs[0];
-  if (!latest) {
-    gh('workflow', 'run', workflow, '--ref', 'main');
-    dispatched.push(workflow);
-    notes.push(`${label}: ${tag} is approved and no promotion run followed it.`);
-  } else if (latest.status !== 'completed') {
-    notes.push(`${label}: promotion run ${latest.html_url} for ${tag} is still ${latest.status}.`);
-  } else if (latest.conclusion === 'success') {
+    const identity = promotionIdentity(kind);
+    const runs = workflowRuns(workflow, approvedAt);
+    const active = runs.find((run) => run.status !== 'completed');
+    if (active) {
+      notes.push(
+        `${label}: promotion run ${active.html_url} for ${tag} is still ${active.status}.`,
+      );
+      continue;
+    }
+    // Publication may have finished while workflow metadata was being read.
+    if (freshProduction(tag)) continue;
+    let readyAt = approvedAt;
+    if (kind === 'ota') {
+      const runtime = /** @type {{runtime:string}} */ (candidate).runtime;
+      const nativeRelease = freshProduction(`mobile-v${runtime}`);
+      if (!nativeRelease) {
+        notes.push(`${label}: ${tag} waits for native production approval of ${runtime}.`);
+        continue;
+      }
+      // A native run can start before OTA approval and finish afterwards. Search
+      // across its history, and match the exact version. Release publication dates
+      // may describe its earlier staging publication, not the production transition.
+      const publishedAt = Date.parse(nativeRelease.published_at ?? '');
+      if (!Number.isFinite(publishedAt))
+        throw new Error('Native runtime has no publication history');
+      const nativeRuns = workflowRuns(nativePromoteWorkflow, 0);
+      let transition = Infinity;
+      for (const nativeRun of nativeRuns) {
+        if (nativeRun.status !== 'completed') continue;
+        if (nativeRun.run_attempt === 1 && nativeRun.conclusion !== 'success') continue;
+        for (let attempt = 1; attempt <= nativeRun.run_attempt; attempt++) {
+          const evidence = recoveryRun(
+            'native',
+            nativeRun,
+            nativeRun.run_attempt > 1 ? attempt : undefined,
+          );
+          if (
+            evidence.manifest.version !== runtime ||
+            (evidence.state && evidence.state !== 'success')
+          )
+            continue;
+          // Rerunning an old native run changes updated_at. Its original delivery
+          // time must come from that attempt's persisted step, not the latest rerun.
+          const completed = Date.parse(
+            evidence.completedAt ?? (nativeRun.run_attempt === 1 ? nativeRun.updated_at : ''),
+          );
+          if (!Number.isFinite(completed))
+            throw new Error('Native rerun has no verifiable publication completion time');
+          transition = Math.min(transition, completed);
+        }
+      }
+      if (Number.isFinite(transition)) readyAt = Math.max(readyAt, transition);
+    }
+    const attempts = [];
+    for (const run of runs) {
+      // GitHub reruns keep one run ID. Count their persisted delivery outcomes,
+      // otherwise a manual rerun could accidentally buy another automatic retry.
+      for (let attempt = run.run_attempt; attempt >= 1; attempt--) {
+        const evidence = recoveryRun(kind, run, run.run_attempt > 1 ? attempt : undefined);
+        if (evidence.candidate !== identity.candidate) continue;
+        if (evidence.state === 'deferred' || evidence.state === 'skipped') continue;
+        if (evidence.pipeline !== identity.pipeline) continue;
+        const completed = Date.parse(run.updated_at);
+        if (!Number.isFinite(completed)) throw new Error('Invalid promotion completion time');
+        if (!evidence.state && run.run_attempt > 1)
+          throw new Error('Historical rerun has no explicit delivery outcome');
+        // Historical green waits need exact runtime transition evidence. Genuine
+        // failures remain counted even after a later native publication.
+        if (!evidence.state && run.conclusion === 'success' && completed < readyAt) continue;
+        attempts.push({ ...run, conclusion: evidence.state ?? run.conclusion });
+      }
+    }
+    // Refresh both publication facts after collecting historical evidence.
+    // A runtime can change while jobs are read just as the candidate can finish.
+    if (freshProduction(tag)) continue;
+    if (
+      kind === 'ota' &&
+      !freshProduction(`mobile-v${/** @type {{runtime:string}} */ (candidate).runtime}`)
+    ) {
+      notes.push(`${label}: ${tag} waits for its exact native production runtime.`);
+      continue;
+    }
+    const latest = attempts[0];
+    if (latest?.conclusion === 'success') {
+      if (freshProduction(tag)) continue;
+      problems.push(
+        `${label}: ${tag} is approved but unpublished although promotion run ${latest.html_url} ended green; inspect its delivery evidence before retrying.`,
+      );
+    } else if (attempts.length < 2) {
+      // Recheck Main immediately before enqueueing; workflow preflight additionally
+      // compares candidate and pipeline after checkout, before publication effects.
+      const main = /** @type {unknown} */ (
+        JSON.parse(gh('api', `repos/${repository}/git/ref/heads/main`))
+      );
+      if (
+        typeof main !== 'object' ||
+        main === null ||
+        !('object' in main) ||
+        typeof main.object !== 'object' ||
+        main.object === null ||
+        !('sha' in main.object) ||
+        typeof main.object.sha !== 'string'
+      )
+        throw new Error('Invalid Main reference');
+      if (main.object.sha !== git('rev-parse', 'HEAD')) {
+        notes.push(`${label}: Main advanced; a fresh sweep owns recovery.`);
+        continue;
+      }
+      if (freshProduction(tag)) continue;
+      if (
+        kind === 'ota' &&
+        !freshProduction(`mobile-v${/** @type {{runtime:string}} */ (candidate).runtime}`)
+      )
+        continue;
+      gh(
+        'workflow',
+        'run',
+        workflow,
+        '--ref',
+        'main',
+        '-f',
+        `recovery-candidate=${identity.candidate}`,
+        '-f',
+        `recovery-pipeline=${identity.pipeline}`,
+      );
+      dispatched.push(workflow);
+      notes.push(
+        latest
+          ? `${label}: promotion run ${latest.html_url} ended with ${latest.conclusion}; retrying once for this candidate and pipeline.`
+          : `${label}: ${tag} is approved and no promotion run followed it for this pipeline.`,
+      );
+    } else {
+      if (freshProduction(tag)) continue;
+      problems.push(
+        `${label}: ${tag} is approved but unpublished after an automatic retry for this candidate and pipeline; last run ${latest?.html_url}. A relevant pipeline fix allows a new bounded attempt.`,
+      );
+    }
+  } catch (error) {
     problems.push(
-      `${label}: ${tag} is approved but unpublished although promotion run ${latest.html_url} ended green; the candidate it promoted differs from the manifest on main, so inspect the manifest history before dispatching ${workflow} again.`,
-    );
-  } else if (runs.length < 2) {
-    gh('workflow', 'run', workflow, '--ref', 'main');
-    dispatched.push(workflow);
-    notes.push(
-      `${label}: promotion run ${latest.html_url} for ${tag} ended with ${latest.conclusion ?? 'no conclusion'}; retrying once.`,
-    );
-  } else {
-    problems.push(
-      `${label}: ${tag} is approved but unpublished and its last promotion run ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'} after an automatic retry; retry ${workflow} once the cause is fixed.`,
+      `${label}: recovery state could not be verified: ${error instanceof Error ? error.message : String(error)}; no promotion dispatched.`,
     );
   }
 }
