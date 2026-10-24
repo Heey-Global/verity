@@ -334,7 +334,7 @@ function WorkingLines() {
   );
 }
 
-export function useReduceMotion(): boolean {
+function useReduceMotion(): boolean {
   const [reduceMotion, setReduceMotion] = useState(true);
   useEffect(() => {
     let mounted = true;
