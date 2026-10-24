@@ -12,8 +12,9 @@ Local encrypted export and recovery belong to Core. The same backup engine can
 send ciphertext to user-controlled storage or Premium Uplink. Premium adds
 managed off-site storage, account-owned archives and retention the host cannot
 shorten, rather than exclusive access to recovery. Initial delivery should
-support an incremental local repository, portable export and installer restore; scheduling, server-side
-destinations and hosted storage follow after restore is proven.
+support a scheduled incremental repository on a host path or mounted NAS, the
+pre-update snapshot and installer restore; app download, Google Drive and hosted
+storage follow after restore is proven.
 
 Encryption happens on the self-hosted Verity machine before bytes leave it.
 "On device" means this host, not necessarily the phone controlling it. TLS remains
@@ -117,16 +118,27 @@ Capture, per repository whose `origin` is the connected code host:
 
 1. Exclude `.git/objects` (loose objects and packs) from the file copy. Keep the
    rest of `.git`: `HEAD`, `refs`, `packed-refs`, `index`, `logs`, `config`,
-   `hooks`, `info`, `worktrees/*` and the stash. The remote URL never contains a
-   token (`packages/server/src/provisioner.ts:37`), so `config` is safe to carry.
+   `hooks`, `info`, `worktrees/*` and the stash. Verity never writes a token
+   into `config`; the provisioner passes credentials as an in-memory
+   `http.extraheader` (`packages/server/src/provisioner.ts:37`). Users and
+   agents can still put secrets there, so `config` is user content encrypted
+   like `.env`, not a file the backup vouches for.
 2. Write a packfile of the local-only objects, equivalent to
-   `git rev-list --objects --all --reflog --indexed-objects --not refs/remotes/origin/HEAD | git pack-objects`,
+   `git rev-list --objects --all --reflog --indexed-objects --not <trusted-tip> | git pack-objects`,
    run once per worktree (`git worktree list`), because the index, `HEAD` and
    reflogs of a session worktree are per worktree and one invocation from the
-   main checkout does not see them. The exclusion set is only the remote default
-   branch tip as last fetched, not every remote-tracking ref: feature branches
-   are routinely squash-merged and deleted on the host, so a stale
-   `refs/remotes/origin/<branch>` would exclude commits the host no longer has.
+   main checkout does not see them. `<trusted-tip>` is the default branch
+   commit that Verity itself last saw on the code host, recorded in the
+   database by the server-side clone, fetch and push paths that run outside the
+   sandbox with the connection credential. It is deliberately not
+   `refs/remotes/origin/HEAD`: everything under `.git` is writable from the
+   sandbox, and a remote-tracking ref moved onto a local-only commit with
+   `git update-ref` would silently drop that commit's history from the pack.
+   The recorded tip cannot be moved from inside the sandbox; if it is missing or
+   its commit does not exist locally, the repository is captured
+   self-contained. Only the default branch is excluded, not every remote
+   branch: feature branches are routinely squash-merged and deleted on the host,
+   so a stale tip for `<branch>` would exclude commits the host no longer has.
    Pushed but unmerged branches are therefore included; they are small, and they
    drop out of the pack on the next snapshot after they merge. `--reflog` and
    `--indexed-objects` are what make the restored `index` and `logs`
@@ -134,14 +146,16 @@ Capture, per repository whose `origin` is the connected code host:
    a reflog after reset, rebase or amend have no ref, and a plain `--all` pack
    would leave dangling pointers behind. Chunk and encrypt the pack like any
    other file.
-3. Record in the manifest: remote URL, the code host connection id, the remote
-   default branch tip as the prerequisite, the local ref list, and the project
-   as `remote-dependent`.
+3. Record in the manifest: remote URL, the code host connection id, the trusted
+   tip and its branch name as the prerequisite, the local ref list, and the
+   project as `remote-dependent`.
 
 Repositories that do not qualify are copied completely, including
 `.git/objects`, and marked `self-contained`: no remote, an `origin` that is not
-the connected code host, or a shallow or partial clone with a promisor remote,
-whose object set cannot be reasoned about locally. Today's local projects, which
+the connected code host, no recorded trusted tip, a shallow or partial clone
+with a promisor remote, `objects/info/alternates`, or submodules under
+`.git/modules`, whose object sets cannot be reasoned about locally. Submodule
+`config` files are set aside at restore like the main one. Today's local projects, which
 still start from an empty initial commit, fall under this; after the "project
 files without a repository" concept lands they have no Git at all and nothing
 changes here.
@@ -165,7 +179,13 @@ the secret store so the code host connection credentials are usable:
    repository-format keys copied from the original: `core.repositoryformatversion`,
    `core.bare`, and every `extensions.*` key such as `objectFormat` and
    `worktreeConfig`, without which fetch, `index-pack` and `fsck` misbehave on
-   SHA-256 or worktree-config repositories. Run every Git command below
+   SHA-256 or worktree-config repositories, and the standard refspec
+   `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*`, so the fetch
+   updates remote-tracking refs and reaches every remote branch rather than only
+   the remote `HEAD`. The code host credential is supplied the way the
+   provisioner does it today, as an in-memory `http.extraheader` passed with
+   `-c` for that one command, never through a credential helper, the
+   environment of a hook, or a file. Run every Git command below
    in the backup execution identity with `core.hooksPath` pointing at an empty
    directory, `GIT_CONFIG_NOSYSTEM` and an empty global config. Users and agents
    can edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
@@ -174,13 +194,14 @@ the secret store so the code host connection credentials are usable:
 2. `git index-pack` the local-only packfile into `.git/objects` first; it has
    no prerequisites of its own.
 3. `git fetch --refetch origin` through the restored connection, which refills
-   `.git/objects` with everything reachable from the remote. `--refetch` makes
-   the negotiation ignore local refs, which at this point still name objects
-   that are not present and would otherwise break or mislead a normal fetch.
-   Then check the prerequisite with `git cat-file -e`. A repository without
-   `origin/HEAD` at capture time was already classified self-contained and does
-   not reach this step; a tampered remote-tracking ref can only enlarge the pack
-   at capture or fail this check at restore.
+   `.git/objects` with everything reachable from the remote. `--refetch` (Git
+   2.36 or newer, a requirement on the server and installer images, not the
+   sandbox) makes the negotiation ignore local refs, which at this point still
+   name objects that are not present and would otherwise break or mislead a
+   normal fetch. Then check the prerequisite with `git cat-file -e`. A
+   repository without a trusted tip at capture time was already classified
+   self-contained and does not reach this step. Remote-tracking refs restored
+   from the snapshot are untrusted and are overwritten by this fetch.
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
    `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
@@ -258,7 +279,11 @@ block boundary. Deduplicate before encryption, within one repository and recover
 key generation only. Never use plaintext hashes as public object names, derive
 encryption keys from content, or use deterministic encryption. The host keeps a
 restricted local index mapping content fingerprints to random opaque object IDs.
-That index contains sensitive information and must not be uploaded unencrypted.
+Fingerprints are keyed (an HMAC under a random per-repository key, itself stored
+in the repository encrypted to the recipient so an index rebuild can recover it),
+not plain hashes, so the index alone does not let anyone confirm the presence of
+a known file. That index contains sensitive information and must not be uploaded
+unencrypted.
 Destination observers can still infer sizes, timing and reuse patterns.
 
 Each new object receives an independent random data key, authenticated encryption
@@ -524,8 +549,10 @@ a remote restored offline, unreachable and revoked code hosts, deleted
 repositories and rewritten history, knowledge originals/revisions, settings and
 usable integration secrets after master-password unlock. Cover a session worktree
 with staged-only blobs, a branch deleted on the host after a squash merge, a
-missing `origin/HEAD`, a tampered remote-tracking ref, a malicious
-`config.worktree` and a fetch into a repository whose refs still dangle. For
+missing trusted tip, a remote-tracking ref moved onto a local-only commit from
+inside the sandbox, a renamed default branch, a malicious `config.worktree`, a
+repository with alternates or submodules, and a fetch into a repository whose
+refs still dangle. For
 updates, prove that
 the final snapshot is taken after quiescing and before the candidate migrates,
 that a failed snapshot aborts before the key hand-off, that the default records

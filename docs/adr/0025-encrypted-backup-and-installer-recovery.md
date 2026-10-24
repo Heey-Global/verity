@@ -152,14 +152,20 @@ that defeat chunk deduplication even when no commit changed.
 For a repository whose `origin` points at the connected code host, capture
 excludes `.git/objects` and replaces it with a packfile of every object that is
 reachable from local refs, from reflogs or from the index of any worktree but
-not from the remote default branch tip as last fetched. Only the default branch
-is excluded, not every remote-tracking ref: feature branches are routinely
-squash-merged and deleted on the host, and a stale remote-tracking ref would
-exclude commits the host no longer holds. Reflogs and the index matter: staged
+not from a trusted tip: the default branch commit Verity itself last saw on the
+code host, recorded in the database by the server-side clone, fetch and push
+paths that run outside the sandbox. Remote-tracking refs are not trusted for
+this, because everything under `.git` is writable from the sandbox and a ref
+moved onto a local-only commit would silently drop history from the pack. Only
+the default branch is excluded, not every remote branch: feature branches are
+routinely squash-merged and deleted on the host, and a stale tip for a deleted
+branch would exclude commits the host no longer holds. Without a recorded tip
+that exists locally, with alternates, submodules, or a shallow or partial clone,
+the repository is captured self-contained. Reflogs and the index matter: staged
 but uncommitted blobs, older stash entries and commits left behind by reset,
 rebase or amend are reachable only from there, and the restored `index` and
 `logs` would point at missing objects otherwise. The manifest records the
-default branch tip as the prerequisite. Everything else in `.git` is included, so
+trusted tip and its branch as the prerequisite. Everything else in `.git` is included, so
 branches, stash, index, reflogs, session worktree registrations and the remote
 URL survive. Repositories without a remote, including today's local projects
 that still hold an empty initial commit, shallow or partial clones, and
@@ -169,8 +175,11 @@ complete copy of `.git/objects`.
 The manifest marks each project as `remote-dependent` or `self-contained`, with
 the remote URL, the code host connection it belongs to and the set of
 prerequisite commits. Restore rehydrates a remote-dependent repository by
-restoring `.git` without objects, fetching from the code host through the
-restored connection, importing the local-only packfile and running `git fsck`.
+restoring `.git` without objects, importing the local-only packfile, fetching
+from the code host through the restored connection with `--refetch` so dangling
+local refs do not steer the negotiation, checking the prerequisite and running
+`git fsck`. The credential travels as an in-memory `http.extraheader` for that
+one command, as the provisioner does today, never through a helper or a file.
 Rehydration runs in the backup execution identity with hooks disabled, with the
 restored `config`, per-worktree `config.worktree` files and `hooks` set aside
 durably next to the project and a
@@ -213,7 +222,9 @@ Use content-defined chunking for files so insertions do not shift every later
 block boundary. Deduplicate before encryption, within one repository and recovery
 key generation only. Never use plaintext hashes as public object names, derive
 encryption keys from content, or use deterministic encryption. The host keeps a
-restricted local index mapping content fingerprints to random opaque object IDs.
+restricted local index mapping keyed content fingerprints to random opaque
+object IDs; the fingerprint key is random per repository and stored in the
+repository encrypted to the recipient, so plain hashes never leave the chunker.
 That index contains sensitive information and must not be uploaded unencrypted.
 Destination observers can still infer sizes, timing and reuse patterns.
 
@@ -507,9 +518,10 @@ project equals the original after rehydration from GitHub and from Forgejo, that
 an unreachable or revoked code host, a deleted repository and rewritten history
 each leave the project suspended and flagged rather than silently truncated,
 that a session worktree with staged-only blobs and a branch deleted on the host
-after a squash merge both restore intact, that a missing `origin/HEAD` falls
-back to a self-contained copy, that a tampered remote-tracking ref can only
-enlarge the pack or fail the prerequisite check, that a malicious
+after a squash merge both restore intact, that a missing trusted tip falls
+back to a self-contained copy, that a remote-tracking ref moved onto a
+local-only commit from inside the sandbox does not remove anything from the
+pack, that a malicious
 `config.worktree` never executes during restore, and that a repository without
 a remote restores without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
