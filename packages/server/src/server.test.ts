@@ -16620,7 +16620,7 @@ describe('vulnerability scan session integration', () => {
         projectId: 'vuln-project',
         sessionId,
         contentHash: sessionId ? 'integration-session' : 'integration-main',
-        ...(sessionId ? { baseChecked: true } : {}),
+        ...(sessionId ? { baseChecked: true, baseContentHash: 'integration-main' } : {}),
         status: 'ready',
         detail: null,
         revision: 'abc',
