@@ -273,3 +273,33 @@ it('skips oversized canonical files during refresh, recovery and publication', a
   expect((await stat(join(documents, 'large.bin'))).size).toBe(65 * 1024 * 1024);
   expect(await readFile(join(a.view, 'large.bin'), 'utf8')).toBe('local edit');
 });
+
+it.each(['file-to-directory', 'directory-to-file'] as const)(
+  'publishes other changes and preserves proposals after a local %s replacement',
+  async (transition) => {
+    const { documents, a, b } = await fixture();
+    const directoryFirst = transition === 'directory-to-file';
+    if (directoryFirst) await mkdir(join(documents, 'entry'));
+    const original = directoryFirst ? 'entry/note.md' : 'entry';
+    await writeFile(join(documents, original), 'base');
+    await Promise.all([a.prepare(), b.prepare()]);
+    await rm(join(a.view, 'entry'), { recursive: true });
+    if (!directoryFirst) await mkdir(join(a.view, 'entry'));
+    const replacement = directoryFirst ? 'entry' : 'entry/note.md';
+    await writeFile(join(a.view, replacement), 'replacement');
+    await writeFile(join(a.view, 'other.md'), 'independent');
+    await a.transferPending(b, 'Transferred');
+    expect(await readFile(join(b.view, 'Transferred', replacement), 'utf8')).toBe('replacement');
+    const result = await a.publish();
+    expect(result.changed).toContain('other.md');
+    expect(await readFile(join(documents, 'other.md'), 'utf8')).toBe('independent');
+    expect(await readFile(join(a.view, replacement), 'utf8')).toBe('replacement');
+    if (directoryFirst) {
+      expect(result.conflicts).toHaveLength(1);
+      const proposal = join(documents, result.conflicts[0]!, '..', 'proposed', 'entry');
+      expect(await readFile(proposal, 'utf8')).toBe('replacement');
+    } else {
+      expect(await readFile(join(documents, replacement), 'utf8')).toBe('replacement');
+    }
+  },
+);

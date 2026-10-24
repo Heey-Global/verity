@@ -78,7 +78,11 @@ async function parentSlot(root: string, path: string, create: boolean) {
   }
 }
 
-async function readDocument(root: string, path: string): Promise<Buffer | undefined> {
+async function readDocument(
+  root: string,
+  path: string,
+  absentAfterReplacement = false,
+): Promise<Buffer | undefined> {
   let slot;
   try {
     slot = await parentSlot(root, path, false);
@@ -121,7 +125,12 @@ async function readDocument(root: string, path: string): Promise<Buffer | undefi
       await file.close();
     }
   } catch (error) {
-    if (missing(error)) return undefined;
+    if (
+      missing(error) ||
+      (absentAfterReplacement &&
+        ['EISDIR', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+    )
+      return undefined;
     throw error;
   } finally {
     await slot?.directory.close();
@@ -314,9 +323,11 @@ export class DocumentWorkspace {
     const copied: string[] = [];
     for (const path of new Set([...Object.keys(state.files), ...Object.keys(before)])) {
       if ((state.files[path] ?? null) === (before[path] ?? null)) continue;
-      const bytes = await readDocument(this.view, path);
+      const bytes = await readDocument(this.view, path, before[path] === undefined);
       const destination =
-        bytes === undefined ? `${prefix}/${path}.deletion.json` : `${prefix}/${path}`;
+        bytes === undefined
+          ? `${prefix}.deletions/${digest(Buffer.from(path))}.json`
+          : `${prefix}/${path}`;
       const proposal = bytes ?? Buffer.from(JSON.stringify({ deletedPath: path }));
       const existing = await readDocument(target.view, destination);
       if (existing !== undefined && !existing.equals(proposal))
@@ -340,7 +351,7 @@ export class DocumentWorkspace {
         const base = state.files[path] ?? null;
         const next = local[path] ?? null;
         if (next === oversizedVersion || base === next) continue;
-        const bytes = await readDocument(this.view, path);
+        const bytes = await readDocument(this.view, path, next === null);
         if ((bytes === undefined ? null : digest(bytes)) !== next)
           throw new Error(`document changed during publication: ${path}`);
         let current: Buffer | undefined;
