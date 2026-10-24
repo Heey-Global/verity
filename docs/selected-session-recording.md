@@ -116,6 +116,24 @@ await selectedRecordingAttempt({
 });
 ```
 
+The Diagnostics Connection recording section exposes this entrypoint as **Run bounded
+connection test**, alongside separate Stop and Copy report actions. It requires the
+active paired endpoint to be direct HTTPS with an available device token and checks
+the authenticated descriptor against the saved remote installation. Administration
+uses a separate pinned client with remote fallback disabled and bounded requests.
+The V3 preparing ACK remains the authoritative capability gate; the descriptor's
+ordinary remote-control capability does not establish V3 support.
+
+The UI refuses an existing DATA tunnel. Its run reference is saved per paired
+server before invocation; navigation or backgrounding aborts the attempt. Another
+start is blocked while that reference remains. Copy validates the V3 export and
+installation fingerprint; the reference is removed only after copy, terminal Core
+and Uplink states and an inactive native tunnel are confirmed. Export failure
+preserves the reference for another collection attempt. An authenticated export
+404 with an inactive native tunnel clears an orphan reference without copying a
+report. No ticket or device token
+is saved in this reference. Copying places metadata on the device clipboard.
+
 This entrypoint is opt-in source preparation, not permission to execute a live
 attempt or proof that the installed native build supports it. Its one health
 request verifies this diagnostic sequence, not normal session creation or message
