@@ -25,8 +25,8 @@ dependent Git capture, writer epochs with fences and a two-pass update hook in
 the first release. Review found that scope too large to deliver and to verify.
 This amendment fixes a smaller first release and moves the rest to later steps
 without discarding it. The mechanics live in the
-[concept](../BACKUP_RECOVERY_CONCEPT.md), which is authoritative for detail;
-where the two disagree, this ADR wins and the concept is corrected.
+[concept](../BACKUP_RECOVERY_CONCEPT.md), which holds the detail; on conflict
+this ADR wins and the concept is corrected.
 
 ## Decision
 
@@ -293,9 +293,13 @@ plaintext or recovery keys.
 
 ### Sequence
 
-1a: self-contained capture, host-path destination, schedule, recovery key,
-identity in snapshots, minimal installer restore and restore probe. 1b:
-pre-update snapshot with the gate and "Update anyway". 1c: alerting, retention
+1a: self-contained capture, host-path destination, schedule, retention with
+garbage collection, the disk-full alert, recovery key, identity in snapshots,
+minimal installer restore and restore probe. Existing hosts re-run the
+installer once for the mount, the identity helper, the installation id and the
+read-only database role, in the pattern of ADR 0008 Amendment 2; until then the
+app shows that backups need the installer. 1b:
+pre-update snapshot with the gate and "Update anyway". 1c: alerting, retention settings
 and snapshot list, snapshot deletion, project and file restore, same-host
 rollback. 2: Premium Uplink upload and account-based installer download,
 enrollment continuity. 3: remote-dependent Git, takeover, quiesced pre-update
@@ -318,8 +322,9 @@ status. Self-contained Git capture costs storage and lock time, because a repack
 re-writes the objects and the freeze copies every `.git` where reflinks are
 unavailable; both are measured and shown.
 
-Fresh-host restore keeps the installation identity, so two hosts restored from
-the same snapshot would answer as one installation; `--new-identity` is the
+Fresh-host restore keeps the deployment identity (deployment id, pairing and
+TLS keys) but writes a new installation id, which alone owns repositories. Two
+hosts restored from the same snapshot would therefore answer as one deployment; `--new-identity` is the
 documented way around that. Two restored hosts never damage each other's
 backups, because each owns its repository. The pre-update snapshot misses
 changes made between the snapshot and the switch.

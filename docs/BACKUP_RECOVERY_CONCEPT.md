@@ -544,7 +544,9 @@ In the frozen copy:
 Every command then runs with `GIT_DIR` set to the frozen copy and reads nothing
 from the live repository. The copy is live and not atomic: a `git gc` in the
 sandbox can delete a pack after its refs were copied. Each frozen copy therefore
-gets `git fsck --connectivity-only` before it is accepted. Missing objects
+gets `git fsck --connectivity-only` before it is accepted, except one flagged
+`alternates-dropped`, whose failure is expected and which skips the check and
+the retry loop. Missing objects
 trigger a re-freeze with bounded retries; after the last attempt the latest copy
 is stored as plain files with an `unstable` flag. Repositories with unknown
 extensions (for example `extensions.refStorage`) or out-of-project pointers are
@@ -571,7 +573,10 @@ measures it on a large installation.
    `config`, every `config.worktree` and `hooks` in server-owned restore staging
    (`VERITY_ROOT/restore/<projectId>/<repoKey>/`), and write the sanitized
    `config` from capture.
-3. Run `git fsck --connectivity-only` and `git worktree repair`. A failure is
+3. Immediately before the first Git command, validate the pointers of step 1
+   again on the restored tree, and refuse a working-tree `.git` entry that is a
+   symlink. Then run `git fsck --connectivity-only` and `git worktree repair`.
+   A failure is
    recorded and the project is marked "Code incomplete"; for an
    `alternates-dropped` repository it is the expected outcome.
 4. After the last Git command of the restore, put the user's `config`,
@@ -732,7 +737,13 @@ devices with a "Revoke" action.
 - No overlapping runs. A scheduled run that is due while one is active is
   skipped and logged. The pre-update request cancels a running scheduled run
   and starts its own, with a one-hour timeout instead of the run timeout, so an
-  update never waits for hours.
+  update never waits for hours. The first full run is never cancelled: a
+  pre-update request during it holds the update with "first backup still
+  running".
+- Objects written by a failed, cancelled or timed-out run stay in the index and
+  are reused by the next run, so a large first run makes progress across
+  attempts instead of starting over; garbage collection removes them only after
+  the grace period if no snapshot ever references them.
 - When the directory is unwritable, missing its marker or full, the run fails
   with the reason and retries with backoff (15 minutes, doubling up to the
   schedule interval). Failed runs never replace the last good snapshot.
@@ -742,8 +753,9 @@ devices with a "Revoke" action.
 - The pair of repository number and sequence number is authoritative for
   order, for "newest" and for retention across all repositories of an
   installation; the sequence alone orders snapshots within one repository.
-  Timestamps are for display only. The installer selects snapshots as
-  `r<n>/<sequence>` and warns about a snapshot timestamp in the future and about
+  The signed capture timestamp places snapshots into the daily, weekly and
+  monthly retention buckets but never decides order. The installer selects
+  snapshots as `<installationId>-r<n>/<sequence>` and warns about a snapshot timestamp in the future and about
   gaps in a repository's sequence.
 
 ## Alerting
@@ -844,7 +856,7 @@ its new installation id, with the same recovery key.
 
 `verity-install --rollback` restores the database and the data volume from the
 newest pre-update snapshot into the existing installation; `--rollback
---snapshot r<n>/<sequence>` selects another one. It finds pre-update snapshots by
+--snapshot <installationId>-r<n>/<sequence>` selects another one. It finds pre-update snapshots by
 the kind in their file names, asks for confirmation, stating the snapshot time
 and that later changes are lost, then for the recovery key, and verifies the
 signed manifest before it touches anything.
@@ -860,7 +872,12 @@ journal (see "Device revocations across restore") and every revocation recorded
 in the live database it replaces, which covers entries written under a newer
 key generation than the one entered, and writes the automatic
 update hold into the restored database before the swap, because the snapshot's
-own settings predate it. It then swaps staging in, pins the snapshot's release
+own settings predate it. Before touching anything it aborts any update the
+Updater has journaled, so the restored release does not resume a failing
+update. Everything that survives a rollback is host-side and not in the
+snapshot: `/etc/verity` with the installation id, `VERITY_ROOT/backup-state/`
+(keys, index, target id, catalog and per-snapshot object references), and the
+backup directory itself. It then swaps staging in, pins the snapshot's release
 and starts it. Automatic updates stay held until the administrator resumes them
 in the app. Backups continue in the installation's current repository, the one
 `backup-state/` belongs to, which may be newer than the snapshot's own if the
@@ -959,11 +976,14 @@ stays with the user.
 ### 1a: Backup that can be restored
 
 Self-contained capture of everything in scope, the exclusion list, the database
-export through the read-only role, the repository format with publication and
-garbage collection, the host-path destination with marker and free-space check,
+export through the read-only role, the repository format with publication,
+retention and garbage collection, the disk-full alert, the host-path destination with marker and free-space check,
 the schedule with the operations defaults, recovery key setup with the
 confirmation paste, identity in snapshots, a minimal installer fresh-host
-restore and the restore probe in the app and in CI.
+restore and the restore probe in the app and in CI. Existing hosts receive the
+new mount, the identity helper, the installation id and the read-only database
+role only through the installer, so they re-run it once, in the pattern of ADR
+0008 Amendment 2; until then the app shows that backups need the installer.
 
 Acceptance:
 
@@ -1007,7 +1027,7 @@ with the note.
 
 ### 1c: Everyday operations
 
-Alerting, retention and snapshot list in the app, single snapshot deletion,
+Alerting, the retention settings and snapshot list in the app, single snapshot deletion,
 pause and delete all, partial restore of a project and of a single file, and
 the installer's same-host rollback with the architecture check.
 
