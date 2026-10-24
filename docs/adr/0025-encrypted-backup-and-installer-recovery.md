@@ -66,8 +66,7 @@ Encrypting to a public key does not prove who wrote a manifest, so the public
 recipient key is confidential host state that never reaches a destination, and
 every manifest is signed with a host-local signing key whose verification key is
 part of the recovery kit; the signature covers the entire manifest, every object
-reference's ciphertext digest and length included, binds repository and epoch
-identity, a snapshot sequence number and a timestamp, and is verified before
+reference's ciphertext digest and length included, binds repository identity, key generation and writer epoch, a snapshot sequence number and a timestamp, and is verified before
 any field is used, so neither substituted objects nor a replayed older manifest
 pass. The private signing key is never in a snapshot but travels
 in the repository encrypted to the recipient; a restore installs it only after
@@ -82,8 +81,7 @@ publishing or pruning beside it; a write-only destination credential cannot see
 that fence, so list access is required. A host restored without that
 confirmation has backups inactive on every capture path, scheduled, manual and
 pre-update, until an administrator takes over or points it at another
-repository. The signature binds repository identity, key generation and writer
-epoch. Restore refuses an unsigned or wrongly signed manifest.
+repository. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
@@ -339,12 +337,17 @@ snapshots, independent of the ordinary schedule's retention.
 One rule, in three cases, decides whether the Updater continues after the final
 snapshot. With no destination configured, or on a host restored without the
 takeover confirmation, whose backups are inactive on every path, no snapshot is
-attempted and the update runs, recorded as unbacked. With a destination, the Updater continues
+attempted and the update runs, recorded as unbacked, unless "Require a backup"
+is enabled, which refuses the update in both cases. With a destination, the Updater continues
 when the final snapshot is durably committed at one of them. If every configured
 destination needs the unlocked secret store and the store is sealed, which can
 happen because an update may run sealed and the promoted Server then starts
 sealed too, the Updater continues once the snapshot is durably in the local
-spool and records the update as "backed up locally only". Anything else, a
+spool and records the update as "backed up locally only". This spool is a complete,
+fsynced local repository snapshot with all referenced objects, directly readable
+by the installer through a local-path input without Drive credentials or a live
+server; it is pinned until delivery and pre-update retention allow removal. It
+protects against migration failure, not loss of the host disk. Anything else, a
 failed or timed-out final snapshot or a spool that is full, aborts the update
 before any irreversible step, never after it. The warm snapshot's failure is
 logged and never aborts by itself. "Require a backup" tightens

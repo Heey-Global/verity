@@ -132,7 +132,11 @@ current path relative to `VERITY_ROOT`. Identity is kept by Verity's own
 bookkeeping, not by anything inside the sandbox-writable directory: every
 rename of a Git directory in this design (`.git` to `.git.verity-incomplete`,
 to `.git.verity-pending-<snapshotId>`, and back) is performed by Verity, which
-updates the recorded path of the existing key in the same transaction. At
+first persists a rename intent containing the key and both paths, then renames
+the directory, then confirms the new path in the database. Startup reconciles
+unconfirmed intents before capture or rehydration; ambiguous states preserve
+both paths and staging and require reconciliation rather than assigning a new
+key. At
 capture, a Git directory found at a path that matches a current record uses
 that key; one found at a path with no current record, for example a `git init`
 at the original location while the record now points at
@@ -143,7 +147,7 @@ staging. Each run has its own directory and a lock,
 so a scheduled run, the warm pre-update run and a restore in progress never
 share a path.
 
-The staging directory holds plaintext refs, index and user `config`, and is the
+The staging directory holds plaintext Git objects, refs, index and user `config`, and is the
 one documented exception to the rule against plaintext staging: it stays on the
 host, in a server-owned directory, for the duration of a run. It is removed on
 every exit path of the run. A SIGKILL or host crash bypasses exit paths, so the
@@ -369,8 +373,9 @@ files without a repository" concept lands they have no Git at all and nothing
 changes here.
 
 No fetch runs during capture: capture holds no code host credential and every
-capture command carries `protocol.allow=never`, so even a config key that
-survived sanitizing could not reach the network through Git. A
+capture command carries `protocol.allow=never`. The config allowlist excludes
+protocol-specific overrides; that sanitization is the network restriction,
+with the command override as defense in depth. A
 default branch tip that is behind the real remote only makes the packfile larger.
 A default branch that was force-rewritten after the last fetch is the one case
 that loses history; restore detects it through the recorded prerequisite and
@@ -378,7 +383,12 @@ reports it. Self-contained repositories keep their whole `.git/objects` and
 re-upload it after every `git gc`, so the size saving applies to remote-dependent
 repositories only.
 
-Restore, per repository. Steps 1 and 4 apply to every repository, including
+Repositories captured as plain files with a "not validated" flag restore as
+plain files, preserving config and extensions without sanitization or any Git
+command. Archive path and link validation still applies; unsafe pointers are
+reported and the project stays suspended pending reconciliation.
+
+Restore, per validated repository. Steps 1 and 4 apply to these repositories, including
 self-contained ones; steps 2 and 3 apply to remote-dependent and
 pending-rehydration repositories only and run after the master password has
 unlocked the secret store so the code host connection credentials are usable:
@@ -573,7 +583,8 @@ restored as explicitly unavailable.
 
 Generate a cryptographically random 256-bit recovery key locally as the private
 half of an asymmetric recipient pair (X25519 or an equivalent reviewed scheme,
-`age`-style). Store only the public recipient key on the host. Objects and
+`age`-style). Store the public recipient key, never its private half, on the host; the
+separate signing and fingerprint keys described below also live there. Objects and
 manifests use independently generated random keys wrapped to that recipient.
 Scheduled capture works with a sealed secret store. Historical decryption still
 requires the private key; a compromised host can read current source data and
@@ -833,8 +844,9 @@ Both snapshots use the ordinary capture path: incremental, encrypted to the
 public recovery key, no secret needed for host-path and NAS destinations. Capture
 always runs; for a Drive destination only delivery waits for an unlocked secret
 store. One rule, in three cases, decides whether the Updater continues. With no
-destination configured, no snapshot is attempted; the update runs and is
-recorded as unbacked. With at least one destination, the final snapshot must be
+destination configured, or with backups inactive after a non-takeover restore,
+no snapshot is attempted; the update runs and is recorded as unbacked unless
+"require a backup before updates" is enabled, in which case it is refused. With at least one destination, the final snapshot must be
 durably committed at one of them. If every configured destination needs the
 unlocked store and the store is sealed, a snapshot durably in the local spool
 suffices and the update is recorded as "backed up locally only"; a sealed server
@@ -854,7 +866,13 @@ setting; "backed up locally only" through the Drive spool does not, and the
 refusal names the destination that blocked. Without the setting the spool-only
 case proceeds, as stated above.
 Rollback of a committed update that went wrong is the installer's restore path
-fed with the pre-update snapshot; the Updater's own rollback phases stay the
+fed with the pre-update snapshot. The local spool must contain a complete
+committed snapshot and all its reachable encrypted objects in the same local
+repository format accepted by the installer, with an explicit local-path input
+that needs no Drive token or running server. The spool-only acknowledgement
+requires these files and their manifest to be fsynced and pinned until delivery
+and pre-update retention permit removal. It protects against migration failure,
+not loss of the host disk; the Updater's own rollback phases stay the
 first line because they only switch containers.
 
 ## Execution identity
@@ -979,7 +997,7 @@ not a degraded health state.
 3. Add app download, Google Drive delivery with the unlock-dependent spool, and
    Premium ciphertext storage in its separate service using the same format and
    account ownership.
-4. Add selective content profiles, export adapters for in-container services and
+4. Add user-controlled object-store delivery, selective content profiles, export adapters for in-container services and
    additional database capture optimizations later.
 
 Verification covers active/sleeping/paused projects, all worktrees and local-only
