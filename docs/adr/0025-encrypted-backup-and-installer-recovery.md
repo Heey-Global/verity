@@ -25,7 +25,8 @@ dependent Git capture, writer epochs with fences and a two-pass update hook in
 the first release. Review found that scope too large to deliver and to verify.
 This amendment fixes a smaller first release and moves the rest to later steps
 without discarding it. The mechanics live in the
-[concept](../BACKUP_RECOVERY_CONCEPT.md), which is authoritative for detail.
+[concept](../BACKUP_RECOVERY_CONCEPT.md), which is authoritative for detail;
+where the two disagree, this ADR wins and the concept is corrected.
 
 ## Decision
 

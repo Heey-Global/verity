@@ -1,7 +1,8 @@
 # Encrypted backup and recovery concept
 
 Status: supporting implementation proposal, not implemented. Architecture decisions
-are recorded in [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md).
+are recorded in [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md);
+where the two disagree, the ADR wins and this document is corrected.
 Selected recovery policy: one recovery key per installation, held only by the
 user. Scope: self-hosted Core backup and recovery to a host directory, with
 Premium Uplink as the later off-site destination.
@@ -130,7 +131,9 @@ them yet, so the next attempt starts over with a new key.
 confirmation paste, as in setup. It starts a new repository with a full first
 run (see "Format and key lifecycle"). Snapshots in the old repository still need
 the old key; the snapshot list shows which key each snapshot needs, and the old
-repository expires under normal retention.
+repository expires under normal retention. Before it starts, the flow warns that
+the old key is still needed for those snapshots, including the pre-update
+snapshots a rollback would use, and names the date until which to keep it.
 
 A user who has lost the key while the server still runs replaces it at once. The
 old snapshots stay unreadable; they are not deleted early, in case the key turns
@@ -261,6 +264,12 @@ server process and never part of a snapshot:
 - the private signing key;
 - the fingerprint key and the local deduplication index.
 
+If `backup-state/` is lost, for example on a damaged data volume, the server
+cannot sign or encrypt new snapshots. It raises the "backup needs attention"
+alert and offers two ways out: enter the recovery key once to recover the keys
+from the repository, or replace the recovery key, which starts a new
+repository.
+
 None of these decrypts a snapshot. Scheduled capture therefore works with a
 sealed secret store and after an unattended restart. A compromised host can
 read current data and forge new snapshots, which is the accepted host-compromise
@@ -278,6 +287,12 @@ attacker held the signing key and could forge or delete manifests. Restore onto
 a clean host from an off-host copy made before the compromise, with
 `--new-identity`, so neither forged database state nor old device tokens come
 back, and replace the recovery key there.
+
+The recovery key protects more than snapshot contents. Snapshots carry device
+tokens and the TLS identity, and the backup directory carries the CA key, so the
+directory plus the key is enough to stand up a host that paired devices accept.
+Setup says the key "opens your backups and can restore this server". After a
+key compromise, replace the key and use `--new-identity` for any later restore.
 
 Restore accepts the recovery key by clipboard paste, QR scan in the app, or
 typed entry with checksum validation; paste over SSH is the installer path.
@@ -549,7 +564,9 @@ measures it on a large installation.
 1. Before any Git command, validate every `gitdir:` target and every
    `worktrees/<name>/gitdir` and `commondir` entry against the project's own
    restore paths, rewrite them for a moved `VERITY_ROOT`, and refuse any that
-   point elsewhere.
+   point elsewhere. Validation resolves with `RESOLVE_NO_SYMLINKS` and requires
+   every path component to be a real directory, so a restored symlink in the
+   working tree cannot redirect a Git command that runs later.
 2. Restore `.git` with its objects and the working files. Keep the user's
    `config`, every `config.worktree` and `hooks` in server-owned restore staging
    (`VERITY_ROOT/restore/<projectId>/<repoKey>/`), and write the sanitized
@@ -593,7 +610,8 @@ The destination is a host directory managed by the installer. The default is
 at install time and changes it later. The installer bind-mounts it read-write
 into the server container. The sealed deployment spec fixes the Server's mounts
 today (`packages/server/src/self-update/deployment-spec.ts`), so admitting this
-mount is a deployment-spec change in step 1a. The path is set on the host, not
+mount, and the writable request directory of the identity host helper below,
+are deployment-spec changes in step 1a. The path is set on the host, not
 from the phone; the app shows it read-only.
 
 A directory that is a mount point of an external disk or a network share is
@@ -867,6 +885,8 @@ the server records whenever it publishes or deletes a snapshot: sequence, kind,
 time, releases for pre-update snapshots, key generation and per-project sizes.
 The catalog is a cache, never restore authority; when it is missing it is
 rebuilt from the file names (sequence and kind) and modification times. The
+kind is also a signed manifest field; restore refuses a snapshot whose name and
+signed kind disagree, so a renamed file cannot pass as `pre-update`. The
 plaintext file names reveal snapshot count, kind and order to anyone who can
 read the directory, which the size and timing of the files reveal anyway.
 

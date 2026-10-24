@@ -1326,7 +1326,11 @@ update the rollback point for data, because the promoted Server runs forward-onl
 2. With backups configured, "Updates wait for a backup" is on by default. A failed or timed-out
    snapshot (one-hour timeout) holds the update in that phase, which has not touched data, and the app shows the
    reason. The administrator may choose "Update anyway", which runs the update and records it as
-   unbacked in the update history. Automatic updates never override the hold.
+   unbacked in the update history. Automatic updates never override the hold. The hold is journaled
+   as a reason on the `preflight` phase, so an Updater restart resumes in `preflight` and asks for the
+   snapshot again; "Update anyway" clears the reason and continues from there. The installer's
+   same-host rollback is a second trigger of the automatic update hold, which then lasts until the
+   administrator resumes updates in the app.
 3. Without configured backups, or while backups are paused, the update runs and the update history
    notes that no backup was taken.
 4. The host gains a second Verity component beside `verity-host-runtime`: a root-owned backup
