@@ -11,6 +11,12 @@ jest.mock('@verity/mobile', () => ({
     activeSessionSubscriptions: 2,
     sessionEventsReceived: 42,
     inFlightApiRequests: 1,
+    apiOtherRequestGroups: {
+      google: { started: 2, settled: 1, failures: 0, inFlight: 1, peakInFlight: 3 },
+      links: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+      models: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+      remaining: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+    },
     apiRequestGroups: {
       overview: { started: 2, settled: 1, failures: 0, inFlight: 1, peakInFlight: 3 },
       preview: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
@@ -105,4 +111,13 @@ it('resets interval peaks at capture and exports independent group snapshots', (
   report.baseline!.apiRequestGroups.overview.peakInFlight = 999;
   expect(exportRuntimeDiagnostics().baseline!.apiRequestGroups.overview.peakInFlight).toBe(3);
   expect(exportRuntimeDiagnostics().samples[0]!.apiRequestGroups.overview.started).toBe(2);
+});
+
+it('detaches exported other-family counters from retained samples', () => {
+  setGestureDiagnosticsEnabled(true);
+  const report = exportRuntimeDiagnostics();
+  report.baseline!.apiOtherRequestGroups.google.started = -1;
+  report.samples[0]!.apiOtherRequestGroups.links.started = -1;
+  expect(exportRuntimeDiagnostics().baseline!.apiOtherRequestGroups.google.started).toBe(2);
+  expect(exportRuntimeDiagnostics().samples[0]!.apiOtherRequestGroups.links.started).toBe(0);
 });
