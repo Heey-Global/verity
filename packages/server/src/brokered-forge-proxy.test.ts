@@ -480,6 +480,7 @@ describe('brokered forge TLS boundary', () => {
     expect(h.mint).toHaveBeenCalledTimes(2);
   });
   it('does not follow redirects or expose upstream errors and echoed credentials', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const h = await harness((req, res) => {
       if (req.url?.endsWith('issues')) {
         res.writeHead(302, { location: 'https://example.com/' });
@@ -496,6 +497,11 @@ describe('brokered forge TLS boundary', () => {
     });
     await expect(call(h.port, '/repos/acme/app/pulls')).rejects.toThrow();
     expect(h.received).toHaveLength(2);
+    expect(warning).toHaveBeenCalledWith('Forge broker upstream request failed', {
+      code: 'UNKNOWN',
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(token);
+    warning.mockRestore();
   });
   it('keeps registry exchange bearers outside TLS clients and rejects unmapped packages', async () => {
     const registryBearer = 'server-only-registry-bearer';
