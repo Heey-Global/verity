@@ -4742,10 +4742,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
-      {/* An empty session has changed nothing yet; its starter card speaks for main. */}
-      {client && messages.length > 0 ? (
-        <SessionVulnerabilityCard client={client} sessionId={sessionId} />
-      ) : null}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
