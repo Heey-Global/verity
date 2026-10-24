@@ -113,47 +113,61 @@ re-upload even when nothing was committed. Pushed history already lives on the
 code host, GitHub or Forgejo, and is recoverable from there. The backup therefore
 carries only what exists nowhere else.
 
-Capture, per repository with an `origin` remote:
+Capture, per repository whose `origin` is the connected code host:
 
 1. Exclude `.git/objects` (loose objects and packs) from the file copy. Keep the
    rest of `.git`: `HEAD`, `refs`, `packed-refs`, `index`, `logs`, `config`,
    `hooks`, `info`, `worktrees/*` and the stash. The remote URL never contains a
    token (`packages/server/src/provisioner.ts:37`), so `config` is safe to carry.
-2. Write a bundle of the local-only objects, equivalent to
-   `git bundle create <out> --all --not --remotes=origin`. Its prerequisites are
-   the remote-tracking commits as of the last fetch; the bundle is small because
-   it holds only unpushed commits and their trees and blobs. Chunk and encrypt it
-   like any other file.
-3. Record in the manifest: remote URL, the code host connection id, prerequisite
-   commits, local ref list, and the project as `remote-dependent`.
+2. Write a packfile of the local-only objects, equivalent to
+   `git rev-list --objects --all --reflog --indexed-objects --not --remotes=origin | git pack-objects`.
+   `--reflog` and `--indexed-objects` are what make the restored `index` and
+   `logs` consistent: staged blobs, older stash entries and commits reachable
+   only from a reflog after reset, rebase or amend have no ref, and a plain
+   `--all` bundle would leave dangling pointers behind. The pack is small
+   because it holds only unpushed work. Chunk and encrypt it like any other file.
+3. Record in the manifest: remote URL, the code host connection id, the
+   remote-tracking tips as prerequisites, the local ref list, and the project as
+   `remote-dependent`.
 
-Repositories without a remote are copied completely, including `.git/objects`,
-and marked `self-contained`. This covers today's local projects, which still
-start from an empty initial commit; after the "project files without a
-repository" concept lands they have no Git at all and nothing changes here.
+Repositories that do not qualify are copied completely, including
+`.git/objects`, and marked `self-contained`: no remote, an `origin` that is not
+the connected code host, or a shallow or partial clone with a promisor remote,
+whose object set cannot be reasoned about locally. Today's local projects, which
+still start from an empty initial commit, fall under this; after the "project
+files without a repository" concept lands they have no Git at all and nothing
+changes here.
 
 No fetch runs during capture: the backup has no network and no credentials. A
-remote-tracking ref that is behind the real remote only makes the bundle larger.
+remote-tracking ref that is behind the real remote only makes the packfile larger.
 A remote-tracking ref that is ahead of the real remote, because the remote was
 force-pushed or deleted after the last fetch, is the one case that loses
-history; restore detects it through the bundle's prerequisites and reports it.
+history; restore detects it through the recorded prerequisites and reports it.
 
 Restore, per remote-dependent repository, after the master password has unlocked
 the secret store so the code host connection credentials are usable:
 
-1. Restore `.git` without objects and the working files from the snapshot.
+1. Restore `.git` without objects and the working files from the snapshot. Move
+   the restored `config` and `hooks` aside and write a sanitized `config` that
+   contains only the remote URL from the manifest. Run every Git command below
+   in the backup execution identity with `core.hooksPath` pointing at an empty
+   directory, `GIT_CONFIG_NOSYSTEM` and an empty global config. Users and agents
+   can edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
+   `credential.helper`, `url.*.insteadOf` or a `reference-transaction` hook
+   would otherwise execute during restore or redirect the fetch credential.
 2. `git fetch origin` through the restored connection, which refills
    `.git/objects` with everything reachable from the remote.
-3. `git bundle verify` checks that every prerequisite exists, then
-   `git fetch <bundle>` adds the local-only objects.
+3. Check each prerequisite with `git cat-file -e`, then `git index-pack` the
+   local-only packfile into `.git/objects`.
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
-   `VERITY_ROOT` moved.
+   `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
+   `hooks` back; they are user content, not restore input.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
 stays in the suspended recovery state with a per-project "Code incomplete"
-warning. Working files and the bundle remain on disk, so nothing local is lost
+warning. Working files and the local-only packfile remain on disk, so nothing local is lost
 and rehydration can be retried from the project screen after reconnecting the
 code host. The restore summary lists rehydrated, pending and failed projects
 separately and never counts a pending one as recovered.
@@ -265,8 +279,12 @@ them and stages a complete installation. App export assembles a self-contained
 bundle of that manifest and its reachable encrypted objects, without decrypting
 on the source host; downloading that bundle transfers the full selected state.
 Repository-to-repository replication transfers only objects missing at the target.
-The UI distinguishes incremental repository backups from full portable downloads
-and reports scanned bytes, new ciphertext bytes and total retained storage.
+An export carries the same content as its snapshot. A remote-dependent code
+project therefore still needs its code host after an export restore; the export
+dialog offers "include pushed history", which adds that project's full
+`.git/objects` to this export only and shows the size difference. The UI
+distinguishes incremental repository backups from full portable downloads and
+reports scanned bytes, new ciphertext bytes and total retained storage.
 
 ### Incremental application database
 
@@ -300,7 +318,7 @@ coupling and retention dependencies; they are not silently added to version one.
    deterministically segmented logical export through the read-only backup role). Record its timestamp.
 4. Copy worktrees and knowledge folders live, streaming through the encryptor,
    skipping `.git/objects` for repositories with a remote and writing their
-   local-only bundle instead. Record the copy window and the turns active in it.
+   local-only packfile instead. Record the copy window and the turns active in it.
 5. Release the lock on every exit path; never wake a sleeping project to copy
    its files. Commit the snapshot only after the destination has
    durably acknowledged every referenced object and the encrypted manifest.
@@ -326,7 +344,11 @@ over the private control socket. The hook adds two requests to that sequence:
    the last scheduled run and warms the destination.
 2. After `quiescing-old`, before `handing-off-key`: request a final incremental
    snapshot. No turn writes anymore, so it captures the exact pre-migration state
-   and transfers seconds of change. Only then does the Updater continue.
+   and transfers seconds of change. The Updater continues only after the
+   destination has durably acknowledged this snapshot, not after local capture,
+   because it is the rollback point. This extends the quiesced window by the
+   upload of that delta; the warm pass keeps it short, and the update status
+   shows the wait as its own phase.
 
 Both snapshots use the ordinary capture path: incremental, encrypted to the
 public recovery key, no secret needed for host-path and NAS destinations. For a
@@ -340,6 +362,9 @@ A snapshot that fails or exceeds its timeout aborts the update in a phase that
 has not touched data. With no destination configured the update runs and the
 update history (#1045) shows it ran without a backup; the administrator setting
 "require a backup before updates" turns that into a refusal with a clear reason.
+Only a snapshot durably committed at a configured destination satisfies that
+setting; "backed up locally only" through the Drive spool does not, and the
+refusal names the destination that blocked.
 Rollback of a committed update that went wrong is the installer's restore path
 fed with the pre-update snapshot; the Updater's own rollback phases stay the
 first line because they only switch containers.
@@ -442,7 +467,7 @@ failures in settings.
 ## Acceptance and implementation sequence
 
 1. Inventory persistence; introduce the exclusion list, the Git local-only
-   bundle, the versioned manifest and incremental repository export, the
+   packfile, the versioned manifest and incremental repository export, the
    recovery kit with public recipient key, the lifecycle lock, the host-path and
    mounted-NAS destination, the schedule, and the pre-update hook in the
    Updater. The outcome of this step is an installation that backs itself up
@@ -463,8 +488,9 @@ a remote restored offline, unreachable and revoked code hosts, deleted
 repositories and rewritten history, knowledge originals/revisions, settings and
 usable integration secrets after master-password unlock. For updates, prove that
 the final snapshot is taken after quiescing and before the candidate migrates,
-that a failed snapshot aborts before the key hand-off, and that opt-out and
-"require backup" behave as specified. Verify fresh-host restore with archive, recovery
+that a failed snapshot aborts before the key hand-off, that the default records
+an unbacked update, and that "require backup" refuses an update whose snapshot
+only reached the local spool. Verify fresh-host restore with archive, recovery
 key and master password; wrong keys, tampering, truncation, malicious archive
 paths, sealed secrets, full disk, interrupted capture/upload, unsupported
 versions, revoked device access and repositories copied mid-write must fail
@@ -480,4 +506,5 @@ index-loss recovery, key rotation across generations, concurrent prune/upload,
 missing objects, interrupted commit publication and retention of shared objects.
 Measure transfer and retained storage, not just snapshot count. Destroy the local
 index and original host in the fresh-host recovery test; only the destination,
-private recovery key and subsequent master-password unlock may be required.
+private recovery key, subsequent master-password unlock and, for remote-dependent
+code projects, the code host may be required.

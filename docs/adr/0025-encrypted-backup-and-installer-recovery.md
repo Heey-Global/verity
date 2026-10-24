@@ -149,20 +149,32 @@ the largest size saving after dependency directories: `.git/objects` is the bulk
 of a clone, and Git repacks it periodically into differently compressed packs
 that defeat chunk deduplication even when no commit changed.
 
-For a repository with a configured `origin`, capture excludes `.git/objects` and
-replaces it with a Git bundle of every object reachable from local refs but not
-from the remote-tracking refs as last fetched. The bundle records those
-remote-tracking commits as prerequisites. Everything else in `.git` is included,
-so branches, stash, index, reflogs, session worktree registrations and the
-remote URL survive. The provisioner never writes tokens into the remote URL, so
-the URL is safe to carry. Repositories without a remote, including today's local
-projects that still hold an empty initial commit, are copied completely.
+For a repository whose `origin` points at the connected code host, capture
+excludes `.git/objects` and replaces it with a packfile of every object that is
+reachable from local refs, from reflogs or from the index but not from the
+remote-tracking refs as last fetched. Reflogs and the index matter: staged but
+uncommitted blobs, older stash entries and commits left behind by reset, rebase
+or amend are reachable only from there, and the restored `index` and `logs`
+would point at missing objects otherwise. The manifest records the
+remote-tracking tips as prerequisites. Everything else in `.git` is included, so
+branches, stash, index, reflogs, session worktree registrations and the remote
+URL survive. Repositories without a remote, including today's local projects
+that still hold an empty initial commit, shallow or partial clones, and
+repositories whose `origin` is not the connected code host fall back to a
+complete copy of `.git/objects`.
 
 The manifest marks each project as `remote-dependent` or `self-contained`, with
 the remote URL, the code host connection it belongs to and the set of
 prerequisite commits. Restore rehydrates a remote-dependent repository by
 restoring `.git` without objects, fetching from the code host through the
-restored connection, unbundling the local-only objects and running `git fsck`.
+restored connection, importing the local-only packfile and running `git fsck`.
+Rehydration runs in the backup execution identity with hooks disabled, with the
+restored `config` set aside and a sanitized configuration in its place, and with
+the remote URL taken from the manifest rather than the restored file. Users and
+agents can edit `config` and `hooks`, and settings such as `core.sshCommand`,
+`core.fsmonitor`, `credential.helper` or `url.*.insteadOf` would otherwise run
+code or redirect the fetch credential during restore. The restored `config` and
+`hooks` are put back only after `fsck` passes, and never run during restore.
 Rehydration needs the secret store unlocked, because the connection credentials
 live there, and it needs the code host reachable. When the host is unreachable,
 the connection is revoked, or the prerequisites no longer exist because history
@@ -239,8 +251,12 @@ them and stages a complete installation. App export assembles a self-contained
 bundle of that manifest and its reachable encrypted objects, without decrypting
 on the source host; downloading that bundle transfers the full selected state.
 Repository-to-repository replication transfers only objects missing at the target.
-The UI distinguishes incremental repository backups from full portable downloads
-and reports scanned bytes, new ciphertext bytes and total retained storage.
+An export carries the same content as the snapshot, so a remote-dependent code
+project keeps its code host dependency in the export; the export dialog offers
+"include pushed history", which adds that project's full `.git/objects` to the
+export only, and shows the size difference. The UI distinguishes incremental
+repository backups from full portable downloads and reports scanned bytes, new
+ciphertext bytes and total retained storage.
 
 ### Incremental application database
 
@@ -296,8 +312,9 @@ pointer files and the `worktrees/<name>/gitdir` entries before validation.
 
 A server update is the one moment Verity itself puts the data at risk: the
 promoted Server runs forward-only schema migrations on start, and there is no
-downgrade path. Every update therefore takes a snapshot first, and the Updater
-does not proceed without it unless the administrator has explicitly opted out.
+downgrade path. Every update therefore attempts a snapshot first. By default an
+update without a destination still runs and is recorded as unbacked; the
+administrator setting "require a backup before updates" makes it a refusal.
 
 The hook lives in the existing update sequence (ADR 0008). While the old Server
 is still serving, before the Updater creates the standby, it requests a full
@@ -306,13 +323,17 @@ destination and usually takes only the delta since the last scheduled backup.
 After `quiescing-old`, when no turn is writing anymore and before
 `handing-off-key` and `activating-candidate`, the Updater requests a final
 incremental snapshot. That second pass contains seconds of changes and is the
-exact pre-migration state. The snapshot is tagged `pre-update` with the previous
-and target release and is retained by a separate rule, at least the last two
-pre-update snapshots, independent of the ordinary schedule's retention.
+exact pre-migration state. The Updater continues only after the destination has
+durably acknowledged that final snapshot, because it is the rollback point; the
+warm pass exists so this wait is short, and the update status shows it as its
+own phase. The snapshot is tagged `pre-update` with the previous and target
+release and is retained by a separate rule, at least the last two pre-update
+snapshots, independent of the ordinary schedule's retention.
 
-If no destination is configured, the update continues and the update history
-records that it ran without a backup. An administrator setting "require a backup
-before updates" turns that into a refusal. A failed or timed-out snapshot
+"Require a backup" is satisfied only by a snapshot durably committed at a
+configured destination. A snapshot that reached the local spool because the
+Drive destination needs an unlocked secret store does not satisfy it; the
+Updater reports which destination blocked. A failed or timed-out snapshot
 aborts the update before any irreversible step, never after it. The snapshot is
 written through the same code path as scheduled backups, so it is incremental,
 encrypted to the public recovery key and works with a sealed secret store for
@@ -471,8 +492,18 @@ each leave the project suspended and flagged rather than silently truncated, and
 that a repository without a remote restores without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
 candidate runs migrations, that a failed snapshot aborts the update before the
-key hand-off, and that the opt-out and the "require backup" setting behave as
-specified.
+key hand-off, that the default records an unbacked update, and that the
+"require backup" setting refuses an update whose snapshot only reached the local
+spool.
+
+Incremental verification must measure uploaded and retained bytes after small
+file edits and database row edits, insertions and deletions. Prove restoration of
+older snapshots after source deletion, recovery without the host index, safe key
+rotation, interrupted publication, concurrent pruning and shared-object retention.
+Missing dependencies must never appear as a complete backup. A portable export
+must restore without the originating repository or host; a remote-dependent code
+project in it additionally needs its code host unless the export included pushed
+history.
 
 Add a restore probe in the pattern of `deploy/bin/verity-clean-install-smoke`:
 it restores the newest archive into throwaway containers, checks database
@@ -490,10 +521,3 @@ is shown as unverified.
 - [Knowledge realms and namespaces](0018-knowledge-realms-and-namespaces.md)
 - [Project sandbox sleep and automatic wake](0020-project-sandbox-sleep-and-automatic-wake.md)
 - [Enrollment storage and recovery lifetime](../protocols/uplink-enrollment-storage-v1.md)
-
-Incremental verification must measure uploaded and retained bytes after small
-file edits and database row edits, insertions and deletions. Prove restoration of
-older snapshots after source deletion, recovery without the host index, safe key
-rotation, interrupted publication, concurrent pruning and shared-object retention.
-Missing dependencies must never appear as a complete backup. Portable export must
-restore without the originating repository or host.
