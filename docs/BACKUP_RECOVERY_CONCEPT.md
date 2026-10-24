@@ -264,7 +264,15 @@ server process and never part of a snapshot:
 None of these decrypts a snapshot. Scheduled capture therefore works with a
 sealed secret store and after an unattended restart. A compromised host can
 read current data and forge new snapshots, which is the accepted host-compromise
-case; it cannot open snapshots already written.
+case. It cannot open snapshots already written as long as nobody enters the
+recovery key on it.
+
+The recovery key is entered on the host for explicit operations only: restore,
+rollback, the restore probe and partial restore. The server holds it in memory
+for that operation and never stores it, but a compromised host can capture it
+at that moment and then decrypt every snapshot made with it, including
+off-host copies. The app says so where it asks for the key. After a suspected
+compromise, restore onto a clean host and replace the recovery key there.
 
 Restore accepts the recovery key by clipboard paste, QR scan in the app, or
 typed entry with checksum validation; paste over SSH is the installer path.
@@ -404,17 +412,19 @@ tracking and deletion must survive crashes.
    repository plus the local staging size of every repository's `.git`. Write
    the warnings into the manifest up front. A run that cannot fit fails before
    it starts.
-2. Take one transaction-consistent database export (see below) and record its
-   timestamp.
-3. Acquire the lifecycle lock and freeze every Git repository (see "Git
-   repositories"). The lock refuses provision, deprovision, sleep, wake, mount
-   changes and project deletion. It is held only while `.git` directories are
-   copied, not while working files are copied, chunked or written. Turns, edits
-   and commits keep running; there is no global drain.
-4. Release the lock. Copy working files and knowledge folders live, streaming
-   through the encryptor, with the no-follow traversal described under "Git
-   capture", storing symlinks as links. A project being copied holds a
-   per-project lease, so its deletion waits for that copy.
+2. Acquire the lifecycle lock. It refuses provision, deprovision, sleep, wake,
+   mount changes and project deletion. Turns, edits and commits keep running;
+   there is no global drain.
+3. Under the lock, open the repeatable-read database transaction (see "Database
+   export") so its snapshot is taken, record its timestamp, and freeze every Git
+   repository (see "Git repositories"). Database state and frozen `.git` copies
+   therefore see the same set of projects and mounts.
+4. Release the lock. The lock is held only for steps 2 and 3, not while the
+   export streams or files are copied, chunked or written. Stream the database
+   export from the open transaction, and copy working files and knowledge
+   folders live, through the encryptor, with the no-follow traversal described
+   under "Git capture", storing symlinks as links. A project being copied holds
+   a per-project lease, so its deletion waits for that copy.
 5. Chunk, encrypt and write the frozen Git copies, then publish the manifest.
 6. Release leases and remove capture staging on every exit path.
 
@@ -556,8 +566,10 @@ ships, which covers worktree-aware connectivity checks and `-c safe.directory`.
 The destination is a host directory managed by the installer. The default is
 `/var/lib/verity/backups`; `verity-install --backup-dir <path>` sets another one
 at install time and changes it later. The installer bind-mounts it read-write
-into the server container. The path is set on the host, not from the phone; the
-app shows it read-only.
+into the server container. The sealed deployment spec fixes the Server's mounts
+today (`packages/server/src/self-update/deployment-spec.ts`), so admitting this
+mount is a deployment-spec change in step 1a. The path is set on the host, not
+from the phone; the app shows it read-only.
 
 A directory that is a mount point of an external disk or a network share is
 allowed; Verity treats it as a host path and does not manage the mount. At setup
@@ -579,6 +591,8 @@ the reason. The directory layout:
       objects/          immutable encrypted objects
       snapshots/        immutable encrypted, signed manifests
       keys/             signing and fingerprint keys, encrypted to the recipient
+  identity/             CA key per generation, written by the host helper
+  revocations/          signed device revocation entries
 ```
 
 ### Copying the directory off-host
@@ -598,15 +612,29 @@ the history. Recommend a target that keeps its own snapshots, or a copy without
 
 ## Identity in snapshots
 
-Devices stay paired across a restore because the installation's identity is in
-every snapshot. Each run reads the allowlisted identity files from the server's
-read-only mount of `/etc/verity`: `deployment-id`, `pairing-identity.pem`,
-`tls-key.pem`, `tls-cert.pem`, `tls-ca-key.pem` and `tls-ca-cert.pem`. It
-stores them as a separate, encrypted manifest section. Nothing else from that
-directory is read; the updater token and the PostgreSQL password stay
-host-specific.
+Devices stay paired across a restore because the installation's identity is
+backed up. Two writers are needed, because the files under `/etc/verity` have
+different owners (`deploy/bin/verity-pairing-material:95`, `:96`):
 
-A run that cannot read an identity file still completes and raises the
+- Each run reads the files the server can read from its read-only mount of
+  `/etc/verity`: `deployment-id`, `pairing-identity.pem`, `tls-key.pem`,
+  `tls-cert.pem` and `tls-ca-cert.pem`. It stores them as a separate, encrypted
+  manifest section of the snapshot.
+- `tls-ca-key.pem` is root-only by design and stays unreadable to the server.
+  The installer installs a host helper in the pattern of `verity-host-runtime`
+  (a systemd path unit answering requests from a root-owned directory, ADR 0008
+  Amendment 2). When backups are set up or the recovery key is replaced, the
+  server writes the public recipient key into that request directory, which
+  stays on the host. The helper encrypts the CA key to it and writes the result
+  to `<backup dir>/identity/ca-key-g<generation>`; it does the same whenever the
+  CA key changes.
+
+Nothing else from `/etc/verity` is read; the updater token and the PostgreSQL
+password stay host-specific. The encrypted CA key is not signed, because the
+helper holds no signing key. Restore authenticates it instead by checking that
+it matches the CA certificate in the signed snapshot. Each run checks that the
+CA key file for the current generation exists. A run that cannot read an
+identity file, or finds no CA key file, still completes and raises the
 "identity missing" alert, because a restore from it would need pairing again.
 
 A fresh-host restore always reinstates the identity, together with the device
@@ -621,6 +649,18 @@ Restore never revives preview links, capability generations, enrollment
 recovery records or queued jobs. Whether a Uplink enrollment continues after
 restore is verified in the Premium step; until then the restore summary notes
 that Uplink may need re-enrollment.
+
+### Device revocations across restore
+
+Reinstating device tokens must not reauthorize a device that was revoked after
+the snapshot, for example a lost phone. Every device revocation is therefore
+also written, at the moment it happens, as a signed entry encrypted to the
+recipient into `<backup dir>/revocations/`, outside any snapshot. Fresh-host
+restore and same-host rollback verify the entries against the verification key
+and apply every revocation from that directory before the restored server
+starts. A backup directory copy older than a revocation cannot know it, so the
+restore summary and the first app screen after a restore list every paired
+device with a "Revoke" action.
 
 ## Operations
 
@@ -640,7 +680,8 @@ that Uplink may need re-enrollment.
 - When the directory is unwritable, missing its marker or full, the run fails
   with the reason and retries with backoff (15 minutes, doubling up to the
   schedule interval). Failed runs never replace the last good snapshot.
-- The lifecycle lock is held only while `.git` directories are frozen.
+- The lifecycle lock is held only while the database snapshot is opened and
+  `.git` directories are frozen.
 - The first full run shows progress and a time estimate in the app.
 - The snapshot sequence number is authoritative for order, for "newest" and for
   retention. Timestamps are for display only. The installer warns about a
@@ -717,8 +758,9 @@ directory on local media. It needs no Uplink account and no subscription.
    worktree repair. Then promote staging, write a new installation id,
    regenerate host-specific state (updater token, PostgreSQL password, host
    runtime under `/var/lib/verity/host-runtime`, image pins and gVisor
-   configuration), install the recovered backup keys, and start the snapshot's
-   release.
+   configuration), reinstate the CA key from `identity/` after checking it
+   against the snapshot's CA certificate, apply the revocation journal, install
+   the recovered backup keys, and start the snapshot's release.
 
 Refuse snapshots the installer cannot run and unsupported downgrades. On a host
 with an existing installation, staging roughly doubles the database and data
@@ -744,11 +786,16 @@ newest pre-update snapshot into the existing installation; `--rollback
 the snapshot time and that later changes are lost, then for the recovery key.
 
 The installation id, the identity and the host-specific state stay as they are,
-so everything stays paired. The installer runs the same architecture check as
-above, restores into staging, swaps staging in, pins the snapshot's release and
-starts it. Automatic updates stay held until the administrator resumes them in
-the app. The repository continues; snapshots taken after the pre-update snapshot
-remain listed and restorable.
+so everything stays paired. `VERITY_ROOT/backup-state/` is not in the snapshot
+and is carried over unchanged from the current data volume into staging, so the
+host keeps its backup keys, index and target id. The installer runs the same
+architecture check as above, restores into staging, applies the revocation
+journal (see "Device revocations across restore"), and writes the automatic
+update hold into the restored database before the swap, because the snapshot's
+own settings predate it. It then swaps staging in, pins the snapshot's release
+and starts it. Automatic updates stay held until the administrator resumes them
+in the app. The repository continues; snapshots taken after the pre-update
+snapshot remain listed and restorable.
 
 ### Partial restore in the app
 
@@ -836,7 +883,10 @@ Acceptance:
   settings, usable integration credentials after unlock, knowledge originals
   and revisions, all worktrees, active, sleeping and paused projects, and
   devices reconnecting without pairing.
-- `--new-identity` requires pairing and revokes old device tokens.
+- `--new-identity` requires pairing and revokes old device tokens. A device
+  revoked after the snapshot stays revoked after fresh-host restore and after
+  rollback. A CA key file that does not match the snapshot's certificate is
+  refused.
 - Wrong keys, tampered, truncated or reordered objects, an unsigned manifest
   encrypted to the recipient, malicious paths and links, a full disk, a missing
   marker, an interrupted run and an unsupported format version fail safely and

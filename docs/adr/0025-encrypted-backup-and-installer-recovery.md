@@ -46,9 +46,13 @@ destinations.
 The protection level is stated in the product: a backup on the host protects
 against failed updates, mistakes and partial loss, not against loss of the host
 disk. The supported way to survive that is copying the backup directory
-off-host, for example with `rsync`, or Premium Uplink once available. The
-repository format makes such a copy safe: objects and manifests are immutable
-and a manifest is written after its objects.
+off-host, for example with `rsync`, or Premium Uplink once available. Objects
+and manifests are immutable and a manifest is written after its objects, so a
+copy taken during a run can at worst hold a newest manifest with missing
+objects; restore detects that and falls back to the newest complete snapshot.
+
+The server's mounts are fixed by the sealed deployment spec, so admitting the
+backup mount is a deployment-spec change in the first step.
 
 ### Recovery key
 
@@ -65,7 +69,12 @@ to a destination), the private signing key and a fingerprint key in
 `VERITY_ROOT/backup-state/`, outside every snapshot. None of them decrypts a
 snapshot, so scheduled capture works with a sealed secret store and after an
 unattended restart. A compromised host can read current data and forge new
-snapshots; it cannot open snapshots already written.
+snapshots; it cannot open snapshots already written as long as nobody enters
+the recovery key on it. Restore, rollback, the probe and partial restore do
+enter it on the host, held in memory for that operation only; a compromised
+host can capture it then. The app says so where it asks for the key, and after
+a suspected compromise the user restores onto a clean host and replaces the key
+there.
 
 Every manifest is signed; the signature covers the whole manifest including
 each object's ID, digest and length, the repository identity, format version and
@@ -160,18 +169,30 @@ The next sequence number is read from the repository, not from restorable state.
 
 ### Consistency without a global drain
 
-Take one transaction-consistent database export, hold the lifecycle lock only
-while `.git` directories are frozen, copy working files live with change
+Take one transaction-consistent database export whose snapshot is opened under
+the lifecycle lock, hold that lock only while the snapshot is opened and `.git`
+directories are frozen, copy working files live with change
 detection, and record the copy window and active turns, which restore marks
 interrupted. Do not drain turns, pause containers or wake sleeping projects.
 
 ### Identity in snapshots
 
-Each run reads the allowlisted identity files (deployment id, pairing identity
-key, TLS key, certificate and CA) from the server's read-only mount of
-`/etc/verity` and stores them as a separate encrypted manifest section. A
-fresh-host restore always reinstates them, with the device tokens, so devices
-reconnect without pairing and without a question in the flow. The installer
+Each run reads the allowlisted identity files the server can read (deployment
+id, pairing identity key, TLS key and certificate, CA certificate) from its
+read-only mount of `/etc/verity` and stores them as a separate encrypted
+manifest section. The CA private key is root-only by design; a host helper that
+the installer installs, in the pattern of the host runtime helper of ADR 0008
+Amendment 2, encrypts it to the recipient key and writes it into the backup
+directory whenever backups are set up, the key is replaced or the CA changes.
+Restore authenticates that file against the CA certificate in the signed
+snapshot. A fresh-host restore always reinstates the identity, with the device
+tokens, so devices reconnect without pairing and without a question in the flow.
+
+Every device revocation is also written, when it happens, as a signed entry into
+the backup directory outside any snapshot. Fresh-host restore and same-host
+rollback apply all of them before the restored server starts, so a device
+revoked after the snapshot stays revoked; the first screen after a restore lists
+paired devices with a revoke action for revocations a stale copy cannot know. The installer
 flag `--new-identity` generates a new identity and revokes device tokens, for a
 compromised source host or a trial restore beside a running original. Preview
 links, capability generations, enrollment recovery records and queued jobs are
@@ -214,9 +235,10 @@ start the pinned release. Projects come back suspended and are resumed by the
 user.
 
 The installer's same-host rollback restores database and data from a pre-update
-snapshot into the existing installation, keeps identity and pairing, pins the
-snapshot's release and holds automatic updates until the administrator resumes
-them. The Updater's own rollback phases stay the first line.
+snapshot into the existing installation, keeps identity, pairing and the
+host's own backup state (keys, index, target id), applies the revocation
+journal, pins the snapshot's release and writes the automatic update hold into
+the restored database before starting it. The Updater's own rollback phases stay the first line.
 
 The app offers restoring one project from a snapshot as a new project and
 downloading a single file. Both ask for the recovery key for that operation and
@@ -302,7 +324,9 @@ Prove fresh-host recovery with only the copied directory, the recovery key and
 the master password, with the original host and its index destroyed: settings,
 usable credentials after unlock, knowledge, all worktrees, active, sleeping and
 paused projects, and devices reconnecting without pairing. Prove that
-`--new-identity` requires pairing.
+`--new-identity` requires pairing, that a device revoked after the snapshot
+stays revoked after restore and rollback, and that a CA key file not matching
+the snapshot's certificate is refused.
 
 Test wrong keys, tampering, truncation, an unsigned manifest encrypted to the
 recipient, unsafe paths and links, a sealed secret store, a full disk, a missing
