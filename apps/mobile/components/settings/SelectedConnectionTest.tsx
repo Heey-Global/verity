@@ -29,6 +29,24 @@ export function SelectedConnectionTest({
   );
   const serverId = getServerProfile()?.serverId;
   const storageKey = serverId ? `verity.selectedConnectionTest.v1.${serverId}` : null;
+  const [localFailure, setLocalFailure] = useState<{
+    kind: 'selected-test-local-failure';
+    stage: string;
+    httpStatus: number | null;
+    runId: string | null;
+  } | null>(null);
+  const recordFailure = (stage: string, error: unknown) => {
+    const status = error && typeof error === 'object' && 'status' in error ? error.status : null;
+    setLocalFailure({
+      kind: 'selected-test-local-failure',
+      stage,
+      httpStatus:
+        typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+          ? status
+          : null,
+      runId: retained.current,
+    });
+  };
   const [loaded, setLoaded] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -85,23 +103,29 @@ export function SelectedConnectionTest({
       return;
     }
     setMessage('Checking the paired direct connection…');
+    let stage = 'direct-context';
+    setLocalFailure(null);
     let verified = false;
     let responseStatus: number | undefined;
     try {
       const context = selectedRecordingContext();
+      stage = 'direct-descriptor';
       const installationFingerprint = await context.verify();
       if (controller.signal.aborted) return;
+      stage = 'native-inactive';
       await context.assertInactive();
       if (controller.signal.aborted) return;
       verified = true;
       const runId = randomUUID();
       if (!storageKey) throw new Error('No paired storage');
+      stage = 'save-run';
       await AsyncStorage.setItem(storageKey, runId);
       retained.current = runId;
       if (focused.current) setHasRun(true);
       if (controller.signal.aborted) return;
       if (getServerProfile() !== context.profile) throw new Error('Pairing changed');
       setMessage('Confirming selected-session support and recording readiness…');
+      stage = 'bounded-attempt';
       const result = await selectedRecordingAttempt({
         ...context.options,
         installationFingerprint,
@@ -117,6 +141,7 @@ export function SelectedConnectionTest({
         );
     } catch (error) {
       if (focused.current) {
+        recordFailure(stage, error);
         const cleanupFailed = error instanceof Error && error.message === 'Selected cleanup failed';
         const permissionDenied =
           error &&
@@ -153,17 +178,22 @@ export function SelectedConnectionTest({
       return;
     }
     let context: ReturnType<typeof selectedRecordingContext> | undefined;
+    let stage = 'export-direct-context';
     let exportRequested = false;
     let copied = false;
     try {
       context = selectedRecordingContext();
+      stage = 'export-direct-descriptor';
       const fingerprint = await context.verify();
       if (controller.signal.aborted) return;
+      stage = 'server-export';
       exportRequested = true;
       const report = await context.client.exportConnectionRecording(saved, 3);
+      stage = 'export-identity';
       if (report.status.runId !== saved || report.status.installationFingerprint !== fingerprint)
         throw new Error('Installation changed');
       if (!focused.current || controller.signal.aborted) return;
+      stage = 'clipboard';
       await Clipboard.setStringAsync(JSON.stringify(report));
       copied = true;
       if (
@@ -182,6 +212,7 @@ export function SelectedConnectionTest({
           'Validated report copied. Missing sources and capture gaps remain in the report.',
         );
     } catch (error) {
+      if (focused.current) recordFailure(stage, error);
       // A rejected arming request may never have created a server recording.
       // An authenticated 404 and inactive native tunnel allow clearing that orphan reference.
       if (
@@ -229,6 +260,20 @@ export function SelectedConnectionTest({
         disabled={!busy}
         onPress={() => operation.current?.abort()}
       />
+      {localFailure ? (
+        <CardRow
+          title="Copy local test failure"
+          subtitle={`Failed step: ${localFailure.stage}${localFailure.httpStatus === null ? '' : ` (HTTP ${localFailure.httpStatus})`}. This is local evidence; server recording and Stop remain unconfirmed.`}
+          disabled={busy}
+          onPress={() => {
+            void Clipboard.setStringAsync(JSON.stringify(localFailure)).then(
+              () =>
+                setMessage('Local failure copied. This does not confirm server recording or Stop.'),
+              () => setMessage(`Clipboard unavailable. Failed step: ${localFailure.stage}.`),
+            );
+          }}
+        />
+      ) : null}
       <CardRow
         title="Copy bounded test report"
         disabled={disabled || busy || !hasRun}
