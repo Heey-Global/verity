@@ -173,8 +173,8 @@ repositories whose `origin` is not the connected code host fall back to a
 complete copy of `.git/objects`.
 
 The manifest marks each project as `remote-dependent` or `self-contained`, with
-the remote URL, the code host connection it belongs to and the set of
-prerequisite commits. Restore rehydrates a remote-dependent repository by
+the remote URL, the code host connection it belongs to and the single trusted
+tip with its branch as the prerequisite. Restore rehydrates a remote-dependent repository by
 restoring `.git` without objects, importing the local-only packfile, fetching
 from the code host through the restored connection with `--refetch` so dangling
 local refs do not steer the negotiation, checking the prerequisite and running
@@ -185,8 +185,14 @@ Every Git command the backup runs, at capture as much as at restore, uses one
 hardened invocation: the backup execution identity, no system or global config,
 and command-line overrides for every key that can execute or redirect
 (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `credential.helper`,
-`protocol.allow`, `gc.auto`, `maintenance.auto`, `safe.directory`), because
-`.git/config` is writable from the sandbox. Classification and the remote URL
+`protocol.allow`, `gc.auto`, `maintenance.auto`, `core.commitGraph`,
+`safe.directory`, plus `GIT_NO_REPLACE_OBJECTS`), because `.git/config` is
+writable from the sandbox; shallow, graft, alternates and replace files are
+checked before and after the pack and force a self-contained copy. The one
+credentialed fetch never runs against the restored repository: it fetches into
+a fresh bare repository with an allowlisted configuration written by Verity, and
+the packs are then moved into the restored `.git/objects`, so no sandbox-written
+file can redirect the credential. Classification and the remote URL
 come from the project record in the database, not from `.git/config`.
 The pack is built with `--local` so objects borrowed through alternates cannot
 enter a project's backup. Rehydration additionally sets the restored `config`,
@@ -203,8 +209,10 @@ Rehydration needs the secret store unlocked, because the connection credentials
 live there, and it needs the code host reachable. When the host is unreachable,
 the connection is revoked, or the prerequisites no longer exist because history
 was rewritten or the repository was deleted, the project stays suspended with a
-"Code incomplete" warning and its working files and local commits intact. The
-user can retry rehydration after reconnecting. The restore never reports such a
+"Code incomplete" warning, its working files on disk and its local commits
+preserved as the unimported packfile. The user can retry rehydration after
+reconnecting, or resume the project in a defined "working files only" state in
+which the unusable `.git` is renamed aside and Code shows no history. The restore never reports such a
 project as recovered.
 
 This makes the backup of a code project complete only together with the code
@@ -508,8 +516,10 @@ credentials; in-container services and custom mounts are the user's own
 responsibility in the first release and are flagged as such. Code projects
 depend on their code host for pushed history: a restore without a reachable
 GitHub or Forgejo leaves their Code area incomplete until rehydration succeeds.
-Every update is preceded by a snapshot, which adds its duration to the update
-and makes a configured destination part of a healthy installation. Live worktree copies
+Every update is preceded by a snapshot, which adds its duration to the update.
+A missing destination is a persistent settings warning and an entry in the update
+history, not a degraded health state, unless "require a backup before updates"
+is set. Live worktree copies
 may need repair at restore. Staging restore on an occupied host needs roughly
 twice the disk.
 
@@ -534,8 +544,10 @@ after a squash merge both restore intact, that a missing trusted tip falls
 back to a self-contained copy, that a remote-tracking ref moved onto a
 local-only commit from inside the sandbox does not remove anything from the
 pack, that a malicious
-`config.worktree` never executes during restore, and that a repository without
-a remote restores without any network. Prove that an
+`config.worktree` in the main or a linked worktree never executes during
+restore, that a commit-graph, replace ref, graft or shallow file written by the
+sandbox cannot shrink the pack, and that a repository without a remote restores
+without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
 candidate runs migrations, that a failed snapshot aborts the update before the
 key hand-off, that the default records an unbacked update, and that the

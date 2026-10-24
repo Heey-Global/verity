@@ -122,10 +122,16 @@ without network except for the one fetch; `GIT_CONFIG_NOSYSTEM=1`,
 command-line overrides, which take precedence over the repository `config`, for
 every key that can execute or redirect: `core.hooksPath` to an empty directory,
 `core.fsmonitor=false`, `core.sshCommand=/bin/false`, `credential.helper=`,
-`protocol.allow=never` with `protocol.https.allow=always` only for the fetch,
-`gc.auto=0`, `maintenance.auto=false`, and `safe.directory` set to the exact
-repository path so a server uid can read a sandbox-owned repository without
-widening the policy. Classification and the remote URL come from the server's
+`protocol.allow=never`, `gc.auto=0`, `maintenance.auto=false`,
+`core.commitGraph=false` and `GIT_NO_REPLACE_OBJECTS=1` so a sandbox-written
+commit-graph or `refs/replace/*` entry cannot forge parent links, and
+`safe.directory` set to the exact repository path so a server uid can read a
+sandbox-owned repository without widening the policy. `.git/shallow`,
+`info/grafts`, `objects/info/alternates` and `refs/replace/*` are checked before
+and after the pack; any of them present at either check discards the pack and
+classifies the repository self-contained, because each can hide commits behind a
+fake history boundary. The one credentialed fetch does not use the restored
+repository at all; see restore step 3. Classification and the remote URL come from the server's
 project record in the database, never from `.git/config`, so the sandbox cannot
 choose the host that receives the connection credential or confuse the
 qualification check with a look-alike URL.
@@ -194,44 +200,60 @@ Restore, per remote-dependent repository, after the master password has unlocked
 the secret store so the code host connection credentials are usable:
 
 1. Restore `.git` without objects and the working files from the snapshot. Move
-   the restored `config`, every `worktrees/<name>/config.worktree` and `hooks`
-   into `.git/verity-restore/` next to the project, where they persist across
-   failed attempts and retries, and write a
-   sanitized `config` that contains the remote URL from the manifest plus the
-   repository-format keys copied from the original: `core.repositoryformatversion`,
-   `core.bare`, and every `extensions.*` key such as `objectFormat` and
-   `worktreeConfig`, without which fetch, `index-pack` and `fsck` misbehave on
-   SHA-256 or worktree-config repositories, and the standard refspec
-   `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*`, so the fetch
-   updates remote-tracking refs and reaches every remote branch rather than only
-   the remote `HEAD`. The remote URL is the one from the project record. The
-   code host credential is an in-memory `http.extraheader`, as the provisioner
-   uses today, but handed to the single fetch through the
-   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` environment of
-   that one child process rather than `-c`, so it never appears in argv or
-   `/proc/*/cmdline`; hooks are disabled, so no hook inherits it. Every command
-   below uses the hardened invocation described above. Users and agents can
-   edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
-   `credential.helper`, `url.*.insteadOf` or a `reference-transaction` hook
-   would otherwise execute during restore or redirect the fetch credential.
+   the restored `config`, the main worktree's `config.worktree`, every
+   `worktrees/<name>/config.worktree` and `hooks` into the server-owned restore
+   staging area outside the sandbox-writable tree
+   (`<VERITY_ROOT>/restore/<projectId>/git-user-config/`), where they persist
+   across failed attempts and retries and nothing in the sandbox can alter them,
+   and write a sanitized `config` that contains the repository-format keys
+   copied from the original, `core.repositoryformatversion`, `core.bare` and
+   every `extensions.*` key such as `objectFormat` and `worktreeConfig`, without
+   which `index-pack` and `fsck` misbehave on SHA-256 or worktree-config
+   repositories, plus the remote URL from the project record and the standard
+   refspec `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*`. Every
+   command in this list uses the hardened invocation described above. Users and
+   agents can edit `config`, `config.worktree` and `hooks`; `core.sshCommand`,
+   `core.fsmonitor`, `credential.helper`, `url.*.insteadOf`, `http.proxy`,
+   `http.sslVerify` or a `reference-transaction` hook would otherwise execute
+   during restore or redirect the fetch credential.
 2. `git index-pack` the local-only packfile into `.git/objects` first; it has
    no prerequisites of its own.
-3. `git fetch --refetch origin` through the restored connection, which refills
-   `.git/objects` with everything reachable from the remote. `--refetch` (Git
+3. Fetch into a fresh repository, not into the restored one. The restore creates
+   a temporary bare repository in the staging area with `git init --bare` and an
+   allowlisted configuration written by Verity, nothing else: the object format
+   from step 1, the remote URL from the project record, the standard refspec,
+   `http.followRedirects=false`, `protocol.allow=never` and
+   `protocol.https.allow=always`. The code host credential is an in-memory
+   `http.extraheader`, as the provisioner uses today, handed to this single
+   `git fetch origin` through the `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+   `GIT_CONFIG_VALUE_n` environment of that one child process rather than `-c`,
+   so it never appears in argv or `/proc/*/cmdline`. No sanitized denylist is
+   relied on for the credentialed command: the fresh repository has no
+   sandbox-written file at all, so no `include.path`, `config.worktree`,
+   alternates or replace ref can reach it. The resulting packs are moved into
+   the restored `.git/objects`, and `git fetch --refetch <staging-path>` (Git
    2.36 or newer, a requirement on the server and installer images, not the
-   sandbox) makes the negotiation ignore local refs, which at this point still
-   name objects that are not present and would otherwise break or mislead a
-   normal fetch. Then check the prerequisite with `git cat-file -e`. A
-   repository without a trusted tip at capture time was already classified
-   self-contained and does not reach this step. Remote-tracking refs restored
-   from the snapshot are untrusted and are overwritten by this fetch.
+   sandbox) updates the restored remote-tracking refs from the staging
+   repository over the local filesystem, ignoring the dangling refs that would
+   otherwise steer a negotiation. Then check the prerequisite with
+   `git cat-file -e`. A repository without a trusted tip at capture time was
+   already classified self-contained and does not reach this step.
+   Remote-tracking refs restored from the snapshot are untrusted and are
+   overwritten here.
 4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
    `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
    `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config` and
-   `hooks` back from `.git/verity-restore/` and remove that directory; they are
-   user content, not restore input. On failure they stay there, a retry starts
-   again from the sanitized state without overwriting them, and a user who gives
-   up on rehydration gets them back by resuming the project as self-contained.
+   `hooks` back from the staging area and remove the staging copy; they are
+   user content, not restore input. On failure they stay in staging, and a retry
+   starts again from the sanitized state without overwriting them.
+
+A user who gives up on rehydration can resume the project in a "working files
+only" state. That state is defined, not implied: the restored `.git` is renamed
+to `.git.verity-incomplete` so no tool mistakes it for a usable repository, the
+working files stay in place, the local-only packfile and the set-aside user
+config stay next to it, and the project screen shows that Code has no history
+until the code host is reconnected and rehydration is retried. Nothing local is
+discarded by that choice; it is not a self-contained repository.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -551,14 +573,20 @@ Product boundary). Recovery key ownership stays local.
 
 Start with incremental repositories and self-contained portable exports. Prove
 reference tracking, atomic publication, retention, index recovery and restore
-before presenting the first release as reliable. Show
-last completed backup, last restore verification, actual scope and actionable
-failures in settings.
+before presenting the first release as reliable. Show last completed backup,
+last restore verification, actual scope, actionable failures and, per code
+project, the age of the trusted tip (time since Verity last saw the default
+branch on the code host) in settings; a stale tip means the pack carries more
+than necessary and the residual force-rewrite window is larger. A missing backup
+destination is a persistent settings warning and an entry in the update history,
+not a degraded health state.
 
 ## Acceptance and implementation sequence
 
-1. Inventory persistence; introduce the exclusion list, the Git local-only
-   packfile, the versioned manifest and incremental repository export, the
+1. Inventory persistence; introduce the exclusion list, trusted-tip recording
+   in the server-side clone, fetch and brokered-push paths (new work; nothing
+   records that tip today), the Git local-only packfile, the versioned
+   manifest and incremental repository export, the
    recovery kit with public recipient key, the lifecycle lock, the host-path and
    mounted-NAS destination, the schedule, and the pre-update hook in the
    Updater. The outcome of this step is an installation that backs itself up
@@ -580,9 +608,10 @@ repositories and rewritten history, knowledge originals/revisions, settings and
 usable integration secrets after master-password unlock. Cover a session worktree
 with staged-only blobs, a branch deleted on the host after a squash merge, a
 missing trusted tip, a remote-tracking ref moved onto a local-only commit from
-inside the sandbox, a renamed default branch, a malicious `config.worktree`, a
-repository with alternates or submodules, and a fetch into a repository whose
-refs still dangle. For
+inside the sandbox, a renamed default branch, a malicious `config.worktree` in
+the main and in a linked worktree, a sandbox-written commit-graph, replace ref,
+graft or shallow file added between classification and pack, a repository with
+alternates or submodules, and a fetch into a repository whose refs still dangle. For
 updates, prove that
 the final snapshot is taken after quiescing and before the candidate migrates,
 that a failed snapshot aborts before the key hand-off, that the default records
