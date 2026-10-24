@@ -276,7 +276,14 @@ export function NoticedCard({
       ) : null}
       {quote ? <Text style={styles.cardQuote}>{quote}</Text> : null}
       {body ? <Text style={styles.cardBody}>{body}</Text> : null}
-      {children}
+      {onToggle && children ? (
+        // The answer itself toggles too; VoiceOver uses the title's button for it.
+        <Pressable accessible={false} onPress={onToggle}>
+          {children}
+        </Pressable>
+      ) : (
+        children
+      )}
       {working && !children ? <WorkingLines /> : null}
       {source ? (
         sourceUrl ? (

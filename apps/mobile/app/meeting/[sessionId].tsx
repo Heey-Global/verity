@@ -2136,7 +2136,11 @@ export default function MeetingScreen() {
                   accessibilityRole="switch"
                   accessibilityLabel="Transcript"
                   accessibilityState={{ checked: showTranscript }}
-                  onPress={() => setMeetingTranscriptVisible(!showTranscript)}
+                  onPress={() => {
+                    // Shown again, the transcript starts at the newest words and follows them.
+                    wideTranscriptAtEnd.current = true;
+                    setMeetingTranscriptVisible(!showTranscript);
+                  }}
                   style={styles.transcriptSwitch}
                 >
                   <Text style={styles.wideStatusText}>Transcript</Text>
@@ -2168,7 +2172,7 @@ export default function MeetingScreen() {
                 >
                   {turns.length ? (
                     turns.map((turn, index) => (
-                      <View key={`${turn.start}-${index}`} style={styles.turn}>
+                      <View key={index} style={styles.turn}>
                         <SpeakerAvatar
                           initial={turn.speaker === null ? '?' : speakerInitial(turn.speaker)}
                           tone={
