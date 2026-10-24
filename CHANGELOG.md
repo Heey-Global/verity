@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.57.0](https://github.com/Heey-Global/verity/compare/v4.56.1...v4.57.0) (2026-10-24)
+
+
+### Features
+
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+
+
+### Bug Fixes
+
+* **deps:** bump body-parser ([#1857](https://github.com/Heey-Global/verity/issues/1857)) ([76e5af5](https://github.com/Heey-Global/verity/commit/76e5af5558babda4cf0d369618645fcf5c1239aa))
+* **forgejo:** preserve broker context in agent environments ([#1858](https://github.com/Heey-Global/verity/issues/1858)) ([eb4fd58](https://github.com/Heey-Global/verity/commit/eb4fd58499a658632027cc726a2aa8a9de704a07))
+* **release:** defer OTA promotion until native production publication ([#1853](https://github.com/Heey-Global/verity/issues/1853)) ([eb0b37d](https://github.com/Heey-Global/verity/commit/eb0b37d4b23733c409269066b4dfecd5335b21f5))
+
 ## [4.56.1](https://github.com/Heey-Global/verity/compare/v4.56.0...v4.56.1) (2026-10-24)
 
 
