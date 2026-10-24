@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import plist from '@expo/plist';
 
@@ -36,7 +36,7 @@ describe('Watch complication capture entry', () => {
     );
   });
 
-  it('packages all mockup families and their artwork', () => {
+  it('packages all mockup families with the vector Verity mark', () => {
     const families = widget.match(/\.supportedFamilies\(\[([^\]]+)\]/)![1];
     for (const family of [
       'accessoryCircular',
@@ -46,11 +46,22 @@ describe('Watch complication capture entry', () => {
     ]) {
       expect(families).toContain(`.${family}`);
     }
-    const image = widget.match(/Image\("([^"]+)"\)/)![1];
+    // The bitmap asset rendered as a solid rectangle on device; every family draws the vector V.
+    expect(widget).not.toMatch(/Image\("[^"]+"\)|image: "/);
     const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
-    const source = config.images[image] as string;
-    expect(source).toBeDefined();
-    expect(existsSync(resolve(targetRoot, 'VerityWatchComplication', source))).toBe(true);
+    expect(config.images).toBeUndefined();
+    const marker = 'outline: [(CGFloat, CGFloat)] = [';
+    const outline = widget.slice(widget.indexOf(marker) + marker.length);
+    const points = [
+      ...outline.slice(0, outline.indexOf(']')).matchAll(/\((-?[\d.]+), (-?[\d.]+)\)/g),
+    ];
+    expect(points.length).toBeGreaterThan(40);
+    for (const coordinate of points.flatMap(([, x, y]) => [Number(x), Number(y)])) {
+      expect(coordinate).toBeGreaterThanOrEqual(0);
+      expect(coordinate).toBeLessThanOrEqual(1);
+    }
+    expect(widget.match(/VerityMarkShape\(\)/g)!.length).toBeGreaterThanOrEqual(3);
+    expect(widget).toContain('icon: { inlineMark }');
   });
 
   it('adds only the complication target without changing Watch signing entitlements', () => {

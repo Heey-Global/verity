@@ -8,5 +8,4 @@ module.exports = {
   deploymentTarget: '11.0',
   frameworks: ['SwiftUI', 'WidgetKit'],
   colors: { $accent: '#ff35da' },
-  images: { VerityMark: '../../assets/brand/verity-v-mark.png' },
 };
