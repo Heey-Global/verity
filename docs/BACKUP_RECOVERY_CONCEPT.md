@@ -120,27 +120,35 @@ sandbox and its `config` can name programs to run, and no denylist of keys is
 complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
 `includeIf` are examples of what a list tends to miss). At capture, the backup
 first freezes the repository: it copies the whole `.git`, objects included,
-into the server-owned capture staging area
-(`<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`, where `repoKey` is a
-hash of the Git directory's path relative to `VERITY_ROOT`, so it includes the
-root (`workspaces/<repo>`, `sessions/<sessionId>` or `restore/<projectId>`) and
-the directory name itself; a project with several repositories or submodules, a
-workspace and a session checkout of the same subpath, and a live `.git` next to
-a `.git.verity-pending-<snapshotId>` all get distinct keys; a sibling of
-`workspaces` that
-no sandbox bind mount contains; the sandbox sees only volume subpaths under
-`workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
-a scheduled run, the warm pre-update run and a restore in progress never share
-a path, and the directory is removed on every exit path of the run because it
-holds plaintext refs, index and user `config`; a SIGKILL or host crash bypasses
-exit paths, so the server sweeps `capture/<runId>/` directories whose run lock
-is no longer held at startup. "Orphaned" is defined by run lock ownership, never
-by age, and the sweep never touches `restore/<projectId>/<repoKey>/`: that
-directory is
-durable pending-rehydration data, owned by project state, and is removed only
-when the project has rehydrated or the user has reconciled it. This staging is the one documented exception to the rule against
-plaintext staging: it stays on the host, in a server-owned directory, for the
-duration of a run). The copy uses reflinks where the
+into the server-owned capture staging area.
+
+Capture staging lives at `<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`.
+It is a sibling of `workspaces` that no sandbox bind mount contains; the sandbox
+sees only volume subpaths under `workspaces/<repo>` (which holds the project's
+own session worktrees under `.verity-sessions/`) and `secrets`. `repoKey` is a
+hash of the Git directory's path relative to `VERITY_ROOT`, including the root
+(`workspaces/<repo>`, the server's own `sessions/<sessionId>` or
+`restore/<projectId>`) and the directory name itself, so several repositories
+or submodules in one project, the same subpath under two roots, and a live
+`.git` next to a `.git.verity-pending-<snapshotId>` all get distinct keys. The
+key is assigned once, when the repository is first seen, and recorded in project
+state and in the manifest; it is never re-derived from the current path, so a
+rename to `.git.verity-incomplete` or `.git.verity-pending-<snapshotId>` keeps
+pointing at the same staging data. Each run has its own directory and a lock,
+so a scheduled run, the warm pre-update run and a restore in progress never
+share a path.
+
+The staging directory holds plaintext refs, index and user `config`, and is the
+one documented exception to the rule against plaintext staging: it stays on the
+host, in a server-owned directory, for the duration of a run. It is removed on
+every exit path of the run. A SIGKILL or host crash bypasses exit paths, so the
+server sweeps at startup every `capture/<runId>/` whose run lock is no longer
+held; "orphaned" is defined by run lock ownership, never by age. The sweep never
+touches `restore/<projectId>/<repoKey>/`: that directory is durable
+pending-rehydration data, owned by project state, and is removed only when the
+project has rehydrated or the user has reconciled it.
+
+The copy uses reflinks where the
 filesystem offers them and a plain copy otherwise, never hardlinks, which would
 still share the sandbox-writable inode. The copy never follows a symlink, and
 it does not rely on a check that a running sandbox could race: traversal is
@@ -156,8 +164,10 @@ them. Before the copy, the `gitdir:` target of a `.git` file and the `gitdir`
 and `commondir` entries under `worktrees/<name>` are resolved and must lie
 inside the project's own workspace or session paths; anything else is recorded
 and the repository is captured as plain files without running Git. In the copy,
-`config` is replaced by a sanitized file holding only the repository-format
-keys; the main and every per-worktree `config.worktree`, `hooks` and
+`config` is replaced by a sanitized file holding only the same explicit
+repository-format keys restore step 1 enumerates (`core.repositoryformatversion`,
+`core.bare`, `extensions.objectFormat`, `extensions.worktreeConfig`; never
+`extensions.partialClone`); the main and every per-worktree `config.worktree`, `hooks` and
 `objects/info/alternates` are moved out of Git's reach into a sibling
 `user-files/` directory of the staging copy, because they can execute or
 redirect. `shallow`, `info/grafts` and `refs/replace/*` are data, not
@@ -274,9 +284,17 @@ code host:
    commit that Verity itself last saw on the code host, recorded in the
    database by the server-side clone, fetch and push paths that run outside the
    sandbox with the connection credential, including pushes brokered for the
-   sandbox, and recorded only after the host has accepted the push or served the
-   fetch; a push that bypasses them leaves the tip stale, which only makes the
-   pack larger. It is deliberately not
+   sandbox. Those paths are the trust root for the exclusion and must meet two
+   requirements of their own, listed as new work in the implementation
+   sequence: they run with the hardened invocation against a Verity-written
+   configuration, never against the live `.git/config` (a sandbox
+   `url.<host>.insteadOf` or `credential.helper` would otherwise redirect the
+   fetch or expose the credential), and the recorded tip is taken from the
+   transport result itself, the `ls-remote` answer or the push status report,
+   never from a ref read from `.git` afterwards, which the sandbox could have
+   rewritten between fetch and read. The tip is recorded only after the host
+   has accepted the push or served the fetch; a push that bypasses these paths
+   leaves the tip stale, which only makes the pack larger. It is deliberately not
    `refs/remotes/origin/HEAD`: everything under `.git` is writable from the
    sandbox, and a remote-tracking ref moved onto a local-only commit with
    `git update-ref` would silently drop that commit's history from the pack.
@@ -483,7 +501,20 @@ fence record naming the generation it was restored from; a host that finds a
 fence it did not write for its own generation stops publishing and pruning and
 reports that another installation has taken over. Two writers with one signing
 key and diverging indexes therefore never prune each other's objects, and the
-sequence number stays monotonic within every generation.
+sequence number stays monotonic within every generation. Two consequences are
+stated rather than implied. A restore does not force a full re-upload: the
+restored host rebuilt its index from the snapshot with the private key present,
+so the new generation may reference objects of the fenced generation it was
+restored from, read-only, and uploads only what is new. The fenced generation is
+pruned by the host that fenced it and by nobody else, only after the fence has
+stood unanswered for a documented grace period and the administrator confirms,
+and always honouring the new generation's references; until then it costs
+storage, which the status shows. The fence works only if the writer reads the
+destination before every publish and prune, so a destination credential needs
+list and read access in addition to write; a write-only credential cannot
+detect takeover, and the UI says so and asks the administrator to stop the old
+host by hand in that case. Recommend list-and-write without delete over
+write-only.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -610,10 +641,15 @@ Each new object receives an independent random data key, authenticated encryptio
 and an envelope to the public recovery recipient. Encrypt manifests the same way.
 Manifests carry ordered object references, envelopes, integrity information,
 file metadata and the repository/key-generation identity. Bind those identities,
-object type and format version into authentication, and into the manifest
-signature as well, together with a monotonically increasing snapshot sequence
-number and a signed timestamp: a destination can otherwise replay an older,
-validly signed manifest or one from another generation. Restore shows sequence
+object type and format version into authentication. The manifest signature
+covers the entire manifest, including every object reference's opaque ID,
+ciphertext digest and length, the repository and generation identity, a
+monotonically increasing snapshot sequence number and a timestamp, and it is
+verified before any manifest field is parsed or acted on. Without that, a party
+holding the recipient key could substitute object contents under valid IDs,
+including the encrypted copies of the signing and fingerprint keys, and a
+destination could replay an older, validly signed manifest or one from another
+generation. Restore shows sequence
 and timestamp of the newest manifest it found and warns when a later sequence
 is known from the host's own records or from the user. Reusing an object reuses its
 existing ciphertext and envelope; encrypting new objects never reuses a nonce or
@@ -807,8 +843,9 @@ and delete protection independent of any credential on the host; archives belong
 to the account, so a fresh deployment under the same account can list and
 download them without approval from the lost installation. For user-controlled
 destinations, document that a host-writable share offers no such protection, and
-support append-only or write-only credentials and target-side snapshots where
-available.
+support append-only credentials with list and read access, and target-side
+snapshots, where available; a write-only credential also blinds the takeover
+fence described under "Git history and code hosts".
 
 Google Drive uses resumable object uploads in a dedicated administrator-owned
 backup folder. Its integration token requires the live secret store to be
@@ -882,7 +919,8 @@ not a degraded health state.
 
 1. Inventory persistence; introduce the exclusion list, trusted-tip recording
    in the server-side clone, fetch and brokered-push paths (new work; nothing
-   records that tip today), the Git local-only packfile, the versioned
+   records that tip today, and those paths must adopt the hardened invocation
+   and read the tip from the transport result), the Git local-only packfile, the versioned
    manifest and incremental repository export, the two Updater changes (a
    control request the old Server still answers after `quiescing-old`, and a
    rollback from that phase back to serving when the request fails; both are
