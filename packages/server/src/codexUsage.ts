@@ -626,7 +626,7 @@ export function createCodexUsageService(opts: CodexUsageOptions = {}): CodexUsag
         // No Codex login reachable: sealed settings store, unconfigured account, or
         // a gateway that has not been configured yet. Claude is unaffected (it uses
         // its own credential), so this is the usual "Codex meter empty".
-        log.warn(
+        log.debug(
           { reason: 'no-credential' },
           'verity: codex usage probe has no gateway credential; meter stays empty',
         );

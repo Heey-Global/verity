@@ -16680,6 +16680,9 @@ describe('vulnerability scan session integration', () => {
     });
     await ctx.store.vulnerabilityScans.setSettings({ enabled: true, sessionChanges: true });
     const finding = {
+      category: 'security' as const,
+      classificationSource: 'osv',
+      classificationVersion: 1,
       advisoryId: 'GHSA-example',
       aliases: [],
       ecosystem: 'npm',
@@ -16726,6 +16729,8 @@ describe('vulnerability scan session integration', () => {
         count: 1,
         critical: 0,
         high: 1,
+        maintenance: 0,
+        unclassified: 0,
       });
       bus.publish('vuln-session', { seq: 1, ts: Date.now(), event: { t: 'interrupted' } });
       await vi.waitFor(
