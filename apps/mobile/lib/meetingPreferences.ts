@@ -10,6 +10,13 @@ const listeners = new Set<() => void>();
 let loaded = false;
 let changed = false;
 
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 function notify(): void {
   for (const listener of listeners) listener();
 }
@@ -28,15 +35,7 @@ export function useMeetingPreferences(): typeof state {
       // An unreadable record keeps the defaults; the next change rewrites it.
       .catch(() => undefined);
   }
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    () => state,
-  );
+  return useSyncExternalStore(subscribe, () => state);
 }
 
 export function setMeetingTranscriptVisible(transcript: boolean): void {
