@@ -179,17 +179,25 @@ restoring `.git` without objects, importing the local-only packfile, fetching
 from the code host through the restored connection with `--refetch` so dangling
 local refs do not steer the negotiation, checking the prerequisite and running
 `git fsck`. The credential travels as an in-memory `http.extraheader` for that
-one command, as the provisioner does today, never through a helper or a file.
-Rehydration runs in the backup execution identity with hooks disabled, with the
-restored `config`, per-worktree `config.worktree` files and `hooks` set aside
-durably next to the project and a
-sanitized configuration in its place that carries only the remote URL from the
-manifest and the repository-format keys (`core.repositoryformatversion`,
-`core.bare`, `extensions.*`), which do not execute code but without which Git misreads
-SHA-256 and worktree-config repositories. Users and
-agents can edit `config` and `hooks`, and settings such as `core.sshCommand`,
-`core.fsmonitor`, `credential.helper` or `url.*.insteadOf` would otherwise run
-code or redirect the fetch credential during restore. The restored `config` and
+one command, as the provisioner does today, passed through the child's
+`GIT_CONFIG_*` environment rather than argv, never through a helper or a file.
+Every Git command the backup runs, at capture as much as at restore, uses one
+hardened invocation: the backup execution identity, no system or global config,
+and command-line overrides for every key that can execute or redirect
+(`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, `credential.helper`,
+`protocol.allow`, `gc.auto`, `maintenance.auto`, `safe.directory`), because
+`.git/config` is writable from the sandbox. Classification and the remote URL
+come from the project record in the database, not from `.git/config`.
+The pack is built with `--local` so objects borrowed through alternates cannot
+enter a project's backup. Rehydration additionally sets the restored `config`,
+per-worktree `config.worktree` files and `hooks` aside durably next to the
+project and puts a sanitized configuration in its place that carries only the
+remote URL from the project record, the repository-format keys
+(`core.repositoryformatversion`, `core.bare`, `extensions.*`) and the standard
+`remote.origin.fetch` refspec. Users and agents can edit `config` and `hooks`,
+and settings such as `core.sshCommand`, `core.fsmonitor`, `credential.helper`
+or `url.*.insteadOf` would otherwise run code or redirect the fetch credential
+during restore. The restored `config` and
 `hooks` are put back only after `fsck` passes, and never run during restore.
 Rehydration needs the secret store unlocked, because the connection credentials
 live there, and it needs the code host reachable. When the host is unreachable,
@@ -223,8 +231,10 @@ block boundary. Deduplicate before encryption, within one repository and recover
 key generation only. Never use plaintext hashes as public object names, derive
 encryption keys from content, or use deterministic encryption. The host keeps a
 restricted local index mapping keyed content fingerprints to random opaque
-object IDs; the fingerprint key is random per repository and stored in the
-repository encrypted to the recipient, so plain hashes never leave the chunker.
+object IDs; the fingerprint key is random per repository, kept in the same
+restricted host-local storage as the index because sealed capture must work, and
+stored in the repository encrypted to the recipient for index rebuilds. It
+protects a leaked index, not a compromised host.
 That index contains sensitive information and must not be uploaded unencrypted.
 Destination observers can still infer sizes, timing and reuse patterns.
 
@@ -378,7 +388,9 @@ this server-side on every request, including resumed downloads. Agents and proje
 containers receive no backup authority.
 
 In the first release, capture runs inside the server process with streaming and
-bounded memory, using a dedicated read-only PostgreSQL role for the dump. A
+bounded memory, using a dedicated read-only PostgreSQL role for the dump whose
+credential is provisioned like the server's own database credential, outside
+the secret store, so sealed capture works. A
 separate backup worker would buy little isolation today: the server still holds
 the raw Docker socket (ADR 0017) and can already read every byte the worker
 would read, while a sidecar adds a trust boundary and a coordination protocol to

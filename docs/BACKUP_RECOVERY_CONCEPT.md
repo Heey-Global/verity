@@ -114,7 +114,23 @@ re-upload even when nothing was committed. Pushed history already lives on the
 code host, GitHub or Forgejo, and is recoverable from there. The backup therefore
 carries only what exists nowhere else.
 
-Capture, per repository whose `origin` is the connected code host:
+Every Git command the backup runs, at capture, at self-contained restore and at
+rehydration, uses one hardened invocation, because `.git` is writable from the
+sandbox and its `config` can name programs to run: the backup execution identity
+without network except for the one fetch; `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`; and
+command-line overrides, which take precedence over the repository `config`, for
+every key that can execute or redirect: `core.hooksPath` to an empty directory,
+`core.fsmonitor=false`, `core.sshCommand=/bin/false`, `credential.helper=`,
+`protocol.allow=never` with `protocol.https.allow=always` only for the fetch,
+`gc.auto=0`, `maintenance.auto=false`, and `safe.directory` set to the exact
+repository path so a server uid can read a sandbox-owned repository without
+widening the policy. Classification and the remote URL come from the server's
+project record in the database, never from `.git/config`, so the sandbox cannot
+choose the host that receives the connection credential or confuse the
+qualification check with a look-alike URL.
+
+Capture, per repository that the project record ties to the connected code host:
 
 1. Exclude `.git/objects` (loose objects and packs) from the file copy. Keep the
    rest of `.git`: `HEAD`, `refs`, `packed-refs`, `index`, `logs`, `config`,
@@ -124,13 +140,19 @@ Capture, per repository whose `origin` is the connected code host:
    agents can still put secrets there, so `config` is user content encrypted
    like `.env`, not a file the backup vouches for.
 2. Write a packfile of the local-only objects, equivalent to
-   `git rev-list --objects --all --reflog --indexed-objects --not <trusted-tip> | git pack-objects`,
-   run once per worktree (`git worktree list`), because the index, `HEAD` and
-   reflogs of a session worktree are per worktree and one invocation from the
-   main checkout does not see them. `<trusted-tip>` is the default branch
+   `git rev-list --objects --all --reflog --indexed-objects --not <trusted-tip> | git pack-objects --local`,
+   run once from the main checkout; since Git 2.15 `--all`, `--reflog` and
+   `--indexed-objects` cover the `HEAD`, reflogs and index of every linked
+   worktree. `--local` leaves out objects borrowed through
+   `objects/info/alternates`, so an alternates file added by the sandbox between
+   the classification check and the pack cannot pull another repository's
+   objects into this project's backup; the check is repeated after the pack and
+   a hit discards the pack and reclassifies. `<trusted-tip>` is the default branch
    commit that Verity itself last saw on the code host, recorded in the
    database by the server-side clone, fetch and push paths that run outside the
-   sandbox with the connection credential. It is deliberately not
+   sandbox with the connection credential, including pushes brokered for the
+   sandbox; a push that bypasses them leaves the tip stale, which only makes the
+   pack larger. It is deliberately not
    `refs/remotes/origin/HEAD`: everything under `.git` is writable from the
    sandbox, and a remote-tracking ref moved onto a local-only commit with
    `git update-ref` would silently drop that commit's history from the pack.
@@ -182,13 +204,14 @@ the secret store so the code host connection credentials are usable:
    SHA-256 or worktree-config repositories, and the standard refspec
    `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*`, so the fetch
    updates remote-tracking refs and reaches every remote branch rather than only
-   the remote `HEAD`. The code host credential is supplied the way the
-   provisioner does it today, as an in-memory `http.extraheader` passed with
-   `-c` for that one command, never through a credential helper, the
-   environment of a hook, or a file. Run every Git command below
-   in the backup execution identity with `core.hooksPath` pointing at an empty
-   directory, `GIT_CONFIG_NOSYSTEM` and an empty global config. Users and agents
-   can edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
+   the remote `HEAD`. The remote URL is the one from the project record. The
+   code host credential is an in-memory `http.extraheader`, as the provisioner
+   uses today, but handed to the single fetch through the
+   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` environment of
+   that one child process rather than `-c`, so it never appears in argv or
+   `/proc/*/cmdline`; hooks are disabled, so no hook inherits it. Every command
+   below uses the hardened invocation described above. Users and agents can
+   edit `config` and `hooks`; `core.sshCommand`, `core.fsmonitor`,
    `credential.helper`, `url.*.insteadOf` or a `reference-transaction` hook
    would otherwise execute during restore or redirect the fetch credential.
 2. `git index-pack` the local-only packfile into `.git/objects` first; it has
@@ -279,11 +302,15 @@ block boundary. Deduplicate before encryption, within one repository and recover
 key generation only. Never use plaintext hashes as public object names, derive
 encryption keys from content, or use deterministic encryption. The host keeps a
 restricted local index mapping content fingerprints to random opaque object IDs.
-Fingerprints are keyed (an HMAC under a random per-repository key, itself stored
-in the repository encrypted to the recipient so an index rebuild can recover it),
-not plain hashes, so the index alone does not let anyone confirm the presence of
-a known file. That index contains sensitive information and must not be uploaded
-unencrypted.
+Fingerprints are keyed, an HMAC under a random per-repository key, not plain
+hashes. Capture must run with a sealed secret store, so that key lives in the
+same restricted host-local storage as the index and the public recipient key,
+readable by the backup execution identity only; a copy is stored in the
+repository encrypted to the recipient so an index rebuild can recover it. The
+keying protects against an index that leaks without the host, for example a
+copy that reached a destination or a backup of the host filesystem; it does not
+protect against a compromised host, which reads the files directly anyway. That
+index contains sensitive information and must not be uploaded unencrypted.
 Destination observers can still infer sizes, timing and reuse patterns.
 
 Each new object receives an independent random data key, authenticated encryption
@@ -365,7 +392,10 @@ coupling and retention dependencies; they are not silently added to version one.
    changes and project deletion during local capture, not remote upload. Turns, edits and commits keep
    running. There is no global drain.
 3. Take one transaction-consistent logical PostgreSQL snapshot (repeatable-read
-   deterministically segmented logical export through the read-only backup role). Record its timestamp.
+   deterministically segmented logical export through the read-only backup role,
+   whose credential is provisioned by compose like the server's own
+   `DATABASE_URL` and lives outside the secret store, so a sealed server can
+   still capture). Record its timestamp.
 4. Copy worktrees and knowledge folders live, streaming through the encryptor,
    skipping `.git/objects` only for repositories that qualify as
    remote-dependent under "Git history and code hosts" and writing their
