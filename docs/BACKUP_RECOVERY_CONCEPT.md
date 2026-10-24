@@ -685,13 +685,19 @@ the reason. The directory layout:
 ### Copying the directory off-host
 
 Copying the directory to another machine is the supported way to survive a disk
-loss in version one, for example a nightly `rsync -a` of the backup directory.
-Objects and manifests are immutable and a manifest is written after its
-objects, so a copy taken during a run at worst misses the newest snapshot or
-contains objects no snapshot references yet. If `rsync` passed `objects/` before
-a run wrote new objects and `snapshots/` after it, the copy holds a manifest
-whose objects are missing; restore detects that and offers the newest complete
-snapshot instead.
+loss in version one, for example with `rsync -a`. Copy from a consistent
+filesystem snapshot, or use a maintenance window: stop the Server and identity
+helper, wait for active backup, deletion and garbage-collection work to exit,
+and prohibit installer changes while copying. Copy the whole directory to a new
+target, finish the copy before restarting writers, and retain the previous
+complete off-host copy until the new one passes a restore probe. This procedure
+requires downtime when filesystem snapshots are unavailable.
+
+An uncoordinated copy of a live directory is best effort, not a recoverability
+guarantee: publication can race traversal and retention/GC can remove objects
+needed by manifests already copied. Restore rejects incomplete snapshots, but
+there may be no complete snapshot to fall back to. Manifest-last publication
+alone does not make a live directory copy consistent.
 
 A copy with `--delete` mirrors pruning and, on a ransomed host, a deletion of
 the history. Recommend a target that keeps its own snapshots, or a copy without

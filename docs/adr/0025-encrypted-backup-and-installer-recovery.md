@@ -47,10 +47,14 @@ destinations.
 The protection level is stated in the product: a backup on the host protects
 against failed updates, mistakes and partial loss, not against loss of the host
 disk. The supported way to survive that is copying the backup directory
-off-host, for example with `rsync`, or Premium Uplink once available. Objects
-and manifests are immutable and a manifest is written after its objects, so a
-copy taken during a run can at worst hold a newest manifest with missing
-objects; restore detects that and falls back to the newest complete snapshot.
+off-host, for example with `rsync`, or Premium Uplink once available. Copy from
+a consistent filesystem snapshot, or stop the Server and identity helper and
+wait for capture, deletion and GC to exit before copying; do not run installer
+mutations during the copy. Retain the previous complete off-host copy until the
+new one passes a restore probe. Without filesystem snapshots this requires a
+maintenance window. Immutable objects and manifest-last publication do not
+make an uncoordinated live copy recoverable: retention/GC can remove referenced
+objects, and restore may find no complete snapshot in that copy.
 
 The server's mounts are fixed by the sealed deployment spec, so admitting the
 backup mount and the identity helper's writable request directory are
