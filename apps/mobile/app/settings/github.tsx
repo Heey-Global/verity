@@ -1,3 +1,4 @@
+import { GithubPermissionNotice } from '../../components/GithubPermissionNotice';
 // GitHub: the three things that have to be true before Verity can work on a
 // repository on the operator's behalf — access to it, an author to commit as,
 // and a signing key GitHub recognises.
@@ -12,7 +13,7 @@ import {
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useMemo } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Text, TextInput, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -25,6 +26,7 @@ import {
 import { SigningKeyDisplay } from '../../components/settings/SigningKeyDisplay';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { createVerityClient } from '../../lib/client';
+import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import {
   patchVeritySettingsLocally,
   retryFailedVeritySettings,
@@ -32,6 +34,7 @@ import {
   useVeritySettings,
 } from '../../lib/settingsStore';
 import { useSettingsFields } from '../../lib/useSettingsFields';
+import { Button } from '../../components/ui';
 
 // Module-level: the hook syncs on this array's identity, and it is also the
 // literal list of keys a save from this screen may contain.
@@ -76,6 +79,8 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
   const identityReady =
     author.values.gitUserName.trim() !== '' && author.values.gitUserEmail.trim() !== '';
   const signingReady = verifiedCommitsReady(settings);
+  const permission = useGithubPermission(client, connected);
+  const actionNeeded = connected && githubActionNeeded(permission);
 
   return (
     <SettingsScaffold
@@ -95,7 +100,13 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
         <SettingsDisclosure
           title="GitHub connection"
           icon="github"
-          summary={connected ? 'Connected' : 'Not connected'}
+          summary={
+            connected
+              ? actionNeeded
+                ? 'Connected · 1 action needed'
+                : 'Connected'
+              : 'Not connected'
+          }
         >
           <Text style={styles.reproSubtitle}>
             GitHub lets Verity clone repositories, push branches, and open pull requests.
@@ -105,14 +116,14 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
               Connect GitHub to give Verity access to your repositories.
             </Text>
           ) : null}
-          <Pressable
-            style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-            onPress={() => router.push('/github-connect')}
-            accessibilityRole="button"
-            accessibilityLabel="Manage GitHub connection"
-          >
-            <Text style={styles.reproButtonLabel}>Manage GitHub connection</Text>
-          </Pressable>
+          <View style={styles.actionRow}>
+            <Button
+              label="Manage GitHub connection"
+              variant="secondary"
+              size="compact"
+              onPress={() => router.push('/github-connect')}
+            />
+          </View>
         </SettingsDisclosure>
       </SettingsGroup>
 
@@ -194,6 +205,14 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           />
         </SettingsDisclosure>
       </SettingsGroup>
+
+      {/* Last, below the settings it does not change: a step the operator takes
+          in GitHub, not a field on this screen. */}
+      {actionNeeded ? (
+        <SettingsGroup title="Action needed">
+          <GithubPermissionNotice client={client} permission={permission} />
+        </SettingsGroup>
+      ) : null}
 
       <SettingsSaveState dirty={author.dirty} />
     </SettingsScaffold>

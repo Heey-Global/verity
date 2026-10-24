@@ -1,6 +1,8 @@
 import { expect, it, vi } from 'vitest';
 import type { EventStore } from '@verity/store';
 import { AttendeeMeetings } from './attendee-meetings.js';
+import { UplinkControlClient } from './uplink-control-client.js';
+import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 
 it('releases a failed preparation so retry cannot remain blocked by a phantom bot', async () => {
   const rows = new Map<string, unknown>();
@@ -44,9 +46,14 @@ it('releases a failed preparation so retry cannot remain blocked by a phantom bo
   }
 });
 
-it.each([true, false])(
-  'recovers restart state before removing the share (submitted: %s)',
-  async (submitted) => {
+it.each([
+  { submitted: true, offline: false },
+  { submitted: false, offline: false },
+  { submitted: true, offline: true },
+  { submitted: false, offline: true },
+])(
+  'recovers restart state before removing the share (submitted: $submitted, offline: $offline)',
+  async ({ submitted, offline }) => {
     const rows = new Map<string, unknown>();
     rows.set('meeting:restored', {
       meeting: {
@@ -70,20 +77,31 @@ it.each([true, false])(
       listenForVerity: false,
       spokenThrough: -1,
     });
+    const queued = new Set<string>();
     const store = {
       getSession: async () => ({ id: 'session' }),
       getAttendeeState: async (id: string) => rows.get(id),
       putAttendeeState: async (id: string, state: unknown) => {
         rows.set(id, structuredClone(state));
       },
-      listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+      listAttendeeState: async () =>
+        [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+      addPendingUplinkShareRemoval: async (id: string) => {
+        queued.add(id);
+      },
     } as unknown as EventStore;
+    const uplink = new UplinkControlClient({
+      url: 'wss://uplink.example.test/control',
+      store,
+      serverVersion: 'test',
+    });
     const ingest = vi.fn();
     const remove = vi.fn(async () => {
       if (submitted)
         expect(ingest).toHaveBeenCalledWith(
           expect.objectContaining({ transcript: submitted ? 'final text' : '', state: 'ended' }),
         );
+      if (offline) await uplink.remove('share');
     });
     const service = new AttendeeMeetings({
       store,
@@ -112,6 +130,15 @@ it.each([true, false])(
         }),
       );
       expect(remove).toHaveBeenCalledWith('share');
+      if (offline) expect(queued.has('share')).toBe(true);
+      expect(rows.get('meeting:restored')).not.toHaveProperty('binding');
+      await service.configure({
+        apiKey: 'fixture',
+        webhookSecret: Buffer.alloc(32).toString('base64'),
+      });
+      await expect(
+        service.start('session', 'https://meet.google.com/abc-defg-hij', false),
+      ).rejects.toThrow('Check Uplink');
     } finally {
       await service.close();
     }
@@ -703,4 +730,169 @@ it('recovers a saved bot ID and requests leave before a failing Edge reconnect',
     await service.close();
     connect.mockRestore();
   }
+});
+
+it.each([false, true])(
+  'removes persisted webhook bindings on sharing shutdown (queued: %s)',
+  async (queued) => {
+    const state = {
+      meeting: { id: 'restored' },
+      phase: 'running',
+      botId: 'bot',
+      binding: { shareId: 'share' },
+    };
+    let disable!: () => void;
+    const saveState = vi.fn(async () => undefined);
+    const store = {
+      listAttendeeState: vi.fn(async () => [{ id: 'meeting:restored', state }]),
+      putAttendeeState: saveState,
+    } as unknown as EventStore;
+    const remove = vi.fn(async () => {
+      // The removal queue must receive the handle before the durable binding is erased.
+      expect(state.binding?.shareId).toBe('share');
+      if (queued) throw new PreviewShareRemovalQueuedError('offline');
+    });
+    const service = new AttendeeMeetings({
+      store,
+      ingest: vi.fn(),
+      edge: {
+        create: vi.fn(),
+        remove,
+        onSharingDisabled: (listener) => {
+          disable = listener;
+          return () => undefined;
+        },
+      },
+    });
+    disable();
+    await vi.waitFor(() => expect(saveState).toHaveBeenCalled());
+    expect(remove).toHaveBeenCalledWith('share');
+    expect(state.binding).toBeUndefined();
+    expect(state.botId).toBe('bot');
+    expect(state.phase).toBe('running');
+    await service.close();
+  },
+);
+
+it.each([
+  { stage: 'connection', queueFails: false },
+  { stage: 'save', queueFails: false },
+  { stage: 'connection', queueFails: true },
+  { stage: 'save', queueFails: true },
+])(
+  'does not create a bot when sharing is disabled during $stage (queue fails: $queueFails)',
+  async ({ stage, queueFails }) => {
+    const { PreviewConnector } = await import('@verity/preview-tunnel');
+    const rows = new Map<string, unknown>();
+    const store = {
+      getSession: async () => ({ id: 'session' }),
+      getAttendeeState: async (id: string) => rows.get(id),
+      putAttendeeState: async (id: string, state: unknown) => {
+        rows.set(id, structuredClone(state));
+        if (stage === 'save' && (state as { botCreateAttempted?: boolean }).botCreateAttempted) {
+          available = false;
+          disable();
+        }
+      },
+      listAttendeeState: async () =>
+        [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+    } as unknown as EventStore;
+    let disable!: () => void;
+    let available = true;
+    const connect = vi.spyOn(PreviewConnector.prototype, 'connect').mockImplementation(async () => {
+      if (stage === 'connection') {
+        available = false;
+        disable();
+      }
+    });
+    const disconnected = vi
+      .spyOn(PreviewConnector.prototype, 'waitForDisconnect')
+      .mockImplementation(() => new Promise(() => undefined));
+    const close = vi.spyOn(PreviewConnector.prototype, 'close');
+    const request = vi.fn();
+    const remove = vi.fn(async () => {
+      if (queueFails) throw new Error('queue storage unavailable');
+    });
+    const service = new AttendeeMeetings({
+      store,
+      ingest: vi.fn(),
+      edge: {
+        isAvailable: () => available,
+        onSharingDisabled: (listener) => {
+          disable = listener;
+          return () => undefined;
+        },
+        remove,
+        create: async () => ({
+          shareId: 'share',
+          publicOrigin: 'https://meeting.example.test',
+          edgeUrl: 'wss://meeting.example.test/__verity/connector',
+          connectorToken: 'fixture',
+          sessionSecret: 'fixture',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      },
+      client: () => ({ request }) as unknown as import('./attendee-client.js').AttendeeClient,
+    });
+    await service.configure({
+      apiKey: 'fixture',
+      webhookSecret: Buffer.alloc(32).toString('base64'),
+    });
+    await service.open();
+    try {
+      await expect(
+        service.start('session', 'https://meet.google.com/abc-defg-hij', false),
+      ).rejects.toThrow('Check Uplink');
+      expect(request).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledWith('share');
+      expect([...rows].find(([id]) => id.startsWith('meeting:'))?.[1]).toMatchObject({
+        phase: queueFails ? 'stopping' : 'ended',
+        credentials: { apiKey: '', webhookSecret: '' },
+      });
+      const state = [...rows].find(([id]) => id.startsWith('meeting:'))?.[1];
+      if (queueFails) {
+        expect(state).toHaveProperty('binding.shareId', 'share');
+        remove.mockImplementation(async () => undefined);
+        await service.stop('session', (state as { meeting: { id: string } }).meeting.id);
+        const completed = [...rows].find(([id]) => id.startsWith('meeting:'))?.[1];
+        expect(completed).toMatchObject({ phase: 'ended' });
+        expect(completed).not.toHaveProperty('binding');
+      } else expect(state).not.toHaveProperty('binding');
+    } finally {
+      await service.close();
+      connect.mockRestore();
+      close.mockRestore();
+      disconnected.mockRestore();
+    }
+  },
+);
+
+it('retains the webhook share handle when shutdown revocation fails', async () => {
+  const state = { meeting: { id: 'restored' }, phase: 'running', binding: { shareId: 'share' } };
+  let disable!: () => void;
+  const save = vi.fn();
+  const remove = vi.fn(async () => {
+    throw new Error('durable queue unavailable');
+  });
+  const service = new AttendeeMeetings({
+    store: {
+      listAttendeeState: async () => [{ id: 'meeting:restored', state }],
+      putAttendeeState: save,
+    } as unknown as EventStore,
+    ingest: vi.fn(),
+    edge: {
+      create: vi.fn(),
+      remove,
+      onSharingDisabled: (listener) => {
+        disable = listener;
+        return () => undefined;
+      },
+    },
+  });
+  disable();
+  await service.close();
+  expect(remove).toHaveBeenCalledWith('share');
+  expect(state.binding).toEqual({ shareId: 'share' });
+  expect(save).not.toHaveBeenCalled();
 });

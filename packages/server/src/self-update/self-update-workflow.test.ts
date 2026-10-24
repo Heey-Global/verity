@@ -84,6 +84,69 @@ describe('self-update workflow image', () => {
     });
   };
 
+  it.each(['success', 'missing', 'ambiguous', 'failure'])(
+    'uses registry-confirmed generation manifests: %s',
+    async (mode) => {
+      const smoke = await readFile(
+        resolve(root, 'deploy/bin/verity-self-update-live-smoke'),
+        'utf8',
+      );
+      const start = smoke.indexOf('docker tag "$previous_image" "$repo:previous"');
+      const end = smoke.indexOf("echo '--- isolated daemon: managed deployment topology'", start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const dir = await mkdtemp(join(tmpdir(), 'verity-generation-digest-'));
+      const digest = 'a'.repeat(64);
+      try {
+        await writeFile(
+          join(dir, 'docker'),
+          `#!/usr/bin/env bash
+set -eu
+case "$1" in
+  push)
+    tag="\${2##*:}"
+    [[ "$MODE" != failure ]] || exit 1
+    [[ "$MODE" != missing ]] || { echo 'layers pushed without manifest'; exit 0; }
+    case "$tag" in
+      previous) n=1;; target) n=2;; successor) n=3;; final) n=4;;
+      drained) n=5;; forced) n=6;; resumed) n=7;; *) exit 2;;
+    esac
+    printf '%s: digest: sha256:%064d size: 1234\n' "$tag" "$n"
+    if [[ "$MODE" == ambiguous ]]; then
+      printf '%s: digest: sha256:%064d size: 1234\n' "$tag" 9
+    fi
+    ;;
+  inspect) echo 'ghcr.io/heey-global/verity/verity-server@sha256:${digest}';;
+  pull) printf '%s\n' "$3" >> "$RUNNER_TEMP/pulls";;
+  tag|image) ;;
+  *) exit 2;;
+esac
+`,
+        );
+        await chmod(join(dir, 'docker'), 0o755);
+        const result = await runIn(
+          dir,
+          `set -euo pipefail
+repo=ghcr.io/heey-global/verity/verity-server
+previous_image=loaded-predecessor
+${smoke.slice(start, end)}`,
+          { MODE: mode },
+        );
+        if (mode === 'success') {
+          expect(result.code, result.out).toBe(0);
+          expect(await readFile(join(dir, 'pulls'), 'utf8')).toBe(
+            `ghcr.io/heey-global/verity/verity-server@sha256:${'1'.padStart(64, '0')}\n`,
+          );
+        } else {
+          expect(result.code, result.out).not.toBe(0);
+          await expect(readFile(join(dir, 'pulls'), 'utf8')).rejects.toThrow();
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('keeps the expensive live cutover off pull requests and ordinary pushes', async () => {
     const workflow = await readFile(resolve(root, '.github/workflows/self-update.yml'), 'utf8');
     const triggers = workflow.slice(workflow.indexOf('on:'), workflow.indexOf('\npermissions:'));

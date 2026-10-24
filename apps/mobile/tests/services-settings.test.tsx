@@ -46,6 +46,7 @@ jest.mock('../components/settings/SettingsChrome', () => {
       <NativeView>{children}</NativeView>
     ),
     SettingsNavRow: () => null,
+    SettingsToggleRow: () => null,
     SettingsSaveState: () => null,
   };
 });

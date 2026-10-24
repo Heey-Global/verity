@@ -26,7 +26,7 @@ type SheetsRequest = {
 
 export interface GoogleSheetsToolDeps {
   eventStore: GoogleWorkspaceToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   sheets?: {
     inspect(token: string, fileId: string): Promise<unknown>;
     read(token: string, fileId: string, range: string): Promise<unknown>;
@@ -118,12 +118,15 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
   const assigned = async (
     sessionId: string,
     assignmentId?: string,
+    credentialVersion?: number | null,
   ): Promise<SessionWorkspaceFile> => {
     const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
     if (
       file === undefined ||
       file.kind !== 'sheets' ||
-      (assignmentId !== undefined && file.assignmentId !== assignmentId)
+      (assignmentId !== undefined && file.assignmentId !== assignmentId) ||
+      file.accountId === null ||
+      (credentialVersion !== undefined && file.credentialVersion !== credentialVersion)
     ) {
       throw new Error(
         assignmentId === undefined
@@ -140,34 +143,34 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
       if (session === undefined || session.projectId !== input.projectId)
         throw new Error('Google Sheets is restricted to the calling session');
       const file = await assigned(input.sessionId);
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(file.accountId ?? undefined);
       if (token === undefined) throw new Error('Google Drive is not connected');
       const request = parseRequest(input.request);
       if (request.action === 'inspect_spreadsheet') {
-        await assigned(input.sessionId, file.assignmentId);
+        await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
         return sheets.inspect(token, file.fileId);
       }
       if (request.action === 'read_range') {
         validateRange(request.range);
-        await assigned(input.sessionId, file.assignmentId);
+        await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
         return sheets.read(token, file.fileId, request.range);
       }
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       if (!['write_range', 'clear_range', 'structural_edit'].includes(request.action)) {
         throw new Error('Unsupported Google Sheets action');
       }
       if (request.action === 'structural_edit') validateStructural(request.requests);
       else validateRange(request.range);
       if (request.action === 'write_range') validateValues(request.values);
-      await assigned(input.sessionId, file.assignmentId);
+      await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
       const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
       if (claim.status === 'completed') return claim.result;
       if (claim.status === 'pending')
         throw new Error(
           'This Google Sheets edit may already have run; inspect the spreadsheet first',
         );
-      await assigned(input.sessionId, file.assignmentId);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+      await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       let result: unknown;
       if (request.action === 'write_range')
         result = await sheets.write(token, file.fileId, request.range!, request.values!);

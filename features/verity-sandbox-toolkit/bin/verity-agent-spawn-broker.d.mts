@@ -94,12 +94,24 @@ export function agentLaunchSpec(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     knowledgeIsolation?: boolean;
+    planning?: boolean;
     knowledgeHome?: string;
+    managedHome?: string;
     args: string[];
     cwd: string;
   },
   options: AgentSpawnBrokerOptions,
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
+
+export function materializeManagedAgentHome(
+  request: {
+    command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
+    planning?: boolean;
+    sessionEnv?: Record<string, string>;
+  },
+  options: AgentSpawnBrokerOptions,
+  connectorUrl: string,
+): Promise<{ home: string; cleanup(): Promise<void> }>;
 
 export function materializeKnowledgeIsolation(
   request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp' },
@@ -144,6 +156,10 @@ export function validateTrustedCliArguments(
     worktreeRoot?: string;
   },
   options?: {
+    enforceRoot?: boolean;
+    agentUid?: number;
+    agentGid?: number;
+    setprivPath?: string;
     /** Test seam. Production always uses the immutable adjacent sidecar loader. */
     loadArgvPolicy?: (resolvedCommand: string) => Promise<unknown | undefined>;
   },
@@ -170,7 +186,15 @@ export function materializeTrustedCliEntryScript(
       worktreeRoot: string;
     };
   },
-  options: Pick<AgentSpawnBrokerOptions, 'secretDir' | 'trustedCliEntryScriptDir'>,
+  options: Pick<
+    AgentSpawnBrokerOptions,
+    | 'secretDir'
+    | 'trustedCliEntryScriptDir'
+    | 'agentUid'
+    | 'agentGid'
+    | 'setprivPath'
+    | 'enforceRoot'
+  >,
 ): Promise<{
   args: string[];
   entrySandbox?: {
@@ -218,3 +242,9 @@ export function runAgentSpawnBroker(options: AgentSpawnBrokerOptions): Promise<{
 }>;
 
 export function probeAgentSpawnBroker(controlDir?: string, timeoutMs?: number): Promise<boolean>;
+
+export function sessionHomePath(runtimeDir: string, sessionId: string): string;
+export function prepareSessionHome(
+  sessionId: string,
+  options: AgentSpawnBrokerOptions,
+): Promise<string>;

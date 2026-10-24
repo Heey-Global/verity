@@ -6,18 +6,11 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { type VerityClient, type OnboardingStatus } from '@verity/mobile';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Linking,
-  Platform,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Linking, Platform, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../lib/client';
+import { Button } from './ui';
 
 const PREPARE_TIMEOUT_MS = 15000;
 const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
@@ -291,13 +284,15 @@ export function GithubConnectPanel({
           <Text style={styles.hint}>Leave empty to connect your personal account.</Text>
         </View>
       ) : (
-        <Pressable
-          onPress={() => setShowOrganization(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Connect a GitHub organization"
-        >
-          <Text style={styles.linkText}>Connecting an organization?</Text>
-        </Pressable>
+        <View style={styles.inline}>
+          <Button
+            label="Connecting an organization?"
+            accessibilityLabel="Connect a GitHub organization"
+            variant="text"
+            size="compact"
+            onPress={() => setShowOrganization(true)}
+          />
+        </View>
       )}
 
       {phase.kind === 'error' ? (
@@ -308,7 +303,7 @@ export function GithubConnectPanel({
 
       {phase.kind === 'starting' ? (
         <View style={styles.waiting} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
           <View style={styles.waitingCopy}>
             <Text style={styles.waitingTitle}>Opening GitHub…</Text>
             <Text style={styles.hint}>Preparing a secure authorization request.</Text>
@@ -316,68 +311,57 @@ export function GithubConnectPanel({
         </View>
       ) : waiting ? (
         <View style={styles.waiting} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
           <View style={styles.waitingCopy}>
             <Text style={styles.waitingTitle}>Waiting for GitHub…</Text>
             <Text style={styles.hint}>Return to Verity after authorization is complete.</Text>
           </View>
-          <Pressable onPress={check} accessibilityRole="button" accessibilityLabel="Check now">
-            <Text style={styles.linkText}>Check now</Text>
-          </Pressable>
+          <Button label="Check now" variant="text" size="compact" onPress={check} />
         </View>
       ) : (
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-          onPress={connect}
-          accessibilityRole="button"
-          accessibilityLabel="Connect to GitHub"
-        >
-          <Text style={styles.primaryButtonLabel}>Connect to GitHub</Text>
-        </Pressable>
+        <Button label="Connect to GitHub" icon="github" onPress={connect} fullWidth />
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   card: {
     gap: theme.spacing.md,
     paddingVertical: theme.spacing.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   title: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
   },
   description: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   field: { gap: theme.spacing.xs },
-  label: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  label: { ...theme.typography.body, fontFamily: theme.fonts.semibold, color: theme.colors.text },
   input: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     minHeight: 44,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
     color: theme.colors.text,
     backgroundColor: theme.colors.background,
-    fontSize: theme.text.md,
   },
   hint: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
+    ...theme.typography.footnote,
+    color: theme.colors.textMuted,
   },
-  linkText: { color: theme.colors.setup.text, fontSize: theme.text.sm, fontWeight: '700' },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.attention,
   },
   waiting: {
     minHeight: 52,
@@ -386,19 +370,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   waitingCopy: { flex: 1, gap: 2 },
-  waitingTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
-  primaryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: theme.spacing.lg,
+  waitingTitle: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
   },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  pressed: { opacity: 0.78 },
 }));

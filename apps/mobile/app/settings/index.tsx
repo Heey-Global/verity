@@ -7,6 +7,7 @@ import { useTaskPreferences } from '../../lib/taskPreferences';
 // the fold to find the thing that needs attention: the checklist names what is
 // unfinished, and each row below it is a destination, not a control.
 import {
+  githubRepositoryAccessReady,
   settingsChecklist,
   settingsChecklistHeadline,
   type SettingsChecklistItemId,
@@ -28,7 +29,9 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
+import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
+import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
@@ -74,10 +77,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
+  const githubConnected = githubRepositoryAccessReady(settings);
+  // Surfaced on the Connections row so a grant still owed in GitHub is visible
+  // without first opening the connection that needs it.
+  const githubPermission = useGithubPermission(client, githubConnected);
+  const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
+  const appStoreVersion = useAppStoreUpdateVersion(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
+  const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -89,10 +100,29 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
         .catch(() => undefined);
+      // A stored key is not an active subscription: Uplink may have refused it.
+      // Keep the last known state while re-reading so the row does not flicker.
+      if (keyConfigured) {
+        client
+          .getUplinkDiagnostics()
+          .then(
+            (status) =>
+              active &&
+              setUplinkState(
+                status.control === 'connected' ||
+                  (status.control === 'idle' && status.entitlement === 'checked')
+                  ? 'active'
+                  : status.control === 'rejected'
+                    ? 'rejected'
+                    : 'pending',
+              ),
+          )
+          .catch(() => active && setUplinkState('pending'));
+      }
       return () => {
         active = false;
       };
-    }, [client]),
+    }, [client, keyConfigured]),
   );
 
   const checkForManualUpdate = useCallback(() => {
@@ -160,6 +190,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             icon="link"
             title="Connections"
             subtitle="AI, code, documents and other services"
+            status={
+              githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
+            }
             onPress={() => router.push('/settings/services')}
           />
         </SettingsListPanel>
@@ -179,16 +212,37 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         <SettingsListPanel>
           <SettingsNavRow
             icon="download"
-            title="Server update"
-            subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
-            status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
+            title="Updates"
+            subtitle={
+              updateVersion !== null
+                ? `Server version ${updateVersion} available`
+                : appStoreVersion !== null
+                  ? `App version ${appStoreVersion} available`
+                  : 'Server and app'
+            }
+            // Only what needs a tap: a downloaded smaller app update applies on
+            // its own the next time the app starts.
+            status={
+              updateVersion !== null || appStoreVersion !== null
+                ? { intent: 'needsSetup', label: 'Update' }
+                : undefined
+            }
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
-            icon="globe"
+            icon="zap"
+            signature
             title="Verity Premium"
-            subtitle="Online sharing and Remote access"
-            value={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Not active'}
+            subtitle="Online sharing, remote access"
+            status={
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkState === 'rejected'
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
+            }
             onPress={() => router.push('/settings/premium')}
           />
         </SettingsListPanel>
@@ -196,10 +250,20 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Known vulnerabilities in code projects"
+            onPress={() => router.push('/settings/vulnerability-scan')}
+          />
+          <SettingsNavRow
             icon="check-square"
             title="Tasks"
-            subtitle="Capture bubble, screenshot suggestions"
-            value={taskPreferences.enabled ? 'On' : 'Off'}
+            subtitle="Capture bubble, screenshot tips"
+            status={
+              taskPreferences.enabled
+                ? { intent: 'ready', label: 'On' }
+                : { intent: 'optional', label: 'Off' }
+            }
             onPress={() => router.push('/settings/tasks')}
           />
           <SettingsNavRow
@@ -219,7 +283,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             <SettingsNavRow
               icon="help-circle"
               title="Show welcome tour again"
-              subtitle="Open the welcome session and reset feature hints on this device"
+              subtitle="Replays the welcome session and hints"
               onPress={() => {
                 void resetFeatureHints()
                   .then(() =>
@@ -235,16 +299,15 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             />
           ) : null}
           <SettingsNavRow
-            icon="file-text"
+            icon="activity"
             title="Diagnostics"
-            subtitle="Connection, transcription and app logs"
             onPress={() => router.push('/settings/diagnostics')}
           />
           {!isDemoMode() ? (
             <SettingsNavRow
               icon="play"
               title="Try demo"
-              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              subtitle="Sample data and simulated AI"
               onPress={() => {
                 void enterDemoMode()
                   .then(() => router.replace('/'))
@@ -260,7 +323,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="server"
             title="Server address"
-            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
             onPress={() => {
               if (isDemoMode()) {
                 Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');

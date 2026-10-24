@@ -1,5 +1,5 @@
 import type { SessionRecord } from '@verity/store';
-import type { PullRequestStatus } from './github.js';
+import type { PullRequestStatus } from './forge-provider.js';
 
 interface Entry {
   status: PullRequestStatus | null;

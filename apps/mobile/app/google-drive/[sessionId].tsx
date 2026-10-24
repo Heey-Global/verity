@@ -15,7 +15,9 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
 import { createVerityClient } from '../../lib/client';
-import { runGoogleDriveAuth } from '../../lib/googleDrive';
+import { runGoogleAccountAuth } from '../../lib/googleDrive';
+import { missingGoogleServices } from '../../lib/googleServices';
+import { Button } from '../../components/ui';
 
 type Crumb = { id: string; name: string };
 type DriveView = 'my-drive' | 'shared';
@@ -32,8 +34,9 @@ function iconForFile(file: DriveFile): IconName {
 
 export default function GoogleDrivePickerScreen() {
   const { theme } = useUnistyles();
-  const { sessionId } = useLocalSearchParams<{
+  const { sessionId, accountId } = useLocalSearchParams<{
     sessionId: string;
+    accountId?: string;
   }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
@@ -48,10 +51,18 @@ export default function GoogleDrivePickerScreen() {
       </View>
     );
   }
-  return <GoogleDrivePicker client={client} sessionId={sessionId} />;
+  return <GoogleDrivePicker client={client} sessionId={sessionId} accountId={accountId} />;
 }
 
-function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessionId: string }) {
+function GoogleDrivePicker({
+  client,
+  sessionId,
+  accountId,
+}: {
+  client: VerityClient;
+  sessionId: string;
+  accountId?: string;
+}) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
 
@@ -71,7 +82,8 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const requestSequence = useRef(0);
 
-  const connected = settings?.googleDriveConnected === true;
+  const [accountConnected, setAccountConnected] = useState(false);
+  const connected = accountId ? accountConnected : settings?.googleDriveConnected === true;
   const clientId = settings?.googleDriveClientId ?? '';
   const parentId = path.length > 0 ? path[path.length - 1]?.id : undefined;
 
@@ -79,12 +91,20 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     try {
       const next = await client.getVeritySettings();
       setSettings(next);
+      if (accountId)
+        setAccountConnected(
+          (await client.listGoogleAccounts()).some(
+            (account) =>
+              account.id === accountId &&
+              account.scopes.includes('https://www.googleapis.com/auth/drive'),
+          ),
+        );
     } catch {
       setSettings(null);
     } finally {
       setSettingsLoaded(true);
     }
-  }, [client]);
+  }, [client, accountId]);
 
   useEffect(() => {
     void loadSettings();
@@ -104,6 +124,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         const sharedRoot =
           driveView === 'shared' && sharedDriveId === null && folderId === undefined;
         const page = await client.listGoogleDriveFiles({
+          ...(accountId ? { accountId } : {}),
           ...(query.length > 0 ? { query } : { parentId: folderId }),
           ...(sharedRoot && query.length === 0 ? { sharedWithMe: true } : {}),
           ...(sharedDriveId ? { driveId: sharedDriveId } : {}),
@@ -116,7 +137,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
           const drives = [];
           let drivesPageToken: string | undefined;
           do {
-            const drivesPage = await client.listGoogleSharedDrives(drivesPageToken);
+            const drivesPage = await client.listGoogleSharedDrives(drivesPageToken, accountId);
             drives.push(...drivesPage.drives);
             drivesPageToken = drivesPage.nextPageToken;
           } while (drivesPageToken !== undefined);
@@ -149,7 +170,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         if (sequence === requestSequence.current) setLoading(false);
       }
     },
-    [client, driveView, sharedDriveId],
+    [client, driveView, sharedDriveId, accountId],
   );
 
   // Reload when the folder changes or after the search input settles. Drive
@@ -169,14 +190,19 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     }
     setConnecting(true);
     try {
-      const result = await runGoogleDriveAuth(clientId);
+      const result = await runGoogleAccountAuth(clientId);
       if (result.kind === 'cancelled') return false;
-      await client.connectGoogleDrive({
+      const connected = await client.connectGoogleAccount({
+        ...(accountId ? { accountId } : {}),
         code: result.code,
         codeVerifier: result.codeVerifier,
         redirectUri: result.redirectUri,
       });
       await loadSettings();
+      if (missingGoogleServices(connected.scopes).includes('Drive')) {
+        Alert.alert('Drive access missing', 'Google did not grant access to Google Drive.');
+        return false;
+      }
       return true;
     } catch (err) {
       const message =
@@ -186,7 +212,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     } finally {
       setConnecting(false);
     }
-  }, [client, clientId, loadSettings]);
+  }, [client, clientId, loadSettings, accountId]);
 
   const openFolder = useCallback(
     (folder: DriveFile) => {
@@ -217,27 +243,12 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     });
   }, [driveView]);
 
-  const disconnect = useCallback(() => {
-    void (async () => {
-      try {
-        await client.disconnectGoogleDrive();
-        setPath([]);
-        setFiles([]);
-        await loadSettings();
-      } catch (err) {
-        const message =
-          err instanceof VerityApiError ? err.message : 'Could not disconnect Google Drive.';
-        Alert.alert('Could not disconnect', message);
-      }
-    })();
-  }, [client, loadSettings]);
-
   const connectCurrentFolder = useCallback(() => {
     const folder = path.at(-1);
     if (folder === undefined || importingId !== null) return;
     setImportingId(folder.id);
     void client
-      .connectProjectGoogleDriveFolder(sessionId, folder.id)
+      .connectProjectGoogleDriveFolder(sessionId, folder.id, 'read-only', accountId)
       .then(() => router.back())
       .catch((err: unknown) =>
         Alert.alert(
@@ -246,7 +257,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         ),
       )
       .finally(() => setImportingId(null));
-  }, [client, importingId, path, sessionId]);
+  }, [client, importingId, path, sessionId, accountId]);
 
   const onPressItem = useCallback(
     (file: DriveFile) => {
@@ -263,24 +274,12 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
       <Stack.Screen
         options={{
           title,
-          headerRight: connected
-            ? () => (
-                <Pressable
-                  onPress={disconnect}
-                  accessibilityRole="button"
-                  accessibilityLabel="Disconnect Google Drive"
-                  hitSlop={8}
-                >
-                  <Text style={styles.headerAction}>Disconnect</Text>
-                </Pressable>
-              )
-            : undefined,
         }}
       />
 
       {!settingsLoaded ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={theme.colors.primary} />
+          <ActivityIndicator color={theme.colors.action} />
         </View>
       ) : !connected ? (
         <View style={styles.centered}>
@@ -290,33 +289,24 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             Google grants Verity access to files in this account. Projects can use only the folder
             you connect in their settings. You can disconnect at any time.
           </Text>
-          <Pressable
-            style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
+          <Button
+            label="Connect Google Drive"
+            loading={connecting}
             onPress={() => void connect()}
-            disabled={connecting}
-            accessibilityRole="button"
-            accessibilityLabel="Connect Google Drive"
-          >
-            {connecting ? (
-              <ActivityIndicator color={theme.colors.onPrimary} />
-            ) : (
-              <Text style={styles.primaryButtonLabel}>Connect Google Drive</Text>
-            )}
-          </Pressable>
+          />
         </View>
       ) : (
         <>
           {path.length > 0 ? (
-            <Pressable
-              style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-              onPress={connectCurrentFolder}
-              accessibilityHint="Connects read-only. Allow changes later in project settings."
-              disabled={importingId !== null}
-              accessibilityRole="button"
+            <Button
+              label="Connect this folder"
               accessibilityLabel={`Connect ${path.at(-1)?.name ?? 'this folder'}`}
-            >
-              <Text style={styles.primaryButtonLabel}>Connect this folder</Text>
-            </Pressable>
+              accessibilityHint="Connects read-only. Allow changes later in project settings."
+              loading={importingId !== null && importingId === path.at(-1)?.id}
+              disabled={importingId !== null}
+              onPress={connectCurrentFolder}
+              fullWidth
+            />
           ) : null}
           <View style={styles.searchContainer}>
             <Icon name="search" size={18} color={theme.colors.textMuted} />
@@ -422,7 +412,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
                     {isSharedDrive ? <Text style={styles.itemMeta}>Shared drive</Text> : null}
                   </View>
                   {isImporting ? (
-                    <ActivityIndicator size="small" color={theme.colors.primary} />
+                    <ActivityIndicator size="small" color={theme.colors.action} />
                   ) : isDriveFolder(item) ? (
                     <Icon name="chevron-right" size={20} color={theme.colors.textFaint} />
                   ) : (
@@ -442,20 +432,19 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             }
             ListFooterComponent={
               <View style={styles.footer}>
-                {loading ? <ActivityIndicator color={theme.colors.primary} /> : null}
+                {loading ? <ActivityIndicator color={theme.colors.action} /> : null}
                 {error !== null ? (
                   <Text style={styles.error} accessibilityRole="alert">
                     {error}
                   </Text>
                 ) : null}
                 {!loading && nextPageToken !== undefined ? (
-                  <Pressable
+                  <Button
+                    label="Load more"
+                    variant="text"
+                    size="compact"
                     onPress={() => void loadFiles(parentId, debouncedQuery, true, nextPageToken)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Load more"
-                  >
-                    <Text style={styles.linkText}>Load more</Text>
-                  </Pressable>
+                  />
                 ) : null}
               </View>
             }
@@ -475,29 +464,13 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
     padding: theme.spacing.xl,
   },
-  emptyTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '800' },
+  emptyTitle: { ...theme.typography.title, color: theme.colors.text },
   emptyBody: {
+    ...theme.typography.subtitle,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
     padding: theme.spacing.lg,
   },
-  primaryButton: {
-    minHeight: 48,
-    minWidth: 220,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '800',
-  },
-  pressed: { opacity: 0.78 },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -510,9 +483,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
   },
   searchInput: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
     paddingVertical: theme.spacing.sm,
   },
   driveViewTabs: {
@@ -532,9 +506,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   driveViewTabSelected: { backgroundColor: theme.colors.surface },
   driveViewTabLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
   },
   driveViewTabLabelSelected: { color: theme.colors.text },
   listContent: { paddingVertical: theme.spacing.xs },
@@ -549,8 +523,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   itemPressed: { backgroundColor: theme.colors.surfaceAlt },
   itemText: { flex: 1, gap: 2 },
-  itemLabel: { color: theme.colors.text, fontSize: theme.text.md },
-  itemMeta: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  itemLabel: { ...theme.typography.body, color: theme.colors.text },
+  itemMeta: { ...theme.typography.footnote, color: theme.colors.textMuted },
   upRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -560,13 +534,15 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  upLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
+  upLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   footer: { padding: theme.spacing.lg, gap: theme.spacing.sm, alignItems: 'center' },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
+    ...theme.typography.subtitle,
+    color: theme.colors.attention,
     textAlign: 'center',
   },
-  linkText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
-  headerAction: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '700' },
 }));

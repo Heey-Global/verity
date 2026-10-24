@@ -1,18 +1,63 @@
 # Bounded DATA disconnect capture
 
-The mobile Connection diagnostics panel offers **Record connection test** and
-**Copy connection recording**. Recording is opt-in for the current DATA socket
-or, if none is live, the next attachment used by that test, including any automatic stall replacement. It never replaces a
-live tunnel to obtain a recording. Ordinary tests and traffic do not enable it.
+The mobile Connection diagnostics panel offers **Record connection** and
+**Stop and collect**. Opening the screen only restores saved state; it never
+starts a recording. The coordinated flow requires a paired administrator, a
+reachable Core, and an Uplink that negotiates `remote-diagnostics-v1`.
+
+1. Connect VPN, then tap **Record connection**. The app arms its local recorder;
+   Core arms its retained metadata sink and requests an Uplink recorder over the
+   existing authenticated control connection.
+2. Wait for **Ready** before disabling VPN. This means all three collectors
+   acknowledged readiness, not that test traffic has already reached them.
+3. Disable VPN and use the app normally. Each collector expires independently
+   within 120 seconds; no test request or continuous VPN connection keeps it alive.
+4. Reconnect VPN and tap **Stop and collect**. Local recording stops first,
+   independently of server availability. The app stops Core/Uplink and copies a
+   combined metadata report. Without VPN, it copies the available local evidence
+   and reports the missing sources; repeat collection after reconnecting.
+
+A failed or incomplete preparation stops the local/Core capture and attempts to
+stop Uplink. A lost acknowledgement never renews the original deadline. The app
+retains the run identifier for collection after navigation or restart, and never
+replays Start automatically. Core/Uplink retain bounded in-memory reports for up
+to one hour; restarting those processes loses their reports and does not resume
+capture. Old Uplinks without the negotiated capability fail preparation explicitly.
+
+The report groups the selected run and retains socket generation/session hashes.
+Use matching hashes and per-socket order to investigate; clocks on different hosts
+are not synchronized by this feature. Missing records, overflow and unavailable
+sources remain visible. The collectors record bounded transport metadata, not
+payloads, tickets, headers or arbitrary error text. This flow does not start TCP
+samplers or Gateway logging, and does not by itself establish a transport cause.
+
+**Advanced diagnostics** retains local-only recording/probe/export and manual
+Core controls for troubleshooting. A local recording test replaces the current
+tunnel and can interrupt active remote requests. Local-only Stop preserves the
+saved evidence and does not stop remote recordings.
 All generations in one test share the original 120-second deadline. After that deadline, recording and the network-path observer stop without stopping
 the transport. A recorded socket cannot be rearmed after its window ends; use a
 fresh attachment for a new recording. The native module keeps at most three
-recorded socket generations in memory, including failed starts and stopped
-tunnels. Restarting the app discards them. No upload happens automatically.
+recorded socket generations, including failed starts and stopped tunnels.
+Metadata snapshots are also saved in a bounded private file excluded from backups;
+restarting the app restores the latest saved snapshots without enabling recording.
+Restored snapshots are marked expired because their original capture process has
+ended. Export refreshes live snapshots, and a deadline callback saves expiry even
+when no further traffic arrives.
+Encoding and atomic writes run asynchronously, so abrupt termination can lose the
+last pending update. Export remains available without a profile, route or Core
+connection. No upload happens automatically.
 
 ## Export schema
 
-The clipboard export is a JSON array of at most three version-1 DATA snapshots.
+**Stop and collect** copies a version-1 object with `runId`, `startedAt`, `app`
+and `remote`. Each source includes availability/stopped state and its recording,
+or an explicit missing source. `remote.recording` contains the Core run status,
+Core summaries/drop count, and the Uplink availability/data/error result. Up to
+256 Core summaries and 2048 Uplink records are accepted, additionally constrained
+by byte budgets. A full envelope does not imply that packets reached every hop.
+
+The **Advanced diagnostics** local-only clipboard export is a JSON array of at most three version-1 DATA snapshots.
 Each snapshot includes:
 
 - `generation`: a local UUID for this socket, **not** the Uplink connection ID.
@@ -133,3 +178,7 @@ Remove copied exports when the investigation is finished. Reverting the
 diagnostics change is independent of transport routing. A dedicated diagnostic
 Gateway/hostname, controller configuration or route switch requires a separate
 concrete design and approval; this capture procedure does not authorize it.
+
+For independent collection and explicit missing-source reports, see
+[Independent capture collection](CAPTURE_BUNDLE.md). This local tool does not
+activate remote recording or replace the administrative collectors.

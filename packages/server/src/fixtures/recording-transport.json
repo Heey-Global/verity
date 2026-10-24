@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "wsState": null,
+  "bufferedBytes": null,
+  "socketEncrypted": null,
+  "socketBytesRead": null,
+  "socketBytesWritten": null,
+  "socketReadableLength": null,
+  "socketWritableLength": null,
+  "socketPaused": null,
+  "socketNeedDrain": null,
+  "socketDestroyed": null,
+  "receiverState": null,
+  "receiverBufferedBytes": null,
+  "receiverPayloadLength": null,
+  "receiverTotalPayloadLength": null,
+  "receiverMessageLength": null,
+  "receiverFragmented": null,
+  "receiverFin": null,
+  "receiverNeedDrain": null,
+  "closeFrameSent": null,
+  "closeFrameReceived": null
+}

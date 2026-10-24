@@ -34,7 +34,8 @@ async function fakeUpstream(options: { silent?: boolean } = {}) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const candidateTcp = createServer((socket) => {
       socket.once('data', (framed) => {
-        const reply = Buffer.concat([framed.subarray(2, 4), Buffer.from('tcp-answer')]);
+        const bytes = typeof framed === 'string' ? Buffer.from(framed) : framed;
+        const reply = Buffer.concat([bytes.subarray(2, 4), Buffer.from('tcp-answer')]);
         const length = Buffer.alloc(2);
         length.writeUInt16BE(reply.length);
         socket.end(Buffer.concat([length, reply]));
@@ -160,7 +161,9 @@ describe('the relay DNS forwarder', () => {
     const reply = await new Promise<Buffer>((resolve, reject) => {
       const socket = createConnection(dns.tcpPort, '127.0.0.1', () => socket.write(framed));
       const chunks: Buffer[] = [];
-      socket.on('data', (chunk) => chunks.push(chunk));
+      socket.on('data', (chunk) =>
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk),
+      );
       socket.once('end', () => resolve(Buffer.concat(chunks)));
       socket.once('error', reject);
     });

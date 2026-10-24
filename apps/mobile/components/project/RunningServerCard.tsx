@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer, SessionDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
+import { Button } from '../ui';
 
 /**
  * One compact row per running server in the session, with the two ways to
@@ -60,29 +61,24 @@ export function RunningServerCard({
         </Text>
       ) : null}
       <View style={styles.actions}>
-        <Pressable
-          style={[styles.button, disabled && styles.buttonDisabled]}
+        <Button
+          label="Open on network"
+          accessibilityLabel={`Open ${server.name} on your network`}
+          icon="wifi"
+          variant="secondary"
+          size="compact"
+          loading={opening}
           disabled={disabled}
           onPress={onOpen}
-          accessibilityRole="button"
-          accessibilityLabel={`Open ${server.name} on your network`}
-        >
-          {opening ? (
-            <ActivityIndicator size="small" color={theme.colors.primary} />
-          ) : (
-            <Icon name="wifi" size={14} color={theme.colors.primary} />
-          )}
-          <Text style={styles.buttonText}>{opening ? 'Opening…' : 'Open on network'}</Text>
-        </Pressable>
-        <Pressable
-          style={styles.button}
-          onPress={onShare}
-          accessibilityRole="button"
+        />
+        <Button
+          label="Share online"
           accessibilityLabel={`Share ${server.name} over the internet`}
-        >
-          <Icon name="globe" size={14} color={theme.colors.primary} />
-          <Text style={styles.buttonText}>Share online</Text>
-        </Pressable>
+          icon="globe"
+          variant="secondary"
+          size="compact"
+          onPress={onShare}
+        />
       </View>
     </View>
   );
@@ -129,7 +125,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  command: { color: theme.colors.textMuted, fontSize: theme.text.xs, flexBasis: '100%' },
+  command: { ...theme.typography.footnote, color: theme.colors.textMuted, flexBasis: '100%' },
   title: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -138,14 +134,14 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 120,
     minHeight: 40,
   },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.success },
   name: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     flexShrink: 1,
     color: theme.colors.text,
-    fontSize: 13 * theme.fontScale,
-    fontWeight: '600',
   },
-  state: { color: theme.colors.textMuted, fontWeight: '400' },
+  state: { color: theme.colors.textMuted, fontFamily: theme.fonts.regular },
   actions: {
     flexDirection: 'row',
     gap: theme.spacing.xs,
@@ -153,18 +149,4 @@ const styles = StyleSheet.create((theme) => ({
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
   },
-  button: {
-    flexDirection: 'row',
-    gap: 6,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: theme.colors.primary, fontSize: 13 * theme.fontScale, fontWeight: '600' },
 }));

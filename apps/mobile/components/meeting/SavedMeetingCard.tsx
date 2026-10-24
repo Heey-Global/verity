@@ -1,5 +1,4 @@
 import { MeetingWave } from './MeetingWave';
-import { meetingPalette } from './meetingPalette';
 import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -14,7 +13,7 @@ export function SavedMeetingCard({
   onOpenLegacy?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const metrics = [
     card.durationMinutes === undefined ? null : `${card.durationMinutes} min`,
     card.people === undefined ? null : `${card.people} people`,
@@ -46,12 +45,12 @@ export function SavedMeetingCard({
         <Text style={styles.title}>{card.title}</Text>
         {metrics ? <Text style={styles.metrics}>{metrics}</Text> : null}
       </View>
-      <Icon name="chevron-right" size={18} color={colors.primary} />
+      <Icon name="chevron-right" size={18} color={colors.action} />
     </Pressable>
   );
 }
 const styles = StyleSheet.create((theme) => {
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   return {
     card: {
       flexDirection: 'row',
@@ -64,8 +63,20 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: colors.surface,
     },
     body: { flex: 1, gap: 4 },
-    label: { color: colors.tone.done, fontSize: theme.text.xs, fontWeight: '700' },
-    title: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
-    metrics: { color: colors.textMuted, fontSize: theme.text.xs },
+    label: {
+      color: colors.success,
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    title: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    metrics: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
   };
 });

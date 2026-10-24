@@ -7,6 +7,7 @@ interface SessionPreviewReadsOptions {
   sessionId: string;
   projectId: string | null | undefined;
   loaded: boolean;
+  enabled?: boolean;
   completedServerTools: number;
   devServers: SessionDevServer[] | undefined;
 }
@@ -68,6 +69,7 @@ export function useSessionPreviewReads({
   sessionId,
   projectId,
   loaded,
+  enabled: admitted = true,
   completedServerTools,
   devServers,
 }: SessionPreviewReadsOptions) {
@@ -106,7 +108,7 @@ export function useSessionPreviewReads({
   const refreshManaged = usePreviewSource(
     client,
     `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`,
-    typeof client.listManagedDevServers === 'function',
+    admitted && typeof client.listManagedDevServers === 'function',
     readManaged,
   );
   const previousManagedInputs = useRef({ client, sessionId, completedServerTools, devServers });
@@ -161,7 +163,7 @@ export function useSessionPreviewReads({
     },
     [client, sessionId],
   );
-  const enabled = loaded && Boolean(projectId);
+  const enabled = admitted && loaded && Boolean(projectId);
   const refreshDevServers = usePreviewSource(
     client,
     `/sessions/${encodeURIComponent(sessionId)}/dev-servers`,

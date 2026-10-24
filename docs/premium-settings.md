@@ -3,7 +3,7 @@
 Status: implemented · Targets: `apps/mobile/app/settings/premium.tsx`,
 `apps/mobile/app/settings/diagnostics.tsx`, server-side feature switches.
 
-Defers to [`design-language.md`](./design-language.md) for auto-save and the glossary. The
+Defers to [`design-system.md`](./design-system.md) for appearance, auto-save and the glossary. The
 mockup is [`assets/premium/mockup.html`](assets/premium/mockup.html) (open it in a browser;
 it is the editable source, one phone per state).
 
@@ -61,11 +61,11 @@ under it; no dialog.
 toggles already on, confetti (~1.5 s, Reanimated + SVG, no new dependency), success haptic
 (not on web), CTA *Continue* → state 4. Fires once per activation.
 
-**4 · Manage** — *Subscription*: the Premium card with tag `Active` and a
-*Replace subscription key* action. The stored key is never read back. *Features*: one card per feature with a
+**4 · Manage** — *Subscription*: the Premium card with tag `Active`, below it a *Subscription
+key* row (*Stored encrypted on your server*, *Replace ›*). The stored key is never read back. *Features*: one card per feature with a
 toggle; Teams muted with `Soon`. A feature the subscription does not include keeps its
 toggle but is muted with the subtitle *Not included in your subscription*. *Diagnostics*:
-one row *Diagnostics* for connection status and tests. Bottom link *Remove subscription key* (danger,
+a *Connection* card with a status dot and a one-line summary, leading to Settings › Diagnostics. Bottom link *Remove subscription key* (danger,
 confirmed; returns to state 1).
 
 - Online sharing off → confirm *Active public links will be revoked* before saving.
@@ -74,19 +74,47 @@ confirmed; returns to state 1).
 
 ## 5. Diagnostics
 
-Phone 5. The implemented screen groups **Connection** (Uplink, Online sharing, Remote access with status dots
-and a one-line reason only when off), **Tests** (Test remote access, Record connection test,
-Copy last recording · time — today's `PublicPreviewDiagnostics` controls, renamed), **Transcription**, **Integrations**, and **App**
-(Live transcription test, Matrix import errors with a count tag, Export app update logs with
-app and server versions). Fetch on focus and after a test, never poll.
+Phone 5. Three cards: **Connection** (Uplink, Online sharing, Remote access with status dots
+and a one-line reason only when off or not included), **Tests** (Test remote access, Record
+connection test, Copy last recording — today's `PublicPreviewDiagnostics` controls, renamed),
+**More** (Live transcription test, Matrix import errors with a count tag that expands the
+details, Export app update logs with app and server versions). Fetch on focus and after a
+test, never poll.
 
 ## 6. Server contract
 
 - `GET/PATCH /settings`: `premiumSharingEnabled`, `premiumRemoteAccessEnabled` (default
-  `true`). Remote access changes renegotiate the Uplink connection; sharing off revokes active shares.
+  `true`). Remote access changes renegotiate only while a connection is needed; sharing off revokes active shares.
 - `GET /api/uplink/diagnostics`: `features.{sharing,remoteAccess} = { granted, enabled,
   effective }`; the existing `sharing` / `remoteControl` fields report the effective state.
+- `POST /api/uplink/check`: explicitly perform a bounded subscription-rights check.
 - `GET /preview-capabilities`: `publicSharing: 'disabled'` for "switched off locally".
+
+## Connection lifecycle
+
+A stored subscription key does not by itself keep a connection open. Online sharing
+connects when a preview or online-meeting share starts and disconnects after the last
+share ends. Leaving Online sharing switched on without a share does not connect.
+Remote access keeps a connection open to receive requests only when both the local
+switch and the current Uplink entitlement allow it.
+
+Switching a feature off or withdrawing its entitlement stops its data connections.
+Without remaining effective demand, the control connection closes too. Cancellation
+ends access when the entitlement expires, which may be later than the cancellation date.
+A lease that expires without renewal also closes access and stops background attempts.
+
+Initial and explicit entitlement checks are bounded to 15 seconds; final share
+revocation is bounded to 5 seconds. Failed revocations remain durably queued for the
+next explicitly requested connection. Local connectors are stopped independently of
+whether Uplink acknowledges revocation. No background connection is opened solely to
+retry queued revocations. A later tariff change is discovered by starting a share,
+re-enabling Remote access, replacing the key, or choosing **Check subscription rights**.
+
+Diagnostics report `control: 'idle'` for intentional disconnection and
+`entitlement: 'unchecked' | 'checked'` for the last rights check. Cached grants are
+historical when disconnected; every new connection verifies rights again.
+`publicSharing: 'available'` means a share can be requested, including from idle;
+it does not guarantee an active connection or entitlement before that check.
 
 ## 7. Open questions
 

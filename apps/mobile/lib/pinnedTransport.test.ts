@@ -277,7 +277,7 @@ describe('pinned native file transport', () => {
 
     await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://192.0.2.1/status');
 
-    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status', true);
+    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status', true, undefined);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.any(String),
       'https://192.0.2.1/status',
@@ -1048,6 +1048,7 @@ it('correlates pinned dispatch and native return with the originating switch', a
   expect(request.phases.map((p) => p.phase)).toEqual([
     'fetch-dispatch',
     'pinned-entry',
+    'remote-availability-ready',
     'body-encoded',
     'route-ready',
     'lane-admitted',
@@ -1056,4 +1057,31 @@ it('correlates pinned dispatch and native return with the originating switch', a
   ]);
   expect(request.phases.at(-1)?.value).toEqual(expect.any(Number));
   expect(JSON.stringify(request)).not.toContain('private');
+});
+
+it('dispatches a bodyless interactive direct read without yielding to JS scheduling', async () => {
+  const trace = beginSessionSwitch('entry');
+  const requestId = beginSwitchTransportRequest(trace, 'events')!;
+  mockRemoteAvailable.mockReturnValueOnce(false);
+  mockRequest.mockClear().mockResolvedValue({ status: 200, headers: {}, bodyBase64: 'e30=' });
+  const pending = createPinnedFetch('pin', true)('https://verity.example/events', {
+    transportLane: 'interactive',
+    headers: { 'x-verity-switch-request': requestId },
+  } as RequestInit);
+  // A no-op await lets unrelated JS work delay native dispatch again.
+  expect(mockRequest).toHaveBeenCalledTimes(1);
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)!
+      .transportRequests[0]!.phases.map((p) => p.phase),
+  ).toEqual([
+    'fetch-dispatch',
+    'pinned-entry',
+    'remote-availability-ready',
+    'body-encoded',
+    'route-ready',
+    'lane-admitted',
+    'native-dispatch',
+  ]);
+  await pending;
 });

@@ -1,4 +1,5 @@
-import { beginRowTouch, markFirstSessionRender, rowPress } from './sessionSwitchTiming';
+import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from './runtimeDiagnostics';
+import { beginRowTouch, markFirstSessionRender, rowPress, rowPressIn } from './sessionSwitchTiming';
 import {
   markSessionSwitch,
   sessionSwitchTiming,
@@ -7,8 +8,9 @@ import {
   markSwitchTransportRequest,
 } from '@verity/mobile';
 import * as Updates from 'expo-updates';
-import { Share } from 'react-native';
+import { AppState, Share } from 'react-native';
 import { shareUpdateDiagnostics } from './updateDiagnostics';
+import { recordGesture, setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 
 jest.mock('expo-updates', () => ({
   isEnabled: true,
@@ -25,6 +27,7 @@ const readLogs = jest.mocked(Updates.readLogEntriesAsync);
 const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
 
 beforeEach(() => jest.clearAllMocks());
+afterEach(() => setGestureDiagnosticsEnabled(false));
 
 it('exports retained launch failures with the running update identity', async () => {
   readLogs.mockResolvedValue([
@@ -43,6 +46,18 @@ it('exports retained launch failures with the running update identity', async ()
     channel: 'staging',
     isEmbeddedLaunch: true,
     logs: [{ message: 'Fatal launch error' }],
+  });
+});
+
+it('includes recorded overview gestures', async () => {
+  readLogs.mockResolvedValue([]);
+  setGestureDiagnosticsEnabled(true);
+  recordGesture({ source: 'swipe', event: 'open-start-drag', projectKind: 'local' });
+  await shareUpdateDiagnostics();
+  const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics).toMatchObject({
+    enabled: true,
+    events: [{ source: 'swipe', event: 'open-start-drag', projectKind: 'local' }],
   });
 });
 
@@ -216,4 +231,66 @@ it('bounds transport metadata while retaining the latest gesture', async () => {
     report.logSummary.maxBytes,
   );
   expect(JSON.stringify(report)).not.toContain('private-overflow');
+});
+
+// Responder grant precedes touch-start on Fabric; a previous tap must not receive it.
+it.each([true, false])('keeps touch callbacks together with press-first=%s', (pressFirst) => {
+  beginRowTouch('repeat-row', 100);
+  const previous = sessionSwitchTiming('repeat-row')!;
+  if (pressFirst) {
+    rowPressIn('repeat-row', 200);
+    beginRowTouch('repeat-row', 200);
+  } else {
+    beginRowTouch('repeat-row', 200);
+    rowPressIn('repeat-row', 200);
+  }
+  rowPress('repeat-row');
+  const current = sessionSwitchTiming('repeat-row')!;
+  expect(current.id).not.toBe(previous.id);
+  expect(previous.phases.map((p) => p.phase)).toEqual(['js-touch-start']);
+  expect(current.phases.map((p) => p.phase)).toEqual(
+    pressFirst
+      ? ['js-press-in', 'js-touch-start', 'js-press-handler']
+      : ['js-touch-start', 'js-press-in', 'js-press-handler'],
+  );
+});
+
+it('does not join matching timestamps from different rows', () => {
+  rowPressIn('row-a', 300);
+  const previous = sessionSwitchTiming('row-a')!;
+  beginRowTouch('row-b', 300);
+  expect(sessionSwitchTiming('row-b')!.id).not.toBe(previous.id);
+});
+
+it('shares bounded runtime history and preserves the first sample for comparison', async () => {
+  jest.useFakeTimers();
+  const previous = AppState.currentState;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const stop = startRuntimeDiagnostics();
+  try {
+    readLogs.mockResolvedValue([]);
+    setRuntimeDiagnosticsScreen('/settings/private-name');
+    setGestureDiagnosticsEnabled(true);
+    jest.advanceTimersByTime(5_000 * 150);
+    await shareUpdateDiagnostics();
+    const message = (share.mock.calls[0]![0] as { message: string }).message;
+    const report = JSON.parse(message);
+    expect(report.schema).toBe(5);
+    expect(report.runtimeDiagnostics.baseline).toMatchObject({
+      recordingAgeMs: 0,
+      screen: 'settings',
+    });
+    expect(report.runtimeDiagnostics.samples.length).toBeGreaterThan(0);
+    expect(report.runtimeDiagnostics.samples.length).toBeLessThanOrEqual(
+      report.runtimeDiagnostics.maxSamples,
+    );
+    expect(report.runtimeDiagnostics.dropped).toBeGreaterThan(0);
+    expect(message).not.toContain('private-name');
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+  } finally {
+    setGestureDiagnosticsEnabled(false);
+    stop();
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: previous });
+    jest.useRealTimers();
+  }
 });

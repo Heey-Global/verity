@@ -26,11 +26,28 @@ describe('ServerUpdateBanner', () => {
     render(<ServerUpdateBanner version="4.1.1" />);
 
     expect(screen.getByText('Verity 4.1.1 available')).toBeOnTheScreen();
-    fireEvent.press(screen.getByRole('button'));
+    fireEvent.press(screen.getByLabelText(/Open updates$/));
 
     expect(mockNavigate).toHaveBeenCalledWith(SERVER_UPDATE_ROUTE);
     // The banner outlives the tap; a second one must not stack another copy.
     expect(mockPush).not.toHaveBeenCalled();
     expect(typeof screenModule.default).toBe('function');
+  });
+
+  it('puts itself away on request', () => {
+    const onDismiss = jest.fn();
+    render(<ServerUpdateBanner version="4.1.1" onDismiss={onDismiss} />);
+
+    fireEvent.press(screen.getByLabelText('Hide until the version after 4.1.1'));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  // Next to a failed or stuck update the banner is the way to the problem.
+  it('names a problem and offers no way to hide it', () => {
+    render(<ServerUpdateBanner version="4.1.1" problem />);
+
+    expect(screen.getByText('The last update did not finish')).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Hide until/)).toBeNull();
   });
 });

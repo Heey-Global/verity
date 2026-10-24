@@ -337,6 +337,35 @@ describe('handlePushResponse', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it('routes scan taps only within the current pairing and never queues an agent action', async () => {
+    const outbox = fakeOutbox(),
+      session = jest.fn(),
+      project = jest.fn();
+    const tap = (projectId: string | null, sessionId: string | null, deviceId = 'current') =>
+      response('expo.modules.notifications.actions.DEFAULT', {
+        kind: 'vulnerability',
+        projectId,
+        sessionId,
+        deviceId,
+      });
+    await handlePushResponse(tap('p', 's'), outbox, session, 'current', undefined, project);
+    expect(session).toHaveBeenCalledWith('s');
+    await handlePushResponse(tap('p', null), outbox, session, 'current', undefined, project);
+    expect(project).toHaveBeenLastCalledWith('p');
+    await handlePushResponse(tap(null, null), outbox, session, 'current', undefined, project);
+    expect(project).toHaveBeenLastCalledWith(null);
+    await handlePushResponse(
+      tap('old', null, 'old'),
+      outbox,
+      session,
+      'current',
+      undefined,
+      project,
+    );
+    expect(project).toHaveBeenCalledTimes(2);
+    expect(outbox.enqueue).not.toHaveBeenCalled();
+  });
+
   it('drops a malformed payload', async () => {
     const outbox = fakeOutbox();
     const navigate = jest.fn();

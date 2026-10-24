@@ -128,6 +128,9 @@ export type SupervisorStartTelemetry = {
 };
 
 export interface SupervisorRunnerClientOptions {
+  /** Test seam for legacy wire fixtures; production keeps the capability check enabled. */
+  securityPreflight?: boolean;
+  persistentSessionHomes?: boolean;
   runtimeDir: string;
   store: RunnerFrameStore;
   bus: EventBus;
@@ -208,7 +211,24 @@ export interface TrustedCliExecutionInput {
   entryScript?: TrustedCliEntryScript;
 }
 
+export type TrustedCliOutputSink = (
+  stream: 'stdout' | 'stderr',
+  bytes: Uint8Array,
+) => Promise<void>;
+
 export interface TrustedCliExecutionResult {
+  outputMode?: 'stream-v1';
+  exitCodeKnown?: false;
+  terminationReason?:
+    | 'process_exit'
+    | 'timeout'
+    | 'output_limit'
+    | 'redaction_failure'
+    | 'storage_failure'
+    | 'transport_failure';
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  terminationRequested?: true;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -298,7 +318,7 @@ class SupervisorTrustedCliRequestError extends Error {
 async function requestSupervisorTrustedCli(
   socketPath: string,
   request: Record<string, unknown>,
-  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number },
+  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number; onOutput?: TrustedCliOutputSink },
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request })}\n`;
   return await new Promise((resolve, reject) => {
@@ -306,6 +326,8 @@ async function requestSupervisorTrustedCli(
     let buffer = Buffer.alloc(0);
     let settled = false;
     let started = false;
+    let outputPending = false;
+    let outputSequence = 0;
     let timeout = setTimeout(
       () => finish(new Error('trusted CLI start acknowledgement timed out')),
       timeouts.startAckTimeoutMs,
@@ -361,6 +383,55 @@ async function requestSupervisorTrustedCli(
             Object.assign(rejection, { trustedCliFailure: parsed.trustedCliFailure });
           }
           finish(rejection);
+          return;
+        }
+        if (parsed.kind === 'trusted-cli-output') {
+          if (
+            !started ||
+            timeouts.onOutput === undefined ||
+            outputPending ||
+            parsed.sequence !== outputSequence ||
+            (parsed.stream !== 'stdout' && parsed.stream !== 'stderr') ||
+            typeof parsed.data !== 'string' ||
+            parsed.data.length > 21848 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(parsed.data)
+          ) {
+            finish(new Error('invalid trusted CLI output frame'));
+            return;
+          }
+          const bytes = Buffer.from(parsed.data, 'base64');
+          if (bytes.toString('base64') !== parsed.data) {
+            finish(new Error('invalid trusted CLI output encoding'));
+            return;
+          }
+          outputPending = true;
+          socket.pause();
+          const sequence = outputSequence++;
+          void Promise.resolve()
+            .then(() => timeouts.onOutput!(parsed.stream as 'stdout' | 'stderr', bytes))
+            .then(
+              () => {
+                if (!settled) socket.write(`${JSON.stringify({ kind: 'output-ack', sequence })}\n`);
+              },
+              (error: unknown) => {
+                const reason =
+                  isObject(error) &&
+                  ['redaction_failure', 'output_limit'].includes(String(error.outputFailure))
+                    ? error.outputFailure
+                    : 'storage_failure';
+                if (!settled)
+                  socket.write(
+                    `${JSON.stringify({ kind: 'output-ack', sequence, failure: reason })}\n`,
+                  );
+              },
+            )
+            .finally(() => {
+              bytes.fill(0);
+              outputPending = false;
+              if (!settled) socket.resume();
+            });
+          // Stop-and-wait forbids a terminal frame before persistence acknowledgment.
+          if (buffer.length > 0) finish(new Error('pipelined trusted CLI output'));
           return;
         }
         if (parsed.kind === 'trusted-cli-started') {
@@ -486,6 +557,7 @@ export async function runSupervisorTrustedCli(
   timeouts: {
     startAckTimeoutMs?: number;
     resultTimeoutMs?: number;
+    onOutput?: TrustedCliOutputSink;
   } = {},
 ): Promise<TrustedCliExecutionResult> {
   let response: Record<string, unknown>;
@@ -494,6 +566,7 @@ export async function runSupervisorTrustedCli(
       join(runtimeDir, 'supervisor.sock'),
       {
         kind: 'run-trusted-cli',
+        ...(timeouts.onOutput === undefined ? {} : { streamOutput: true }),
         turnId: input.turnId,
         ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
         secrets: input.secrets.map((secret) => ({
@@ -509,6 +582,7 @@ export async function runSupervisorTrustedCli(
       {
         startAckTimeoutMs: timeouts.startAckTimeoutMs ?? TRUSTED_CLI_START_ACK_TIMEOUT_MS,
         resultTimeoutMs: timeouts.resultTimeoutMs ?? TRUSTED_CLI_RESULT_TIMEOUT_MS,
+        ...(timeouts.onOutput === undefined ? {} : { onOutput: timeouts.onOutput }),
       },
     );
   } catch (error) {
@@ -617,7 +691,43 @@ export async function runSupervisorTrustedCli(
   ) {
     throw new Error('runner supervisor returned an invalid trusted CLI result');
   }
+  const reasons = [
+    'process_exit',
+    'timeout',
+    'output_limit',
+    'redaction_failure',
+    'storage_failure',
+    'transport_failure',
+  ] as const;
+  if (
+    response.outputMode !== undefined &&
+    (response.outputMode !== 'stream-v1' ||
+      timeouts.onOutput === undefined ||
+      !reasons.includes(response.terminationReason as (typeof reasons)[number]) ||
+      !Number.isSafeInteger(response.stdoutBytes) ||
+      Number(response.stdoutBytes) < 0 ||
+      !Number.isSafeInteger(response.stderrBytes) ||
+      Number(response.stderrBytes) < 0 ||
+      (response.terminationRequested !== undefined && response.terminationRequested !== true) ||
+      (response.exitCodeKnown !== undefined && response.exitCodeKnown !== false) ||
+      response.stdout !== '' ||
+      response.stderr !== '')
+  ) {
+    throw new Error('invalid trusted CLI streaming result');
+  }
   return {
+    ...(response.outputMode === 'stream-v1'
+      ? {
+          outputMode: 'stream-v1' as const,
+          ...(response.exitCodeKnown === false ? { exitCodeKnown: false as const } : {}),
+          terminationReason: response.terminationReason as (typeof reasons)[number],
+          stdoutBytes: Number(response.stdoutBytes),
+          stderrBytes: Number(response.stderrBytes),
+          ...(response.terminationRequested === true
+            ? { terminationRequested: true as const }
+            : {}),
+        }
+      : {}),
     exitCode: Number(response.exitCode),
     stdout: response.stdout,
     stderr: response.stderr,
@@ -1024,6 +1134,22 @@ export class SupervisorRunnerClient implements RunnerClient {
     if (opts.storeSessionId === undefined || !SAFE_ID.test(opts.storeSessionId)) {
       throw new Error('supervisor runner requires storeSessionId');
     }
+    if (this.options.securityPreflight !== false) {
+      const capabilities = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        { kind: 'status' },
+        this.options.timeoutMs,
+      );
+      if (
+        capabilities['managedAgentConfig'] !== true ||
+        (this.options.persistentSessionHomes === true &&
+          capabilities['persistentSessionHomes'] !== true) ||
+        (opts.planning === true && capabilities['planningIsolation'] !== true)
+      )
+        throw new Error(
+          'Required agent security boundaries are unavailable; recreate the Sandbox with the updated toolkit',
+        );
+    }
     const mcpServers = validatedMcpServers(opts.mcpServers);
     // `command`, `extraArgs`, `spawner`, `claudeHome` and `env` describe how the SERVER
     // would spawn the agent on the loopback path. They are deliberately NOT forwarded:
@@ -1068,6 +1194,19 @@ export class SupervisorRunnerClient implements RunnerClient {
       this.options.transcript === undefined
     ) {
       throw new Error('supervisor worker cannot persist opts.transcript without a server sink');
+    }
+    if (this.options.persistentSessionHomes === true) {
+      const prepared = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        {
+          kind: 'prepare-session-home',
+          sessionId: opts.storeSessionId,
+          legacyBackend: this.workerBackend,
+          legacySessionId: opts.resumeSessionId,
+        },
+        this.options.timeoutMs,
+      );
+      if (prepared.ok !== true) throw new Error('Could not prepare persistent session storage');
     }
     // Restore-before-launch (Stage 5b Slice 2): for a `--resume` turn, materialize the
     // durable transcript back onto the shared mount BEFORE the supervisor starts the

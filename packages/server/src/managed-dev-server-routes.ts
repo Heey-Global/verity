@@ -92,6 +92,10 @@ export function registerManagedDevServerRoutes(
         .object({
           command: z.string().min(1),
           workdir: z.string().min(1),
+          secretBindings: z
+            .array(z.object({ secretAlias: z.string(), env: z.string() }).strict())
+            .max(16)
+            .optional(),
           local: z.boolean().optional(),
         })
         .strict()
@@ -149,6 +153,10 @@ const agentBody = z
     newName: z.string().min(1).optional(),
     command: z.string().min(1).optional(),
     workdir: z.string().optional(),
+    secretBindings: z
+      .array(z.object({ secretAlias: z.string(), env: z.string() }).strict())
+      .max(16)
+      .optional(),
   })
   .strict()
   .refine((value) => value.action === 'list' || value.name !== undefined, 'name is required')
@@ -219,6 +227,7 @@ export function registerManagedDevServerAgentRoute(
               name: server.name,
               command: server.command,
               workdir: server.workdir,
+              secretBindings: server.secretBindings,
               status: describeForAgent(server),
             })),
           };
@@ -228,9 +237,10 @@ export function registerManagedDevServerAgentRoute(
             name,
             command: body.command ?? '',
             workdir: body.workdir,
+            secretBindings: body.secretBindings,
           });
           return {
-            message: `Added ${created.name}. Start it with: verity-dev-server start "${created.name}"`,
+            message: `Added ${created.name}.${created.secretBindings?.length ? ' Review and approve its command, directory and secret mappings in Preview first.' : ''} Start it with: verity-dev-server start "${created.name}"`,
           };
         }
         case 'update': {
@@ -238,9 +248,10 @@ export function registerManagedDevServerAgentRoute(
             name: body.newName,
             command: body.command,
             workdir: body.workdir,
+            secretBindings: body.secretBindings,
           });
           return {
-            message: `Updated ${updated.name}. A running instance keeps its old command until restarted, and the operator must approve the new command again.`,
+            message: `Updated ${updated.name}. A running instance keeps its old configuration until restarted. Review and approve changes to the command, directory or secret mappings in Preview.`,
           };
         }
         case 'remove':

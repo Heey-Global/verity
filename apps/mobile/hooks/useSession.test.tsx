@@ -14,6 +14,7 @@ interface MockModel {
   setView: jest.Mock;
   refreshActivity: jest.Mock;
   refreshMetadata: jest.Mock;
+  retryHistory: jest.Mock;
 }
 const mockModels: MockModel[] = [];
 jest.mock('@verity/mobile', () => ({
@@ -29,6 +30,7 @@ jest.mock('@verity/mobile', () => ({
       setView: jest.fn(),
       refreshActivity: jest.fn(),
       refreshMetadata: jest.fn(),
+      retryHistory: jest.fn(),
     };
     mockModels.push(model);
     return model;
@@ -66,6 +68,12 @@ describe('useSession frame publication', () => {
   let nextFrame = 0;
   const client = {} as VerityClient;
   let initialAppState: AppStateStatus;
+
+  it('routes an explicit history retry to the current session model', () => {
+    const { result } = renderHook(() => useSession(client, 's1', 'http://host'));
+    act(() => result.current.retryHistory());
+    expect(mockModels[0]?.retryHistory).toHaveBeenCalledTimes(1);
+  });
 
   it('refreshes metadata after session settings change', () => {
     const { result } = renderHook(() => useSession(client, 's1', 'http://host'));

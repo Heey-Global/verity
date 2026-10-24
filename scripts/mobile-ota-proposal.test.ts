@@ -172,6 +172,8 @@ function detectFixture(
     reviewedVersion?: string;
     production?: boolean;
     forged?: boolean;
+    missingAssociation?: boolean;
+    fallbackCommit?: string;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-proposal-'));
@@ -184,6 +186,7 @@ function detectFixture(
   const pr = {
     number: 12,
     merged_at: '2026-10-04',
+    merge_commit_sha: options.fallbackCommit ?? commit,
     base: { ref: 'main' },
     head: {
       ref: options.forged
@@ -203,7 +206,8 @@ const endpoint=args.at(-1);
 let response;
 if (args[0] === 'label' || args[0] === 'pr') response={};
 else if (endpoint.includes('/releases?')) response=[[${options.released ? JSON.stringify({ tag_name: 'mobile-v1.52.4', draft: false, prerelease: !options.production }) : ''}]];
-else if (endpoint.endsWith('/pulls')) response=[${JSON.stringify(pr)}];
+else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[]' : JSON.stringify([pr])};
+else if (endpoint.includes('/pulls?')) response=[[${JSON.stringify(pr)}]];
 else if (endpoint.includes('/contents/')) response={content: ${JSON.stringify(Buffer.from(options.reviewedVersion ?? '1.52.4').toString('base64'))}};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
@@ -402,4 +406,15 @@ it('checks native compatibility for published planning baselines too', () => {
       command === 'git' && args[0] === 'rev-list' ? source : '',
     ),
   ).toBe(source);
+});
+
+it('recovers missing commit associations only for the exact merged release source', () => {
+  const result = detectFixture({ missingAssociation: true });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.output).toContain('mode=stage');
+  expect(
+    detectFixture({ missingAssociation: true, fallbackCommit: 'd'.repeat(40) }).status,
+  ).not.toBe(0);
+  expect(detectFixture({ missingAssociation: true, forged: true }).status).not.toBe(0);
+  expect(detectFixture({ missingAssociation: true, reviewedVersion: '1.52.3' }).status).not.toBe(0);
 });

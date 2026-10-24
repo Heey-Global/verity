@@ -6,53 +6,58 @@ for calendars/Meet and the [People API](https://developers.google.com/people/qui
 for Contacts in that client's Google Cloud project. Configure the consent screen
 for the scopes of the services you intend to use.
 
-## Incremental consent
+## One consent per account
 
-Before Google sign-in, Verity explains what access is needed and why. Each
-connection requests only its own scopes; previously granted Google permissions
-are retained through incremental consent, without requesting unrelated services.
-Google may show existing permissions again during its consent screen.
+Adding a Google account requests every service in one Google sign-in. Before it
+opens, Verity briefly explains what is requested. Google's consent screen lets
+you deselect individual permissions; Verity stores whatever was granted and the
+account works for those services. An account must grant at least one service.
 
-| Action | Requested scopes | Purpose |
+| Service | Requested scopes | Purpose |
 | --- | --- | --- |
-| Connect email | `gmail.readonly`, `gmail.compose`, `gmail.settings.basic` | Read mail, prepare drafts, send after approval, and read the configured signature. |
-| Connect Google Calendar | `calendar.calendarlist.readonly`, `calendar.events`, `userinfo.email` | Discover calendars, read events, make approved changes, and identify the connected account. |
-| Connect Google Contacts | `contacts.readonly`, `userinfo.email` | Find names and email addresses for email recipients and calendar attendees; identify the connected account. |
-| Connect Google Drive | `drive` | Browse/import files and use connected project folders as read/write workspaces. |
-| First native file edit | `documents`, `spreadsheets`, and `presentations` together | Read/edit Docs, Sheets, and Slides. Google grants access to these file types across the account; Verity limits tools to the file assigned to the session. |
+| Drive | `drive` | Browse/import files and use connected project folders as read/write workspaces. |
+| Gmail | `gmail.readonly`, `gmail.compose`, `gmail.settings.basic` | Read mail, prepare drafts, send after approval, and read the configured signature. |
+| Calendar | `calendar.calendarlist.readonly`, `calendar.events` | Discover calendars, read events, and make approved changes. |
+| Contacts | `contacts.readonly` | Find names and email addresses for email recipients and calendar attendees. |
+| Docs, Sheets & Slides | `documents`, `spreadsheets`, `presentations` | Read/edit native files. Google grants access to these file types across the account; Verity limits tools to the file assigned to the session. |
+| Account identity | `userinfo.email` | Identify the connected account. |
 
 Scope names in this table have the prefix `https://www.googleapis.com/auth/`.
-Connecting Gmail, Calendar, or Contacts does not request Drive or native editor
-scopes. Drive availability is derived from the actual returned scopes, rather
-than from the presence of a shared refresh token. Existing stored connections
-retain their known permissions when upgrading; projects gain no Contacts
-access until explicitly enabled.
+A service is available only when all of its scopes were granted. Availability is
+derived from the scopes Google actually returned, rather than from the presence
+of a stored refresh token. Projects gain no Contacts access until explicitly
+enabled.
 
-Docs, Sheets, and Slides share one consent step when first opening a native file
-for editing. Existing partial editor permissions are expanded to this bundle;
-the bundle is not requested when merely connecting Drive.
+The server accepts the authorization code at `POST /google/connect`. The former
+per-service endpoints (`/google-drive/connect`, `/gmail/connect`,
+`/calendar/connect`, `/contacts/connect`) were removed; app versions that still
+call them cannot add or reconnect Google accounts until they are updated.
+Existing connections are unaffected.
 
 ## Project access and removal
 
-Connect one Google account under **Settings → Connections → Google**. Grant only
-those services you need through incremental consent. In **Project settings →
-Connections → Google**, enable Gmail, Calendar, and Contacts separately. Each
-project grant applies to all its sessions, including future sessions. The
-attachment menu provides shortcuts to these project settings.
+Add Google accounts under **Settings → Connections → Google**. The list shows one
+row per account with either full access or the services that are missing. Open
+an account to rename it, see its project usage, grant missing permissions through
+the same sign-in bound to that account, or disconnect it. In **Project settings →
+Connections → Google**, choose one account for each of Gmail, Calendar and
+Contacts.
 
-Drive remains limited to the folder selected for that project. Native Docs,
-Sheets, and Slides remain limited to the file assigned to an individual session:
-open the session's folder icon, choose **Google Drive**, tap a native file, and
-choose **Use in this chat**.
+Existing and future sessions inherit the current project default. In a chat,
+choose another account, disable the service only for that chat, or select **Use
+project default** to restore inheritance. Project changes affect inheriting
+sessions; chat exceptions and other sessions remain unchanged.
 
-Existing session-only Gmail, Calendar, and Contacts grants stay session-only
-when upgrading. They are not automatically promoted to project grants. To extend
-access, explicitly enable the service in project settings. Disabling a service
-for a project removes its project grant and legacy session grants in that project.
-Project settings show how many existing chats retain separate access and offer
-an explicit action to revoke all access for that service in the project. Other
-projects remain unaffected. A session disconnect button only removes a
-legacy session grant; access granted by its project is managed in project settings.
+Drive uses account-bound folders selected for the project, each with independent
+read/write access. Native Docs, Sheets and Slides remain limited to the file
+assigned to an individual session: open the session's folder icon, choose
+**Google Drive**, tap a native file, and choose **Use in this chat**.
+A single folder opens directly, multiple folders from one account form a folder
+list, and folders across accounts are grouped by email address.
+
+Existing session-only grants stay session-only when upgrading; stale account
+bindings become disabled rather than inheriting access. Project grants remain
+project defaults. Disabling a project default preserves explicit session grants.
 
 Later tool calls, including a change awaiting approval, recheck effective access.
 An HTTP request already sent to Google cannot be recalled. Contacts lookup checks
@@ -60,9 +65,11 @@ access again between Google's cache warmup and the actual search. Google Contact
 is read-only; ambiguous names or email addresses must be resolved with you before
 sending mail or inviting attendees.
 
-Disconnecting the Google account removes project and session grants. Changing
-accounts or losing a service's scopes clears affected grants, requiring explicit
-enablement for the new account.
+Disconnecting an account removes its project access and disables its session
+exceptions without selecting a replacement account. Other accounts retain access.
+Scope upgrades must return the selected identity. Account, credential and grant
+changes invalidate pending approvals. Disconnecting waits for outstanding
+temporary Slides image cleanup so its credentials remain available for cleanup.
 
 ## Calendar changes and Google Meet
 
@@ -84,3 +91,18 @@ event. Creation may be pending; the agent must read the event again to obtain
 the actual link and report failures accurately. Availability depends on the
 connected calendar and Google account. Contacts lookup is optional: email
 addresses supplied or confirmed by you also work without an address book.
+
+
+## Gmail sender addresses
+
+Gmail drafts can use an existing verified “Send mail as” address. The Gmail tool's
+`list_senders` action lists available addresses; `create_draft` accepts an optional
+`from` address and otherwise uses Gmail's configured default sender. Each draft
+uses the selected address's signature.
+
+Use `create_reply_draft` for replies. It preserves the own address used in the
+selected message: the sender for sent messages, or a recognized recipient address
+for incoming messages. If the address is missing, unrecognized, or ambiguous,
+draft creation stops instead of silently switching identities. The sender remains
+part of the snapshot presented for approval before sending. Configure and verify
+new aliases in Gmail itself.

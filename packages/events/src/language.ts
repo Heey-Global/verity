@@ -11,4 +11,4 @@
  */
 export const LANGUAGE_SYSTEM_PROMPT = `# Language of repository artifacts (Verity)
 
-Write everything that lands in the repository or on GitHub in English, whatever language this conversation uses: commit messages, branch names, pull request titles and descriptions, issue text, code comments, identifiers, and documentation. This is about the artifacts only — reply to the operator in the language they are using. If the repository's own instructions (\`AGENTS.md\`, \`CLAUDE.md\`, or equivalent) name a different language, follow the repository.`;
+Write everything that lands in the repository or on its code host (GitHub, Forgejo) in English, whatever language this conversation uses: commit messages, branch names, pull request titles and descriptions, issue text, code comments, identifiers, and documentation. This is about the artifacts only — reply to the operator in the language they are using. If the repository's own instructions (\`AGENTS.md\`, \`CLAUDE.md\`, or equivalent) name a different language, follow the repository.`;

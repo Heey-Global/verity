@@ -100,6 +100,8 @@ interface SessionLinkPendingMessagesTable {
 
 /** One native Google Workspace file explicitly assigned to a session. */
 interface SessionSlideDecksTable {
+  folder_link_id: ColumnType<string | null, string | null | undefined, string | null>;
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   session_id: string;
   assignment_id: string;
   kind: 'slides' | 'docs' | 'sheets';
@@ -110,8 +112,49 @@ interface SessionSlideDecksTable {
   assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+export interface GoogleAccountsTable {
+  id: string;
+  email: string;
+  subject: string | null;
+  display_name: string | null;
+  client_id: string;
+  refresh_token: string;
+  scopes: ColumnType<string[], string, string>;
+  credential_version: ColumnType<number, number | undefined, number>;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+export interface GoogleServiceOverridesTable {
+  mode: 'inherit' | 'disabled' | 'account';
+  revision: string;
+  session_id: string;
+  service: 'gmail' | 'calendar' | 'contacts';
+  account_id: string | null;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+export interface ProjectGoogleDriveFoldersTable {
+  revision: string;
+  id: string;
+  project_id: string;
+  account_id: string;
+  folder_id: string;
+  name: string;
+  access_mode: 'read-only' | 'read-write';
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+interface GoogleWorkspaceRecentsTable {
+  account_id: string;
+  file_id: string;
+  kind: 'docs' | 'sheets' | 'slides';
+  last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 /** Explicit Gmail access grant for one session. */
 interface ProjectGoogleConnectionsTable {
+  revision: ColumnType<string | null, string | null | undefined, string | null>;
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   service: 'gmail' | 'calendar' | 'contacts';
   account_email: string;
@@ -140,6 +183,7 @@ interface SessionContactsConnectionsTable {
 
 /** Workspace file ids ordered by their latest explicit assignment. */
 interface RecentGoogleSlideDecksTable {
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   file_id: string;
   kind: 'slides' | 'docs' | 'sheets';
   last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
@@ -147,6 +191,7 @@ interface RecentGoogleSlideDecksTable {
 
 /** Durable cleanup outbox created before a temporary Drive image becomes public. */
 interface GoogleSlideImageCleanupTable {
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   session_id: string;
   file_id: string;
@@ -190,6 +235,25 @@ export interface ProjectMcpBindingsTable {
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+interface MatrixOutboundTable {
+  invocation_id: string;
+  session_id: string;
+  project_id: string;
+  account_id: string;
+  source_id: string;
+  binding_version: number;
+  payload_secret: string;
+  transaction_id: string;
+  state: string;
+  lease_id: string | null;
+  lease_until: Date | null;
+  next_attempt_at: Generated<Date>;
+  attempts: Generated<number>;
+  event_id: string | null;
+  error: string | null;
+  created_at: Generated<Date>;
+}
+
 interface IntegrationAccountsTable {
   id: string;
   provider: string;
@@ -208,6 +272,7 @@ interface MatrixConnectorConfigTable {
 }
 
 interface IntegrationSourcesTable {
+  binding_version: Generated<number>;
   import_diagnostics_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   import_diagnostics_truncated: ColumnType<boolean, boolean | undefined, boolean>;
   import_diagnostics: ColumnType<
@@ -254,7 +319,23 @@ interface IntegrationEventsTable {
  *     hyphen-slug, lowercased). Uniquely-restrained so two concurrent provisions
  *     can't collide at the Docker daemon.
  */
+export interface ForgeConnectionsTable {
+  custom_ca_pem: ColumnType<string | null, string | null | undefined, string | null>;
+  id: string;
+  provider: 'github' | 'forgejo';
+  base_url: string;
+  label: string;
+  personal_token: string | null;
+  github_app_id: string | null;
+  github_app_installation_id: string | null;
+  github_app_private_key: string | null;
+  created_at: ColumnType<Date, Date | string | undefined, never>;
+  updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
+}
+
 export interface ProjectsTable {
+  forge_scope: ColumnType<string, never, never>;
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
   created_by_user_id: ColumnType<string, string | undefined, never>;
@@ -264,9 +345,8 @@ export interface ProjectsTable {
   repo: string;
   /** `verity-<owner>--<repo>` — single hyphen-slug, lowercased. */
   container_name: string;
-  /** `github` for ordinary repository projects; `control_plane` for Verity's
-   *  internal advanced workspace; `local` for a project Verity created with
-   *  `git init` and no remote (no GitHub link yet). */
+  /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
+   *  internal advanced workspace; `local` for a project created without a remote. */
   kind: ColumnType<string, string | undefined, string>;
   /** Host clone-directory NAME under the clone root, when it must not be derived
    *  from `(owner, repo)`. NULL = derive `<owner>-<repo>` (every pre-existing row).
@@ -353,6 +433,8 @@ export interface ProjectPackageProtectionTable {
 }
 
 interface ProjectIdentityClaimsTable {
+  forge_scope: ColumnType<string, never, never>;
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   owner: string;
   repo: string;
   project_id: string;
@@ -438,6 +520,12 @@ interface BrokeredHttpConsumptionsTable {
  * id='global' so deployment defaults can be imported once and then managed via
  * the Verity API/UI instead of scattered container-local git config. */
 export interface VeritySettingsTable {
+  vuln_scan_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_schedule: ColumnType<string | null, string | null | undefined, string | null>;
+  vuln_scan_session_changes: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_include_dev: ColumnType<boolean, boolean | undefined, boolean>;
+  vuln_scan_notify_from: ColumnType<string, string | undefined, string>;
+  vuln_scan_daily_digest: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
@@ -487,12 +575,10 @@ export interface VeritySettingsTable {
   opencode_api_key: ColumnType<string | null, string | null | undefined, string | null>;
   opencode_models: ColumnType<string | null, string | null | undefined, string | null>;
   opencode_disabled_models: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Google connection for Drive imports and assigned Slides editing (ADRs 0009/0016). The iOS
-   *  OAuth client id is non-secret config (it ships in the app); the connected
-   *  account email is non-secret display metadata; the refresh token is a
-   *  secret, encrypted at rest via the store's SecretCipher. Singleton columns
-   *  (like the GitHub App credential); a per-account table replaces these when
-   *  multi-account support lands. */
+  /** Legacy Google singleton fields retained for migration and older clients.
+   * Credentials and grants are resolved through google_accounts. The OAuth client
+   * id and email are public metadata; the legacy refresh token remains encrypted
+   * with SecretCipher while compatibility writes retain it. */
   google_drive_client_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_account_email: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_refresh_token: ColumnType<string | null, string | null | undefined, string | null>;
@@ -817,6 +903,7 @@ interface SessionAutomationMarkerTable {
  *  restart, so existing sandboxes' `git push` failed with 401 after any redeploy.
  *  A re-provision UPSERTs (rotating the hash); a deprovision DELETEs (revocation). */
 interface GhTokenCapabilitiesTable {
+  forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   cap_hash: string;
   owner: string;
@@ -940,6 +1027,16 @@ interface SecretJobFramesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface TrustedCliOutputsTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  expires_at: ColumnType<Date, string, string>;
+  next_sequence: number;
+  /** Encrypted completion metadata; null while the invocation is running. */
+  result: string | null;
+}
+
 /**
  * A recurring prompt bound to one session (ADR 0008). The operator confirms an
  * agent's proposal in the session; from then on the scheduler sends `prompt` to
@@ -979,6 +1076,16 @@ export interface SessionAutomationsTable {
  *  name normalized to upper-case letters, digits and underscores; it is unique per
  *  project because it also names the sibling URL variable. No column holds a credential. */
 export interface ManagedDevServersTable {
+  secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[],
+    string | undefined,
+    string
+  >;
+  approved_secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
+    string | null | undefined,
+    string | null
+  >;
   id: string;
   project_id: ColumnType<string, string, never>;
   name: string;
@@ -1032,6 +1139,11 @@ export interface TaskAttachment {
 
 /** One managed dev server bound to one session's worktree. */
 export interface ManagedDevServerInstancesTable {
+  last_run_secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[],
+    string | undefined,
+    string
+  >;
   id: string;
   server_id: ColumnType<string, string, never>;
   project_id: ColumnType<string, string, never>;
@@ -1111,6 +1223,21 @@ export interface DevServerDetectionStateTable {
 export interface PublicPreviewPinLocksTable {
   share_id: string;
   created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Durable local share intent; connector credentials are encrypted by EventStore. */
+export interface LocalPreviewSharesTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  managed_instance_id: string | null;
+  network_port: number;
+  url: string;
+  target_port: number | null;
+  static_path: string | null;
+  connector_secret: string;
+  state: 'active' | 'revoking';
+  expires_at: ColumnType<Date, string, never>;
 }
 
 /** One temporary public link to a generation-bound project dev server. Secret
@@ -1367,7 +1494,56 @@ interface AttendeeStateTable {
   state_secret: string;
 }
 
+export interface VulnScanResultsTable {
+  content_hash: string;
+  findings: string;
+  scanned_at: ColumnType<Date, Date | undefined, Date>;
+}
+export interface VulnScanStateTable {
+  id: string;
+  project_id: string;
+  session_id: string | null;
+  content_hash: string | null;
+  base_content_hash: ColumnType<string | null, string | null | undefined, string | null>;
+  base_checked: ColumnType<boolean, boolean | undefined, boolean>;
+  status: string;
+  detail: string | null;
+  revision: string | null;
+  attempted_at: ColumnType<Date, Date | undefined, Date>;
+}
+
+export interface VulnIgnoresTable {
+  id: string;
+  project_id: string;
+  advisory_id: string;
+  aliases: string;
+  package: string;
+  ecosystem: string;
+  severity: string;
+  until_fix: boolean;
+  expires_at: Date;
+  reason: string;
+  created_at: ColumnType<Date, Date | undefined, Date>;
+}
+export interface VulnNotificationsTable {
+  id: string;
+  user_id: string;
+  project_id: string;
+  session_id: string | null;
+  package: string;
+  created_at: ColumnType<Date, Date | undefined, Date>;
+  sent_at: Date | null;
+}
+export interface VulnDigestsTable {
+  user_id: string;
+  day: string;
+}
 export interface Database {
+  vuln_digests: VulnDigestsTable;
+  vuln_ignores: VulnIgnoresTable;
+  vuln_notifications: VulnNotificationsTable;
+  vuln_scan_results: VulnScanResultsTable;
+  vuln_scan_state: VulnScanStateTable;
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
@@ -1379,6 +1555,7 @@ export interface Database {
   session_link_deliveries: SessionLinkDeliveriesTable;
   session_link_pending_messages: SessionLinkPendingMessagesTable;
   session_moves: SessionMovesTable;
+  matrix_outbound: MatrixOutboundTable;
   integration_accounts: IntegrationAccountsTable;
   matrix_connector_config: MatrixConnectorConfigTable;
   integration_sources: IntegrationSourcesTable;
@@ -1397,6 +1574,10 @@ export interface Database {
   starter_project: StarterProjectTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
+  google_workspace_recents: GoogleWorkspaceRecentsTable;
+  google_accounts: GoogleAccountsTable;
+  google_service_overrides: GoogleServiceOverridesTable;
+  project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
   session_gmail_connections: SessionGmailConnectionsTable;
   session_calendar_connections: SessionCalendarConnectionsTable;
@@ -1426,6 +1607,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
   signing_capabilities: SigningCapabilitiesTable;
   secret_run_grants: SecretRunGrantsTable;
@@ -1434,6 +1616,7 @@ export interface Database {
   secret_audit_events: SecretAuditEventsTable;
   audit_mac_keys: AuditMacKeysTable;
   secret_job_frames: SecretJobFramesTable;
+  trusted_cli_outputs: TrustedCliOutputsTable;
   secret_jobs: SecretJobsTable;
   secret_provider_credentials: SecretProviderCredentialsTable;
   secret_provider_bindings: SecretProviderBindingsTable;
@@ -1450,6 +1633,7 @@ export interface Database {
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;
   public_preview_shares: PublicPreviewSharesTable;
+  local_preview_shares: LocalPreviewSharesTable;
   public_preview_pin_locks: PublicPreviewPinLocksTable;
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;

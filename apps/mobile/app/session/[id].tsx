@@ -1,7 +1,22 @@
+import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
+import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
+import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import type { GoogleMenuAccess } from '../../lib/attachMenu';
+import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
+import type { ProjectDriveFolder } from '@verity/mobile';
+import {
+  useGoogleAccountPicker,
+  googleAccountSupports,
+} from '../../components/settings/GoogleAccountPicker';
+import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
+import { Button } from '../../components/ui/Button';
+import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { CodeHostIcon } from '../../components/CodeHostIcon';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
@@ -30,7 +45,7 @@ import { FileContentPreview } from '../../components/files/FileContentPreview';
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
 // with our own components — user bubbles, agent text with fenced-code blocks, tool
 // cards, and lifecycle event rows. The input bar (text + mic/attach placeholders)
-// sits inside a KeyboardAvoidingView so it rises above the keyboard. All
+// sits inside an animated frame so it rises above the keyboard. All
 // StyleSheet.create-using components live in this file so the Unistyles Babel
 // plugin (root: 'app') processes them.
 import {
@@ -76,9 +91,12 @@ import {
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
+  matrixSendSummary,
   calendarChangeSummary,
-  githubRefUrl,
+  forgeRefUrl,
+  providerName,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
@@ -144,6 +162,7 @@ import {
   type LocalPreviewShare,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
+import { TranscriptScrollView } from '../../components/TranscriptScrollView';
 import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
@@ -206,7 +225,7 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // across reopens — the backlog of images never loads up front.
 import { Image as ExpoImage, type ImageSource } from 'expo-image';
 import { UITextView } from 'react-native-uitextview';
-import { KeyboardAvoidingView, KeyboardStickyView } from 'react-native-keyboard-controller';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -266,7 +285,6 @@ import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   hasConnectedGoogleAccount,
-  getProjectGoogleAccess,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
   type GoogleService,
@@ -311,7 +329,6 @@ import {
   isOldestRowViewable,
   isScrollTowardHistory,
   migratedAnchorOffset,
-  shouldContinueOlderHistory,
   shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
@@ -340,8 +357,9 @@ import {
 } from '../../lib/transcriptAnchor';
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
-
-const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
+import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
+import { toneColor } from '../../theme/tokens';
+import { tint } from '../../components/ui/tint';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -492,7 +510,6 @@ const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequ
 // translateY the stack onto the true vertical centre of the visible transcript. Keep
 // in sync with styles.msgNav(Btn).
 const NAV_STACK_HALF = 65;
-const SPLIT_SCREEN_MIN_WIDTH = 900;
 const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
   'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
@@ -544,42 +561,6 @@ export default function SessionScreen() {
       retrySecret={retrySecret}
     />
   );
-}
-
-// Send the wide-screen viewer to the split home with this session preselected.
-// Uses `dismissTo` (not `<Redirect>`/`replace`): when a home screen is already
-// below in the stack — the usual case, since sessions are reached via `/new`,
-// an issue, or a list tap that all sit on top of `/` — this pops
-// back to that existing home instead of stacking a *second* `/`. A duplicate
-// home was what surfaced the phantom "‹ Verity" back button on the home header.
-// If no home exists below (e.g. a cold deep-link straight to /session/[id]),
-// `dismissTo` falls back to replacing this route with `/`, exactly like the old
-// redirect did. Mirrors expo-router's own <Redirect>, which fires on focus.
-function SplitScreenRedirect({
-  id,
-  targetMessageId,
-  targetSearchQuery,
-  retrySecret,
-}: {
-  id: string;
-  targetMessageId?: string;
-  targetSearchQuery?: string;
-  retrySecret?: string;
-}) {
-  useFocusEffect(
-    useCallback(() => {
-      router.dismissTo({
-        pathname: '/',
-        params: {
-          selected: id,
-          ...(targetMessageId ? { targetMessageId } : {}),
-          ...(targetSearchQuery ? { targetSearchQuery } : {}),
-          ...(retrySecret ? { retrySecret } : {}),
-        },
-      });
-    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
-  );
-  return null;
 }
 
 /**
@@ -697,6 +678,9 @@ export const SessionChat = memo(function SessionChat({
     session,
     refreshMetadata,
     streamError,
+    historyError,
+    loadingHistory,
+    retryHistory,
     sending,
     sendError,
     cancelError,
@@ -734,11 +718,14 @@ export const SessionChat = memo(function SessionChat({
     oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
-    olderLoadNeedsContinuation,
     olderLoadGeneration,
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  const optionalWorkReady = useDeferredSessionWork(
+    sessionId,
+    initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
+  );
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
@@ -859,14 +846,14 @@ export const SessionChat = memo(function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
+  const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const {
     models,
     modelOrder,
     moreModels,
     allowedAgents,
     refresh: refreshModels,
-  } = useModels(client, loaded, projectId);
-  const [enginePickerOpen, setEnginePickerOpen] = useState(false);
+  } = useModels(client, optionalWorkReady, projectId);
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
   const [automationReady, setAutomationReady] = useState(false);
@@ -917,8 +904,8 @@ export const SessionChat = memo(function SessionChat({
   }, [client, sessionId]);
   useEffect(() => {
     setAutomationReady(false);
-    if (loaded) void loadAutomation();
-  }, [loadAutomation, loaded]);
+    if (optionalWorkReady) void loadAutomation();
+  }, [loadAutomation, optionalWorkReady]);
   const applyAutomation = useCallback(
     (next: SessionAutomation | null) => {
       automationGeneration.current += 1;
@@ -992,9 +979,13 @@ export const SessionChat = memo(function SessionChat({
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
-  const completedServerTools = session.messages.filter(
-    (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
-  ).length;
+  const completedServerTools = useMemo(
+    () =>
+      session.messages.filter(
+        (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
+      ).length,
+    [session.messages],
+  );
   const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
     useSessionPreviewReads({
       client,
@@ -1002,6 +993,7 @@ export const SessionChat = memo(function SessionChat({
       projectId,
       loaded,
       completedServerTools,
+      enabled: optionalWorkReady || staticPreviewOpen,
       devServers: session.devServers,
     });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
@@ -1110,11 +1102,13 @@ export const SessionChat = memo(function SessionChat({
   // Issue # comes from the branch name (#125, works before any PR). The PR chip has
   // moved out of the header — the bottom PR status bar surfaces the PR now.
   const issueNumber = parseBranchIssue(effectiveBranch);
-  // Tappable Issue chip (#161): build the GitHub URL from the server-surfaced owner/
-  // repo. `githubRefUrl` returns null when owner/repo is unknown (no GitHub remote /
-  // older server) — the chip then renders non-tappable, never linking to a broken URL.
-  const repoIdentity = { owner: branches.owner, repo: branches.repo };
-  const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
+  // Tappable Issue chip (#161): build the code-host URL from the server-surfaced owner/
+  // repo and, for Forgejo, its host. `forgeRefUrl` returns null when owner/repo is
+  // unknown (no remote / older server) — the chip then renders non-tappable, never
+  // linking to a broken URL.
+  const repoIdentity = { owner: branches.owner, repo: branches.repo, host: branches.codeHost };
+  const issueUrl = forgeRefUrl('issue', repoIdentity, issueNumber);
+  const codeHostName = providerName(branches.codeHost?.provider ?? 'github');
   // Open PRs cannot be dismissed, so they can render immediately. Wait for the
   // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
@@ -2283,27 +2277,35 @@ export const SessionChat = memo(function SessionChat({
     ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  // With nothing visible there is no list to scroll, so older pages are fetched
+  // until a message appears, the history ends, or a page fails (which shows its
+  // own retry). A fetch that did not move the history cursor ends the walk, so a
+  // page that adds nothing cannot repeat for good; a bookmark jump in progress
+  // owns paging and is left alone.
+  const showsNoMessages = loaded && messages.length === 0;
+  const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    // A reload starts a fresh walk.
+    if (!loaded) emptyPagingCursorRef.current = undefined;
+  }, [loaded]);
+  useEffect(() => {
+    if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
+    if (pendingUserJump !== null) return;
+    if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
+    emptyPagingCursorRef.current = oldestHistorySeq ?? null;
+    void loadOlder();
+  }, [
+    showsNoMessages,
+    hasOlder,
+    loadingOlder,
+    olderLoadStalled,
+    pendingUserJump,
+    oldestHistorySeq,
+    loadOlder,
+  ]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
-  const initialHistoryPrefetchRef = useRef(false);
-  useEffect(() => {
-    if (
-      initialHistoryPrefetchRef.current ||
-      !initialListLoaded ||
-      !loaded ||
-      restoring ||
-      !hasOlder ||
-      loadingOlder
-    )
-      return;
-    initialHistoryPrefetchRef.current = true;
-    // Automatic pages must not compete with initial list measurement.
-    // A single extra page starts after FlashList reports its initial load.
-    // Subsequent pages use the measured four-viewport buffer, so opening a long session
-    // cannot pull its whole transcript into memory.
-    loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2344,36 +2346,6 @@ export const SessionChat = memo(function SessionChat({
       if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
-  const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
-  useEffect(() => {
-    const completed = observedOlderLoadGenerationRef.current !== olderLoadGeneration;
-    observedOlderLoadGenerationRef.current = olderLoadGeneration;
-    if (
-      !shouldContinueOlderHistory(
-        completed,
-        hasOlder,
-        olderLoadStalled,
-        olderLoadNeedsContinuation,
-        isHistoryEdgeVisible(
-          lastScrollYRef.current,
-          lastContentHeightRef.current,
-          lastViewportHeightRef.current,
-          oldestVisibleIndexRef.current,
-          dataRef.current.length,
-        ),
-        userScrollActiveRef.current,
-        historyAppendSettlingRef.current,
-      )
-    )
-      return;
-
-    // A bounded scan may advance across metadata-only pages without changing any
-    // visible rows. Continue after React has committed the new cursor while the
-    // history edge remains visible. Failures/non-progress are deliberately excluded
-    // above, so this cannot become an automatic retry loop.
-    const raf = requestAnimationFrame(() => loadOlderNearStartRef.current());
-    return () => cancelAnimationFrame(raf);
-  }, [hasOlder, olderLoadGeneration, olderLoadNeedsContinuation, olderLoadStalled]);
   useEffect(() => {
     reportScrollDebug('loading-older-state', { loadingOlder });
   }, [loadingOlder, reportScrollDebug]);
@@ -2383,9 +2355,6 @@ export const SessionChat = memo(function SessionChat({
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
-  const sessionMenuRef = useRef<View>(null);
-  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
   const [settingsProjects, setSettingsProjects] = useState<
     Awaited<ReturnType<VerityClient['listProjects']>>
   >([]);
@@ -2481,18 +2450,15 @@ export const SessionChat = memo(function SessionChat({
   // When a jump target isn't in the loaded window yet, page older history toward it
   // until it appears — driven entirely by the effect below (ONE control path, so the
   // async prepends settle across re-renders and the initial call can't race the retry).
-  // `jumpRowsRef` records the row count at the last page request: if a load settles
-  // without adding rows we've made no progress — a flaky fetch, an empty page, or a
-  // target whose id re-keyed away across a coalescing boundary (older text deltas
-  // merging onto an earlier seq when a page prepends) — so we stop instead of
-  // refetching in a tight, unthrottled loop.
+  // Metadata-only pages and coalesced text can advance history without adding rows.
+  // Stop only when the event cursor stalls or a request fails.
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
   const pendingJumpQueryRef = useRef<string | null>(null);
   const highlightMessage = useCallback((messageId: string, searchQuery: string | null = null) => {
     setHighlightedMessageId(messageId);
     setHighlightedSearchQuery(searchQuery);
   }, []);
-  const jumpRowsRef = useRef(-1);
+  const bookmarkCursorRef = useRef<number | undefined>(undefined);
   const jumpToBookmark = useCallback(
     (messageId: string, searchQuery: string | null = null): boolean => {
       const index = rowIndexOfMessage(messageId);
@@ -2514,14 +2480,14 @@ export const SessionChat = memo(function SessionChat({
       // that effect falls through to paging exactly as it would have.
       if (frozenTailRef.current !== null) {
         snapshotLiveTail();
-        jumpRowsRef.current = -1;
+        bookmarkCursorRef.current = undefined;
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
       }
       // Not loaded — let the effect page toward it. Nothing older → the message is gone.
       if (hasOlder) {
-        jumpRowsRef.current = -1; // fresh jump: no page requested yet
+        bookmarkCursorRef.current = undefined; // fresh jump: no page requested yet
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
@@ -2585,14 +2551,19 @@ export const SessionChat = memo(function SessionChat({
       return;
     }
     if (loadingOlder) return; // a page is in flight — wait for it to settle
-    // Give up (don't spin) when there's nothing older left, or the last page added no
-    // rows (no progress toward the target).
-    if (!hasOlder || data.length === jumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        bookmarkCursorRef.current,
+      )
+    ) {
       setPendingJumpId(null);
       pendingJumpQueryRef.current = null;
       return;
     }
-    jumpRowsRef.current = data.length;
+    bookmarkCursorRef.current = oldestHistorySeq;
     pageTowardMessage(pendingJumpId);
   }, [
     cancelPendingUserScrollSettle,
@@ -2602,6 +2573,8 @@ export const SessionChat = memo(function SessionChat({
     hasOlder,
     loadingOlder,
     pageTowardMessage,
+    oldestHistorySeq,
+    olderLoadStalled,
     highlightMessage,
     syncTailFreeze,
   ]);
@@ -2613,16 +2586,12 @@ export const SessionChat = memo(function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [chooseGoogleAccount, googleAccountSheet] = useGoogleAccountPicker();
   const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
-  const [projectGoogleAccess, setProjectGoogleAccess] = useState<Record<GoogleService, boolean>>({
-    gmail: false,
-    calendar: false,
-    contacts: false,
-  });
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2654,11 +2623,6 @@ export const SessionChat = memo(function SessionChat({
         .getSessionContactsConnection(sessionId)
         .then((connection) => {
           if (active) setContactsConnection(connection);
-        })
-        .catch(() => undefined);
-      void getProjectGoogleAccess(client, projectId)
-        .then((access) => {
-          if (active) setProjectGoogleAccess(access);
         })
         .catch(() => undefined);
       return () => {
@@ -3261,22 +3225,47 @@ export const SessionChat = memo(function SessionChat({
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
-      void connectSessionGoogleService(client, sessionId, service)
-        .then((result) => {
-          if (result.kind === 'session') {
-            setGmailConnection(result.connections.gmail);
-            setCalendarConnection(result.connections.calendar);
-            setContactsConnection(result.connections.contacts);
-          }
-        })
-        .catch((error: unknown) =>
-          Alert.alert(
-            'Could not connect Google service',
-            error instanceof Error ? error.message : String(error),
-          ),
+      void (async () => {
+        const accounts = (await client.listGoogleAccounts()).filter((account) =>
+          googleAccountSupports(account, service),
         );
+        const status = await client.getSessionGoogleAccess(sessionId, service);
+        const choice = await chooseGoogleAccount({
+          accounts,
+          sessionOptions: status.enabled || status.mode !== 'inherit',
+        });
+        if (!choice) return;
+        if (choice.kind === 'inherit' || choice.kind === 'disabled') {
+          await client.setSessionGoogleAccess(sessionId, service, { mode: choice.kind });
+          const [gmail, calendar, contacts] = await Promise.all([
+            client.getSessionGmailConnection(sessionId),
+            client.getSessionCalendarConnection(sessionId),
+            client.getSessionContactsConnection(sessionId),
+          ]);
+          setGmailConnection(gmail);
+          setCalendarConnection(calendar);
+          setContactsConnection(contacts);
+          return;
+        }
+        const result = await connectSessionGoogleService(
+          client,
+          sessionId,
+          service,
+          choice.kind === 'account' ? choice.accountId : null,
+        );
+        if (result.kind === 'session') {
+          setGmailConnection(result.connections.gmail);
+          setCalendarConnection(result.connections.calendar);
+          setContactsConnection(result.connections.contacts);
+        }
+      })().catch((error: unknown) =>
+        Alert.alert(
+          'Could not connect Google service',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
     },
-    [client, sessionId],
+    [client, sessionId, chooseGoogleAccount],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),
@@ -3294,18 +3283,41 @@ export const SessionChat = memo(function SessionChat({
     (service: GoogleService) => {
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
-          setProjectGoogleAccess((current) => ({ ...current, [service]: false }));
           if (service === 'gmail')
             setGmailConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else if (service === 'calendar')
             setCalendarConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else
             setContactsConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
         })
         .catch((error: unknown) =>
@@ -3823,22 +3835,15 @@ export const SessionChat = memo(function SessionChat({
               >
                 <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
+              {issueNumber !== null ? (
+                <IssueRef number={issueNumber} url={issueUrl} hostName={codeHostName} />
+              ) : null}
             </View>
           )}
         </View>
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
-          <View ref={sessionMenuRef} collapsable={false}>
-            <HeaderActionButton
-              icon="more-horizontal"
-              label="Session menu"
-              accessibilityLabel="Open session menu"
-              onHint={showHeaderHint}
-              onPress={openSessionMenu}
-            />
-          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -3847,7 +3852,7 @@ export const SessionChat = memo(function SessionChat({
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
               active={hasActiveStaticPreview}
-              activeColor={theme.colors.tone.done}
+              activeColor={theme.colors.success}
               dot={hasRunningDevServer}
               dotTestID="preview-server-dot"
               onHint={showHeaderHint}
@@ -3888,7 +3893,7 @@ export const SessionChat = memo(function SessionChat({
         >
           {linkedSessions.map((link) => (
             <View key={link.sessionId} style={styles.headerLinkChip}>
-              <Icon name="link" size={13} color={theme.colors.primary} />
+              <Icon name="link" size={13} color={theme.colors.action} />
               <Text style={styles.headerLinkText} numberOfLines={1}>
                 {link.projectName} · {link.name ?? link.sessionId}
               </Text>
@@ -3907,22 +3912,107 @@ export const SessionChat = memo(function SessionChat({
     </View>
   );
 
+  // Unrelated composer and auxiliary state must not invalidate FlashList's
+  // measured cells through fresh style, footer and callback identities.
+  const transcriptList = useMemo(
+    () => (
+      <FlashList
+        renderScrollComponent={Platform.OS === 'web' ? TranscriptScrollView : undefined}
+        onLoad={() => {
+          markInitialListLoad(switchTiming);
+          setLoadedListSessionId(sessionId);
+        }}
+        ref={listRef}
+        data={data}
+        keyExtractor={rowKey}
+        renderItem={renderItem}
+        getItemType={getItemType}
+        // Render further beyond the viewport (default ~250px) so rows above are
+        // MEASURED before a scroll-up reveals them — their height correction then
+        // happens off-screen instead of jumping the visible offset (cause-2 fix).
+        drawDistance={500}
+        // Visual inversion: newest-first data flipped back the right way up.
+        // Each row is counter-flipped in renderItem (styles.invertedItem).
+        // FlashList consumes plain styles; Unistyles metadata loses the web flip.
+        style={{
+          transform: [{ scaleY: -1 }],
+          marginLeft: embedded ? 0 : insets.left,
+          marginRight: embedded ? 0 : insets.right,
+        }}
+        contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+        onScroll={onListScroll}
+        onContentSizeChange={onListContentSizeChange}
+        onTouchEnd={clearSearchHighlightAfterTouch}
+        scrollEventThrottle={64}
+        // Only a real finger drag/fling summons the message-nav stack (see
+        // revealNav) — programmatic/content-driven scrolls (session open, agent
+        // streaming) fire none of these, so the stack never pops up on its own. The
+        // hold-then-fade starts on motion END (drag lift / fling settle), so the
+        // 1.8s is measured from the list coming to REST.
+        onScrollBeginDrag={onListScrollBeginDrag}
+        onMomentumScrollBegin={onListMomentumScrollBegin}
+        onScrollEndDrag={onListScrollEndDrag}
+        onMomentumScrollEnd={onListMomentumScrollEnd}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        // Paging is driven by our scroll/viewability callbacks (see
+        // requestOlderHistory), which also own the settle window between
+        // pages that the native edge callbacks have no notion of.
+        //
+        // The spinner belongs to the OLDEST end, which in the newest-first
+        // list is the footer. It sits behind the viewport, so unlike the
+        // former header spinner it cannot shift a single visible row.
+        ListFooterComponent={
+          <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <ActivityIndicator
+              color={theme.colors.textMuted}
+              animating={loadingOlder}
+              hidesWhenStopped={false}
+              style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+              accessibilityLabel="Loading older messages"
+              accessibilityElementsHidden={!loadingOlder}
+              importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+            />
+          </View>
+        }
+        maintainVisibleContentPosition={maintainVisibleContentPosition}
+        // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+      />
+    ),
+    [
+      switchTiming,
+      sessionId,
+      data,
+      renderItem,
+      getItemType,
+      embedded,
+      insets.left,
+      insets.right,
+      theme.spacing.lg,
+      theme.colors.textMuted,
+      onListScroll,
+      onListContentSizeChange,
+      clearSearchHighlightAfterTouch,
+      onListScrollBeginDrag,
+      onListMomentumScrollBegin,
+      onListScrollEndDrag,
+      onListMomentumScrollEnd,
+      onViewableItemsChanged,
+      viewabilityConfig,
+      loadingOlder,
+      maintainVisibleContentPosition,
+    ],
+  );
+
   finishChatWork();
   return (
-    <AnimatedKeyboardAvoidingView
-      style={[styles.flex, keyboardAvoidance.resetStyle]}
-      enabled={keyboardAvoidance.enabled}
-      // The composer is pinned to the bottom of this frame, so the frame is what
-      // shrinks. `padding` on both platforms now that the keyboard controller
-      // drives it — it tracks the keyboard frame-by-frame instead of jumping on
-      // the show event, which is what the transcript's scroll position is
-      // measured against.
-      behavior="padding"
-      // The custom nav header is drawn by the navigator ABOVE this screen body, so
-      // the KAV frame already starts below it (screen-absolute coords) — no extra
-      // offset needed. A non-zero offset here over-lifts the input by ~the header
-      // height, leaving a dead gap between the field and the keyboard top.
-      keyboardVerticalOffset={0}
+    <Reanimated.View
+      ref={keyboardAvoidance.frameRef}
+      onLayout={keyboardAvoidance.onLayout}
+      collapsable={false}
+      style={[styles.flex, keyboardAvoidance.frameStyle]}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
       {workspaceFile !== null ? (
@@ -3948,10 +4038,11 @@ export const SessionChat = memo(function SessionChat({
                     : 'file-text'
               }
               size={16}
-              color={theme.colors.primary}
+              color={theme.colors.action}
             />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              {workspaceFile.name} ↗
+              {workspaceFile.name}
+              {workspaceFile.accountEmail ? ` · ${workspaceFile.accountEmail}` : ''} ↗
             </Text>
           </Pressable>
           <Pressable
@@ -3964,6 +4055,7 @@ export const SessionChat = memo(function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {googleAccountSheet}
       {automation ? (
         <AutomationBar
           automation={automation}
@@ -3973,22 +4065,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="mail" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('gmail')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Gmail account"
+          >
+            <Icon name="mail" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
+              Gmail{gmailConnection.source === 'project' ? ' · Project access' : ''}
               {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.gmail
-                ? 'Disable Gmail for this project'
-                : 'Disconnect Gmail from this session'
-            }
+            accessibilityLabel={'Disable Gmail for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3996,22 +4089,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {calendarConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="calendar" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('calendar')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Calendar account"
+          >
+            <Icon name="calendar" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
+              Google Calendar{calendarConnection.source === 'project' ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.calendar
-                ? 'Disable Google Calendar for this project'
-                : 'Disconnect Google Calendar from this session'
-            }
+            accessibilityLabel={'Disable Google Calendar for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4019,22 +4113,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {contactsConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="users" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('contacts')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Contacts account"
+          >
+            <Icon name="users" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
+              Google Contacts{contactsConnection.source === 'project' ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.contacts
-                ? 'Disable Google Contacts for this project'
-                : 'Disconnect Google Contacts from this session'
-            }
+            accessibilityLabel={'Disable Google Contacts for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4071,7 +4166,7 @@ export const SessionChat = memo(function SessionChat({
                     const allowed = await new Promise<boolean>((resolve) =>
                       Alert.alert(
                         `Allow ${current.name} on your network?`,
-                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}\n\nAnyone on your network can open it while it runs.`,
+                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}${current.secretBindings?.length ? `\n\nSecrets: ${current.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\nAnyone on your network can open it while it runs.`,
                         [
                           { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
                           { text: 'Allow', onPress: () => resolve(true) },
@@ -4083,6 +4178,9 @@ export const SessionChat = memo(function SessionChat({
                     const approved = await client.approveManagedDevServer(sessionId, current.id, {
                       command: current.command,
                       workdir: current.workdir,
+                      ...(current.secretBindings?.length
+                        ? { secretBindings: current.secretBindings }
+                        : {}),
                     });
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
@@ -4161,24 +4259,6 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {featureHint.sheet}
-      {sessionMenuAnchor ? (
-        <ActionMenu
-          anchor={sessionMenuAnchor}
-          label="Session menu"
-          onClose={() => setSessionMenuAnchor(null)}
-          items={[
-            {
-              icon: 'settings',
-              title: 'Session settings',
-              subtitle: 'Rename, link or manage this session',
-              onPress: () => {
-                setSessionMenuAnchor(null);
-                setSessionSettingsOpen(true);
-              },
-            },
-          ]}
-        />
-      ) : null}
       {sessionSettingsOpen ? (
         <SessionSettingsDialog
           key={sessionId}
@@ -4338,6 +4418,18 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
+      {historyError ? (
+        <>
+          <Banner tone="attention" text={historyError} />
+          <Button
+            label="Retry history"
+            variant="secondary"
+            size="compact"
+            loading={loadingHistory || loadingOlder}
+            onPress={loaded ? loadOlder : retryHistory}
+          />
+        </>
+      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4375,7 +4467,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
-      {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
+      {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
         // already rendered) rather than a blank pane. Locally-created sessions
@@ -4394,7 +4486,9 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {loadingOlder ? 'Loading earlier history…' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"
@@ -4428,71 +4522,7 @@ export const SessionChat = memo(function SessionChat({
                     sessionId={sessionId}
                     projectId={projectId}
                   >
-                    <FlashList
-                      onLoad={() => {
-                        markInitialListLoad(switchTiming);
-                        setLoadedListSessionId(sessionId);
-                      }}
-                      ref={listRef}
-                      data={data}
-                      keyExtractor={rowKey}
-                      renderItem={renderItem}
-                      getItemType={getItemType}
-                      // Render further beyond the viewport (default ~250px) so rows above are
-                      // MEASURED before a scroll-up reveals them — their height correction then
-                      // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                      drawDistance={500}
-                      // Visual inversion: newest-first data flipped back the right way up.
-                      // Each row is counter-flipped in renderItem (styles.invertedItem).
-                      // FlashList consumes plain styles; Unistyles metadata loses the web flip.
-                      style={{
-                        transform: [{ scaleY: -1 }],
-                        marginLeft: embedded ? 0 : insets.left,
-                        marginRight: embedded ? 0 : insets.right,
-                      }}
-                      contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
-                      onScroll={onListScroll}
-                      onContentSizeChange={onListContentSizeChange}
-                      onTouchEnd={clearSearchHighlightAfterTouch}
-                      scrollEventThrottle={64}
-                      // Only a real finger drag/fling summons the message-nav stack (see
-                      // revealNav) — programmatic/content-driven scrolls (session open, agent
-                      // streaming) fire none of these, so the stack never pops up on its own. The
-                      // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                      // 1.8s is measured from the list coming to REST.
-                      onScrollBeginDrag={onListScrollBeginDrag}
-                      onMomentumScrollBegin={onListMomentumScrollBegin}
-                      onScrollEndDrag={onListScrollEndDrag}
-                      onMomentumScrollEnd={onListMomentumScrollEnd}
-                      onViewableItemsChanged={onViewableItemsChanged}
-                      viewabilityConfig={viewabilityConfig}
-                      // Paging is driven by our scroll/viewability callbacks (see
-                      // requestOlderHistory), which also own the settle window between
-                      // pages that the native edge callbacks have no notion of.
-                      //
-                      // The spinner belongs to the OLDEST end, which in the newest-first
-                      // list is the footer. It sits behind the viewport, so unlike the
-                      // former header spinner it cannot shift a single visible row.
-                      ListFooterComponent={
-                        <View style={[styles.olderSpinner, styles.invertedItem]}>
-                          <ActivityIndicator
-                            color={theme.colors.textMuted}
-                            animating={loadingOlder}
-                            hidesWhenStopped={false}
-                            style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                            accessibilityLabel="Loading older messages"
-                            accessibilityElementsHidden={!loadingOlder}
-                            importantForAccessibility={
-                              loadingOlder ? 'auto' : 'no-hide-descendants'
-                            }
-                          />
-                        </View>
-                      }
-                      maintainVisibleContentPosition={maintainVisibleContentPosition}
-                      // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                      keyboardDismissMode="interactive"
-                      keyboardShouldPersistTaps="handled"
-                    />
+                    {transcriptList}
                     {/* Keep intermediate history pages hidden while resolving a jump, and
                 cover measurement correction while restoring a saved position. */}
                     {restoring || pendingUserJump !== null || jumpTarget !== null ? (
@@ -4660,6 +4690,7 @@ export const SessionChat = memo(function SessionChat({
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
+          codeHost={branches.codeHost}
         />
       ) : null}
       {!visiblePullRequest &&
@@ -4702,6 +4733,8 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {/* Last above the composer: below the plan and the PR bar, never above them. */}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
@@ -4767,13 +4800,18 @@ export const SessionChat = memo(function SessionChat({
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
         googleConnected={googleConnected}
+        googleAccess={{
+          gmail: gmailConnection,
+          calendar: calendarConnection,
+          contacts: contactsConnection,
+        }}
         onConnectGmail={onConnectGmail}
         onConnectCalendar={onConnectCalendar}
         onConnectContacts={onConnectContacts}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
-    </AnimatedKeyboardAvoidingView>
+    </Reanimated.View>
   );
 });
 
@@ -4817,7 +4855,7 @@ function HeaderActionButton({
       <Icon
         name={icon}
         size={20}
-        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+        color={active ? (activeColor ?? theme.colors.action) : theme.colors.textMuted}
       />
       {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
       {badge !== undefined ? (
@@ -4830,11 +4868,19 @@ function HeaderActionButton({
 }
 
 // The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
-// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// string (opens the issue on its code host via `Linking.openURL`, announced as a link) and
 // then tinted like the app's other tappable meta; when `url` is null — owner/repo
 // unknown (no GitHub remote / older server) — it stays plain, faint text and never
 // links to a broken URL (#161).
-function IssueRef({ number, url }: { number: number; url: string | null }) {
+function IssueRef({
+  number,
+  url,
+  hostName,
+}: {
+  number: number;
+  url: string | null;
+  hostName: string;
+}) {
   const label = `#${String(number)}`;
   if (url === null) {
     return (
@@ -4850,7 +4896,7 @@ function IssueRef({ number, url }: { number: number; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on ${hostName}.`}
     >
       <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
@@ -5038,6 +5084,7 @@ function SessionFilesSheet({
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
   const [driveCanWrite, setDriveCanWrite] = useState(false);
+  const [driveLinks, setDriveLinks] = useState<ProjectDriveFolder[]>([]);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
@@ -5142,35 +5189,49 @@ function SessionFilesSheet({
     if (!driveActive || !projectId) return;
     let active = true;
     const loadDrive = async (): Promise<void> => {
+      setDriveCanWrite(false);
       setLoading(true);
       setError(null);
       setDriveUnconfigured(false);
       try {
-        let folderId = driveFolderId;
-        let nextPath = drivePath;
-        const detail = await client.getProject(projectId);
-        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
-        const folderName = detail.settings?.googleDriveFolderName ?? null;
-        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
-        if (!configuredFolderId || !folderName) {
-          if (active) {
-            setDriveEntries([]);
-            setDriveFolderId(null);
-            setDriveCanWrite(false);
-            setDriveUnconfigured(true);
-          }
+        const links = await client.listProjectDriveFolders(projectId);
+        if (!active) return;
+        setDriveLinks(links);
+        if (links.length === 0) {
+          if (drivePath.length) setDrivePath([]);
+          setDriveEntries([]);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          setDriveUnconfigured(true);
           return;
         }
-        if (!folderId || folderId !== configuredFolderId) {
-          folderId = configuredFolderId;
-          nextPath = [{ id: folderId, name: folderName }];
-          if (active) {
-            setDriveFolderId(folderId);
-            setDrivePath(nextPath);
-          }
+        let nextPath = drivePath;
+        if (links.length === 1 && !nextPath.some((part) => part.id.startsWith('link:'))) {
+          nextPath = singleDriveFolderPath(links);
+          setDrivePath(nextPath);
         }
-        const parentId = nextPath.at(-1)?.id ?? folderId;
-        const page = await client.listProjectGoogleDriveFiles(projectId, folderId, { parentId });
+        const selectedId = nextPath.find((part) => part.id.startsWith('link:'))?.id.slice(5);
+        const link = links.find((candidate) => candidate.id === selectedId);
+        if (!link) {
+          if (selectedId) {
+            setDrivePath([]);
+            return;
+          }
+          const accountId = nextPath.find((part) => part.id.startsWith('account:'))?.id.slice(8);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          if (accountId && !links.some((candidate) => candidate.accountId === accountId)) {
+            setDrivePath([]);
+            return;
+          }
+          setDriveEntries(driveOverview(links, accountId));
+          return;
+        }
+        setDriveFolderId(link.id);
+        setDriveCanWrite(link.accessMode === 'read-write');
+        const last = nextPath.at(-1)?.id;
+        const parentId = !last || last.startsWith('link:') ? link.folderId : last;
+        const page = await client.listProjectGoogleDriveFiles(projectId, link.id, { parentId });
         if (active) setDriveEntries(page.files);
       } catch (caught) {
         if (active) {
@@ -5252,7 +5313,9 @@ function SessionFilesSheet({
         setUploading(true);
         for (const file of picked) {
           await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
-            parentId: drivePath.at(-1)?.id,
+            parentId: drivePath.at(-1)?.id.startsWith('link:')
+              ? driveLinks.find((link) => link.id === driveFolderId)?.folderId
+              : drivePath.at(-1)?.id,
             fileName: file.fileName,
             mimeType: 'application/octet-stream',
             data: new FsFile(file.uri),
@@ -5275,7 +5338,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
+  }, [client, driveFolderId, drivePath, driveLinks, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -5307,8 +5370,20 @@ function SessionFilesSheet({
                   onPress: () => {
                     setMutating(true);
                     void (async () => {
-                      if (!(await ensureGoogleWorkspaceAccess(client, file.mimeType))) return;
-                      await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
+                      if (
+                        !(await ensureGoogleWorkspaceAccess(
+                          client,
+                          file.mimeType,
+                          driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        ))
+                      )
+                        return;
+                      await client.assignSessionGoogleWorkspaceFile(
+                        sessionId,
+                        file.id,
+                        driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        driveFolderId,
+                      );
                       onClose();
                     })()
                       .catch((caught: unknown) =>
@@ -5342,7 +5417,7 @@ function SessionFilesSheet({
         { cancelable: true },
       );
     },
-    [client, driveFolderId, onClose, projectId, sessionId],
+    [client, driveFolderId, driveLinks, onClose, projectId, sessionId],
   );
 
   const uploadDroppedFiles = useCallback(
@@ -6040,13 +6115,19 @@ function SessionFilesSheet({
           </View>
         ) : null}
         {preview ? null : driveActive ? (
-          drivePath.length > 1 ? (
+          (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
             <FileBreadcrumb
               rootIcon="hard-drive"
-              rootLabel={drivePath[0]?.name ?? 'Google Drive'}
-              segments={drivePath.slice(1).map(({ id, name }) => ({ key: id, name }))}
+              rootLabel={
+                driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
+              }
+              segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
+                ({ id, name }) => ({ key: id, name }),
+              )}
               disabled={mutating}
-              onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
+              onNavigate={(index) =>
+                setDrivePath((current) => current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)))
+              }
             />
           ) : null
         ) : path ? (
@@ -6314,7 +6395,7 @@ function SessionFilesSheet({
                                   <Icon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                    color={picked ? theme.colors.action : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -6348,7 +6429,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.primary} />
+                    <Icon name="download" size={18} color={theme.colors.action} />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -6528,7 +6609,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
-      return <EventRow message={item.message} />;
+      return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;
     case 'choices':
@@ -6733,7 +6814,7 @@ function CopyButton({
       setTimeout(() => setCopied(false), 1500);
     });
   }, [value]);
-  const tint = copied ? theme.colors.primary : theme.colors.textMuted;
+  const tint = copied ? theme.colors.action : theme.colors.textMuted;
   return (
     <Pressable
       onPress={onCopy}
@@ -6910,7 +6991,7 @@ function AgentMarkdown({
             gestures; toggling off happens via the "…" sheet or the header sheet. */}
           {bookmarked && !showCopy && !actionsOpen ? (
             <View style={styles.msgBookmarkFlag} pointerEvents="none">
-              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+              <Icon name="bookmark" size={13} color={theme.colors.action} />
             </View>
           ) : null}
           {showCopy || actionsOpen ? (
@@ -7370,7 +7451,7 @@ function Inline({
         }
         if (span.t === 'code') {
           return (
-            <Text key={i} style={[styles.mdCode, { color: theme.colors.accent }]}>
+            <Text key={i} style={[styles.mdCode, { color: theme.colors.signature }]}>
               <HighlightedSearchText text={span.text} />
             </Text>
           );
@@ -7388,7 +7469,7 @@ function Inline({
               key={i}
               style={[
                 asLink ? styles.mdLink : styles.mdReference,
-                { color: asLink ? theme.colors.primary : theme.colors.accent },
+                { color: asLink ? theme.colors.action : theme.colors.signature },
               ]}
               // openURL rejects only if no handler can open it (no browser); swallow
               // so it never surfaces as an unhandled rejection (only http(s) reach here).
@@ -7492,7 +7573,7 @@ function ToolImageItem({
 function ToolCard({ message }: { message: ToolCallMessage }) {
   const { theme } = useUnistyles();
   const view = toolCallView(message.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const [expanded, setExpanded] = useState(false);
   // A `Skill` call (e.g. /code-review) carries the injected SKILL.md
   // body; show it as this card's collapsed detail instead of leaking it as prose,
@@ -7581,7 +7662,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   if (!last) return null;
   if (tools.length === 1) return <ToolCard message={last} />;
   const view = toolCallView(last.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   return (
     <View>
       <Pressable
@@ -7623,7 +7704,7 @@ function DelegatedAgent({ row }: { row: Extract<Row, { kind: 'delegated-agent' }
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
   const view = toolCallView(row.parent.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const state = row.parent.tool.state;
   const verb = state === 'running' ? 'Running' : state === 'error' ? 'Failed' : 'Done';
   const summary = `⎿ ${verb} · ${String(row.toolCount)} ${row.toolCount === 1 ? 'tool' : 'tools'}`;
@@ -7679,9 +7760,9 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
   const last = tools[tools.length - 1];
   if (!last) return null;
   const view = toolCallView(last.tool);
-  // Always the "active" tone: a todo list reads as one live, in-progress widget
+  // Always the action colour: a todo list reads as one live, in-progress widget
   // rather than per-op success/error states.
-  const color = theme.colors.tone.active;
+  const color = theme.colors.action;
   return (
     <View>
       <Pressable
@@ -7726,7 +7807,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(latest);
   const done = plan.completed === plan.entries.length;
-  const color = done ? theme.colors.tone.done : theme.colors.tone.active;
+  const color = done ? theme.colors.success : theme.colors.action;
   return (
     <Pressable
       style={styles.toolCard}
@@ -7754,7 +7835,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
               <Text
                 style={[
                   styles.planMark,
-                  entry.status === 'in_progress' ? { color: theme.colors.tone.active } : null,
+                  entry.status === 'in_progress' ? { color: theme.colors.action } : null,
                 ]}
               >
                 {PLAN_MARK[entry.status]}
@@ -7826,10 +7907,10 @@ function PlanProposalCard({
             styles.toolDot,
             {
               backgroundColor: decidable
-                ? theme.colors.tone.attention
+                ? theme.colors.attention
                 : planning === 'implemented' && latest
-                  ? theme.colors.tone.done
-                  : theme.colors.tone.idle,
+                  ? theme.colors.success
+                  : theme.colors.textFaint,
             },
           ]}
         />
@@ -7859,10 +7940,16 @@ function PlanProposalCard({
   );
 }
 
-function EventRow({ message }: { message: ModeSwitchMessage }) {
+// Failures carry stderr tails, request ids and loader logs. The row leads with
+// what happened and what to do; the raw text stays one tap away for diagnosis.
+const RETRY_PROMPT = 'Try again';
+
+function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest: boolean }) {
   const { theme } = useUnistyles();
+  const actions = useContext(SessionActionsContext);
+  const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
   // A task change is bookkeeping, not conversation: one muted line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
@@ -7878,19 +7965,67 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
       </Pressable>
     );
   }
+  const repeats = message.repeatCount ?? 1;
+  // Only the newest failure offers a resend: an older one was already followed
+  // by something, and resending from it would answer a stale state.
+  const canRetry =
+    descriptor.action === 'retry' &&
+    isLatest &&
+    actions !== null &&
+    !actions.sending &&
+    !actions.dead;
+  const expandable = descriptor.technical !== undefined;
   return (
-    <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
-      <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
+    <View
+      style={[styles.eventRow, descriptor.action || expandable ? styles.eventRowActionable : null]}
+    >
+      <Text style={[styles.eventLabel, { color }]}>
+        {repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
+      </Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
+      {canRetry || expandable ? (
+        <View style={styles.eventFailureActions}>
+          {canRetry ? (
+            <Button
+              label="Try again"
+              icon="rotate-cw"
+              variant="secondary"
+              size="compact"
+              onPress={() => actions.sendTurn(RETRY_PROMPT)}
+              accessibilityHint="Sends a new turn asking the agent to continue"
+            />
+          ) : null}
+          {expandable ? (
+            <Pressable
+              onPress={() => setShowTechnical((open) => !open)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showTechnical }}
+              accessibilityLabel={showTechnical ? 'Hide details' : 'Show details'}
+              hitSlop={8}
+              style={({ pressed }) => (pressed ? styles.eventActionPressed : null)}
+            >
+              <Text style={styles.eventTasksLink}>
+                {showTechnical ? 'Hide details' : 'Details'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {expandable && showTechnical ? (
+        <View style={styles.eventTechnical}>
+          <Text selectable style={styles.toolPreview}>
+            {descriptor.technical}
+          </Text>
+        </View>
+      ) : null}
       {descriptor.action === 'claude-login' ? (
-        <Pressable
-          style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
-          accessibilityRole="button"
-          accessibilityLabel="Sign in to Claude"
-        >
-          <Text style={styles.eventActionLabel}>Sign in to Claude</Text>
-        </Pressable>
+        <View style={styles.eventActionRow}>
+          <Button
+            label="Sign in to Claude"
+            size="compact"
+            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -8112,7 +8247,7 @@ function BookmarksSheet({
                   accessibilityRole="button"
                   accessibilityLabel={`Jump to bookmark: ${preview}`}
                 >
-                  <Icon name="bookmark" size={15} color={theme.colors.primary} />
+                  <Icon name="bookmark" size={15} color={theme.colors.action} />
                   <Text style={styles.bookmarkPreview} numberOfLines={2}>
                     {preview}
                   </Text>
@@ -8223,12 +8358,12 @@ function BranchSwitcherSheet({
             {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
             {loading && current === undefined ? (
               <View style={styles.sheetLoading}>
-                <ActivityIndicator color={theme.colors.accent} />
+                <ActivityIndicator color={theme.colors.signature} />
               </View>
             ) : null}
             {current !== undefined ? (
               <View style={styles.sheetRow}>
-                <View style={[styles.sheetDot, { backgroundColor: theme.colors.tone.active }]} />
+                <View style={[styles.sheetDot, { backgroundColor: theme.colors.action }]} />
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {current}
                 </Text>
@@ -8251,7 +8386,7 @@ function BranchSwitcherSheet({
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {branch}
                 </Text>
-                {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                {pending === branch ? <ActivityIndicator color={theme.colors.signature} /> : null}
               </Pressable>
             ))}
             {/* Preview a PR / pushed branch (#122): check out origin/<branch> DETACHED
@@ -8272,13 +8407,15 @@ function BranchSwitcherSheet({
                     accessibilityRole="button"
                     accessibilityLabel={`Preview pushed branch ${branch}`}
                   >
-                    {/* Accent dot marks a preview (detached) row vs a local switch. */}
-                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.accent }]} />
+                    {/* Signature dot marks a preview (detached) row vs a local switch. */}
+                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.signature }]} />
                     <Text style={styles.sheetRowLabel} numberOfLines={1}>
                       {branch}
                     </Text>
                     <Text style={styles.sheetCurrent}>preview</Text>
-                    {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                    {pending === branch ? (
+                      <ActivityIndicator color={theme.colors.signature} />
+                    ) : null}
                   </Pressable>
                 ))}
               </>
@@ -8302,7 +8439,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Commit changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Commit &amp; switch
                   </Text>
                 </Pressable>
@@ -8316,7 +8453,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Stash changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Stash &amp; switch
                   </Text>
                 </Pressable>
@@ -8361,9 +8498,9 @@ function BranchSwitcherSheet({
                 accessibilityLabel="Create and switch to new branch"
               >
                 {pending === newBranch.trim() && newBranch.trim().length > 0 ? (
-                  <ActivityIndicator color={theme.colors.accent} />
+                  <ActivityIndicator color={theme.colors.signature} />
                 ) : (
-                  <Text style={[styles.newBranchButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.newBranchButtonText, { color: theme.colors.signature }]}>
                     Create
                   </Text>
                 )}
@@ -8440,7 +8577,7 @@ function EngineSwitcherSheet({
         <View
           style={[
             styles.sheetDot,
-            { backgroundColor: isSelected ? theme.colors.tone.active : theme.colors.border },
+            { backgroundColor: isSelected ? theme.colors.action : theme.colors.border },
           ]}
         />
         <Text style={styles.sheetRowLabel} numberOfLines={1}>
@@ -8566,6 +8703,7 @@ function PermissionPrompt({
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
+  const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
@@ -8593,12 +8731,21 @@ function PermissionPrompt({
   const recentSummary = isRecentSessionMessages
     ? recentSessionMessagesSummary(pending.input)
     : null;
+  const matrixSummary = isMatrix ? matrixSendSummary(pending.input) : null;
   const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
       ? (pending.input as Record<string, unknown>)
       : undefined;
+  const googleAccount = grantInput?.googleAccount;
+  const googleAccountEmail =
+    typeof googleAccount === 'object' &&
+    googleAccount !== null &&
+    'email' in googleAccount &&
+    typeof googleAccount.email === 'string'
+      ? googleAccount.email
+      : null;
   const reusableScopes = secretGrantScopes(pending.tool, grantInput);
   const isScopedSecretTool = reusableScopes.length > 0;
   // A brokered request whose input the summariser could not read still has to be
@@ -8616,6 +8763,7 @@ function PermissionPrompt({
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
+    (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
@@ -8666,6 +8814,9 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      matrixSummary === null
+        ? null
+        : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
       isEndPlanning
         ? grantInput?.action === 'discard'
@@ -8711,7 +8862,7 @@ function PermissionPrompt({
       }
     >
       <View style={styles.permissionHeader}>
-        <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
+        <View style={[styles.permissionDot, { backgroundColor: theme.colors.attention }]} />
         <Text
           style={styles.permissionTitle}
           numberOfLines={packageInstall === null ? 1 : undefined}
@@ -8732,6 +8883,11 @@ function PermissionPrompt({
                 : pending.riskClass}
         </Text>
       </View>
+      {googleAccountEmail ? (
+        <Text style={styles.permissionSubtitle} selectable>
+          Google account: {spellOutBidiControls(googleAccountEmail)}
+        </Text>
+      ) : null}
       {isPresentPlan ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>
@@ -8884,6 +9040,8 @@ function PermissionPrompt({
             </Text>
           ))}
         </View>
+      ) : matrixSummary !== null ? (
+        <MatrixSendPreview summary={matrixSummary} />
       ) : gmailSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           {gmailSummary.from === null ? null : (
@@ -8935,6 +9093,19 @@ function PermissionPrompt({
               {spellOutBidiControls(gmailSummary.body)}
             </Text>
           </ScrollView>
+          {gmailSummary.attachments.length > 0 ? (
+            <View>
+              <Text style={styles.permissionHttpMeta}>
+                Attachments ({gmailSummary.attachments.length}):
+              </Text>
+              {gmailSummary.attachments.map((attachment, index) => (
+                <Text key={index} style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(attachment.filename)} ·{' '}
+                  {formatAttachmentSize(attachment.size)} · {attachment.mimeType}
+                </Text>
+              ))}
+            </View>
+          ) : null}
           {gmailSummary.externalUrls.length > 0 ? (
             <View>
               <Text style={styles.permissionHttpMeta}>
@@ -8948,9 +9119,9 @@ function PermissionPrompt({
             </View>
           ) : null}
           <Text style={styles.permissionHttpMeta}>
-            Gmail sends exactly this text and HTML snapshot once. After sending, Verity deletes the
-            original draft if the final check still matches this preview. A change during cleanup
-            may be lost.
+            Gmail sends exactly this text, HTML, and attachment snapshot once. After sending, Verity
+            deletes the original draft if the final check still matches this preview. A change
+            during cleanup may be lost.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (
@@ -9001,13 +9172,13 @@ function PermissionPrompt({
         >
           {deciding ? (
             <ActivityIndicator
-              color={packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger}
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.attention}
             />
           ) : (
             <Text
               style={[
                 styles.permissionButtonLabel,
-                { color: packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger },
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.attention },
               ]}
             >
               {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
@@ -9042,7 +9213,7 @@ function PermissionPrompt({
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
+            <ActivityIndicator color={theme.colors.onAction} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
               {packageInstall !== null
@@ -9208,15 +9379,19 @@ function PullRequestBar({
   onMerge,
   onRefresh,
   onDismiss,
+  codeHost,
 }: {
   confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
+  /** Absent for GitHub; the bar names and marks the host it opens. */
+  codeHost: UseBranches['codeHost'];
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
   onDismiss?: () => void;
 }) {
   const { theme } = useUnistyles();
   const [merging, setMerging] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
@@ -9252,12 +9427,12 @@ function PullRequestBar({
   // second animation beside it only competed with it.
   const statusColor =
     button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
-      ? theme.colors.tone.danger
+      ? theme.colors.attention
       : button.kind === 'waiting'
-        ? theme.colors.tone.idle
+        ? theme.colors.textFaint
         : button.kind === 'refresh'
-          ? theme.colors.tone.attention
-          : theme.colors.tone.done;
+          ? theme.colors.attention
+          : theme.colors.success;
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
   const prNumber = String(pullRequest.number);
   const blockedLabels: Record<PullRequestBlockReason, string> = {
@@ -9316,97 +9491,98 @@ function PullRequestBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
+    <SessionBar pressed={opening}>
+      <SessionBarTarget
+        onPressIn={() => setOpening(true)}
+        onPressOut={() => setOpening(false)}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current)
+              void Linking.openURL(pullRequest.url).catch(() => undefined);
+          })
+        }
+        accessibilityRole="link"
+        accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
+      >
+        <SessionBarContent
+          color={statusColor}
+          title={`PR #${pullRequest.number} · ${pullRequest.title}`}
+          subtitle={`${merged ? 'merged' : pullRequest.phase} · ${checksText}`}
+        >
+          {visibleError ? (
+            <Text style={styles.prError} numberOfLines={1}>
+              {visibleError}
+            </Text>
+          ) : null}
+        </SessionBarContent>
+        <CodeHostIcon
+          provider={codeHost?.provider ?? 'github'}
+          size={16}
+          color={theme.colors.textMuted}
+        />
+      </SessionBarTarget>
+      {onDismiss ? (
         <Pressable
-          style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
+          style={({ pressed }) => [
+            styles.prDismissButton,
+            pressed ? styles.prDismissButtonPressed : null,
+          ]}
           onPress={() =>
             void confirmHint().then((proceed) => {
-              if (proceed && mounted.current)
-                void Linking.openURL(pullRequest.url).catch(() => undefined);
+              if (proceed && mounted.current) onDismiss();
             })
           }
-          accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
+          accessibilityRole="button"
+          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
         >
-          <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
-          <View style={styles.prMain}>
-            <Text style={styles.prTitle} numberOfLines={1}>
-              PR #{pullRequest.number} · {pullRequest.title}
-            </Text>
-            <Text style={styles.prSub} numberOfLines={1}>
-              {merged ? 'merged' : pullRequest.phase} · {checksText}
-            </Text>
-            {visibleError ? (
-              <Text style={styles.prError} numberOfLines={1}>
-                {visibleError}
-              </Text>
-            ) : null}
-          </View>
+          <Text style={styles.prDismissText}>×</Text>
         </Pressable>
-        {onDismiss ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prDismissButton,
-              pressed ? styles.prDismissButtonPressed : null,
-            ]}
-            onPress={() =>
-              void confirmHint().then((proceed) => {
-                if (proceed && mounted.current) onDismiss();
-              })
-            }
-            accessibilityRole="button"
-            accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
-          >
-            <Text style={styles.prDismissText}>×</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prMergeButton,
-              button.kind === 'merge' || button.kind === 'merging'
-                ? { backgroundColor: theme.colors.tone.done }
-                : button.kind === 'blocked'
-                  ? { backgroundColor: theme.colors.tone.danger }
-                  : button.kind === 'waiting'
-                    ? styles.prMergeButtonWaiting
-                    : styles.prMergeButtonOutline,
-              pressed && (mergeButtonEnabled || button.kind === 'refresh')
-                ? styles.prMergeButtonPressed
-                : null,
-            ]}
-            onPress={
-              button.kind === 'refresh'
-                ? () =>
-                    void confirmHint().then((proceed) => {
-                      if (proceed && mounted.current) onRefresh();
-                    })
-                : merge
-            }
-            disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
-            accessibilityRole="button"
-            accessibilityState={{
-              disabled: !mergeButtonEnabled && button.kind !== 'refresh',
-              busy: button.kind === 'merging' || button.kind === 'waiting',
-            }}
-            accessibilityLabel={buttonLabel}
-          >
-            {button.kind === 'merging' ? (
-              <ActivityIndicator color={theme.colors.onPrimary} />
-            ) : button.kind === 'waiting' ? (
-              <View style={styles.prMergeWaiting}>
-                <SlowSpinner color={theme.colors.textMuted} />
-                <Text style={styles.prMergeWaitingText}>{button.label}</Text>
-              </View>
-            ) : button.kind === 'closed' ? null : (
-              <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
-                {button.label}
-              </Text>
-            )}
-          </Pressable>
-        )}
-      </View>
-    </View>
+      ) : (
+        <Pressable
+          style={({ pressed }) => [
+            styles.prMergeButton,
+            button.kind === 'merge' || button.kind === 'merging'
+              ? { backgroundColor: theme.colors.success }
+              : button.kind === 'blocked'
+                ? { backgroundColor: theme.colors.attention }
+                : button.kind === 'waiting'
+                  ? styles.prMergeButtonWaiting
+                  : styles.prMergeButtonOutline,
+            pressed && (mergeButtonEnabled || button.kind === 'refresh')
+              ? styles.prMergeButtonPressed
+              : null,
+          ]}
+          onPress={
+            button.kind === 'refresh'
+              ? () =>
+                  void confirmHint().then((proceed) => {
+                    if (proceed && mounted.current) onRefresh();
+                  })
+              : merge
+          }
+          disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
+          accessibilityRole="button"
+          accessibilityState={{
+            disabled: !mergeButtonEnabled && button.kind !== 'refresh',
+            busy: button.kind === 'merging' || button.kind === 'waiting',
+          }}
+          accessibilityLabel={buttonLabel}
+        >
+          {button.kind === 'merging' ? (
+            <ActivityIndicator color={theme.colors.onAction} />
+          ) : button.kind === 'waiting' ? (
+            <View style={styles.prMergeWaiting}>
+              <SlowSpinner color={theme.colors.textMuted} />
+              <Text style={styles.prMergeWaitingText}>{button.label}</Text>
+            </View>
+          ) : button.kind === 'closed' ? null : (
+            <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
+              {button.label}
+            </Text>
+          )}
+        </Pressable>
+      )}
+    </SessionBar>
   );
 }
 
@@ -9454,47 +9630,45 @@ function LocalMergeBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <View style={styles.prLocalMain}>
-          <Text style={styles.prTitle} numberOfLines={1}>
-            Changes from this session
+    <SessionBar>
+      <View style={styles.prLocalMain}>
+        <Text style={styles.prTitle} numberOfLines={1}>
+          Changes from this session
+        </Text>
+        <Text style={styles.prSub} numberOfLines={1}>
+          Save them as a version in your project.
+        </Text>
+        {error !== undefined ? (
+          <Text style={styles.prError} numberOfLines={2}>
+            {error}
           </Text>
-          <Text style={styles.prSub} numberOfLines={1}>
-            Save them as a version in your project.
-          </Text>
-          {error !== undefined ? (
-            <Text style={styles.prError} numberOfLines={2}>
-              {error}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.prMergeButton,
-            styles.prLocalMergeButton,
-            { backgroundColor: theme.colors.tone.done },
-            saving || busy ? styles.prMergeButtonDisabled : null,
-            pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
-          ]}
-          onPress={() =>
-            void confirmHint().then((proceed) => {
-              if (proceed && mounted.current) save();
-            })
-          }
-          disabled={saving || busy}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: saving || busy, busy: saving }}
-          accessibilityLabel="Save this session's changes as a version in your project"
-        >
-          {saving ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
-          ) : (
-            <Text style={styles.prMergeText}>Save to project</Text>
-          )}
-        </Pressable>
+        ) : null}
       </View>
-    </View>
+      <Pressable
+        style={({ pressed }) => [
+          styles.prMergeButton,
+          styles.prLocalMergeButton,
+          { backgroundColor: theme.colors.success },
+          saving || busy ? styles.prMergeButtonDisabled : null,
+          pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
+        ]}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current) save();
+          })
+        }
+        disabled={saving || busy}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: saving || busy, busy: saving }}
+        accessibilityLabel="Save this session's changes as a version in your project"
+      >
+        {saving ? (
+          <ActivityIndicator color={theme.colors.onAction} />
+        ) : (
+          <Text style={styles.prMergeText}>Save to project</Text>
+        )}
+      </Pressable>
+    </SessionBar>
   );
 }
 
@@ -9597,6 +9771,17 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  // The browser's own focus ring is removed (WEB_NO_FOCUS_RING); the card
+  // shows focus in the action color instead, so keyboard users keep a cue.
+  const [focused, setFocused] = useState(false);
+  const onComposerFocus = useCallback(() => {
+    setFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const onComposerBlur = useCallback(() => {
+    setFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9636,7 +9821,7 @@ function InputBar({
         <InputActivityLine running={activityAnimating && !dead} />
         {dropActive ? (
           <View pointerEvents="none" style={styles.inputDropHint}>
-            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Icon name="paperclip" size={18} color={theme.colors.action} />
             <Text style={styles.inputDropHintText}>Drop files to attach</Text>
           </View>
         ) : null}
@@ -9653,7 +9838,7 @@ function InputBar({
                 <Icon
                   name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
                   size={16}
-                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                  color={saveAttachmentsToKnowledge ? theme.colors.action : theme.colors.textMuted}
                 />
                 <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
               </Pressable>
@@ -9669,24 +9854,21 @@ function InputBar({
             styles.inputCard,
             compact && styles.inputCardCompact,
             dropActive ? styles.inputCardDropActive : null,
+            Platform.OS === 'web' && focused && !dropActive ? styles.inputCardFocused : null,
           ]}
         >
           <PromptComposerInput
             key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
-            style={[
-              styles.input,
-              compact && styles.inputCompact,
-              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
-            ]}
+            style={[styles.input, compact && styles.inputCompact, WEB_NO_FOCUS_RING]}
             value={value}
             onChangeText={onChangeText}
             containerStyle={compact ? styles.inputContainerCompact : undefined}
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={onFocus}
-            onBlur={onBlur}
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
             placeholder={
               dead
                 ? 'This session can’t be resumed'
@@ -9766,7 +9948,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                   <Icon
                     name="arrow-up"
                     size={22}
-                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                    color={canSend ? theme.colors.onAction : theme.colors.textMuted}
                   />
                 </Pressable>
               )}
@@ -9783,6 +9965,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
   googleConnected,
+  googleAccess,
   visible,
   anchor,
   onCapturePhoto,
@@ -9797,6 +9980,7 @@ function AttachMenu({
   onDismiss,
 }: {
   googleConnected: boolean;
+  googleAccess: GoogleMenuAccess;
   visible: boolean;
   anchor: AttachAnchor | null;
   onCapturePhoto: () => void;
@@ -9823,7 +10007,7 @@ function AttachMenu({
       onConnectCalendar,
       onConnectContacts,
     },
-    { googleConnected },
+    { googleConnected, googleAccess },
   );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
@@ -10110,7 +10294,7 @@ function InputActivityLine({ running }: { running: boolean }) {
               ? {
                   height: 2,
                   borderRadius: theme.radius.pill,
-                  backgroundColor: theme.colors.accent,
+                  backgroundColor: theme.colors.signature,
                   opacity: 0.8,
                 }
               : styles.inputActivitySegment,
@@ -10213,7 +10397,9 @@ function MicButton({
           ]}
         >
           {countdown !== null ? (
-            <Text style={{ color: theme.colors.background, fontWeight: '700' }}>{countdown}</Text>
+            <Text style={{ color: theme.colors.background, fontFamily: theme.fonts.bold }}>
+              {countdown}
+            </Text>
           ) : autoMode ? (
             <Icon name="mic" size={20} color={theme.colors.background} />
           ) : (
@@ -10244,7 +10430,7 @@ function Banner({
   action?: { label: string; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const color = theme.colors.tone[tone];
+  const color = toneColor(theme.colors, tone);
   return (
     <View style={[styles.banner, { borderLeftColor: color }]}>
       <View style={styles.bannerRow}>
@@ -10312,8 +10498,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   starterScreen: {
     flexGrow: 1,
@@ -10333,7 +10519,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 320,
     lineHeight: 20 * theme.fontScale,
@@ -10400,7 +10587,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.text,
   },
   voiceAutoActionFill: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   voiceAutoDot: {
     position: 'absolute',
@@ -10409,7 +10596,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     borderWidth: 1,
     borderColor: theme.colors.background,
   },
@@ -10429,8 +10616,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   headerSubtitle: {
@@ -10440,8 +10627,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   headerHintText: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   // Fits the 28px back chevron + its padding.
@@ -10462,14 +10649,14 @@ const styles = StyleSheet.create((theme) => ({
   headerBranch: {
     flexShrink: 1,
     color: theme.colors.textFaint,
-    fontSize: 12 * theme.fontScale,
-    fontWeight: '400',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.regular,
   },
-  headerIssueLink: { color: theme.colors.primary },
+  headerIssueLink: { color: theme.colors.action },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '600',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   headerActions: {
     flexDirection: 'row',
@@ -10495,7 +10682,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
     borderWidth: 1.5,
     borderColor: theme.colors.surfaceAlt,
   },
@@ -10509,12 +10696,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
   },
   headerActionBadgeText: {
     color: '#ffffff',
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '700',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -10537,11 +10724,16 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  headerLinkText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
+  headerLinkText: {
+    flexShrink: 1,
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   headerMetaChip: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -10552,7 +10744,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.colors.scrim,
   },
   sheet: {
     backgroundColor: theme.colors.surface,
@@ -10580,16 +10772,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetTitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginBottom: theme.spacing.sm,
   },
   // Section header within the switcher list (e.g. the #122 preview section).
   sheetSectionLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginTop: theme.spacing.md,
     marginBottom: theme.spacing.xs,
@@ -10598,13 +10790,15 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
   },
   sheetError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.sm,
   },
   sheetEmpty: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.md,
   },
   driveSetupNotice: {
@@ -10619,15 +10813,15 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   driveSetupButtonPressed: {
     opacity: 0.78,
   },
   driveSetupButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
@@ -10635,7 +10829,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPath: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Pinned under the list while selecting: the one action that applies to the
   // whole selection, labelled and away from the header's Done.
@@ -10668,16 +10863,17 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: -StyleSheet.hairlineWidth,
   },
   filesRootButtonActive: {
-    borderBottomColor: theme.colors.primary,
+    borderBottomColor: theme.colors.action,
   },
   filesRootLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   filesRootLabelActive: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.
@@ -10698,13 +10894,13 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderTopColor: theme.colors.action,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   filesDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   fileRow: {
     minHeight: 46,
@@ -10724,7 +10920,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 1,
   },
   fileDownload: {
@@ -10746,7 +10943,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPreviewText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
@@ -10782,11 +10979,13 @@ const styles = StyleSheet.create((theme) => ({
   sheetRowLabel: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
   },
   sheetExcludedNote: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: theme.spacing.md,
     paddingTop: theme.spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -10794,12 +10993,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetCurrent: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   sheetLimited: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   // A bookmark jump-row: the tappable preview (dog-ear + up-to-2 lines of the passage)
@@ -10820,7 +11021,8 @@ const styles = StyleSheet.create((theme) => ({
   bookmarkPreview: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   bookmarkRemove: {
@@ -10840,7 +11042,8 @@ const styles = StyleSheet.create((theme) => ({
   newBranchInput: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
@@ -10858,8 +11061,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.4,
   },
   newBranchButtonText: {
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   // The inline dirty-worktree prompt: a message + commit/stash/cancel buttons,
   // shown in place of the new-branch row after a 409 "uncommitted changes".
@@ -10872,7 +11075,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   dirtyButtons: {
@@ -10888,54 +11092,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyButtonText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   queuedWrap: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  prBarWrap: {
-    paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
-  },
-  prBar: {
-    minHeight: 54,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  prOpenTarget: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.sm,
-  },
-  prBarPressed: {
-    backgroundColor: theme.colors.border,
-  },
-  prStatusDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-  },
-  prMain: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
-  },
   /** The local merge bar has no status dot and nothing to open, so it carries the
-   *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
+   *  padding the shared session target gives the PR row — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
 
   prLocalMain: {
@@ -10949,18 +11115,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   prTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   prSub: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prMergeButton: {
     minWidth: 78,
@@ -10970,7 +11136,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   prLocalMergeButton: {
     width: 124,
@@ -10994,9 +11160,9 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.textMuted,
   },
   prMergeText: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   prMergeWaiting: {
     flexDirection: 'row',
@@ -11005,13 +11171,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   prMergeWaitingText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prRefreshText: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prDismissButton: {
     width: 36,
@@ -11025,9 +11191,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   prDismissText: {
     color: theme.colors.textFaint,
-    fontSize: 22 * theme.fontScale,
+    fontSize: theme.typography.title.fontSize,
     lineHeight: 24 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   queuedBubbleRow: {
     alignItems: 'flex-end',
@@ -11050,13 +11216,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   queuedText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   queuedTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
   },
   banner: {
@@ -11066,7 +11233,8 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftWidth: 3,
   },
   bannerText: {
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     // Takes the row's slack so long copy wraps to its two lines instead of pushing
     // the action off the edge.
     flex: 1,
@@ -11077,8 +11245,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   bannerAction: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textDecorationLine: 'underline',
   },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
@@ -11090,7 +11258,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   searchTermHighlight: {
     color: theme.colors.text,
-    backgroundColor: `${theme.colors.accent}66`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
     borderRadius: 3,
   },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
@@ -11106,7 +11274,8 @@ const styles = StyleSheet.create((theme) => ({
     // right-aligned to sit with the user turn it dates. Reads as orientation, not
     // content, so it uses the faintest text token at the xs scale.
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'right',
     marginBottom: theme.spacing.xs,
     marginHorizontal: theme.spacing.sm,
@@ -11129,11 +11298,11 @@ const styles = StyleSheet.create((theme) => ({
     marginVertical: theme.spacing.sm,
   },
   peerRow: { justifyContent: 'flex-start' },
-  peerBubble: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surface },
+  peerBubble: { borderColor: theme.colors.action, backgroundColor: theme.colors.surface },
   peerSource: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     marginBottom: 6,
   },
   userBubble: {
@@ -11175,16 +11344,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   userPendingTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     alignSelf: 'flex-end',
     marginTop: 2,
   },
   userText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   // Attached images in a sent user turn: a wrapping row of rounded thumbnails,
   // sized to sit comfortably in the bubble. A trailing margin separates them from
@@ -11252,9 +11421,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   agentText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadStatus: {
     flexDirection: 'row',
@@ -11274,22 +11443,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   localMeetingUploadTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
-    fontWeight: '500',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   mdHeading: {
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.xs,
   },
   mdSectionHeading: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.sm,
   },
   mdListRow: {
@@ -11299,7 +11469,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   mdBullet: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   // Native selectable Text wraps reliably in normal column flow. Inside list
@@ -11317,18 +11488,18 @@ const styles = StyleSheet.create((theme) => ({
     height: theme.spacing.sm,
   },
   mdBold: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   mdCode: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   mdLink: {
     textDecorationLine: 'underline',
   },
   mdReference: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   table: {
     marginVertical: theme.spacing.xs,
@@ -11356,7 +11527,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRightColor: theme.colors.border,
   },
   tableHeaderText: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     color: theme.colors.text,
   },
   thinkingRow: {
@@ -11367,8 +11538,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   thinkingLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   thinkingText: {
@@ -11385,13 +11556,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   codeLang: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   codeText: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   // Copy affordance (shared by code cards and the tap-revealed message action).
@@ -11407,8 +11578,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.6,
   },
   copyLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Pinned to the code card's top-right corner, on a solid chip so it reads over
   // the monospace text it overlaps.
@@ -11441,13 +11612,15 @@ const styles = StyleSheet.create((theme) => ({
   toolHeadline: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
   // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
@@ -11457,7 +11630,8 @@ const styles = StyleSheet.create((theme) => ({
   // The "⎿ Done · N tools" summary line under a delegated-agent card.
   delegatedSummary: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 2,
     marginLeft: theme.spacing.md,
   },
@@ -11510,35 +11684,38 @@ const styles = StyleSheet.create((theme) => ({
   planMark: {
     width: 14 * theme.fontScale,
     color: theme.colors.textFaint,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryText: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryDone: {
     color: theme.colors.textFaint,
     textDecorationLine: 'line-through',
   },
   planEntryCurrent: {
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   toolCommand: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolPreview: {
     color: theme.colors.textFaint,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolSkillBody: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   eventRow: {
@@ -11556,38 +11733,44 @@ const styles = StyleSheet.create((theme) => ({
   dependencyStatusText: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   eventRowActionable: {
     flexDirection: 'column',
     alignItems: 'flex-start',
   },
+  eventFailureActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
+  },
+  eventTechnical: {
+    alignSelf: 'stretch',
+    marginTop: theme.spacing.xs,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
   eventLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   eventDetail: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   eventTasksLink: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
-  eventAction: {
-    alignSelf: 'flex-start',
-    marginTop: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.accent,
-  },
-  eventActionLabel: {
-    color: theme.colors.background,
-    fontWeight: '700',
-  },
+  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
   eventActionPressed: {
     opacity: 0.72,
   },
@@ -11622,8 +11805,8 @@ const styles = StyleSheet.create((theme) => ({
   slideDeckName: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputDropHint: {
     // Just a centered "Drop files to attach" label — no tinted bar or blue
@@ -11637,8 +11820,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   inputDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputActivityTrack: {
     position: 'absolute',
@@ -11651,7 +11834,7 @@ const styles = StyleSheet.create((theme) => ({
   inputActivitySegment: {
     height: 2,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
     opacity: 0.8,
   },
   // Quick-Action chips (issue #97).
@@ -11661,8 +11844,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   choicesQuestion: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   choicesChips: {
     flexDirection: 'row',
@@ -11680,14 +11863,14 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  // The agent's default pick: outlined in the primary accent so it stands out.
+  // The agent's default pick: outlined in the action colour so it stands out.
   chipRecommended: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
   },
   // A toggled multi-select option: filled to read as "on".
   chipSelected: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   chipDisabled: {
     opacity: 0.5,
@@ -11697,19 +11880,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipLabel: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '500',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.regular,
   },
   chipLabelRecommended: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
   },
   chipLabelSelected: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   chipStar: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // "Custom answer": a dashed-outline chip that opens the keyboard, visually set
   // apart from the agent's concrete options.
@@ -11719,22 +11903,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipCustomLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   choicesSend: {
     alignSelf: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   choicesSendDisabled: {
     opacity: 0.5,
   },
   choicesSendLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The live per-tool permission prompt (#149): a bordered card just above the input,
   // attention-toned so it reads as "the agent is paused, waiting on your decision".
@@ -11747,12 +11932,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     gap: theme.spacing.sm,
   },
-  planHistoryDone: { borderColor: theme.colors.tone.done },
-  planCount: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  planHistoryDone: { borderColor: theme.colors.success },
+  planCount: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   planHistoryStatus: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   permissionPrompt: {
@@ -11762,7 +11951,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.attention,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surfaceAlt,
     gap: theme.spacing.sm,
   },
@@ -11779,19 +11968,19 @@ const styles = StyleSheet.create((theme) => ({
   permissionTitle: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The risk-class tag (#149): a quiet attention-toned chip next to the title.
   permissionRisk: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   permissionSubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
   permissionDetails: {
@@ -11828,16 +12017,17 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionInstallExplanation: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   permissionDeny: {
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: 'transparent',
   },
   // Allow: the filled primary action.
   permissionAllow: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   permissionButtonDisabled: {
     opacity: 0.5,
@@ -11846,11 +12036,11 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.7,
   },
   permissionButtonLabel: {
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   permissionAllowLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   // Brokered-HTTP card (ADR 0011): readable request summary + plain-language
   // explanation instead of a raw JSON dump.
@@ -11859,7 +12049,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionHttpMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Scoped allows (ADR 0011 D2): a quiet outlined secondary row under Deny/Allow.
   permissionScopeRow: {
@@ -11878,8 +12069,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionScopeLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The rounded input card holding the full-width text field stacked above the
   // action row (two-tier, like the Claude app). Padding lives here, not on the
@@ -11907,9 +12098,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: 3,
     gap: theme.spacing.sm,
   },
+  inputCardFocused: {
+    borderColor: theme.colors.action,
+  },
   inputCardDropActive: {
-    borderColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderColor: theme.colors.action,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   // The button row under the text field: attach + engine chip on the left,
   // mic + Send/Stop right.
@@ -11971,7 +12165,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   knowledgeAttachmentToggleText: {
     color: theme.colors.textMuted,
-    fontSize: 13,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.subtitle.fontSize,
   },
   previewItem: {
     width: 64,
@@ -12000,11 +12195,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
+  // A light dim in both themes; a popover does not take the full scrim.
+  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
   menuCard: {
     position: 'absolute',
     backgroundColor: theme.colors.surface,
@@ -12012,7 +12209,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: theme.spacing.xs,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -12027,12 +12224,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   menuRowPressed: { backgroundColor: theme.colors.surfaceAlt },
   menuRowText: { flex: 1 },
-  menuRowLabel: { color: theme.colors.text, fontSize: theme.text.md },
-  menuRowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs, marginTop: 1 },
+  menuRowLabel: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
+  menuRowDetail: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+    marginTop: 1,
+  },
   menuSectionLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
     paddingTop: theme.spacing.xs,
@@ -12061,9 +12267,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewRemoveGlyph: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 16 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   // Right-edge message-nav stack (prev/next my message + to-bottom). `top: '50%'` +
   // an inline translateY (NAV_STACK_HALF + inputBarHeight/2) centre it in the VISIBLE
@@ -12080,10 +12286,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 6,
     paddingHorizontal: 4,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.scrim,
+    // A frosted surface, not the modal `scrim` dimmer: the stack has to stay
+    // readable over the transcript without darkening it.
+    backgroundColor: `${theme.colors.surface}d1`,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.3,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
@@ -12094,7 +12302,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   input: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
     // One comfortable line tall when empty; native multiline grows up to maxHeight
     // (~8 lines) then scrolls. No explicit height (RN#35234) and full width (stretches
@@ -12130,7 +12339,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   sendButtonDisabled: {
     backgroundColor: theme.colors.surface,

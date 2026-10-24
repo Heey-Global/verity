@@ -7,6 +7,7 @@ enum RemoteSmokeError: Error {
   case invalidFrame
   case closed
   case limitReached
+  case sendStalled
 }
 
 func matchesIP(_ bytes: Data, host: String, family: Int32) -> Bool {
@@ -136,7 +137,8 @@ final class RemoteSmokeTunnel {
 
   static func requestOnce(
     dataURL: URL, ticket: String, sessionId: String, coreURL: URL, corePin: String,
-    onAttached: (() -> Void)? = nil
+    onAttached: (() -> Void)? = nil,
+    onDiagnostic: ((String) -> Void)? = nil
   ) async throws -> (Int, Data) {
     let tunnel = try RemoteSmokeTunnel(
       dataURL: dataURL, ticket: ticket, sessionId: sessionId, coreURL: coreURL)
@@ -144,6 +146,7 @@ final class RemoteSmokeTunnel {
     try await tunnel.attach()
     onAttached?()
     let port = try await tunnel.start()
+    onDiagnostic?("probe-stage:listener_ready")
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = 20
     configuration.timeoutIntervalForResource = 30
@@ -153,7 +156,10 @@ final class RemoteSmokeTunnel {
     let delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL)
     let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     defer { session.invalidateAndCancel() }
+    onDiagnostic?("probe-stage:https_request")
+    defer { onDiagnostic?("probe-tls:\(delegate.phase)") }
     let (body, response) = try await session.data(from: coreURL)
+    onDiagnostic?("probe-stage:http_response")
     guard let http = response as? HTTPURLResponse else { throw RemoteSmokeError.invalidFrame }
     return (http.statusCode, body)
   }

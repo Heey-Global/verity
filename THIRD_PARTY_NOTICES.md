@@ -50,19 +50,20 @@ separately by `TRADEMARKS.md`.
 | (MIT OR CC0-1.0) | 1 |
 | (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
-| Apache-2.0 | 57 |
+| Apache-2.0 | 58 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 9 |
 | BSD-2-Clause | 23 |
-| BSD-3-Clause | 28 |
+| BSD-3-Clause | 26 |
 | CC-BY-3.0 | 1 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 2 |
 | ISC | 68 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1045 |
+| MIT | 1046 |
 | MIT AND Apache-2.0 | 1 |
+| MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
 | SEE LICENSE IN LICENSE.md | 8 |
@@ -218,6 +219,7 @@ separately by `TRADEMARKS.md`.
 | @eslint/js | MIT | [source](https://www.npmjs.com/package/%40eslint%2Fjs) |
 | @eslint/object-schema | Apache-2.0 | [source](https://www.npmjs.com/package/%40eslint%2Fobject-schema) |
 | @eslint/plugin-kit | Apache-2.0 | [source](https://www.npmjs.com/package/%40eslint%2Fplugin-kit) |
+| @expo-google-fonts/inter | MIT AND OFL-1.1 | [source](https://www.npmjs.com/package/%40expo-google-fonts%2Finter) |
 | @expo-google-fonts/material-symbols | MIT AND Apache-2.0 | [source](https://www.npmjs.com/package/%40expo-google-fonts%2Fmaterial-symbols) |
 | @expo/cli | MIT | [source](https://www.npmjs.com/package/%40expo%2Fcli) |
 | @expo/code-signing-certificates | MIT | [source](https://www.npmjs.com/package/%40expo%2Fcode-signing-certificates) |
@@ -252,10 +254,11 @@ separately by `TRADEMARKS.md`.
 | @expo/ui | MIT | [source](https://www.npmjs.com/package/%40expo%2Fui) |
 | @expo/vector-icons | MIT | [source](https://www.npmjs.com/package/%40expo%2Fvector-icons) |
 | @expo/ws-tunnel | MIT | [source](https://www.npmjs.com/package/%40expo%2Fws-tunnel) |
-| @expo/xcpretty | BSD-3-Clause | [source](https://www.npmjs.com/package/%40expo%2Fxcpretty) |
+| @expo/xcpretty | MIT | [source](https://www.npmjs.com/package/%40expo%2Fxcpretty) |
 | @fastify/accept-negotiator | MIT | [source](https://www.npmjs.com/package/%40fastify%2Faccept-negotiator) |
 | @fastify/ajv-compiler | MIT | [source](https://www.npmjs.com/package/%40fastify%2Fajv-compiler) |
 | @fastify/compress | MIT | [source](https://www.npmjs.com/package/%40fastify%2Fcompress) |
+| @fastify/deepmerge | MIT | [source](https://www.npmjs.com/package/%40fastify%2Fdeepmerge) |
 | @fastify/error | MIT | [source](https://www.npmjs.com/package/%40fastify%2Ferror) |
 | @fastify/fast-json-stringify-compiler | MIT | [source](https://www.npmjs.com/package/%40fastify%2Ffast-json-stringify-compiler) |
 | @fastify/forwarded | MIT | [source](https://www.npmjs.com/package/%40fastify%2Fforwarded) |
@@ -362,6 +365,7 @@ separately by `TRADEMARKS.md`.
 | @octokit/rest | MIT | [source](https://www.npmjs.com/package/%40octokit%2Frest) |
 | @octokit/types | MIT | [source](https://www.npmjs.com/package/%40octokit%2Ftypes) |
 | @openai/codex | Apache-2.0 | [source](https://www.npmjs.com/package/%40openai%2Fcodex) |
+| @opentelemetry/api | Apache-2.0 | [source](https://www.npmjs.com/package/%40opentelemetry%2Fapi) |
 | @oxc-parser/binding-android-arm-eabi | MIT | [source](https://www.npmjs.com/package/%40oxc-parser%2Fbinding-android-arm-eabi) |
 | @oxc-parser/binding-android-arm64 | MIT | [source](https://www.npmjs.com/package/%40oxc-parser%2Fbinding-android-arm64) |
 | @oxc-parser/binding-darwin-arm64 | MIT | [source](https://www.npmjs.com/package/%40oxc-parser%2Fbinding-darwin-arm64) |
@@ -582,9 +586,8 @@ separately by `TRADEMARKS.md`.
 | brace-expansion | MIT | [source](https://www.npmjs.com/package/brace-expansion) |
 | braces | MIT | [source](https://www.npmjs.com/package/braces) |
 | browserslist | MIT | [source](https://www.npmjs.com/package/browserslist) |
-| bser | Apache-2.0 | [source](https://www.npmjs.com/package/bser) |
+| bser | MIT | [source](https://www.npmjs.com/package/bser) |
 | buffer-from | MIT | [source](https://www.npmjs.com/package/buffer-from) |
-| buffer | MIT | [source](https://www.npmjs.com/package/buffer) |
 | bundle-name | MIT | [source](https://www.npmjs.com/package/bundle-name) |
 | bytes | MIT | [source](https://www.npmjs.com/package/bytes) |
 | cacache | ISC | [source](https://www.npmjs.com/package/cacache) |
@@ -708,7 +711,6 @@ separately by `TRADEMARKS.md`.
 | esutils | BSD-2-Clause | [source](https://www.npmjs.com/package/esutils) |
 | etag | MIT | [source](https://www.npmjs.com/package/etag) |
 | event-target-shim | MIT | [source](https://www.npmjs.com/package/event-target-shim) |
-| events | MIT | [source](https://www.npmjs.com/package/events) |
 | eventsource-parser | MIT | [source](https://www.npmjs.com/package/eventsource-parser) |
 | eventsource | MIT | [source](https://www.npmjs.com/package/eventsource) |
 | execa | MIT | [source](https://www.npmjs.com/package/execa) |
@@ -779,7 +781,7 @@ separately by `TRADEMARKS.md`.
 | fastify | MIT | [source](https://www.npmjs.com/package/fastify) |
 | fastq | ISC | [source](https://www.npmjs.com/package/fastq) |
 | fb-dotslash | (MIT OR Apache-2.0) | [source](https://www.npmjs.com/package/fb-dotslash) |
-| fb-watchman | Apache-2.0 | [source](https://www.npmjs.com/package/fb-watchman) |
+| fb-watchman | MIT | [source](https://www.npmjs.com/package/fb-watchman) |
 | fbjs-css-vars | MIT | [source](https://www.npmjs.com/package/fbjs-css-vars) |
 | fbjs | MIT | [source](https://www.npmjs.com/package/fbjs) |
 | fd-package-json | MIT | [source](https://www.npmjs.com/package/fd-package-json) |
@@ -845,7 +847,6 @@ separately by `TRADEMARKS.md`.
 | human-signals | Apache-2.0 | [source](https://www.npmjs.com/package/human-signals) |
 | hyphenate-style-name | BSD-3-Clause | [source](https://www.npmjs.com/package/hyphenate-style-name) |
 | iconv-lite | MIT | [source](https://www.npmjs.com/package/iconv-lite) |
-| ieee754 | BSD-3-Clause | [source](https://www.npmjs.com/package/ieee754) |
 | ignore | MIT | [source](https://www.npmjs.com/package/ignore) |
 | import-local | MIT | [source](https://www.npmjs.com/package/import-local) |
 | imurmurhash | MIT | [source](https://www.npmjs.com/package/imurmurhash) |
@@ -1080,6 +1081,8 @@ separately by `TRADEMARKS.md`.
 | pirates | MIT | [source](https://www.npmjs.com/package/pirates) |
 | pkce-challenge | MIT | [source](https://www.npmjs.com/package/pkce-challenge) |
 | pkg-dir | MIT | [source](https://www.npmjs.com/package/pkg-dir) |
+| playwright-core | Apache-2.0 | [source](https://www.npmjs.com/package/playwright-core) |
+| playwright | Apache-2.0 | [source](https://www.npmjs.com/package/playwright) |
 | plist | MIT | [source](https://www.npmjs.com/package/plist) |
 | pngjs | MIT | [source](https://www.npmjs.com/package/pngjs) |
 | postcss-value-parser | MIT | [source](https://www.npmjs.com/package/postcss-value-parser) |
@@ -1094,7 +1097,6 @@ separately by `TRADEMARKS.md`.
 | pretty-format | MIT | [source](https://www.npmjs.com/package/pretty-format) |
 | proc-log | ISC | [source](https://www.npmjs.com/package/proc-log) |
 | process-warning | MIT | [source](https://www.npmjs.com/package/process-warning) |
-| process | MIT | [source](https://www.npmjs.com/package/process) |
 | progress | MIT | [source](https://www.npmjs.com/package/progress) |
 | promise-limit | ISC | [source](https://www.npmjs.com/package/promise-limit) |
 | promise-retry | MIT | [source](https://www.npmjs.com/package/promise-retry) |

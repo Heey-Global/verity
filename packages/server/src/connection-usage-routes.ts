@@ -27,6 +27,8 @@ export function registerConnectionUsageRoutes(
       matrix: 0,
       doppler: 0,
       mcp: 0,
+      // Forgejo projects per connection id; instances are listed individually.
+      forgejo: {} as Record<string, number>,
     };
     for (const project of projects) {
       const settings = await store.getProjectSettings(project.id);
@@ -36,6 +38,9 @@ export function registerConnectionUsageRoutes(
         grants.push(await store.getProjectGoogleConnection(project.id, service));
       }
       if (project.kind === 'github') usage.github++;
+      if (project.kind === 'forgejo' && project.forgeConnectionId)
+        usage.forgejo[project.forgeConnectionId] =
+          (usage.forgejo[project.forgeConnectionId] ?? 0) + 1;
       let legacyGoogle = false;
       for (const session of sessions.filter((session) => session.projectId === project.id)) {
         if (
@@ -48,6 +53,7 @@ export function registerConnectionUsageRoutes(
         }
       }
       if (
+        (await store.googleAccounts.folders(project.id)).length > 0 ||
         settings?.googleDriveFolderId ||
         grants.some((grant) => grant !== undefined) ||
         legacyGoogle

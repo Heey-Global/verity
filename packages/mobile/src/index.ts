@@ -1,3 +1,4 @@
+export { mobileRuntimeSnapshot, type MobileRuntimeSnapshot } from './runtimeDiagnostics.js';
 export {
   decodeStreamMessage,
   parseStreamFrame,
@@ -151,7 +152,20 @@ export {
   type AttentionNotice,
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
-export { parseBranchIssue, githubRefUrl, type RepoIdentity } from './ui/branchRef.js';
+export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
+export {
+  LEGACY_GITHUB_CONNECTION_ID,
+  codeHostForProject,
+  codeHostFromConnection,
+  connectedCodeHosts,
+  forgejoConnection,
+  preferredCodeHost,
+  providerName,
+  repositoryWebUrl,
+  type CodeHost,
+  type CodeHostProvider,
+  type CodeHostState,
+} from './ui/codeHosts.js';
 export { usesDevcontainerImage, DEVCONTAINER_IMAGE_PREFIX } from './ui/devcontainerImage.js';
 export { splitSearchHighlights, type SearchHighlightSegment } from './ui/searchHighlight.js';
 export {
@@ -183,7 +197,9 @@ export {
 } from './ui/knowledgePublishSummary.js';
 export {
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
+  type GmailSendAttachment,
   type GmailSendSummary,
 } from './ui/gmailSendSummary.js';
 export {
@@ -207,10 +223,24 @@ export {
   type TrustedCliSummary,
 } from './ui/trustedCliSummary.js';
 export {
+  appStoreUpdate,
+  describeAppUpdate,
+  parseAppStoreLookup,
+  type AppStoreRelease,
+  type AppUpdateAction,
+  type AppUpdateBlock,
+  type AppUpdateBox,
+  type AppUpdateFacts,
+} from './ui/appUpdate.js';
+export {
   describeServerUpdate,
+  describeServerUpdatePanel,
   serverUpdateAwaitsAttention,
   serverUpdatePollMs,
   showsServerUpdatePanel,
+  type ServerUpdateCard,
+  type ServerUpdateCardAction,
+  type ServerUpdatePanel,
   type ServerUpdateView,
 } from './ui/serverUpdate.js';
 export {
@@ -222,6 +252,7 @@ export {
 export {
   serverUpdateOperationSchema,
   serverUpdateStatusSchema,
+  type ServerUpdateAttempt,
   type ServerUpdateOperation,
   type ServerUpdateStatus,
 } from './api.js';
@@ -330,6 +361,10 @@ export {
   type ProjectMcpBinding,
   type MeetingTranscriptionBackendStatus,
   type CreateProjectRequest,
+  type ConnectionRepository,
+  type ForgeConnection,
+  type ForgeConnectionList,
+  type ForgejoConnectionRequest,
   type DevicePushTokenRequest,
   type DevicePushTokenRegistered,
   type MeetingTranscriptCreated,
@@ -457,6 +492,14 @@ export {
 } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export {
+  connectionRecordingStatusSchema,
+  selectedConnectionRecordingStatusSchema,
+  type SelectedConnectionRecordingStatus,
+  connectionRecordingExportSchema,
+  type ConnectionRecordingStatus,
+  type ConnectionRecordingExport,
+  returnPathStatusSchema,
+  type ReturnPathStatus,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
@@ -515,6 +558,7 @@ export {
   SERVER_UPDATE_PUSH_KIND,
   parsePushPayload,
   parseServerUpdatePush,
+  parseVulnerabilityPush,
   pushPayloadSchema,
   serverUpdatePushSchema,
   type PushKind,
@@ -596,3 +640,19 @@ export { packageInstallSummary, packageInstallDecision } from './ui/packageInsta
 export type { TransportLane, TransportRequestInit } from './api.js';
 
 export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';
+
+export { matrixSendSummary, type MatrixSendSummary } from './ui/matrixSendSummary.js';
+
+export type {
+  GoogleAccount,
+  GoogleService,
+  GoogleSessionAccess,
+  GoogleSessionAccessStatus,
+  ProjectDriveFolder,
+} from './api.js';
+
+export {
+  vulnerabilityFixPrompt,
+  type VulnerabilityFinding,
+  type VulnerabilitySettings,
+} from './vulnerability.js';

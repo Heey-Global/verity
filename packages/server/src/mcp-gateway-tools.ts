@@ -1,6 +1,7 @@
 import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
 
+import type { TrustedCliOutputStore } from './trusted-cli-output.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import { ControlPlaneSessionToolError } from './session-handoff-tool.js';
 import type { createBrokeredHttpTool } from './brokered-http-tool.js';
@@ -12,6 +13,7 @@ type TrustedCliTool = ReturnType<typeof createTrustedCliTool>;
 export function createMcpGatewayToolExecutor(options: {
   brokeredHttpTool: BrokeredHttpTool;
   trustedCliTool: TrustedCliTool;
+  trustedCliOutput?: TrustedCliOutputStore;
   /** Root containing one supervisor runtime directory per project. */
   runnerRoot?: string | undefined;
   runTrustedCli?: typeof runSupervisorTrustedCli | undefined;
@@ -40,6 +42,16 @@ export function createMcpGatewayToolExecutor(options: {
         turnId: string;
         invocationId: string;
         request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
+  matrix?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+        approvedByCard?: boolean;
       }) => Promise<unknown>)
     | undefined;
   gmail?:
@@ -92,6 +104,15 @@ export function createMcpGatewayToolExecutor(options: {
     request,
     approvedByCard,
   }) => {
+    if (toolName === 'verity_secret_output') {
+      if (options.trustedCliOutput === undefined) throw new Error('trusted CLI output unavailable');
+      const input = request as { invocationId: string; cursor?: number };
+      return options.trustedCliOutput.read(
+        { projectId, sessionId },
+        input.invocationId,
+        input.cursor,
+      );
+    }
     if (toolName === 'verity_secret_run') {
       if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
@@ -99,7 +120,7 @@ export function createMcpGatewayToolExecutor(options: {
         sessionId,
         turnId,
         { id: callId, name: 'verity_secret_run', input: request },
-        (input) => runTrustedCli(join(runnerRoot, projectId), input),
+        (input, streamOptions) => runTrustedCli(join(runnerRoot, projectId), input, streamOptions),
       );
     }
     if (toolName === 'verity_http_request') {
@@ -128,6 +149,17 @@ export function createMcpGatewayToolExecutor(options: {
     if (toolName === 'verity_google_calendar') {
       if (options.googleCalendar === undefined) throw new Error('Google Calendar is unavailable');
       return options.googleCalendar({ projectId, sessionId, turnId, invocationId, request });
+    }
+    if (toolName === 'verity_matrix') {
+      if (options.matrix === undefined) throw new Error('Matrix is unavailable');
+      return options.matrix({
+        projectId,
+        sessionId,
+        turnId,
+        invocationId,
+        request,
+        ...(approvedByCard === undefined ? {} : { approvedByCard }),
+      });
     }
     if (toolName === 'verity_gmail') {
       if (options.gmail === undefined) throw new Error('Gmail is unavailable');
@@ -160,7 +192,8 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_present_plan' ||
       toolName === 'verity_end_planning' ||
       toolName === 'verity_tasks' ||
-      toolName === 'verity_app_help'
+      toolName === 'verity_app_help' ||
+      toolName === 'verity_vulnerabilities'
     ) {
       // Not served from here. Most need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`
@@ -188,7 +221,10 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE =
  * refuse the same request on their own, so
  * this only moves the refusal ahead of a card whose answer could not change the outcome.
  *
- * Only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field
+ * Starting planning also requires an affirmative managed-configuration and planning
+ * capability before changing session state.
+ *
+ * For entry scripts, only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field
  * started only after the helper's probe passed, and an unreachable supervisor fails the call
  * on its own after approval, exactly as before this check existed.
  */
@@ -200,6 +236,14 @@ export function createTrustedCliPreflight(options: {
     options.requestStatus ??
     ((socketPath: string) => requestRunnerSupervisor(socketPath, { kind: 'status' }));
   return async ({ projectId, toolName, request }) => {
+    if (toolName === 'verity_start_planning') {
+      const status = await requestStatus(join(options.runnerRoot, projectId, 'supervisor.sock'));
+      if (status['managedAgentConfig'] !== true || status['planningIsolation'] !== true)
+        throw new ControlPlaneSessionToolError(
+          'Planning requires the updated agent filesystem boundary; recreate the Sandbox with the updated toolkit.',
+        );
+      return;
+    }
     if (toolName !== 'verity_secret_run') return;
     if (
       typeof request !== 'object' ||

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const PAIRS = [
   'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker',
+  'features/verity-sandbox-toolkit/bin/verity-managed-secret-servers',
   'features/verity-sandbox-toolkit/bin/verity-egress-connector',
   'features/verity-sandbox-toolkit/bin/verity-memory-guard',
   'features/verity-sandbox-toolkit/bin/verity-package-policy',

@@ -12,7 +12,7 @@ import {
 } from '@verity/mobile';
 import { router, Stack } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -20,6 +20,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { GithubConnectPanel } from '../components/GithubConnectPanel';
 import { createVerityClient } from '../lib/client';
 import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
+import { Button } from '../components/ui';
 
 export default function GithubConnectScreen() {
   const client = createVerityClient();
@@ -104,7 +105,7 @@ function GithubConnectView({ client }: { client: VerityClient }) {
     return (
       <View style={styles.centered}>
         <Stack.Screen options={{ title: 'GitHub' }} />
-        <ActivityIndicator color={theme.colors.accent} />
+        <ActivityIndicator color={theme.colors.signature} />
       </View>
     );
   }
@@ -137,24 +138,14 @@ function GithubConnectView({ client }: { client: VerityClient }) {
               This Verity server is connected to GitHub. Disconnect to authorize a different account
               or organization.
             </Text>
-            <Pressable
-              style={({ pressed }) => [
-                styles.disconnectButton,
-                disconnecting ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={disconnect}
-              disabled={disconnecting}
-              accessibilityRole="button"
-              accessibilityLabel="Disconnect GitHub"
-            >
-              {disconnecting ? (
-                <ActivityIndicator size="small" color={theme.colors.accent} />
-              ) : null}
-              <Text style={styles.disconnectLabel}>
-                {disconnecting ? 'Disconnecting…' : 'Disconnect GitHub'}
-              </Text>
-            </Pressable>
+            <View style={styles.inline}>
+              <Button
+                label="Disconnect GitHub"
+                variant="destructive"
+                loading={disconnecting}
+                onPress={disconnect}
+              />
+            </View>
           </View>
         ) : (
           <GithubConnectPanel client={client} onConnected={onConnected} />
@@ -165,6 +156,8 @@ function GithubConnectView({ client }: { client: VerityClient }) {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   flex: {
     flex: 1,
     backgroundColor: theme.colors.background,
@@ -178,14 +171,13 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
   },
   centerTitle: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
     textAlign: 'center',
   },
   centerSubtitle: {
+    ...theme.typography.body,
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
     textAlign: 'center',
   },
   content: {
@@ -193,9 +185,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
   panel: {
     gap: theme.spacing.md,
@@ -206,35 +198,11 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   panelTitle: {
+    ...theme.typography.row,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '800',
   },
   panelSubtitle: {
+    ...theme.typography.subtitle,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-  },
-  disconnectButton: {
-    minHeight: 48,
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
-  },
-  disconnectLabel: {
-    color: theme.colors.accent,
-    fontSize: theme.text.md,
-    fontWeight: '800',
-  },
-  buttonDisabled: {
-    opacity: 0.45,
-  },
-  pressed: {
-    opacity: 0.62,
   },
 }));

@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type View } from 'react-native';
 import { measure, scrollTo, withSpring, type AnimatedRef } from 'react-native-reanimated';
+import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 import { useProjectReorder, useProjectRowDrag, useSessionDragOrder } from './useProjectReorder';
 
 let mockFrame: (frame: { timeSincePreviousFrame: number }) => void;
@@ -55,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 afterEach(() => {
+  act(() => setGestureDiagnosticsEnabled(false));
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -255,6 +257,30 @@ it('leaves session content and header actions to their own gestures', () => {
   expect(fail).not.toHaveBeenCalled();
   down(400);
   expect(fail).toHaveBeenCalledTimes(1);
+});
+
+it('records whether it holds or releases a touch only while gesture recording is on', () => {
+  const test = setup();
+  const down = (absoluteY: number) =>
+    act(() =>
+      test.hook.result.current.gesture.handlers.onTouchesDown?.(
+        { allTouches: [{ absoluteX: 100, absoluteY }] } as never,
+        { fail: jest.fn() } as never,
+      ),
+    );
+  down(300);
+  expect(exportGestureDiagnostics().events).toEqual([]);
+  act(() => setGestureDiagnosticsEnabled(true));
+  down(300);
+  down(400);
+  expect(exportGestureDiagnostics().events).toMatchObject([
+    {
+      source: 'reorder',
+      event: 'touch-down-hold',
+      detail: { target: 'project', excluded: false, headers: 4 },
+    },
+    { source: 'reorder', event: 'touch-down-fail', detail: { excluded: false } },
+  ]);
 });
 
 it('uses visible slot measurements even when earlier rows have never mounted', () => {

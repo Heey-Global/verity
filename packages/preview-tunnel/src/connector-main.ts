@@ -11,6 +11,9 @@ const staticServer = staticRoot
   ? await startStaticPreviewServer(staticRoot, required('VERITY_PREVIEW_STATIC_PATH'))
   : undefined;
 const connector = new PreviewConnector({
+  shareId: process.env.VERITY_PREVIEW_SHARE_ID?.trim() || 'unknown',
+  onRequest: (entry) =>
+    process.stdout.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`),
   accessMode: process.env.VERITY_PREVIEW_ACCESS_MODE === 'local-open' ? 'local-open' : 'pin',
   edgeUrl: required('VERITY_PREVIEW_EDGE_URL'),
   connectorToken: required('VERITY_PREVIEW_CONNECTOR_TOKEN'),
@@ -18,6 +21,10 @@ const connector = new PreviewConnector({
     offlineServer?.origin ?? staticServer?.origin ?? required('VERITY_PREVIEW_TARGET_ORIGIN'),
   ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
   ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+  onDiagnostic: (diagnostic) =>
+    process.stderr.write(
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...diagnostic })}\n`,
+    ),
 });
 
 let stopping = false;

@@ -1,3 +1,4 @@
+import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
 import type { ProjectSettingsRecord } from '@verity/store';
 
 import {
@@ -33,7 +34,7 @@ const NATIVE_EXPORTS: Record<string, { mimeType: string; text: boolean }> = {
 
 interface GoogleDriveAgentToolStore extends Pick<
   GoogleWorkspaceToolStore,
-  'claimGoogleWorkspaceInvocation' | 'completeGoogleWorkspaceInvocation'
+  'claimGoogleWorkspaceInvocation' | 'completeGoogleWorkspaceInvocation' | 'googleAccounts'
 > {
   getCompletedGoogleWorkspaceInvocation?(
     input: WorkspaceInvocationInput,
@@ -44,6 +45,8 @@ interface GoogleDriveAgentToolStore extends Pick<
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getProjectSettings(projectId: string): Promise<ProjectSettingsRecord | undefined>;
   setSessionWorkspaceFile(input: {
+    accountId?: string | null;
+    folderLinkId?: string | null;
     sessionId: string;
     kind: 'slides' | 'docs' | 'sheets';
     fileId: string;
@@ -74,7 +77,7 @@ export interface GoogleDriveAgentApi {
 
 export interface GoogleDriveAgentToolDeps {
   eventStore: GoogleDriveAgentToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   drive?: GoogleDriveAgentApi;
 }
 
@@ -168,6 +171,8 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
     projectId: string;
     sessionId: string;
     url: string;
+    accountId?: string | undefined;
+    folderLinkId?: string | undefined;
   }): Promise<boolean>;
   invoke(input: WorkspaceInvocationInput): Promise<unknown>;
 } {
@@ -183,7 +188,15 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
     async canReadDocumentWithoutApproval(input) {
       const session = await deps.eventStore.getSession(input.sessionId);
       if (session?.projectId !== input.projectId) return false;
-      const settings = await deps.eventStore.getProjectSettings(input.projectId);
+      const authority = deps.eventStore.googleAccounts
+        ? await resolveGoogleDriveAuthority(
+            { googleAccounts: deps.eventStore.googleAccounts },
+            input.projectId,
+            { ...input, action: 'read_document_url' },
+          ).catch(() => undefined)
+        : undefined;
+      if (deps.eventStore.googleAccounts && !authority) return false;
+      const settings = authority ?? (await deps.eventStore.getProjectSettings(input.projectId));
       const rootId = settings?.googleDriveFolderId;
       if (!rootId) return false;
       const request = googleDriveRequestSchema.parse({
@@ -191,7 +204,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         url: input.url,
       });
       if (request.action !== 'read_document_url') return false;
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(authority?.accountId);
       if (!token) return false;
       const file = await drive.get(token, new URL(request.url).pathname.split('/')[3]!);
       return (
@@ -205,13 +218,34 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         throw new Error('Google Drive is restricted to the calling session');
       }
       const request = googleDriveRequestSchema.parse(input.request);
-      const settings = await deps.eventStore.getProjectSettings(input.projectId);
+      if (
+        request.action === 'capabilities' &&
+        deps.eventStore.googleAccounts &&
+        !request.folderLinkId
+      ) {
+        return {
+          folders: await deps.eventStore.googleAccounts.folders(input.projectId),
+          accounts: (await deps.eventStore.googleAccounts.list()).map(
+            ({ id, email, displayName }) => ({ id, email, displayName }),
+          ),
+          instructions:
+            'Select folderLinkId for subsequent operations. Each folder has its own account and access mode.',
+        };
+      }
+      const authority = deps.eventStore.googleAccounts
+        ? await resolveGoogleDriveAuthority(
+            { googleAccounts: deps.eventStore.googleAccounts },
+            input.projectId,
+            request,
+          )
+        : undefined;
+      const settings = authority ?? (await deps.eventStore.getProjectSettings(input.projectId));
       const rootId = settings?.googleDriveFolderId;
-      const credential = await deps.eventStore.getVeritySettings?.();
+      const credential = authority ? undefined : await deps.eventStore.getVeritySettings?.();
       if (request.action !== 'read_document_url' && (rootId === undefined || rootId === null)) {
         throw new Error('No Google Drive folder is linked to this project');
       }
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(authority?.accountId);
       if (token === undefined) throw new Error('Google Drive is not connected');
       const mutation = googleDriveIsMutation(request);
       if (mutation && settings?.googleDriveAccessMode === 'read-only')
@@ -222,8 +256,18 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         const callingSession = await deps.eventStore.getSession(input.sessionId);
         if (callingSession?.projectId !== input.projectId)
           throw new Error('The calling session changed projects during this operation');
-        const current = await deps.eventStore.getProjectSettings(input.projectId);
-        const account = await deps.eventStore.getVeritySettings?.();
+        const currentAuthority = deps.eventStore.googleAccounts
+          ? await resolveGoogleDriveAuthority(
+              { googleAccounts: deps.eventStore.googleAccounts },
+              input.projectId,
+              request,
+            )
+          : undefined;
+        if (JSON.stringify(currentAuthority) !== JSON.stringify(authority))
+          throw new Error('Google Drive authorization changed during this operation');
+        const current =
+          currentAuthority ?? (await deps.eventStore.getProjectSettings(input.projectId));
+        const account = authority ? undefined : await deps.eventStore.getVeritySettings?.();
         if (
           current?.googleDriveFolderId !== rootId ||
           (mutation && current?.googleDriveAccessMode === 'read-only')
@@ -427,7 +471,11 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
           : file.mimeType.endsWith('.document')
             ? 'docs'
             : 'sheets';
+        await recheck();
         await deps.eventStore.setSessionWorkspaceFile({
+          ...(authority
+            ? { accountId: authority.accountId, folderLinkId: authority.folderLinkId }
+            : {}),
           sessionId: input.sessionId,
           kind,
           fileId: file.id,

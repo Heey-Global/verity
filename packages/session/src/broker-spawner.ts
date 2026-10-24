@@ -94,7 +94,55 @@ function send(socket: Socket, frame: object): boolean {
   return true;
 }
 
-export function createBrokerSpawner(socketPath: string): Spawner {
+async function requireBrokerIsolation(socketPath: string, planning: boolean): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const peer = createConnection(socketPath);
+    let buffered = '';
+    const timer = setTimeout(
+      () => finish(new Error('Agent security capability check timed out')),
+      10_000,
+    );
+    const finish = (error?: Error): void => {
+      clearTimeout(timer);
+      peer.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    peer.once('error', finish);
+    peer.once('connect', () => send(peer, { protocolVersion: PROTOCOL_VERSION, kind: 'status' }));
+    peer.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString('utf8');
+      if (Buffer.byteLength(buffered) > 8192)
+        return finish(new Error('Invalid broker capabilities'));
+      if (!buffered.includes('\n')) return;
+      try {
+        const status = JSON.parse(buffered.split('\n')[0]!) as Record<string, unknown>;
+        if (
+          status['ok'] !== true ||
+          status['managedAgentConfig'] !== true ||
+          (planning && status['planningIsolation'] !== true)
+        ) {
+          return finish(
+            new Error(
+              'Agent configuration or planning isolation is unavailable; update the Sandbox toolkit',
+            ),
+          );
+        }
+        finish();
+      } catch {
+        finish(new Error('Invalid broker capabilities'));
+      }
+    });
+    peer.once('end', () =>
+      finish(new Error('Broker did not report required security capabilities')),
+    );
+  });
+}
+
+export function createBrokerSpawner(
+  socketPath: string,
+  requireManagedConfiguration = false,
+): Spawner {
   const spawner: Spawner = (command, args, options): SpawnedProcess => {
     const socket = createConnection(socketPath);
     let processBuffered = (): void => undefined;
@@ -138,15 +186,28 @@ export function createBrokerSpawner(socketPath: string): Spawner {
     };
 
     socket.once('connect', () => {
-      const sessionEnv = sessionRuntimeEnv(options.env);
-      send(socket, {
-        protocolVersion: PROTOCOL_VERSION,
-        kind: 'spawn-agent',
-        command,
-        args,
-        cwd: options.cwd,
-        ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
-      });
+      void (async () => {
+        if (requireManagedConfiguration || options.planning === true) {
+          try {
+            await requireBrokerIsolation(socketPath, options.planning === true);
+          } catch (error) {
+            stderrTail.push(String(error));
+            settle(1);
+            return;
+          }
+        }
+        if (settled) return;
+        const sessionEnv = sessionRuntimeEnv(options.env);
+        send(socket, {
+          protocolVersion: PROTOCOL_VERSION,
+          kind: 'spawn-agent',
+          command,
+          args,
+          cwd: options.cwd,
+          ...(options.planning === true ? { planning: true } : {}),
+          ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
+        });
+      })();
     });
     processBuffered = (): void => {
       if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes('\n')) {

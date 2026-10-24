@@ -190,6 +190,12 @@ the app step by step. In short:
    needs the GitHub connection, which can be added at any time under
    Settings → Connections.
 
+OpenCode web search uses Exa independently of the configured model provider.
+Search queries are sent to Exa; no Exa API key is required by the default
+integration. Availability and limits are controlled by Exa. Existing installations
+need the updated sandbox toolkit and a newly launched OpenCode process to pick up
+the search configuration.
+
 To get a new pairing link after the first one expires, run the installer again
 and choose "Repair this installation".
 

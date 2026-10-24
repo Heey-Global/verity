@@ -1,9 +1,13 @@
+import { sessionLayout } from '../lib/sessionLayout';
+import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
+import { DeferredSessionPane } from '../components/DeferredSessionPane';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
   beginRenderWork,
   beginRowTouch,
   markFirstSessionRender,
   rowPress,
+  rowPressIn,
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
@@ -49,6 +53,9 @@ import {
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,
+  providerName,
+  repositoryWebUrl,
+  type ForgeConnection,
   type RepoIdentity,
   parseBranchIssue,
 } from '@verity/mobile';
@@ -85,6 +92,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
+import { CodeHostIcon } from '../components/CodeHostIcon';
 import { ProjectPortChip } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
@@ -117,6 +125,8 @@ import type { ProjectOverviewStatus } from '../lib/projectSetup';
 import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { toneColor } from '../theme/tokens';
+import { tint } from '../components/ui/tint';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -147,7 +157,7 @@ function SessionList({ client }: { client: VerityClient }) {
   usePushNotifications(client, baseUrl);
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const { wide, sidebarWidth } = sessionLayout(width);
   // A `selected` route param preselects a session into the right pane — this is how
   // a freshly-started session (new.tsx → /session/[id] → Redirect on wide) and any
   // deep link land in the unified split layout instead of the old per-route sidebar.
@@ -160,6 +170,11 @@ function SessionList({ client }: { client: VerityClient }) {
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
+  useSessionLayoutNavigation(wide, selectedId, {
+    targetMessageId: selected === selectedId ? targetMessageId : undefined,
+    targetSearchQuery: selected === selectedId ? targetSearchQuery : undefined,
+    retrySecret: selected === selectedId ? retrySecret : undefined,
+  });
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -242,6 +257,24 @@ function SessionList({ client }: { client: VerityClient }) {
       sessionsLoadedOnce.current = true;
     }, [refresh]),
   );
+  // Forgejo links need the instance address; GitHub needs nothing. Unavailable
+  // connections (older server, non-admin) leave Forgejo links inert.
+  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (!client) return;
+      let active = true;
+      void Promise.resolve()
+        .then(() => client.listConnections())
+        .then((list) => {
+          if (active) setForgeConnections(list?.connections ?? null);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
   const previousGroups = useRef<SessionProjectGroup[]>([]);
   const groups = useMemo(() => {
     const next = projectGroups(
@@ -251,10 +284,11 @@ function SessionList({ client }: { client: VerityClient }) {
       detectionsByProject,
       baseUrl,
       previousGroups.current,
+      forgeConnections,
     );
     previousGroups.current = next;
     return next;
-  }, [baseUrl, detectionsByProject, devServersByProject, projects, sessions]);
+  }, [baseUrl, detectionsByProject, devServersByProject, forgeConnections, projects, sessions]);
   // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
@@ -586,6 +620,43 @@ function SessionList({ client }: { client: VerityClient }) {
     [updateProjectSandbox],
   );
 
+  const toggleProjectGroup = useCallback(
+    (item: SessionProjectGroup, collapsed: boolean) => {
+      if (draggingAnything) return;
+      const nextValue = !collapsed;
+      setCollapsedOverride((current) => {
+        const next = new Map(current);
+        next.set(item.id, nextValue);
+        return next;
+      });
+      const project = item.project;
+      if (!project) return;
+      enqueueProjectCollapse(project.id, nextValue, {
+        // The override keeps holding the tapped value: the write's
+        // response is not adopted, so a server answering from a list
+        // memoised before the write cannot fold the group back. The
+        // polled list clears the override once it reports the same value.
+        success: () => void refreshProjects(),
+        failure: (caught) => {
+          // Roll the override back to server truth so a failed write doesn't
+          // strand the group in the wrong state.
+          setCollapsedOverride((current) => {
+            const next = new Map(current);
+            next.delete(item.id);
+            return next;
+          });
+          Alert.alert(
+            'Update failed',
+            caught instanceof VerityApiError
+              ? caught.message
+              : 'Could not save the collapse state.',
+          );
+        },
+      });
+    },
+    [draggingAnything, enqueueProjectCollapse, refreshProjects],
+  );
+
   const renderGroup = useCallback(
     (item: SessionProjectGroup, floating = false) => {
       return (
@@ -597,39 +668,7 @@ function SessionList({ client }: { client: VerityClient }) {
             draggingProjectId !== null ||
             (collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false)
           }
-          onToggle={() => {
-            if (draggingAnything) return;
-            const nextValue = !(collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false);
-            setCollapsedOverride((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextValue);
-              return next;
-            });
-            const project = item.project;
-            if (!project) return;
-            enqueueProjectCollapse(project.id, nextValue, {
-              // The override keeps holding the tapped value: the write's
-              // response is not adopted, so a server answering from a list
-              // memoised before the write cannot fold the group back. The
-              // polled list clears the override once it reports the same value.
-              success: () => void refreshProjects(),
-              failure: (caught) => {
-                // Roll the override back to server truth so a failed write doesn't
-                // strand the group in the wrong state.
-                setCollapsedOverride((current) => {
-                  const next = new Map(current);
-                  next.delete(item.id);
-                  return next;
-                });
-                Alert.alert(
-                  'Update failed',
-                  caught instanceof VerityApiError
-                    ? caught.message
-                    : 'Could not save the collapse state.',
-                );
-              },
-            });
-          }}
+          onToggle={toggleProjectGroup}
           reorder={reorder}
           renderedOrder={activeGroupIds}
           sortable={isReorderableGroup(item)}
@@ -644,7 +683,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
-          onRepairProject={(projectId) => void repairProjectRow(projectId)}
+          onRepairProject={repairProjectRow}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
@@ -659,6 +698,7 @@ function SessionList({ client }: { client: VerityClient }) {
     [
       activeGroupIds,
       collapsedOverride,
+      toggleProjectGroup,
       draggingProjectId,
       draggingAnything,
       sessionReordering,
@@ -751,7 +791,9 @@ function SessionList({ client }: { client: VerityClient }) {
       ) : null}
       {/* Pinned above the list, not rendered as its header: the usage meters are
           the one thing on this screen that must not scroll, drag or fold away. */}
-      {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
+      {providerLimitRows.length > 0 ? (
+        <ProviderLimitMeters rows={providerLimitRows} compact={wide && sidebarWidth < 380} />
+      ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
           ref={reorder.hostRef}
@@ -781,7 +823,8 @@ function SessionList({ client }: { client: VerityClient }) {
                     {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
                   </Text>
                   <Text style={styles.emptySubtitle}>
-                    Add an existing GitHub repository or create an empty project to get started.
+                    Add a repository from GitHub or Forgejo, or create a local project to get
+                    started.
                   </Text>
                   {!projectsLoading ? (
                     <Pressable
@@ -838,11 +881,7 @@ function SessionList({ client }: { client: VerityClient }) {
                 previewActive={previewUrls.has(floatingSession.sessionId)}
                 previewPublic={publicPreviews.has(floatingSession.sessionId)}
                 previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
-                repo={
-                  floatingSessionGroup?.project?.kind === 'github'
-                    ? floatingSessionGroup.project
-                    : undefined
-                }
+                repo={floatingSessionGroup?.repo}
                 selected={selectedId === floatingSession.sessionId}
                 floating
               />
@@ -917,19 +956,32 @@ function SessionList({ client }: { client: VerityClient }) {
 
   return (
     <View style={styles.splitRow}>
-      <View style={styles.leftPane}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
-          <SessionChat
-            key={`${selectedId}:${moveGeneration}`}
-            client={client}
+          <DeferredSessionPane
             sessionId={selectedId}
-            baseUrl={baseUrl}
-            embedded
-            initialTargetMessageId={targetMessageId}
-            initialTargetSearchQuery={targetSearchQuery}
-            retrySecret={retrySecret}
-          />
+            key={`${selectedId}:${moveGeneration}`}
+            fallback={
+              <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
+                <Text style={styles.rightPanePlaceholderText}>
+                  {sessions.find((session) => session.sessionId === selectedId)?.name ?? 'Session'}
+                </Text>
+                <ActivityIndicator />
+                <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
+              </View>
+            }
+          >
+            <SessionChat
+              client={client}
+              sessionId={selectedId}
+              baseUrl={baseUrl}
+              embedded
+              initialTargetMessageId={targetMessageId}
+              initialTargetSearchQuery={targetSearchQuery}
+              retrySecret={retrySecret}
+            />
+          </DeferredSessionPane>
         ) : (
           <RightPanePlaceholder />
         )}
@@ -995,7 +1047,7 @@ function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
   }
 }
 
-function ProjectGroup({
+const ProjectGroup = memo(function ProjectGroup({
   group,
   floating = false,
   wide,
@@ -1029,7 +1081,7 @@ function ProjectGroup({
   floating?: boolean;
   wide: boolean;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (group: SessionProjectGroup, collapsed: boolean) => void;
   reorder: ProjectReorderController;
   /** The row order the list is painting right now. */
   renderedOrder: readonly string[];
@@ -1083,6 +1135,65 @@ function ProjectGroup({
     onOpen: onOpenSession,
     onReorder: onReorderSession,
   });
+  const sessionDragEnabled = sessionReordering && !collapsed;
+  const sessionRows = useMemo(
+    () => (
+      <View style={styles.projectSessions}>
+        {group.sessions.map((session, index) => (
+          <SessionDragSlot
+            key={session.sessionId}
+            id={`session:${session.sessionId}`}
+            scope={group.id}
+            order={sessionDragOrder}
+            reorder={reorder}
+            enabled={sessionDragEnabled}
+          >
+            {(handle, issue, markers) => (
+              <Fragment>
+                {/* Quiet inset hairline between sessions (never above the first — the
+                  project header already draws its own bottom border). Inset to start
+                  under the session title, leaving the dot gutter clear (iOS-style
+                  leading inset), so adjacent session blocks read as separate without
+                  the restless full-width line grid the group had before. */}
+                {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                <SessionRow
+                  session={session}
+                  dragHandleRef={handle}
+                  dragIssueRef={issue}
+                  dragMarkersRef={markers}
+                  reorderable={sessionReordering}
+                  interactionsLocked={reordering}
+                  {...rowCallbacks.get(session.sessionId)!}
+                  unread={unread.has(session.sessionId)}
+                  previewActive={previewUrls.has(session.sessionId)}
+                  previewPublic={publicPreviews.has(session.sessionId)}
+                  previewUrl={previewUrls.get(session.sessionId) ?? null}
+                  repo={group.repo}
+                  projectKind={group.project?.kind}
+                  selected={selectedId === session.sessionId}
+                  renaming={renamingId === session.sessionId}
+                />
+              </Fragment>
+            )}
+          </SessionDragSlot>
+        ))}
+      </View>
+    ),
+    [
+      group,
+      sessionDragOrder,
+      reorder,
+      sessionDragEnabled,
+      sessionReordering,
+      reordering,
+      rowCallbacks,
+      unread,
+      previewUrls,
+      publicPreviews,
+      selectedId,
+      renamingId,
+    ],
+  );
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1105,7 +1216,7 @@ function ProjectGroup({
   // has no second `string | undefined` to narrow.
   const indicator = controlPlane ? undefined : sandboxUpdateIndicator(group.project?.sandboxUpdate);
   const updateGlyph = indicator
-    ? { ...indicator, color: theme.colors.tone[indicator.tone] }
+    ? { ...indicator, color: toneColor(theme.colors, indicator.tone) }
     : undefined;
   const updating =
     group.project !== undefined && updatingProjectIds?.has(group.project.id) === true;
@@ -1147,7 +1258,7 @@ function ProjectGroup({
             style={({ pressed }) => [styles.projectToggle, pressed ? styles.rowPressed : null]}
             onHoverIn={() => setHeaderHovered(true)}
             onHoverOut={() => setHeaderHovered(false)}
-            onPress={reordering ? undefined : onToggle}
+            onPress={reordering ? undefined : () => onToggle(group, collapsed)}
             accessibilityRole="button"
             accessibilityState={{ expanded: !collapsed }}
             accessibilityLabel={
@@ -1181,9 +1292,26 @@ function ProjectGroup({
                     the slot outright, and its metadata (the release tag) is only
                     shown when nothing is. Both at once is what made a status
                     message and a version number share — and squeeze — one line. */}
+                  {group.status && group.project?.vulnerabilitySummary?.count ? (
+                    <Icon name="shield" size={14} color={theme.colors.attention} />
+                  ) : null}
                   {group.status ? (
                     <Text
                       style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
+                      onPress={
+                        group.project?.vulnerabilitySummary?.count
+                          ? (event) => {
+                              event.stopPropagation();
+                              router.push({
+                                pathname: '/project/[id]/vulnerability-scan',
+                                params: { id: group.project!.id },
+                              });
+                            }
+                          : undefined
+                      }
+                      accessibilityRole={
+                        group.project?.vulnerabilitySummary?.count ? 'link' : undefined
+                      }
                       numberOfLines={1}
                     >
                       {group.status.label}
@@ -1213,9 +1341,9 @@ function ProjectGroup({
                 disabled={repairing}
               >
                 {repairing ? (
-                  <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+                  <ActivityIndicator size="small" color={theme.colors.attention} />
                 ) : (
-                  <Icon name="tool" size={16} color={theme.colors.tone.danger} />
+                  <Icon name="tool" size={16} color={theme.colors.attention} />
                 )}
               </Pressable>
             ) : null}
@@ -1227,8 +1355,8 @@ function ProjectGroup({
                       styles.projectIconButton,
                       styles.projectUpdateButton,
                       {
-                        borderColor: `${updateGlyph.color}99`,
-                        backgroundColor: `${updateGlyph.color}1f`,
+                        borderColor: tint(updateGlyph.color, 'border'),
+                        backgroundColor: tint(updateGlyph.color, 'fill'),
                       },
                       updating ? styles.projectActionDisabled : null,
                     ]}
@@ -1244,18 +1372,25 @@ function ProjectGroup({
                     )}
                   </Pressable>
                 ) : null}
-                {!controlPlane && projectRepoRef(group.project) !== undefined ? (
+                {!controlPlane && group.repo?.owner && group.repo.repo ? (
                   <Pressable
                     style={styles.projectIconButton}
                     accessibilityRole="button"
-                    accessibilityLabel={`Open ${group.title} on GitHub`}
+                    accessibilityLabel={`Open ${group.title} on ${providerName(group.repo.host?.provider ?? 'github')}`}
                     onPress={() =>
                       void Linking.openURL(
-                        `https://github.com/${projectRepoRef(group.project!)!}`,
+                        repositoryWebUrl(
+                          { baseUrl: group.repo?.host?.baseUrl ?? 'https://github.com' },
+                          group.repo!.owner!,
+                          group.repo!.repo!,
+                        ),
                       ).catch(() => undefined)
                     }
                   >
-                    <Icon name="github" size={18} color={theme.colors.textMuted} />
+                    <CodeHostIcon
+                      provider={group.repo.host?.provider ?? 'github'}
+                      color={theme.colors.textMuted}
+                    />
                   </Pressable>
                 ) : null}
                 {onNewSession ? (
@@ -1265,7 +1400,7 @@ function ProjectGroup({
                     accessibilityLabel={`Start new session in ${group.title}`}
                     onPress={() => onNewSession(group.project!)}
                   >
-                    <Icon name="plus" size={20} color={theme.colors.primary} />
+                    <Icon name="plus" size={20} color={theme.colors.action} />
                   </Pressable>
                 ) : (
                   <Link
@@ -1277,7 +1412,7 @@ function ProjectGroup({
                     asChild
                   >
                     <Pressable style={styles.projectIconButton} accessibilityRole="button">
-                      <Icon name="plus" size={20} color={theme.colors.primary} />
+                      <Icon name="plus" size={20} color={theme.colors.action} />
                     </Pressable>
                   </Link>
                 )}
@@ -1301,7 +1436,7 @@ function ProjectGroup({
                   accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
                   onPress={() => onNewSession(defaultNewSessionProject)}
                 >
-                  <Icon name="plus" size={20} color={theme.colors.primary} />
+                  <Icon name="plus" size={20} color={theme.colors.action} />
                 </Pressable>
               ) : (
                 <Link
@@ -1315,7 +1450,7 @@ function ProjectGroup({
                   asChild
                 >
                   <Pressable style={styles.projectIconButton} accessibilityRole="button">
-                    <Icon name="plus" size={20} color={theme.colors.primary} />
+                    <Icon name="plus" size={20} color={theme.colors.action} />
                   </Pressable>
                 </Link>
               )
@@ -1323,52 +1458,12 @@ function ProjectGroup({
           </View>
         </View>
         {group.sessions.length > 0 ? (
-          <ProjectSessionsCollapse collapsed={collapsed}>
-            <View style={styles.projectSessions}>
-              {group.sessions.map((session, index) => (
-                <SessionDragSlot
-                  key={session.sessionId}
-                  id={`session:${session.sessionId}`}
-                  scope={group.id}
-                  order={sessionDragOrder}
-                  reorder={reorder}
-                  enabled={sessionReordering && !collapsed}
-                >
-                  {(handle, issue, markers) => (
-                    <Fragment>
-                      {/* Quiet inset hairline between sessions (never above the first — the
-                  project header already draws its own bottom border). Inset to start
-                  under the session title, leaving the dot gutter clear (iOS-style
-                  leading inset), so adjacent session blocks read as separate without
-                  the restless full-width line grid the group had before. */}
-                      {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                      <SessionRow
-                        session={session}
-                        dragHandleRef={handle}
-                        dragIssueRef={issue}
-                        dragMarkersRef={markers}
-                        reorderable={sessionReordering}
-                        interactionsLocked={reordering}
-                        {...rowCallbacks.get(session.sessionId)!}
-                        unread={unread.has(session.sessionId)}
-                        previewActive={previewUrls.has(session.sessionId)}
-                        previewPublic={publicPreviews.has(session.sessionId)}
-                        previewUrl={previewUrls.get(session.sessionId) ?? null}
-                        repo={group.repo}
-                        selected={selectedId === session.sessionId}
-                        renaming={renamingId === session.sessionId}
-                      />
-                    </Fragment>
-                  )}
-                </SessionDragSlot>
-              ))}
-            </View>
-          </ProjectSessionsCollapse>
+          <ProjectSessionsCollapse collapsed={collapsed}>{sessionRows}</ProjectSessionsCollapse>
         ) : null}
       </Reanimated.View>
     </Reanimated.View>
   );
-}
+});
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened
@@ -1426,7 +1521,13 @@ function isVerityControlPlaneProject(project: ProjectRecord): boolean {
 
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
-function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
+function ProviderLimitMeters({ rows, compact }: { rows: ProviderLimitRow[]; compact: boolean }) {
+  const segments = (row: ProviderLimitRow) => (
+    <>
+      <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} compact={compact} />
+      <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} compact={compact} />
+    </>
+  );
   return (
     <View style={styles.limitMeters}>
       {rows.map((row) => (
@@ -1434,8 +1535,7 @@ function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
           <Text style={styles.limitProvider} numberOfLines={1}>
             {row.providerLabel}
           </Text>
-          <ProviderLimitSegment label="5h" window="five_hour" limit={row.fiveHour} />
-          <ProviderLimitSegment label="Week" window="weekly" limit={row.weekly} />
+          {segments(row)}
         </View>
       ))}
     </View>
@@ -1446,14 +1546,16 @@ function ProviderLimitSegment({
   label,
   window,
   limit,
+  compact,
 }: {
   label: string;
   window: 'five_hour' | 'weekly';
   limit: ProviderLimitState | null;
+  compact: boolean;
 }) {
   const { theme } = useUnistyles();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const usesWideSpacing = screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
+  const usesWideSpacing = !compact && screenWidth >= WIDE_PROVIDER_LIMIT_MIN_WIDTH;
   const chartRef = useRef<View>(null);
   const [showPaceInfo, setShowPaceInfo] = useState(false);
   const [paceInfoAnchor, setPaceInfoAnchor] = useState<{
@@ -1476,11 +1578,14 @@ function ProviderLimitSegment({
     reported !== undefined && Number.isFinite(reported) ? reported : blocked ? 100 : 0;
   const usage = Math.max(0, percent);
   const clamped = Math.min(100, usage);
+  // Faint while there is room, full text colour when it runs low, the problem
+  // colour once it is spent:
+  // a meter is a state, so it never takes the action or brand colour.
   const fillColor =
     meterLevel === 'spent'
-      ? theme.colors.accent
+      ? theme.colors.attention
       : meterLevel === 'low'
-        ? theme.colors.primary
+        ? theme.colors.text
         : theme.colors.textMuted;
   // Even-burn marker: where usage "should" sit now if the quota were spent at a
   // steady rate. Shown for both the five-hour and weekly windows.
@@ -1495,7 +1600,8 @@ function ProviderLimitSegment({
     setShowPaceInfo(false);
     setPaceInfoAnchor(null);
   }, [screenHeight, screenWidth]);
-  const text = limit === null ? '--' : formatResetDisplay(limit.resetsAt, window);
+  const text =
+    limit === null ? '--' : formatResetDisplay(limit.resetsAt, window, { compact: true });
   const percentText =
     reported === undefined || !Number.isFinite(reported) ? undefined : `${Math.round(usage)}%`;
   const accessibilityText =
@@ -1557,6 +1663,7 @@ function ProviderLimitSegment({
     <View
       style={[
         styles.limitSegment,
+
         usesWideSpacing
           ? window === 'weekly'
             ? styles.limitWeeklySegmentWide
@@ -1567,14 +1674,14 @@ function ProviderLimitSegment({
       <Text style={styles.limitWindowLabel} numberOfLines={1} ellipsizeMode="clip">
         {label}
       </Text>
-      {pace !== null ? (
+      {compact || pace !== null ? (
         <Pressable
           ref={chartRef}
           style={styles.limitChart}
           onPress={showPaceInfo ? closePaceInfo : openPaceInfo}
           accessibilityRole="button"
           accessibilityLabel={`${windowLabel} token pace. ${accessibilityText}. ${paceStatus}`}
-          accessibilityHint="Shows or hides an explanation of the pace marker"
+          accessibilityHint="Shows or hides reset and pace details"
           accessibilityState={{ expanded: showPaceInfo }}
           hitSlop={11}
         >
@@ -1583,13 +1690,15 @@ function ProviderLimitSegment({
       ) : (
         <View style={styles.limitChart}>{chartContent}</View>
       )}
-      <Text
-        style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
-        numberOfLines={1}
-      >
-        {text}
-      </Text>
-      {pace !== null && paceInfoAnchor !== null ? (
+      {!compact ? (
+        <Text
+          style={[styles.limitValue, blocked ? styles.limitValueBlocked : null]}
+          numberOfLines={1}
+        >
+          {text}
+        </Text>
+      ) : null}
+      {paceInfoAnchor !== null ? (
         <Modal
           visible={showPaceInfo}
           transparent
@@ -1619,13 +1728,19 @@ function ProviderLimitSegment({
                   {windowLabel === 'weekly' ? 'Weekly' : '5-hour'} usage pace
                 </Text>
                 <Text style={styles.limitPaceInfoText}>
-                  {Math.round(usage)}% used · {Math.round(pace)}% at even pace
+                  {percentText ?? 'Usage unknown'} · Resets {text}
                 </Text>
-                <Text style={styles.limitPaceInfoText}>{paceStatus}</Text>
-                <Text style={styles.limitPaceInfoHint}>
-                  The triangle shows where usage would be if your {windowLabel} limit were spread
-                  evenly.
-                </Text>
+                {pace !== null ? (
+                  <>
+                    <Text style={styles.limitPaceInfoText}>
+                      {Math.round(pace)}% at even pace. {paceStatus}
+                    </Text>
+                    <Text style={styles.limitPaceInfoHint}>
+                      The triangle shows where usage would be if your {windowLabel} limit were
+                      spread evenly.
+                    </Text>
+                  </>
+                ) : null}
                 <Pressable
                   style={styles.limitPaceInfoClose}
                   onPress={closePaceInfo}
@@ -1658,6 +1773,7 @@ const SessionRow = memo(function SessionRow({
   previewPublic,
   previewUrl,
   repo,
+  projectKind,
   selected,
   renaming,
   dragHandleRef,
@@ -1684,6 +1800,8 @@ const SessionRow = memo(function SessionRow({
   previewUrl?: string | null;
   /** The GitHub repo the issue number links into; absent for local projects. */
   repo?: RepoIdentity | undefined;
+  /** Only labels gesture diagnostics; rows behave the same for every kind. */
+  projectKind?: string | undefined;
   selected?: boolean;
   renaming?: boolean;
   dragHandleRef?: RefCallback<View>;
@@ -1695,6 +1813,9 @@ const SessionRow = memo(function SessionRow({
   onMoveUp?: (() => void) | undefined;
   onMoveDown?: (() => void) | undefined;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
+  const layout = sessionLayout(windowWidth);
+  const compactSidebar = layout.wide && layout.sidebarWidth < 380;
   const finishRowWork = beginRenderWork('sidebar-row-body');
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
@@ -1703,7 +1824,7 @@ const SessionRow = memo(function SessionRow({
       markSessionSwitch(sessionSwitchTiming(session.sessionId), 'selected-row-react-commit');
   }, [selected, session.sessionId]);
   const badge = sessionBadge(session.status);
-  const toneColor = theme.colors.tone[badge.tone];
+  const badgeColor = toneColor(theme.colors, badge.tone);
   const label = sessionLabel(session);
   const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
@@ -1753,7 +1874,11 @@ const SessionRow = memo(function SessionRow({
     // Pressable: in the narrow layout that Pressable is cloned by `<Link asChild>`,
     // which drops its `style` — so a flex-row set there silently falls back to a
     // column and stacks the dot ABOVE the name. A plain child View keeps its style.
-    <View ref={dragHandleRef} collapsable={false} style={styles.rowInner}>
+    <View
+      ref={dragHandleRef}
+      collapsable={false}
+      style={[styles.rowInner, compactSidebar ? styles.rowInnerCompact : null]}
+    >
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
@@ -1762,7 +1887,7 @@ const SessionRow = memo(function SessionRow({
           here; the dot column holds the single left indicator: a pulsing magenta dot
           while the agent works, else a stable blue dot if there are unread messages (a
           finished session with something new to read), else nothing. */}
-      <View style={styles.colChevron} />
+      {!compactSidebar ? <View style={styles.colChevron} /> : null}
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
       {/* Name with the lifecycle label at its right end; below it the model,
           followed by the issue and its PR status. Attached to the model, they use
@@ -1782,10 +1907,10 @@ const SessionRow = memo(function SessionRow({
               <View
                 style={[
                   styles.statusPill,
-                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                  { borderColor: badgeColor, backgroundColor: tint(badgeColor, 'fill') },
                 ]}
               >
-                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                <Text style={[styles.statusPillText, { color: badgeColor }]} numberOfLines={1}>
                   {badge.label}
                 </Text>
               </View>
@@ -1793,11 +1918,14 @@ const SessionRow = memo(function SessionRow({
           ) : null}
         </View>
         <View style={styles.sessionLine}>
+          {notice?.code === 'vulnerability_new' ? (
+            <Icon name="shield" size={14} color={theme.colors.attention} />
+          ) : null}
           <Text
             style={[
               styles.rowSub,
               styles.sessionSub,
-              notice ? { color: theme.colors.tone.danger } : null,
+              notice ? { color: theme.colors.attention } : null,
             ]}
             numberOfLines={1}
             {...(notice ? { accessibilityRole: 'alert' as const } : {})}
@@ -1856,6 +1984,7 @@ const SessionRow = memo(function SessionRow({
       onDelete={onDelete}
       onEdit={onRename}
       disabled={interactionsLocked}
+      diagnostics={{ rowKey: `session:${session.sessionId}`, projectKind }}
     >
       {row}
     </SwipeableSessionRow>
@@ -1876,7 +2005,7 @@ const SessionRow = memo(function SessionRow({
         disabled={interactionsLocked}
         {...moveActions}
         onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
-        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onPressIn={(event) => rowPressIn(session.sessionId, event.nativeEvent.timestamp)}
         onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
           if (interactionsLocked) return;
@@ -1918,7 +2047,7 @@ const SessionRow = memo(function SessionRow({
         disabled={interactionsLocked}
         {...moveActions}
         onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
-        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onPressIn={(event) => rowPressIn(session.sessionId, event.nativeEvent.timestamp)}
         onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
           if (!interactionsLocked) {
@@ -2008,8 +2137,8 @@ const styles = StyleSheet.create((theme) => ({
   limitProvider: {
     width: 48,
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.extrabold,
   },
   limitSegment: {
     flex: 1,
@@ -2031,8 +2160,8 @@ const styles = StyleSheet.create((theme) => ({
     width: 32,
     flexShrink: 0,
     color: theme.colors.textMuted,
-    fontSize: 10 * theme.fontScale,
-    fontWeight: '800',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.extrabold,
     textAlign: 'right',
     textTransform: 'uppercase',
   },
@@ -2094,7 +2223,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.16,
     shadowRadius: 6,
@@ -2113,25 +2242,27 @@ const styles = StyleSheet.create((theme) => ({
   },
   limitPaceInfoBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.34)',
+    backgroundColor: theme.colors.scrim,
   },
   limitPaceInfoContent: {
     gap: 2,
   },
   limitPaceInfoTitle: {
     color: theme.colors.text,
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '800',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.extrabold,
   },
   limitPaceInfoText: {
     color: theme.colors.text,
-    fontSize: 10 * theme.fontScale,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.caption.fontSize,
     lineHeight: 14 * theme.fontScale,
   },
   limitPaceInfoHint: {
     marginTop: 2,
     color: theme.colors.textMuted,
-    fontSize: 9 * theme.fontScale,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.caption.fontSize,
     lineHeight: 12 * theme.fontScale,
   },
   limitPaceInfoClose: {
@@ -2143,31 +2274,33 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
   },
   limitPaceInfoCloseText: {
-    color: theme.colors.primary,
-    fontSize: 10 * theme.fontScale,
-    fontWeight: '800',
+    color: theme.colors.action,
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.extrabold,
   },
   limitValue: {
     flex: 1,
     minWidth: 0,
     color: theme.colors.textMuted,
-    fontSize: 10 * theme.fontScale,
-    fontWeight: '700',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   limitPercent: {
     position: 'absolute',
     left: 2,
-    // Track sits 4px up (marginBottom lane); keep the percent above it.
-    bottom: 11,
-    width: 30,
+    // Track sits 4px up and is 5px tall (bottom edge at 9); the percent sits
+    // on it, and its Caption line fills the rest of the 22px chart.
+    bottom: 9,
+    // Wide enough for "100%" in Caption ExtraBold.
+    width: 36,
     color: theme.colors.textMuted,
-    fontSize: 8 * theme.fontScale,
-    fontWeight: '800',
-    lineHeight: 9 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.extrabold,
+    lineHeight: theme.typography.caption.lineHeight,
     textAlign: 'left',
   },
   limitValueBlocked: {
-    color: theme.colors.accent,
+    color: theme.colors.attention,
   },
   centered: {
     flex: 1,
@@ -2179,12 +2312,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 300,
     lineHeight: 20 * theme.fontScale,
@@ -2195,12 +2329,14 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.sm,
   },
   errorDetailsLabel: {
-    color: theme.colors.primary,
-    fontSize: theme.text.sm,
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   errorDetailsText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
     maxWidth: 320,
   },
@@ -2211,24 +2347,24 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   emptyActionLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   retry: {
     marginTop: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   retryLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   listContent: {
     flexGrow: 1,
@@ -2240,7 +2376,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
   },
   leftPane: {
-    width: 380,
     backgroundColor: theme.colors.background,
     borderRightWidth: StyleSheet.hairlineWidth,
     borderRightColor: theme.colors.border,
@@ -2258,7 +2393,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   rightPanePlaceholderText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   emptyOverview: {
     alignItems: 'center',
@@ -2272,8 +2408,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   pausedCount: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   pausedList: {
     gap: theme.spacing.sm,
@@ -2295,7 +2431,7 @@ const styles = StyleSheet.create((theme) => ({
     marginHorizontal: -theme.spacing.lg,
   },
   projectGroupDragging: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
     backgroundColor: theme.colors.surfaceAlt,
   },
   sectionHeaderRow: {
@@ -2306,8 +2442,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionHeader: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
   },
   projectHeader: {
@@ -2361,8 +2497,8 @@ const styles = StyleSheet.create((theme) => ({
   projectTitle: {
     minWidth: 0,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
     lineHeight: 21 * theme.fontScale,
   },
   projectMetaRow: {
@@ -2375,14 +2511,15 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   projectStatusLabel: {
     minWidth: 0,
     flexShrink: 1,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Work in progress stays muted on purpose. The pulsing magenta dot in the
   // gutter is the signal that something is happening; painting the sentence the
@@ -2395,16 +2532,15 @@ const styles = StyleSheet.create((theme) => ({
   projectStatusIdle: {
     color: theme.colors.textMuted,
   },
-  // Attention, not danger: the project is running. A stale attestation verdict
-  // means it needs re-checking, not that it is broken — `danger` here would put
-  // a working project in the same colour as a stopped container.
+  // The design system has one problem colour, so a stale attestation verdict on a
+  // running project and a stopped container share it; the status text says which.
   projectStatusAttention: {
-    color: theme.colors.tone.attention,
+    color: theme.colors.attention,
   },
   // A failure reason has to be legible as a failure — muted grey made "Sandbox
   // container stopped" look like just another progress step.
   projectStatusDanger: {
-    color: theme.colors.tone.danger,
+    color: theme.colors.attention,
   },
   projectActions: {
     flexDirection: 'row',
@@ -2432,15 +2568,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectUpdateButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.accent}99`,
-    backgroundColor: `${theme.colors.accent}1f`,
+    borderColor: tint(theme.colors.action, 'border'),
+    backgroundColor: tint(theme.colors.action, 'fill'),
   },
-  // Outlined in the same danger tone as the row's status dot, so the broken
+  // Outlined in the same attention tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.
   projectRepairButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.tone.danger}99`,
-    backgroundColor: `${theme.colors.tone.danger}1f`,
+    borderColor: tint(theme.colors.attention, 'border'),
+    backgroundColor: tint(theme.colors.attention, 'fill'),
   },
   projectActionDisabled: {
     opacity: 0.6,
@@ -2478,6 +2614,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     paddingLeft: theme.spacing.lg,
   },
+  rowInnerCompact: {
+    paddingLeft: theme.spacing.sm,
+  },
   selectedRow: {
     backgroundColor: theme.colors.surfaceAlt,
   },
@@ -2495,14 +2634,15 @@ const styles = StyleSheet.create((theme) => ({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: `${theme.colors.accent}4d`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
   },
   rowPressed: {
     opacity: 0.6,
   },
   rowSub: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   sessionDragHandle: { flex: 1, minWidth: 0 },
@@ -2511,8 +2651,8 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
     lineHeight: 19 * theme.fontScale,
   },
   // The session row has no separate trail column: the title line carries its own
@@ -2544,8 +2684,8 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: StyleSheet.hairlineWidth,
   },
   statusPillText: {
-    fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.extrabold,
     lineHeight: 15 * theme.fontScale,
   },
   separator: {

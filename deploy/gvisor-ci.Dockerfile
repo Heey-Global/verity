@@ -1,7 +1,7 @@
 # Ephemeral Docker daemon for the live Secret Job CI path. Keeping runsc inside this
 # privileged test container avoids mutating the shared self-hosted runner.
 # renovate: datasource=docker depName=docker
-FROM docker:29.8.2-dind@sha256:1e08cdb63405ca788aea94ef35b792d1e299607c667d33d7bcbcae1fd2611ced
+FROM docker:29.9.1-dind@sha256:3e5756e2b6dad6a5f1f5deacf0a19f9eaa2581b76ae092b2d4a118162e1d4d4e
 
 COPY deploy/gvisor/versions.env /tmp/versions.env
 

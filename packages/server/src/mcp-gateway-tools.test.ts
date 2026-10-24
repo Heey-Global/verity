@@ -108,6 +108,40 @@ describe('MCP gateway trusted CLI integration', () => {
   });
 });
 
+describe('MCP trusted output retrieval', () => {
+  it('uses authenticated owner scope without rerunning the command or resolving secrets', async () => {
+    const trustedCliTool = vi.fn();
+    const read = vi.fn(async () => ({ frames: [], nextCursor: 4, hasMore: false }));
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool: vi.fn(),
+      trustedCliTool,
+      trustedCliOutput: {
+        begin: vi.fn(),
+        append: vi.fn(),
+        finish: vi.fn(),
+        remove: vi.fn(),
+        cleanup: vi.fn(),
+        read,
+      },
+    });
+    await invoke({
+      projectId: 'project',
+      sessionId: 'session',
+      turnId: 'later-turn',
+      callId: 'read',
+      invocationId: 'read-invocation',
+      toolName: 'verity_secret_output',
+      request: { invocationId: 'stored-output', cursor: 4 },
+    });
+    expect(read).toHaveBeenCalledWith(
+      { projectId: 'project', sessionId: 'session' },
+      'stored-output',
+      4,
+    );
+    expect(trustedCliTool).not.toHaveBeenCalled();
+  });
+});
+
 describe('MCP gateway Google Slides integration', () => {
   it('passes the authenticated identity and replay key to the Slides executor', async () => {
     const googleSlides = vi.fn(async () => ({ revisionId: 'rev-2' }));
@@ -191,5 +225,37 @@ describe('MCP gateway control-plane session tools', () => {
         }),
       ).rejects.toThrow('control-plane session tools are unavailable');
     }
+  });
+});
+
+it('forwards trusted approval provenance to the Matrix executor without exposing it as tool input', async () => {
+  const matrix = vi.fn(async () => ({ state: 'queued' }));
+  const invoke = createMcpGatewayToolExecutor({
+    matrix,
+    brokeredHttpTool: async () => {
+      throw new Error('unexpected HTTP');
+    },
+    trustedCliTool: async () => {
+      throw new Error('unexpected CLI');
+    },
+  });
+  const request = { action: 'send', body: 'Exact message' };
+  await invoke({
+    toolName: 'verity_matrix',
+    projectId: 'project',
+    sessionId: 'session',
+    turnId: 'turn',
+    invocationId: 'invocation',
+    callId: 'call',
+    request,
+    approvedByCard: true,
+  });
+  expect(matrix).toHaveBeenCalledWith({
+    projectId: 'project',
+    sessionId: 'session',
+    turnId: 'turn',
+    invocationId: 'invocation',
+    request,
+    approvedByCard: true,
   });
 });

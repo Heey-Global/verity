@@ -1,5 +1,54 @@
 # Changelog
 
+## [2.5.2](https://github.com/Heey-Global/verity/compare/website-v2.5.1...website-v2.5.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to b5047b9 ([#1747](https://github.com/Heey-Global/verity/issues/1747)) ([1914469](https://github.com/Heey-Global/verity/commit/1914469e75718e3b66100d00b489258cbf4fc6f7))
+
+## [2.5.1](https://github.com/Heey-Global/verity/compare/website-v2.5.0...website-v2.5.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **github:** explain and recover missing commit-status permissions ([#1737](https://github.com/Heey-Global/verity/issues/1737)) ([2a2b781](https://github.com/Heey-Global/verity/commit/2a2b7813df93f27a68b92123b3399fe9492545d9))
+
+## [2.5.0](https://github.com/Heey-Global/verity/compare/website-v2.4.0...website-v2.5.0) (2026-10-18)
+
+
+### Features
+
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
+## [2.4.0](https://github.com/Heey-Global/verity/compare/website-v2.3.0...website-v2.4.0) (2026-10-17)
+
+
+### Features
+
+* **website:** focus the homepage on six blocks around agent security ([#1680](https://github.com/Heey-Global/verity/issues/1680)) ([c3cf16b](https://github.com/Heey-Global/verity/commit/c3cf16b4029f0c0e624fa2e1e8916e46bdbb81de))
+
+## [2.3.0](https://github.com/Heey-Global/verity/compare/website-v2.2.2...website-v2.3.0) (2026-10-16)
+
+
+### Features
+
+* **website:** render product images from the app and rebuild the homepage ([#1657](https://github.com/Heey-Global/verity/issues/1657)) ([79eac56](https://github.com/Heey-Global/verity/commit/79eac56417ef70c019c71a18f401f5e1666b9c23))
+
+## [2.2.2](https://github.com/Heey-Global/verity/compare/website-v2.2.1...website-v2.2.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to 378d0c3 ([#1647](https://github.com/Heey-Global/verity/issues/1647)) ([678a66d](https://github.com/Heey-Global/verity/commit/678a66da0d33a653db2f8c8c030e1e527ea79ac8))
+
+## [2.2.1](https://github.com/Heey-Global/verity/compare/website-v2.2.0...website-v2.2.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to 884e0b7 ([#1569](https://github.com/Heey-Global/verity/issues/1569)) ([7396e44](https://github.com/Heey-Global/verity/commit/7396e44d888a0f148b14fdb29adcc77c8aa71180))
+
 ## [2.2.0](https://github.com/Heey-Global/verity/compare/website-v2.1.1...website-v2.2.0) (2026-10-07)
 
 

@@ -73,6 +73,55 @@ describe('Codex egress gateway handler', () => {
     expect(JSON.stringify(result)).not.toContain('server-only-token');
   });
 
+  // Standalone search bypasses Responses, so ordinary inference can work while web tools fail.
+  it('forwards standalone web search with server credentials and a loggable route', async () => {
+    const events: CodexEgressRequestEnd[] = [];
+    const body = JSON.stringify({ commands: { search_query: [{ q: 'Verity' }] } });
+    const output = JSON.stringify({ output: 'search result', results: [] });
+    const forward = vi.fn<CodexEgressForward>(async (request) => {
+      expect(request.method).toBe('POST');
+      expect(request.url.href).toBe('https://chatgpt.com/backend-api/codex/alpha/search');
+      expect(request.headers.get('authorization')).toBe('Bearer server-only-token');
+      expect(request.headers.get('chatgpt-account-id')).toBe('account-1');
+      expect(request.redirect).toBe('manual');
+      let received = '';
+      for await (const chunk of request.body as AsyncIterable<Buffer>) {
+        received += chunk.toString('utf8');
+      }
+      expect(received).toBe(body);
+      return {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Readable.from([output]),
+      };
+    });
+    const port = await serve(
+      forward,
+      async () => ({ accessToken: 'server-only-token', accountId: 'account-1' }),
+      undefined,
+      (event) => events.push(event),
+    );
+    const result = await call(port, {
+      path: '/codex/alpha/search',
+      method: 'POST',
+      headers: {
+        host: AUTHORITY,
+        authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+        'content-type': 'application/json',
+      },
+      body,
+    });
+    expect(result).toEqual({ status: 200, body: output, quota: undefined });
+    expect(forward).toHaveBeenCalledOnce();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      method: 'POST',
+      path: '/codex/alpha/search',
+      outcome: 'completed',
+      status: 200,
+    });
+  });
+
   it('rejects caller-controlled credentials before resolving the gateway login', async () => {
     const credential = vi.fn(async () => ({
       accessToken: 'server-only-token',

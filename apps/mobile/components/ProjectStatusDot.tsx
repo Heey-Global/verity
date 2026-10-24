@@ -18,16 +18,16 @@ export function ProjectStatusDot({ badge, size = 8 }: { badge: ProjectBadge; siz
   if (badge.symbol === 'sleep') {
     return (
       <View accessibilityRole="image" accessibilityLabel={badge.label}>
-        <Icon name="moon" size={size + 5} color={theme.colors.tone.idle} />
+        <Icon name="moon" size={size + 5} color={theme.colors.textFaint} />
       </View>
     );
   }
   const color =
     badge.tone === 'done'
-      ? theme.colors.tone.done
+      ? theme.colors.success
       : badge.tone === 'danger'
-        ? theme.colors.tone.danger
-        : theme.colors.tone.idle;
+        ? theme.colors.attention
+        : theme.colors.textFaint;
   return (
     <View
       accessibilityRole="image"

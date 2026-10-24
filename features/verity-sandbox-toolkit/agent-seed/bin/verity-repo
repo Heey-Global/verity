@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Verity pull request and issue client for the project's code host.
+#
+# Every action runs on the Verity server through the project's code host
+# (GitHub, Forgejo, ...) via POST /internal/project/repo. The sandbox never names
+# the repository and never holds a token: it presents the per-container
+# capability, and the server resolves it to this project and its repository.
+#
+# Usage:
+#   verity-repo pr create --title <title> [--body <text> | --body-file <path|->]
+#                         [--base <branch>] [--head <branch>] [--json]
+#   verity-repo pr ready [<number>] [--json]   # default: the current branch's PR
+#   verity-repo pr view  [<number>] [--json]
+#   verity-repo issue list [--json]
+#   verity-repo issue view <number> [--json]
+#   verity-repo issue comment <number> (--body <text> | --body-file <path|->) [--json]
+#
+# Failures are reported on stderr with a non-zero exit code: a pull request the
+# agent believes it opened must never silently not exist.
+set -euo pipefail
+
+usage() {
+  sed -n '9,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+fail() {
+  echo "verity-repo: $*" >&2
+  exit 1
+}
+
+[ "$#" -ge 2 ] || usage
+group="$1"
+cmd="$2"
+shift 2
+
+json=0
+title=''
+body=''
+body_set=0
+base=''
+head=''
+positional=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json=1 ;;
+    --title) [ "$#" -ge 2 ] || fail '--title needs a value'; title="$2"; shift ;;
+    --body) [ "$#" -ge 2 ] || fail '--body needs a value'; body="$2"; body_set=1; shift ;;
+    --body-file)
+      [ "$#" -ge 2 ] || fail '--body-file needs a path'
+      if [ "$2" = '-' ]; then body="$(cat)"; else body="$(cat -- "$2")" || fail "cannot read $2"; fi
+      body_set=1
+      shift
+      ;;
+    --base) [ "$#" -ge 2 ] || fail '--base needs a branch'; base="$2"; shift ;;
+    --head) [ "$#" -ge 2 ] || fail '--head needs a branch'; head="$2"; shift ;;
+    -h | --help) usage ;;
+    -*) fail "unknown option '$1'" ;;
+    *) positional+=("$1") ;;
+  esac
+  shift
+done
+
+number_arg() {
+  local value="${positional[0]:-}"
+  [ -z "$value" ] || [[ "$value" =~ ^[0-9]+$ ]] || fail "'$value' is not a number"
+  printf '%s' "$value"
+}
+
+current_branch() {
+  local branch
+  branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" ||
+    fail 'not on a branch; pass --head <branch> or a pull request number'
+  printf '%s' "$branch"
+}
+
+case "$group $cmd" in
+  'pr create')
+    [ -n "${title//[[:space:]]/}" ] || fail 'pr create needs --title'
+    [ -n "$head" ] || head="$(current_branch)"
+    payload="$(jq -cn --arg title "$title" --arg body "$body" --arg head "$head" --arg base "$base" \
+      '{action: "pr.create", title: $title, body: $body, head: $head}
+       + (if $base == "" then {} else {base: $base} end)')"
+    ;;
+  'pr ready' | 'pr view')
+    number="$(number_arg)"
+    if [ -n "$number" ]; then
+      payload="$(jq -cn --arg action "pr.$cmd" --argjson number "$number" \
+        '{action: $action, number: $number}')"
+    else
+      [ -n "$head" ] || head="$(current_branch)"
+      payload="$(jq -cn --arg action "pr.$cmd" --arg head "$head" '{action: $action, head: $head}')"
+    fi
+    ;;
+  'issue list')
+    payload='{"action":"issue.list"}'
+    ;;
+  'issue view')
+    number="$(number_arg)"
+    [ -n "$number" ] || fail 'issue view needs an issue number'
+    payload="$(jq -cn --argjson number "$number" '{action: "issue.view", number: $number}')"
+    ;;
+  'issue comment')
+    number="$(number_arg)"
+    [ -n "$number" ] || fail 'issue comment needs an issue number'
+    [ "$body_set" = 1 ] && [ -n "${body//[[:space:]]/}" ] || fail 'issue comment needs --body or --body-file'
+    payload="$(jq -cn --argjson number "$number" --arg body "$body" \
+      '{action: "issue.comment", number: $number, body: $body}')"
+    ;;
+  *)
+    fail "unknown command '$group $cmd' (see verity-repo --help)"
+    ;;
+esac
+
+url="${VERITY_PROJECT_REPO_URL:-}"
+[ -n "$url" ] || fail 'not available in this sandbox (VERITY_PROJECT_REPO_URL unset)'
+cap_file="${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
+[ -r "$cap_file" ] || fail "capability file '$cap_file' is missing or unreadable"
+cap="$(tr -d '[:space:]' <"$cap_file")"
+[ -n "$cap" ] || fail "capability file '$cap_file' is empty"
+
+curl_status=0
+out="$(curl -sS --max-time "${VERITY_REPO_TIMEOUT_SECONDS:-60}" -w '\n%{http_code}' -X POST "$url" \
+  -H "authorization: Bearer $cap" \
+  -H 'content-type: application/json' \
+  --data "$payload" 2>/dev/null)" || curl_status=$?
+# Only a failure to resolve or connect proves the request never left. Anything
+# later (a timeout, a dropped or empty reply) may have reached the code host,
+# and a blind retry would open a second pull request or post the comment twice.
+case "$curl_status" in
+  0) ;;
+  6 | 7) fail 'the Verity server is unreachable' ;;
+  *) fail 'the request failed or timed out and may have completed; check with `verity-repo pr view` or `verity-repo issue view` before retrying' ;;
+esac
+status="${out##*$'\n'}"
+response="${out%$'\n'*}"
+
+if [ "$status" != '200' ]; then
+  message="$(jq -r '.error // empty' <<<"$response" 2>/dev/null || true)"
+  fail "${message:-request failed (HTTP $status)}"
+fi
+
+if [ "$json" = 1 ]; then
+  jq '.' <<<"$response"
+  exit 0
+fi
+
+case "$group $cmd" in
+  'pr create')
+    jq -r '"Opened pull request #\(.pullRequest.number) on \(.host): \(.pullRequest.url)"' <<<"$response"
+    ;;
+  'pr ready')
+    jq -r '"Pull request #\(.pullRequest.number) is ready for review: \(.pullRequest.url)"' <<<"$response"
+    ;;
+  'pr view')
+    jq -r '.pullRequest | "#\(.number) \(.title)\nstate: \(.state)\(if .draft then " (draft)" else "" end)\nbranch: \(.head) -> \(.base)\nurl: \(.url)\n\n\(.body)"' <<<"$response"
+    ;;
+  'issue list')
+    jq -r 'if (.issues | length) == 0 then "No open issues on \(.host)."
+           else .issues[] | "#\(.number)\t\(.title)\(if (.labels | length) > 0 then "\t[" + (.labels | join(", ")) + "]" else "" end)" end' <<<"$response"
+    ;;
+  'issue view')
+    jq -r '.issue | "#\(.number) \(.title)\nstate: \(.state)\(if (.labels | length) > 0 then "\nlabels: " + (.labels | join(", ")) else "" end)\nurl: \(.url)\n\n\(.body)"' <<<"$response"
+    ;;
+  'issue comment')
+    jq -r '"Commented: \(.comment.url)"' <<<"$response"
+    ;;
+esac

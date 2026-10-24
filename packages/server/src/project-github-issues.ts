@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { isLocalProject, type EventStore, type ProjectRecord } from '@verity/store';
 import { z } from 'zod';
+import type { ForgeIssueList } from './forge-provider.js';
+import type { HttpFetch } from './github.js';
 
 const issueSchema = z.object({
   number: z.number().int().positive(),
@@ -11,17 +13,14 @@ const issueSchema = z.object({
   assignees: z.array(z.object({ login: z.string() })),
 });
 
-export interface ProjectGitHubIssues {
-  connected: boolean;
-  viewerLogin: string | null;
-  issues: { number: number; title: string; url: string; labels: string[]; assignees: string[] }[];
-}
+/** The GitHub-backed {@link ForgeIssueList}; the route keeps its GitHub path for clients. */
+export type ProjectGitHubIssues = ForgeIssueList;
 
 /** A repository-scoped token never leaves the server or follows a pagination URL. */
 export async function listProjectGitHubIssues(
   project: ProjectRecord,
   mint: (project: ProjectRecord) => Promise<string | undefined>,
-  fetcher: typeof fetch = fetch,
+  fetcher: HttpFetch = (url, init) => fetch(url, init),
 ): Promise<ProjectGitHubIssues> {
   if (isLocalProject(project)) return { connected: false, viewerLogin: null, issues: [] };
   const token = await mint(project);

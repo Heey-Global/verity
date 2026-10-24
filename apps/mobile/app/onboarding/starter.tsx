@@ -6,11 +6,12 @@
 // older server without the endpoint, goes straight home.
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
+import { Button } from '../../components/ui';
 
 const POLL_MS = 2_000;
 /** Past this, the sandbox setup is stuck rather than slow; the home screen shows it. */
@@ -77,7 +78,7 @@ export default function OnboardingStarter() {
   return (
     <View style={[styles.root, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 16 }]}>
       <View style={styles.center}>
-        {!error ? <ActivityIndicator size="large" color={theme.colors.setup.text} /> : null}
+        {!error ? <ActivityIndicator size="large" color={theme.colors.text} /> : null}
         <Text style={styles.title} accessibilityRole="header">
           {error
             ? 'Could not open welcome tour'
@@ -88,12 +89,11 @@ export default function OnboardingStarter() {
         {error ? (
           <>
             <Text style={styles.lead}>{error}</Text>
-            <Pressable
-              accessibilityRole="button"
+            <Button
+              label="Try again"
+              variant="secondary"
               onPress={() => setAttemptNumber((value) => value + 1)}
-            >
-              <Text style={styles.skipLabel}>Try again</Text>
-            </Pressable>
+            />
           </>
         ) : null}
         {preparing && !error ? (
@@ -105,16 +105,14 @@ export default function OnboardingStarter() {
         ) : null}
       </View>
       {preparing || replay ? (
-        <Pressable
-          style={({ pressed }) => [styles.skip, pressed ? styles.pressed : null]}
-          accessibilityRole="button"
-          accessibilityLabel="Skip"
-          accessibilityHint="Go to the home screen; the starter project keeps preparing"
-          hitSlop={8}
-          onPress={() => router.replace('/')}
-        >
-          <Text style={styles.skipLabel}>Skip</Text>
-        </Pressable>
+        <View style={styles.skip}>
+          <Button
+            label="Skip"
+            variant="text"
+            accessibilityHint="Go to the home screen; the starter project keeps preparing"
+            onPress={() => router.replace('/')}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -136,28 +134,18 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   title: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
     textAlign: 'center',
   },
   lead: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
+    ...theme.typography.body,
+    color: theme.colors.textMuted,
     textAlign: 'center',
   },
   skip: {
     minHeight: 44,
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-  },
-  skipLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    textDecorationLine: 'underline',
-  },
-  pressed: {
-    opacity: 0.62,
   },
 }));

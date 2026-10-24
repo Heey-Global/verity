@@ -107,7 +107,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Project connections',
     summary: 'Choose which connected services a project may use.',
     details:
-      'Project settings, Connections lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler project and config, a Google Drive folder, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Grants apply to every session in the project.',
+      'Project settings, Connections lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler project and config, Google Drive folders, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Project defaults apply to every inheriting session; each chat can choose a different account or disable a service.',
     appLink: 'verity://project/settings/services',
     docsPath: 'docs/connections.md',
     keywords: ['project settings', 'scope', 'enable', 'grant'],
@@ -117,10 +117,20 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'GitHub',
     summary: 'Work on your repositories, open pull requests, sign commits.',
     details:
-      'Connect GitHub to let agents work on existing repositories and open pull requests; you choose which repositories Verity may access. The same screen sets the commit author and the signing key for verified commits. Afterwards New project offers GitHub repository, and sessions show pull request and CI status.',
+      'Connect GitHub to let agents work on existing repositories and open pull requests; you choose which repositories Verity may access. The same screen sets the commit author and the signing key for verified commits. Afterwards New project offers GitHub next to Local project, and sessions show pull request and CI status.',
     appLink: 'verity://settings/github',
     docsPath: 'docs/getting-started.md',
     keywords: ['repository', 'repo', 'pull request', 'pr', 'commit', 'signing', 'git'],
+  },
+  {
+    id: 'forgejo',
+    title: 'Forgejo',
+    summary: 'Work on repositories on your own Forgejo server.',
+    details:
+      'Connect a Forgejo server with its HTTPS address and an access token with read and write access to repositories, issues and user; a custom certificate is optional. Forgejo then sits next to GitHub: New project offers its repositories, local projects can be connected to it in project settings, and sessions link issues and pull requests to that server. Agents open and update pull requests there with verity-repo instead of gh. The token stays on the Verity server.',
+    appLink: 'verity://settings/forgejo',
+    docsPath: 'docs/connections.md',
+    keywords: ['forgejo', 'gitea', 'self-hosted', 'git server', 'repository', 'pull request'],
   },
   {
     id: 'claude',
@@ -157,7 +167,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Google',
     summary: 'Drive, Docs, Sheets, Slides, mail and calendar for agents.',
     details:
-      'Connect your Google account to let agents work with Google Workspace. Each service asks only for its own permissions: mail, calendar, contacts and Drive are connected separately. A project then enables the services it needs, and sending mail or changing events always asks you first.',
+      'Connect one or more Google accounts, identified by email with an optional name, to let agents work with Google Workspace. Each service asks only for its own permissions: mail, calendar, contacts and Drive are connected separately. A project chooses an account for each mail, calendar or contacts service. Chats inherit that live default, can select another account or disable that service for this chat. Drive supports multiple project folders from different accounts. Sending mail or changing events always asks you first.',
     appLink: 'verity://settings/google',
     docsPath: 'docs/google-calendar.md',
     keywords: [
@@ -177,7 +187,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Google Drive folders',
     summary: 'Give a project a Drive folder as a workspace.',
     details:
-      'In project settings, Connections, Google Drive, select a folder. New folder connections are read-only; enable changes explicitly if agents should write. Agents only see that folder and its contents, and deletions go to the Drive trash.',
+      'In project settings, Connections, Google Drive, select folders and their accounts. New folder connections are read-only; enable changes explicitly if agents should write. Agents only see linked folders and their contents, and deletions go to the Drive trash.',
     appLink: 'verity://project/settings/services',
     docsPath: 'docs/file-connections.md',
     keywords: ['drive', 'folder', 'files', 'upload', 'read-only'],
@@ -196,9 +206,9 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   {
     id: 'matrix',
     title: 'Matrix',
-    summary: 'Import chat room messages into project knowledge.',
+    summary: 'Import chat room messages and approve individual text sends.',
     details:
-      "A dedicated Matrix account joins rooms you invite it to, for example rooms bridged from WhatsApp or Signal. After you assign a room to a project, new messages and attachments are imported into that project's knowledge. Agents can read them, but chat content is never treated as instructions.",
+      "A dedicated Matrix account joins rooms you invite it to, for example rooms bridged from WhatsApp or Signal. After you assign a room to a project, new messages and attachments are imported into that project's knowledge. Agents can read them, but chat content is never treated as instructions. From a project session you can ask to send a text message to an active connected room. Each message requires approval of the exact account, room and text; sending has no reusable permission. Sent means Matrix accepted the message, not that a WhatsApp or Signal bridge delivered it.",
     appLink: 'verity://settings/services/matrix',
     docsPath: 'docs/matrix-knowledge-connector.md',
     keywords: ['chat', 'whatsapp', 'signal', 'messages', 'room', 'import'],

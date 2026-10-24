@@ -1,3 +1,4 @@
+import { ProjectGoogleDriveFolders } from '../../../../components/settings/ProjectGoogleDriveFolders';
 // Connected services, per project: which Doppler environment, Google Drive
 // folder and MCP connections this project may use. The credentials themselves
 // live on the Verity-wide Connected services screen; this screen only binds the
@@ -31,6 +32,7 @@ import { ProjectGoogleServices } from '../../../../components/settings/ProjectGo
 import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { Button } from '../../../../components/ui';
 
 export default function ProjectServicesScreen() {
   const { id, section } = useLocalSearchParams<{
@@ -85,7 +87,7 @@ function ProjectServicesView({
   if (loading && detail === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
@@ -115,12 +117,7 @@ function ProjectServicesView({
 
       {section === undefined || section === 'drive' ? (
         <SettingsGroup title="Files">
-          <GoogleDriveFolderSection
-            client={client}
-            projectId={projectId}
-            settings={settings}
-            onSaved={onSettingsSaved}
-          />
+          <ProjectGoogleDriveFolders client={client} projectId={projectId} />
         </SettingsGroup>
       ) : null}
 
@@ -270,14 +267,15 @@ function DopplerBindingSection({
       </Text>
 
       {phase === 'idle' ? (
-        <Pressable
-          style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-          onPress={start}
-          accessibilityRole="button"
-          accessibilityLabel={bound ? 'Change Doppler binding' : 'Choose Doppler binding'}
-        >
-          <Text style={styles.reproButtonLabel}>{bound ? 'Change' : 'Choose'}</Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label={bound ? 'Change' : 'Choose'}
+            accessibilityLabel={bound ? 'Change Doppler binding' : 'Choose Doppler binding'}
+            variant="secondary"
+            size="compact"
+            onPress={start}
+          />
+        </View>
       ) : null}
 
       {loading ? <ActivityIndicator size="small" /> : null}
@@ -365,14 +363,15 @@ function PickRow({
 // the idle (current-binding) view without changing anything.
 function BindingCancel({ onPress }: { onPress: () => void }) {
   return (
-    <Pressable
-      style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel="Cancel Doppler binding"
-    >
-      <Text style={styles.reproButtonLabel}>Cancel</Text>
-    </Pressable>
+    <View style={styles.selfStart}>
+      <Button
+        label="Cancel"
+        accessibilityLabel="Cancel Doppler binding"
+        variant="text"
+        size="compact"
+        onPress={onPress}
+      />
+    </View>
   );
 }
 
@@ -382,116 +381,6 @@ function BindingCancel({ onPress }: { onPress: () => void }) {
 function bindingErrorCopy(error: string): string {
   if (error === 'locked') return 'Unlock the secret store first.';
   return error;
-}
-
-function GoogleDriveFolderSection({
-  client,
-  projectId,
-  settings,
-  onSaved,
-}: {
-  client: VerityClient;
-  projectId: string;
-  settings: ProjectSettings | null;
-  onSaved: (settings: ProjectSettings) => void;
-}) {
-  const [disconnecting, setDisconnecting] = useState(false);
-  const folderName = settings?.googleDriveFolderName ?? null;
-  const choose = useCallback(() => {
-    router.push({
-      pathname: '/google-drive/[sessionId]',
-      params: { sessionId: projectId, purpose: 'folder' },
-    });
-  }, [projectId]);
-  const disconnect = useCallback(() => {
-    if (disconnecting) return;
-    Alert.alert(
-      'Disconnect Google Drive folder?',
-      'The files stay in Google Drive. Verity will no longer access them from this project.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: () => {
-            setDisconnecting(true);
-            void client
-              .disconnectProjectGoogleDriveFolder(projectId)
-              .then(() => {
-                if (settings === null) return;
-                onSaved({ ...settings, googleDriveFolderId: null, googleDriveFolderName: null });
-              })
-              .catch(() => Alert.alert('Could not disconnect folder'))
-              .finally(() => setDisconnecting(false));
-          },
-        },
-      ],
-    );
-  }, [client, disconnecting, onSaved, projectId, settings]);
-
-  return (
-    <SettingsDisclosure
-      title="Google Drive folder"
-      icon="folder"
-      summary={
-        folderName
-          ? `${folderName} · ${settings?.googleDriveAccessMode === 'read-only' ? 'Read only' : 'Read/write'}`
-          : 'Not connected'
-      }
-    >
-      <Text style={styles.reproSubtitle}>
-        Choose whether this project can only read files or also change them. Overwrites and trash
-        actions still require confirmation.
-      </Text>
-      {folderName ? (
-        <SettingsToggleRow
-          label="Allow changes to Google Drive files"
-          value={settings?.googleDriveAccessMode !== 'read-only'}
-          onValueChange={(enabled) => {
-            if (disconnecting) return;
-            setDisconnecting(true);
-            void client
-              .updateProjectSettings(projectId, {
-                googleDriveAccessMode: enabled ? 'read-write' : 'read-only',
-              })
-              .then(onSaved)
-              .catch(() => Alert.alert('Could not change Drive access'))
-              .finally(() => setDisconnecting(false));
-          }}
-          disabled={disconnecting}
-        />
-      ) : null}
-      <View style={styles.actionRow}>
-        {folderName ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.reproButton,
-              disconnecting ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={disconnect}
-            disabled={disconnecting}
-            accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Drive folder"
-          >
-            <Text style={styles.reproButtonLabel}>
-              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Text>
-          </Pressable>
-        ) : null}
-        <Pressable
-          style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-          onPress={choose}
-          accessibilityRole="button"
-          accessibilityLabel={
-            folderName ? 'Change Google Drive folder' : 'Connect Google Drive folder'
-          }
-        >
-          <Text style={styles.reproButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
-        </Pressable>
-      </View>
-    </SettingsDisclosure>
-  );
 }
 
 function ProjectMcpBindingsSection({

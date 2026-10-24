@@ -2,6 +2,20 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
+  it('copies Python artifacts matching the pinned source image', () => {
+    const source = readFileSync('deploy/verity-sandbox.Dockerfile', 'utf8');
+    const version = source.match(/^ARG PYTHON_VERSION=(\d+\.\d+)-/mu)?.[1];
+    expect(version).toBeDefined();
+    // Updating only the image tag leaves COPY paths pointing at absent artifacts.
+    const paths = [
+      ...source.matchAll(
+        /\/usr\/local\/(?:bin\/(?:python|pip)|lib\/(?:libpython|python)|include\/python)(\d+\.\d+)/gu,
+      ),
+    ];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const match of paths) expect(match[1]).toBe(version);
+  });
+
   it('ships the browser export at the configured server path', () => {
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
     const webStage = dockerfile.split('FROM builder-deps AS web-builder\n')[1]?.split('FROM ')[0];

@@ -80,6 +80,7 @@ const PRIMARY_FIELD: Record<string, string> = {
   // A skill/slash-command invocation — headline reads "Skill code-review".
   Skill: 'skill',
   verity_tasks: 'action',
+  verity_vulnerabilities: 'action',
   // Without this the fallback picks whichever string field comes first in the object, which
   // for a handoff could be the briefing — 80 squashed characters of a document, where the
   // title is the one field written to be read at a glance. The full briefing has its own
@@ -107,6 +108,7 @@ const PRIMARY_FIELD: Record<string, string> = {
  * for reasons that have nothing to do with these.
  */
 const ONLY_PRIMARY_FIELD = new Set([
+  'verity_vulnerabilities',
   'verity_session_handoff',
   'verity_list_sessions',
   // Codex reports an MCP call's input as `{ server, tool, arguments }`, so the first string
@@ -125,6 +127,7 @@ const ONLY_PRIMARY_FIELD = new Set([
  */
 const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_gmail: 'Gmail',
+  verity_matrix: 'Matrix',
   verity_google_calendar: 'Google Calendar',
   verity_google_contacts: 'Google Contacts',
   verity_google_docs: 'Google Docs',
@@ -148,6 +151,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_end_planning: 'Verity Implement Plan',
   verity_tasks: 'Verity Tasks',
   verity_app_help: 'Verity Help',
+  verity_vulnerabilities: 'Verity Vulnerability Scan',
 };
 
 /** Strip only Verity's own backend qualification, including tools added by the platform. */

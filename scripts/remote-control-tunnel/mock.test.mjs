@@ -127,42 +127,46 @@ for (const protocol of ['h1', 'h2']) {
         sessionId: 'fixture-session',
         capability: 'remote-control-v1',
       });
-      let sequence = 0;
-      let receivedSequence = 0;
-      const pipe = new Duplex({
-        read() {},
-        write(chunk, _encoding, callback) {
-          assert.ok(Buffer.isBuffer(chunk));
-          framed.send(
-            JSON.stringify({
-              type: 'stream.data',
-              streamId: 'test',
-              seq: sequence++,
-              payload: chunk.toString('base64'),
-            }),
-            callback,
-          );
-        },
-        final(callback) {
-          framed.send(JSON.stringify({ type: 'stream.end', streamId: 'test' }), callback);
-        },
-      });
-      framed.on('message', (raw) => {
-        assert.ok(Buffer.isBuffer(raw));
-        /** @type {unknown} */
-        const parsed = JSON.parse(raw.toString());
-        assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
-        const frame = /** @type {Record<string, unknown>} */ (parsed);
-        if (frame.type === 'stream.data') {
-          assert.equal(frame.seq, receivedSequence++);
-          assert.equal(typeof frame.payload, 'string');
-          pipe.push(Buffer.from(/** @type {string} */ (frame.payload), 'base64'));
-        } else if (frame.type === 'stream.end') pipe.push(null);
-        else pipe.destroy(new Error('Unexpected frame'));
-      });
-      framed.send(
-        JSON.stringify({ type: 'stream.open', streamId: 'test', channel: 'remote', meta: {} }),
-      );
+      /** @param {string} streamId */
+      function streamPipe(streamId) {
+        let sequence = 0;
+        let receivedSequence = 0;
+        const pipe = new Duplex({
+          read() {},
+          write(chunk, _encoding, callback) {
+            assert.ok(Buffer.isBuffer(chunk));
+            framed.send(
+              JSON.stringify({
+                type: 'stream.data',
+                streamId,
+                seq: sequence++,
+                payload: chunk.toString('base64'),
+              }),
+              callback,
+            );
+          },
+          final(callback) {
+            framed.send(JSON.stringify({ type: 'stream.end', streamId }), callback);
+          },
+        });
+        framed.on('message', (raw) => {
+          assert.ok(Buffer.isBuffer(raw));
+          /** @type {unknown} */
+          const parsed = JSON.parse(raw.toString());
+          assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+          const frame = /** @type {Record<string, unknown>} */ (parsed);
+          if (frame.streamId !== streamId) return;
+          if (frame.type === 'stream.data') {
+            assert.equal(frame.seq, receivedSequence++);
+            assert.equal(typeof frame.payload, 'string');
+            pipe.push(Buffer.from(/** @type {string} */ (frame.payload), 'base64'));
+          } else if (frame.type === 'stream.end') pipe.push(null);
+          else pipe.destroy(new Error('Unexpected frame'));
+        });
+        framed.send(JSON.stringify({ type: 'stream.open', streamId, channel: 'remote', meta: {} }));
+        return pipe;
+      }
+      const pipe = streamPipe('test');
       const framedTLS = tls.connect({
         socket: pipe,
         ca: cert,
@@ -174,6 +178,23 @@ for (const protocol of ['h1', 'h2']) {
       if (protocol === 'h2') {
         const session = http2.connect('https://core.test', { createConnection: () => framedTLS });
         session.on('error', () => {});
+        const partial = session.request({ ':path': '/partial' });
+        partial.on('error', () => {});
+        let partialEnded = false;
+        partial.on('end', () => {
+          partialEnded = true;
+        });
+        const firstPartialByte = once(partial, 'data');
+        const partialHeaders = once(partial, 'response');
+        partial.end();
+        const headerEvent = /** @type {unknown[]} */ (await partialHeaders);
+        const headers = /** @type {import('node:http2').IncomingHttpHeaders} */ (headerEvent[0]);
+        assert.equal(headers[':status'], 200);
+        assert.equal(headers['content-length'], '2');
+        assert.equal(headers['content-type'], 'application/octet-stream');
+        assert.equal(headers['x-content-type-options'], 'nosniff');
+        const partialEvent = /** @type {unknown[]} */ (await firstPartialByte);
+        assert.deepEqual(partialEvent[0], Buffer.from('x'));
         const held = session.request({ ':path': '/slow' });
         held.on('error', () => {});
         held.end();
@@ -191,13 +212,41 @@ for (const protocol of ['h1', 'h2']) {
         next.end();
         await once(next, 'end');
         assert.equal(Buffer.concat(nextChunks).toString(), 'core-ok');
+        assert.equal(partialEnded, false, 'partial body must remain held while siblings finish');
+        partial.close(http2.constants.NGHTTP2_CANCEL);
         session.destroy();
       } else {
+        const partial = tls.connect({
+          socket: streamPipe('partial'),
+          ca: cert,
+          servername: 'core.test',
+          ALPNProtocols: ['http/1.1'],
+        });
+        await once(partial, 'secureConnect');
+        let partialEnded = false;
+        let partialBody = '';
+        partial.on('end', () => {
+          partialEnded = true;
+        });
+        const firstPartialByte = new Promise((resolve) => {
+          partial.on('data', (chunk) => {
+            partialBody += chunk.toString();
+            if (partialBody.includes('\r\n\r\nx')) resolve(undefined);
+          });
+        });
+        partial.write('GET /partial HTTP/1.1\r\nHost: core.test\r\n\r\n');
+        await firstPartialByte;
+        assert.match(partialBody, /content-length: 2/i);
+        assert.match(partialBody, /content-type: application\/octet-stream\r\n/i);
+        assert.match(partialBody, /x-content-type-options: nosniff\r\n/i);
         const framedChunks = [];
         framedTLS.on('data', (chunk) => framedChunks.push(chunk));
         framedTLS.write('GET /healthz HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
         await once(framedTLS, 'end');
         assert.match(Buffer.concat(framedChunks).toString(), /core-ok/);
+        assert.equal(partialEnded, false, 'partial body must remain held while siblings finish');
+        assert.equal(partialBody.split('\r\n\r\n')[1], 'x');
+        partial.destroy();
       }
       framedTLS.destroy();
       framed.terminate();

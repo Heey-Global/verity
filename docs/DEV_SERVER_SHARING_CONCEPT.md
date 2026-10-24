@@ -167,7 +167,11 @@ to end.
   example "Also running in ‘Yesterday's session'", and offers "Stop" for that instance.
 - _Archived sessions._ Archiving a session stops its instances. There is no idle timeout: a
   server the operator or agent started keeps running until someone stops it.
-- _Public links survive restarts._ For managed entries a public link stays valid until it
+- _Preview links survive restarts._ Local and public previews retain their address and, for
+  public previews, PIN across Server restarts, system updates, and rollback until the share
+  expires or is explicitly stopped. Static folders and unmanaged listeners recover their
+  connectors too. An unmanaged process has no saved launch command: its link remains offline
+  until the process listens again. For managed entries a public link stays valid until it
   expires, with the same address and PIN. While the server is stopped, starting, or crashed,
   the link shows a "Currently offline" page instead of being revoked. Stopping the link itself
   stays an explicit operator action. The link belongs to the pair, not to a port: after a sandbox-port change the connector follows the new port, and a pair with a live public link is never evicted from the local range. A public link of a stopped entry does not keep the sandbox awake, and a visitor does not wake it; the visitor sees the offline page.
@@ -370,9 +374,15 @@ becomes "Open settings" and the text names Verity Premium.
 
 ## 5. Implementation details and verification boundaries
 
-- Local edges and their connector leases are process-owned, not restored from the database.
-  A Server restart closes them; startup removes orphan local connectors, and opening again
-  allocates a new share. Active local and public shares block automatic sandbox sleep.
+- Local shares persist their identity, network-port reservation, target, expiry, and encrypted
+  connector credentials. Server shutdown releases process-owned edges without cancelling the
+  saved sharing request. The active Server generation restores shares after unlocking the
+  store, before removing orphan connectors. A reserved port or target that is temporarily
+  unavailable is retried without assigning a different URL. Explicit stop, expiry, and target
+  deletion prevent recovery. Active local and public shares block automatic sandbox sleep.
+- Recovery across rollback requires a compatible Server version that supports durable preview
+  recovery. Local shares created by older versions existed only in process memory and cannot
+  be recovered after that process exits; recreate those shares after upgrading.
 - Both legacy and managed deployments publish `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The managed
   Gateway relays each port unchanged to the selected Server generation, preserving HTTP
   origins, streaming bodies and WebSocket upgrades through the normal update lifecycle.

@@ -1,4 +1,17 @@
 export {
+  ForgeConnectionStore,
+  type ForgeConnection,
+  type ForgeConnectionProvider,
+  type ForgeConnectionCredentials,
+  type ForgeConnectionInput,
+} from './forge-connections.js';
+export {
+  MatrixOutboundStore,
+  type MatrixSendSnapshot,
+  type MatrixDelivery,
+  type MatrixDispatch,
+} from './matrix-outbound.js';
+export {
   createRequestLatencyTrace,
   withRequestLatencyTrace,
   measureLatencyPhase,
@@ -76,6 +89,7 @@ export {
   type DevServerPatch,
   type DevServerDetectionStateRecord,
   type PublicPreviewShareRecord,
+  type LocalPreviewShareRecord,
   type PublicPreviewShareCreateInput,
   type PublicPreviewShareState,
   type ClaudeEgressCaRecord,
@@ -112,6 +126,9 @@ export {
   ManagedDevServerPortsFullError,
   managedDevServerNameKey,
   normalizeManagedDevServerWorkdir,
+  normalizeManagedDevServerSecretBindings,
+  managedDevServerBindingsEqual,
+  type ManagedDevServerSecretBinding,
   type ManagedDevServerRecord,
   type ManagedDevServerInstanceRecord,
   type ManagedDevServerDesired,
@@ -199,3 +216,7 @@ export * from './knowledge.js';
 export * from './knowledge-sources.js';
 
 export { redactSecrets, redactProcessStderr } from './redact.js';
+
+export * from './google-accounts.js';
+
+export * from './vulnerability-scan.js';

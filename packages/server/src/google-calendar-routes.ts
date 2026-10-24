@@ -9,27 +9,17 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
-import {
-  hasGoogleCalendarScopes,
-  hasGoogleContactsScopes,
-  hasGoogleGmailScopes,
-} from './google-oauth-scopes.js';
+import { hasGoogleCalendarScopes } from './google-oauth-scopes.js';
 
-const connectBody = z.object({
-  code: z.string().trim().min(1).max(4096),
-  codeVerifier: z.string().trim().min(1).max(256),
-  redirectUri: z.string().trim().min(1).max(2048),
-});
 const sessionParams = z.object({
   id: z
     .string()
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
 });
-const REQUIRED_CALENDAR_SCOPES = new Set(['https://www.googleapis.com/auth/userinfo.email']);
 
 type CalendarRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
+  Partial<Pick<EventStore, 'googleAccounts'>> &
   Pick<
     EventStore,
     | 'getSession'
@@ -46,22 +36,6 @@ interface CalendarRouteDeps {
   googleClientId?: string;
   stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
-  fetch?: GoogleFetch;
-  onCredentialsChanged?: () => void;
-}
-
-async function calendarAccountEmail(
-  accessToken: string,
-  doFetch: GoogleFetch = fetch,
-): Promise<string | undefined> {
-  const response = await doFetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok)
-    throw new GoogleDriveError('Calendar profile request failed', `http_${response.status}`);
-  const body = (await response.json().catch(() => ({}))) as { email?: unknown };
-  return typeof body.email === 'string' && body.email.length > 0 ? body.email : undefined;
 }
 
 /** Shared-Google-account Calendar consent and explicit per-session enablement. */
@@ -80,6 +54,15 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
     };
 
     instance.get('/calendar/connection', async () => {
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        return {
+          connected: accounts.length > 0,
+          accountEmail: accounts.length === 1 ? accounts[0]!.email : null,
+        };
+      }
       const current = await settings();
       const connected =
         current?.calendarAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -89,87 +72,31 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       };
     });
 
-    instance.post(
-      '/calendar/connect',
-      { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
-      async (request, reply) => {
-        if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-        const body = connectBody.parse(request.body);
-        const clientId =
-          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
-        if (!clientId) {
-          reply.code(400);
-          return { error: 'Google is not configured on this server' };
-        }
-        let tokens;
-        try {
-          tokens = await exchangeGoogleAuthCode(
-            { clientId, ...body },
-            deps.fetch === undefined ? {} : { fetch: deps.fetch },
-          );
-        } catch (error) {
-          const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-          request.log.error({ reason }, 'verity: Calendar code exchange failed');
-          reply.code(502);
-          return { error: `Google sign-in failed (${reason})` };
-        }
-        if (tokens.refreshToken === undefined) {
-          reply.code(400);
-          return {
-            error: 'Google did not return a refresh token — reconnect and allow offline access',
-          };
-        }
-        if (
-          !hasGoogleCalendarScopes(tokens.scopes) ||
-          [...REQUIRED_CALENDAR_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
-        ) {
-          reply.code(400);
-          return { error: 'Google did not grant the required Calendar permissions' };
-        }
-        let accountEmail: string;
-        try {
-          accountEmail =
-            (await calendarAccountEmail(tokens.accessToken, deps.fetch)) ??
-            (() => {
-              throw new Error('missing Calendar account email');
-            })();
-        } catch {
-          reply.code(502);
-          return { error: 'Could not verify the connected Calendar account' };
-        }
-        const previous = await settings();
-        const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
-        if (
-          previous?.googleDriveAccountEmail !== null &&
-          previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase()
-        ) {
-          await deps.eventStore.clearSessionCalendarConnections();
-          await deps.eventStore.clearSessionGmailConnections();
-          await deps.eventStore.clearSessionContactsConnections();
-        }
-        const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
-        if (!contactsAuthorized) await deps.eventStore.clearSessionContactsConnections();
-        if (!gmailAuthorized) await deps.eventStore.clearSessionGmailConnections();
-        await deps.eventStore.updateVeritySettings({
-          googleGrantedScopes: tokens.scopes ?? [],
-          contactsAuthorized,
-          googleDriveClientId: clientId,
-          googleDriveRefreshToken: tokens.refreshToken,
-          googleDriveAccountEmail: accountEmail,
-          calendarAuthorized: true,
-          gmailAuthorized,
-        });
-        deps.onCredentialsChanged?.();
-        return { connected: true as const, accountEmail };
-      },
-    );
-
     instance.get('/sessions/:id/calendar', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'calendar');
+        const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'calendar');
+        return {
+          enabled: effective !== undefined && hasGoogleCalendarScopes(effective.account.scopes),
+          connected: accounts.length > 0,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            effective?.account.clientId ??
+            accounts[0]?.clientId ??
+            null,
+          accountId: effective?.account.id ?? null,
+          accountEmail: effective?.account.email ?? null,
+          source: effective?.source ?? null,
+          mode: access.mode,
+        };
       }
       const connection = await deps.eventStore.getSessionCalendarConnection(id);
       const current = await settings();
@@ -193,6 +120,29 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        if (accounts.length !== 1)
+          return reply.code(409).send({ error: 'Choose an authorized Google account' });
+        const account = accounts[0]!;
+        await deps.eventStore.googleAccounts.setSessionAccess(id, 'calendar', {
+          mode: 'account',
+          accountId: account.id,
+        });
+        return {
+          enabled: true,
+          connected: true,
+          accountId: account.id,
+          accountEmail: account.email,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            account.clientId,
+          source: 'session',
+          mode: 'account',
+        };
       }
       const current = await settings();
       if (current?.calendarAuthorized !== true || !current.googleDriveRefreshToken?.trim()) {

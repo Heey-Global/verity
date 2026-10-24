@@ -143,6 +143,24 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'Matrix connector bearer token',
   ),
   declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/claim',
+    'container-capability',
+    'Matrix connector bearer token; approved jobs only',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/check',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/result',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
     'GET',
     '/internal/integrations/matrix/config',
     'container-capability',
@@ -189,6 +207,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     '/internal/project/memory',
     'container-capability',
     'per-container capability, presented by the sandbox `verity-memory` wrapper (ADR 0008)',
+  ),
+  declare(
+    'POST',
+    '/internal/project/repo',
+    'container-capability',
+    'per-container capability, presented by the sandbox `verity-repo` command',
   ),
   declare(
     'POST',

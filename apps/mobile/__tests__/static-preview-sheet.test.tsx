@@ -1023,6 +1023,7 @@ describe('managed dev servers', () => {
   const demo = (overrides: Partial<ManagedDevServer> = {}): ManagedDevServer => ({
     id: 'srv-1',
     name: 'Curtis Demo',
+    secretBindings: [],
     command: 'node server.mjs --port {port}',
     workdir: 'curtis-voice',
     approved: true,
@@ -1101,12 +1102,13 @@ describe('managed dev servers', () => {
 
   // Local publishes the agent's command on the network, so the operator sees
   // exactly what runs and approves only that.
-  it('shows the command and approves exactly it before Local turns on', async () => {
+  it('shows the command and secret mapping and approves exactly them before Local turns on', async () => {
+    const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
     const approveManagedDevServer = jest.fn(async () => []);
     const setManagedDevServerLocal = jest.fn(async () => demo());
     const alert = answer('Allow');
     renderSheet(
-      managedClient([demo({ approved: false, instance: null })], {
+      managedClient([demo({ approved: false, instance: null, secretBindings })], {
         approveManagedDevServer,
         setManagedDevServerLocal,
       }),
@@ -1117,11 +1119,12 @@ describe('managed dev servers', () => {
     );
     expect(alert.mock.calls[0]?.[1]).toContain('node server.mjs --port {port}');
     expect(alert.mock.calls[0]?.[1]).toContain('curtis-voice');
+    expect(alert.mock.calls[0]?.[1]).toContain('ATTENDEE_API_KEY → API_KEY');
     expect(alert.mock.calls[0]?.[1]).toContain('without a PIN');
     expect(approveManagedDevServer).toHaveBeenCalledWith(
       'session-one',
       'srv-1',
-      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice', secretBindings },
       {},
     );
   });

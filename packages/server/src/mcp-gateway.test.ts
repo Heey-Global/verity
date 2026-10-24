@@ -1,3 +1,4 @@
+import { matrixRequestSchema } from './matrix-tool.js';
 import { gatewayToolNameSchema, secretAuditEventInputSchema } from '@verity/secret-contracts';
 import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
@@ -971,4 +972,200 @@ it('serves Shared publication with trusted caller identity and no permission car
     'gateway_call_received',
     'gateway_call_served',
   ]);
+});
+
+const MATRIX_SEND = {
+  action: 'send',
+  accountId: '@verity:example.test',
+  endpoint: 'https://matrix.example.test',
+  roomId: '!room:example.test',
+  roomName: 'Project chat',
+  bindingVersion: 2,
+  body: 'Exact message\nsecond line',
+};
+
+it('requires a real card for every Matrix send even when a standing permission provider allows it', async () => {
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_matrix'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(MATRIX_SEND, 'verity_matrix'),
+  });
+  expect(requestApproval).toHaveBeenCalledOnce();
+  expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ input: MATRIX_SEND }));
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ approvedByCard: true, request: MATRIX_SEND }),
+  );
+});
+
+it('never invokes a Matrix send after deny, edited content, edited room or a non-card grant', async () => {
+  const answers: ExternalPermissionAnswer[] = [
+    { decision: { behavior: 'deny', message: 'No' }, decidedBy: 'card' },
+    {
+      decision: { behavior: 'allow', updatedInput: { ...MATRIX_SEND, body: 'Changed' } },
+      decidedBy: 'card',
+    },
+    {
+      decision: {
+        behavior: 'allow',
+        updatedInput: { ...MATRIX_SEND, roomId: '!other:example.test' },
+      },
+      decidedBy: 'card',
+    },
+    { decision: { behavior: 'allow' }, decidedBy: 'grant' },
+  ];
+  for (const answer of answers) {
+    const { gateway, invokeTool } = harness({
+      servedTools: ['verity_matrix'],
+      requestApproval: async () => answer,
+    });
+    await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(MATRIX_SEND, 'verity_matrix'),
+    });
+    expect(invokeTool).not.toHaveBeenCalled();
+  }
+});
+
+it('rejects caller-supplied Matrix approval fields before showing a card', async () => {
+  const { gateway, invokeTool, requestApproval } = harness({ servedTools: ['verity_matrix'] });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call({ ...MATRIX_SEND, approvedByCard: true }, 'verity_matrix'),
+  });
+  expect(requestApproval).not.toHaveBeenCalled();
+  expect(invokeTool).not.toHaveBeenCalled();
+});
+
+it('returns a bounded replay identity usable by the Matrix status action', () => {
+  const identity = mcpGatewayInvocationId(7, 'verity_matrix', 'turn', 'a'.repeat(64));
+  expect(matrixRequestSchema.safeParse({ action: 'status', invocationId: identity }).success).toBe(
+    true,
+  );
+  expect(mcpGatewayInvocationId(7, 'verity_matrix', 'turn', 'a'.repeat(64))).toBe(identity);
+  expect(mcpGatewayInvocationId(7, 'verity_matrix', 'another-turn', 'a'.repeat(64))).not.toBe(
+    identity,
+  );
+});
+
+it.each([
+  { action: 'download_attachment', messageId: 'm1', partId: '1.0' },
+  { action: 'download_attachment', messageId: 'm1', partId: '' },
+  { action: 'list_senders' },
+  {
+    action: 'create_draft',
+    from: 'support@example.test',
+    to: ['friend@example.test'],
+    subject: 'Hello',
+    body: 'Body',
+  },
+  {
+    action: 'create_draft',
+    to: ['friend@example.test'],
+    subject: 'Report',
+    body: 'Body',
+    attachments: [
+      { path: 'out/report.pdf' },
+      { path: 'a', filename: 'b.txt', mimeType: 'text/plain' },
+    ],
+  },
+  {
+    action: 'create_reply_draft',
+    threadId: 't1',
+    body: 'Body',
+    attachments: [{ path: 'out/report.pdf' }],
+  },
+])('accepts Gmail read and draft actions through the gateway: %j', async (request) => {
+  const { gateway, invokeTool } = harness({
+    servedTools: ['verity_gmail'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(request, 'verity_gmail'),
+  });
+  expect(invokeTool).toHaveBeenCalledOnce();
+  expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ request }));
+});
+
+// The approval card lists attachments from send_draft; a malformed entry must not reach it.
+it.each([
+  { attachments: [{ path: 'a', extra: true }], action: 'create_draft' },
+  { attachments: Array.from({ length: 11 }, () => ({ path: 'a' })), action: 'create_draft' },
+])('rejects malformed Gmail attachment requests: %#', async ({ attachments, action }) => {
+  const { gateway, invokeTool } = harness({
+    servedTools: ['verity_gmail'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(
+      { action, to: ['friend@example.test'], subject: 'S', body: 'B', attachments },
+      'verity_gmail',
+    ),
+  });
+  expect(invokeTool).not.toHaveBeenCalled();
+});
+
+describe('account-bound approval snapshots', () => {
+  it('refuses a bearer retired while rechecking account authority', async () => {
+    let retired = false;
+    let snapshots = 0;
+    const { gateway, invokeTool } = harness({
+      resolveCaller: async () => (retired ? undefined : { sessionId: 'sess-1', turnId: 'turn-1' }),
+      authorizationSnapshot: async () => {
+        if (++snapshots === 2) retired = true;
+        return 'unchanged-account';
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(response).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+  it('does not execute when account authority changes while approval is pending', async () => {
+    let authority = 'account-one:grant-one';
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async () => {
+        authority = 'account-two:grant-two';
+        return ALLOW;
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).isError).toBe(true);
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
+  it('requires a different approval receipt after authority changes on a transport retry', async () => {
+    let authority = 'account-one:grant-one';
+    const receipts: string[] = [];
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async (input) => {
+        receipts.push(input.invocationId);
+        return ALLOW;
+      },
+    });
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    authority = 'account-two:grant-two';
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0]).not.toBe(receipts[1]);
+    expect(invokeTool.mock.calls.map(([input]) => input.invocationId)).toEqual(receipts);
+  });
 });

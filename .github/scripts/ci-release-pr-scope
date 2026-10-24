@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 # Classify a bot-owned generated PR into its isolated CI train. Print nothing
 # for an ordinary or malformed PR so the caller fails broad into normal CI.
+# The owning identities are GitHub Actions (historical release PRs) and the
+# release app slugs the caller passes as RELEASE_BOT_LOGINS (`<slug>[bot]`,
+# comma-separated); scripts/release-bot-logins.mjs applies the same list.
 set -euo pipefail
 
 author="${1:-}"
 head="${2:-}"
 pr_number="${3:-}"
 
-[[ "$author" == 'github-actions[bot]' ]] || exit 0
+is_release_bot() {
+  local login="$1" candidate
+  IFS=, read -ra candidates <<<"github-actions[bot],${RELEASE_BOT_LOGINS:-}"
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" && "$login" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+is_release_bot "$author" || exit 0
 [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || exit 0
 
 case "$head" in

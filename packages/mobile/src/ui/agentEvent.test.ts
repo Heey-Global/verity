@@ -2,18 +2,97 @@ import { describe, expect, it } from 'vitest';
 import { agentEventDescriptor } from './agentEvent.js';
 
 describe('agentEventDescriptor', () => {
+  it('shows capacity retries as a neutral system notice', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'model_capacity_retry',
+        message: 'Retrying in 5 seconds (1/3).',
+      }),
+    ).toEqual({ kind: 'model-capacity', label: 'Retrying in 5 seconds (1/3).', tone: 'neutral' });
+  });
+
+  it('offers recovery after capacity retries are exhausted', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'model_capacity',
+        message: 'Selected model is at capacity.',
+      }),
+    ).toEqual({
+      kind: 'model-capacity',
+      label: 'Model temporarily unavailable',
+      detail: 'Try again later or select a different model.',
+      tone: 'warning',
+    });
+  });
+
   it('describes a compaction boundary (neutral, no detail)', () => {
     const d = agentEventDescriptor({ t: 'compaction', boundary: true });
     expect(d).toEqual({ kind: 'compaction', label: 'Context compacted', tone: 'neutral' });
     expect(d).not.toHaveProperty('detail');
   });
 
-  it('describes an error event (danger, message as label, kind as detail)', () => {
+  it('keeps a short adapter diagnostic readable without a details section', () => {
     expect(agentEventDescriptor({ t: 'error', kind: 'parse_error', message: 'bad line' })).toEqual({
       kind: 'error',
-      label: 'bad line',
-      detail: 'parse_error',
+      label: 'Agent error',
+      detail: 'bad line',
       tone: 'danger',
+    });
+  });
+
+  // A stderr tail as the headline is what flooded the chat: the operator saw
+  // loader logs and session ids instead of what went wrong.
+  it('keeps a multi-line diagnostic out of the headline', () => {
+    const message = `first problem\n${'[session/load] noise\n'.repeat(200)}fatal: last line`;
+    const d = agentEventDescriptor({ t: 'error', kind: 'parse_error', message });
+    expect(d).toMatchObject({ label: 'Agent error', detail: 'first problem' });
+    expect(d.technical?.startsWith('parse_error\n…')).toBe(true);
+    expect(d.technical?.endsWith('fatal: last line')).toBe(true);
+    expect(d.technical?.length).toBeLessThanOrEqual('parse_error\n…'.length + 2_000);
+  });
+
+  it.each([
+    ['acp', 'Internal error: API Error: 502 {"type":"error","error":{"type":"api_error"}}'],
+    ['run_failed', 'upstream connect error or disconnect/reset before headers'],
+    [
+      'crashed',
+      'agent exited with code 1 without a terminal event: Error: 503 Service Unavailable',
+    ],
+    ['acp', 'Internal error: Overloaded'],
+    ['run_failed', 'request failed: read ECONNRESET'],
+  ])('reports a provider outage (%s) as retryable: %s', (kind, message) => {
+    const d = agentEventDescriptor({ t: 'error', kind, message });
+    expect(d).toMatchObject({
+      kind: 'provider-unreachable',
+      label: 'Model provider unreachable',
+      tone: 'warning',
+      action: 'retry',
+    });
+    expect(d.technical).toContain(message);
+  });
+
+  // A count that happens to start with 5 is not an HTTP status.
+  it.each(['wrote 502 lines then failed', 'exceeded 500 tokens'])(
+    'does not mistake a bare number for an outage: %s',
+    (message) => {
+      expect(agentEventDescriptor({ t: 'error', kind: 'acp', message }).kind).toBe('agent-stopped');
+    },
+  );
+
+  it('summarizes a process crash and keeps its stderr behind details', () => {
+    const message =
+      'agent exited with code 1 without a terminal event: \u001b[31m[session/load] id=abc\u001b[0m';
+    const d = agentEventDescriptor({ t: 'error', kind: 'crashed', message });
+    expect(d).toEqual({
+      kind: 'agent-stopped',
+      label: 'Agent stopped unexpectedly',
+      detail: 'The turn ended with an error.',
+      tone: 'danger',
+      action: 'retry',
+      technical:
+        'crashed\nagent exited with code 1 without a terminal event: [session/load] id=abc',
     });
   });
 

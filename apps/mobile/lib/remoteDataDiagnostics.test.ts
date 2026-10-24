@@ -230,3 +230,17 @@ it('does not expose a native failure message in the export result', async () => 
   mockExport.mockRejectedValue(new Error('https://private?ticket=secret'));
   expect(await exportResult()).toEqual({ status: 'failed' });
 });
+
+it('revalidates stored recordings and excludes previous capture generations from a selected run', () => {
+  const { validateStoredRemoteRecording, selectRemoteRecording } =
+    require('./remoteDataDiagnostics') as typeof import('./remoteDataDiagnostics');
+  const current = snapshot();
+  const raw = JSON.stringify([current]);
+  const start = Date.parse(current.events[0]!.utc);
+  expect(selectRemoteRecording(raw, start, start + 120_000)).toBe(raw);
+  expect(selectRemoteRecording(raw, start + 1, start + 120_000)).toBeNull();
+  expect(
+    validateStoredRemoteRecording(JSON.stringify([{ ...current, ticket: 'private' }])),
+  ).toBeNull();
+  expect(validateStoredRemoteRecording('{bad')).toBeNull();
+});

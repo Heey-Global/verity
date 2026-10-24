@@ -45,7 +45,7 @@ export function FileActionMenu({
       <Icon
         name={action.icon}
         size={18}
-        color={action.destructive ? theme.colors.tone.danger : theme.colors.textMuted}
+        color={action.destructive ? theme.colors.attention : theme.colors.textMuted}
       />
     </Pressable>
   );
@@ -90,7 +90,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: theme.colors.scrim,
   },
   card: {
     width: '100%',
@@ -104,8 +104,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
     paddingBottom: theme.spacing.xs,
@@ -122,9 +122,10 @@ const styles = StyleSheet.create((theme) => ({
   itemLabel: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
   },
-  destructive: { color: theme.colors.tone.danger },
+  destructive: { color: theme.colors.attention },
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: theme.colors.border,
@@ -133,7 +134,7 @@ const styles = StyleSheet.create((theme) => ({
   cancel: { justifyContent: 'center' },
   cancelLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
 }));

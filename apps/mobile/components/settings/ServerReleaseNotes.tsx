@@ -13,7 +13,7 @@ export function ServerReleaseNotes({ client, version }: { client: VerityClient; 
   if (notes === undefined) {
     return (
       <View style={styles.releaseNotes}>
-        <ActivityIndicator size="small" color={theme.colors.setup.textMuted} />
+        <ActivityIndicator size="small" color={theme.colors.textMuted} />
       </View>
     );
   }

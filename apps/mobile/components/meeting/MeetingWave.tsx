@@ -1,4 +1,3 @@
-import { meetingPalette } from './meetingPalette';
 import { useEffect, useId, useState } from 'react';
 import { AccessibilityInfo, Animated } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Stop } from 'react-native-svg';
@@ -13,7 +12,7 @@ export function MeetingWave({
   addressed?: boolean;
 }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const gradient = useId();
   const [motion] = useState(() => new Animated.Value(0));
   const [reduceMotion, setReduceMotion] = useState(true);
@@ -54,9 +53,9 @@ export function MeetingWave({
       <Svg width="100%" height="56" viewBox="0 0 600 56" preserveAspectRatio="none">
         <Defs>
           <LinearGradient id={gradient} x1="0" y1="0" x2="1" y2="0">
-            <Stop offset="0" stopColor={colors.accent} />
-            <Stop offset="0.5" stopColor={addressed ? colors.accent : '#a968f3'} />
-            <Stop offset="1" stopColor={addressed ? colors.accent : colors.primary} />
+            <Stop offset="0" stopColor={colors.signature} />
+            <Stop offset="0.5" stopColor={addressed ? colors.signature : '#a968f3'} />
+            <Stop offset="1" stopColor={addressed ? colors.signature : colors.action} />
           </LinearGradient>
         </Defs>
         <Path

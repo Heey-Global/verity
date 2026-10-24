@@ -1,3 +1,4 @@
+import { markSwitchTransportRequest } from '@verity/mobile';
 import { requireNativeModule } from 'expo-modules-core';
 import { AppState } from 'react-native';
 
@@ -13,6 +14,8 @@ interface NativeTunnel {
   stopWithCause?(cause: string): Promise<void>;
   captureDataDiagnostics?(): Promise<boolean>;
   clearPendingDataDiagnostics?(): Promise<void>;
+  disableDataDiagnostics?(): Promise<void>;
+  dataDiagnosticsRemainingMs?(): Promise<number>;
   recordDataDiagnosticEvent?(event: string): Promise<void>;
   /** Absent in native builds older than the JavaScript bundle. */
   lastStopReason?(): Promise<string | null>;
@@ -171,6 +174,31 @@ let directRoute: { key: string; reachable: boolean; checkedAt: number } | null =
 let directRefusal: { key: string; reason: string } | null = null;
 let routeGeneration = 0;
 let diagnosticCaptureUntil = 0;
+let diagnosticCaptureRevision = 0;
+let diagnosticCaptureScope: string | null = null;
+function recordingScope(): string | null {
+  const profile = getServerProfile();
+  return profile?.remoteControl
+    ? JSON.stringify([profile.serverId, profile.identityKey, profile.remoteControl.installationId])
+    : null;
+}
+async function recordingScopeAllowed(): Promise<boolean> {
+  if (diagnosticCaptureScope !== null) {
+    return diagnosticCaptureScope === recordingScope() || (await stopRemoteDataRecording());
+  }
+  // A JavaScript reload loses consent ownership while the native window survives.
+  // Older native builds have no capture window API and retain their normal route.
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (!native.dataDiagnosticsRemainingMs) return true;
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!Number.isFinite(remaining) || remaining < 0) return false;
+    return remaining === 0 || (await stopRemoteDataRecording());
+  } catch {
+    return false;
+  }
+}
+
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
   if (state === 'active' && previousAppState !== 'active') {
@@ -351,6 +379,7 @@ export function reportDirectRouteFailure(url: string): void {
 async function stopNativeTunnel(
   cause: 'profile_changed' | 'probe_failure' | 'replacement',
 ): Promise<void> {
+  if (cause === 'profile_changed') await recordingScopeAllowed();
   const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
   if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
   else await native.stop();
@@ -440,10 +469,12 @@ function keyFor(url: string): string | null {
 }
 
 /** A disabled descriptor removes Remote Control from selectable routes. */
-export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
+export function remoteControlAvailableForUrl(url: string): boolean {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   if (keyFor(target.origin) !== null) return true;
+  // Direct requests do not depend on stale tunnel cleanup. Keep cleanup ordered
+  // with pending admission so a late attachment cannot survive revocation.
   const cleanup = operation.then(async () => {
     if (active === null || keyFor(target.origin) !== null) return;
     active = null;
@@ -454,7 +485,6 @@ export async function remoteControlAvailableForUrl(url: string): Promise<boolean
     }
   });
   operation = cleanup;
-  await cleanup;
   return false;
 }
 
@@ -464,7 +494,11 @@ export async function remoteControlAvailableForUrl(url: string): Promise<boolean
  * Uplink if the direct route loses it; a mutation cannot, and waits for the
  * route verdict instead.
  */
-export async function remoteControlPortForUrl(url: string, replayable = false): Promise<number> {
+export async function remoteControlPortForUrl(
+  url: string,
+  replayable = false,
+  diagnosticRequestId?: string,
+): Promise<number> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
@@ -474,7 +508,11 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
     // the route from its outcome. Waiting for a probe to fail first costs its
     // full timeout on every VPN wake-up, and then an Uplink attempt that can
     // take far longer, before a request that would have worked directly is sent.
-    const probe = directRouteReachable(target.origin, key).catch(() => false);
+    const probe = directRouteReachable(
+      target.origin,
+      key,
+      replayable ? undefined : diagnosticRequestId,
+    ).catch(() => false);
     if (replayable) return 0;
     await probe;
   }
@@ -482,12 +520,72 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
   // must not wait behind their serialized native-tunnel lifecycle operations.
   if (
     key !== null &&
-    (await directRouteReachable(target.origin, key)) &&
+    (await directRouteReachable(target.origin, key, diagnosticRequestId)) &&
     keyFor(target.origin) === key &&
     (active === null || active.key === key)
   )
     return 0;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-queue-start');
   const selected = operation.then(() => selectPort(url));
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    return await selected;
+  } finally {
+    markSwitchTransportRequest(diagnosticRequestId, 'route-queue-end');
+  }
+}
+
+/** Arm capture and optionally reserve selected admission in the same lifecycle operation. */
+export async function startRemoteDataRecording(
+  beforeAttach?: (sessionId: string) => Promise<void>,
+): Promise<number> {
+  const revision = diagnosticCaptureRevision;
+  const scope = recordingScope();
+  const selected = operation.then(async () => {
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope())
+      throw new Error('Recording stopped');
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (
+      !native.captureDataDiagnostics ||
+      !native.dataDiagnosticsRemainingMs ||
+      !native.disableDataDiagnostics
+    ) {
+      throw new Error('Recording requires a newer native app build');
+    }
+    const existing = await native.dataDiagnosticsRemainingMs();
+    if (
+      revision !== diagnosticCaptureRevision ||
+      scope === null ||
+      scope !== recordingScope() ||
+      existing > 0
+    )
+      throw new Error('Recording already active or stopped');
+    await stopNativeTunnel('replacement');
+    active = null;
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope())
+      throw new Error('Recording stopped');
+    diagnosticCaptureScope = scope;
+    const armed = await native.captureDataDiagnostics();
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope()) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording stopped');
+    }
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!armed || !Number.isFinite(remaining) || remaining <= 0 || remaining > 120_000) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording unavailable');
+    }
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope()) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording stopped');
+    }
+    diagnosticCaptureUntil = Date.now() + remaining;
+    if (beforeAttach) await prepareSelectedDataRecordingNow(beforeAttach, revision, scope);
+    return remaining;
+  });
   operation = selected.then(
     () => undefined,
     () => undefined,
@@ -495,11 +593,93 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
   return selected;
 }
 
+/** Prepare exactly one admitted session before activating its App DATA socket. */
+async function prepareSelectedDataRecordingNow(
+  beforeAttach: (sessionId: string) => Promise<void>,
+  revision: number,
+  scope: string | null,
+): Promise<void> {
+  const profile = getServerProfile();
+  const url = profile?.activeUrl;
+  const key = url ? keyFor(url) : null;
+  const check = () => {
+    if (!scope || scope !== recordingScope() || revision !== diagnosticCaptureRevision)
+      throw new Error('Recording stopped');
+  };
+  check();
+  const remaining = await remoteDataRecordingRemainingMs();
+  if (!url || !key || active !== null || remaining === null || remaining <= 0)
+    throw new Error('Recording preparation unavailable');
+  let preparationError: unknown;
+  const port = await open(url, key, {
+    retryStall: false,
+    beforeAttach: async (sessionId) => {
+      try {
+        check();
+        await beforeAttach(sessionId);
+        check();
+      } catch (error) {
+        preparationError = error;
+        throw error;
+      }
+    },
+  });
+  check();
+  if (port === 0) throw preparationError ?? new Error('Selected recording probe failed');
+}
+
+/** Prepare a previously armed recording; new selected starts use the atomic start hook. */
+export async function prepareSelectedDataRecording(
+  beforeAttach: (sessionId: string) => Promise<void>,
+): Promise<void> {
+  const revision = diagnosticCaptureRevision;
+  const scope = recordingScope();
+  const selected = operation.then(() =>
+    prepareSelectedDataRecordingNow(beforeAttach, revision, scope),
+  );
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
+/** Local-only status; reading it never starts a recording or contacts Core. */
+export async function remoteDataRecordingRemainingMs(): Promise<number | null> {
+  try {
+    if (!(await recordingScopeAllowed())) return null;
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    const remaining = await native.dataDiagnosticsRemainingMs?.();
+    return typeof remaining === 'number' && Number.isFinite(remaining) && remaining >= 0
+      ? Math.min(remaining, 120_000)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop must not queue behind a probe waiting for an unreachable server. */
+export async function stopRemoteDataRecording(): Promise<boolean> {
+  diagnosticCaptureRevision++;
+  diagnosticCaptureUntil = 0;
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (typeof native.disableDataDiagnostics !== 'function') return false;
+    await native.disableDataDiagnostics();
+    diagnosticCaptureScope = null;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** An explicit diagnostic uses Uplink even when the direct route is healthy. */
 export async function testRemoteControlForUrl(
   url: string,
   capture = false,
 ): Promise<{ ready: boolean; detail: string }> {
+  const captureRevision = diagnosticCaptureRevision;
+  const captureScope = recordingScope();
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
@@ -508,13 +688,37 @@ export async function testRemoteControlForUrl(
     }
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (capture) {
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
       if (typeof native.captureDataDiagnostics !== 'function') {
         return { ready: false, detail: 'update the app to record connection diagnostics' };
       }
       // Arm on a fresh socket: recording an active tunnel misses its first sends.
       await stopNativeTunnel('replacement');
       active = null;
-      if (!(await native.captureDataDiagnostics())) {
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
+      diagnosticCaptureScope = captureScope;
+      const armed = await native.captureDataDiagnostics();
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
+        await stopRemoteDataRecording();
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
+      if (!armed) {
         return {
           ready: false,
           detail: 'the recording window ended; reconnect before recording another test',
@@ -522,33 +726,30 @@ export async function testRemoteControlForUrl(
       }
       diagnosticCaptureUntil = Date.now() + 120_000;
     }
-    try {
-      const attachment = active;
-      if (attachment?.key === key) {
-        try {
-          if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
-            const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-            if (pin !== undefined) {
-              await probeCoreThroughEitherProxy(target, pin, attachment.port);
-              return { ready: true, detail: 'Core health check passed through Uplink' };
-            }
+    // Native capture keeps its original deadline across later replacements.
+    const attachment = active;
+    if (attachment?.key === key) {
+      try {
+        if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
+          const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+          if (pin !== undefined) {
+            await probeCoreThroughEitherProxy(target, pin, attachment.port);
+            return { ready: true, detail: 'Core health check passed through Uplink' };
           }
-        } catch (error) {
-          // A diagnostic must not replace a tunnel that may be carrying transfers.
-          const summary = await tunnelDiagnosticSummary();
-          return {
-            ready: false,
-            detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
-          };
         }
+      } catch (error) {
+        // A diagnostic must not replace a tunnel that may be carrying transfers.
+        const summary = await tunnelDiagnosticSummary();
+        return {
+          ready: false,
+          detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+        };
       }
-      const port = await open(target, key);
-      return port > 0
-        ? { ready: true, detail: 'Core health check passed through Uplink' }
-        : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
-    } finally {
-      if (capture) await native.clearPendingDataDiagnostics?.().catch(() => undefined);
     }
+    const port = await open(target, key);
+    return port > 0
+      ? { ready: true, detail: 'Core health check passed through Uplink' }
+      : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
   });
   operation = selected.then(
     () => undefined,
@@ -619,6 +820,12 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
 }
 
 async function selectPort(url: string): Promise<number> {
+  if (
+    diagnosticCaptureScope !== null &&
+    diagnosticCaptureScope !== recordingScope() &&
+    !(await recordingScopeAllowed())
+  )
+    return 0;
   const targetUrl = new URL(url);
   if (targetUrl.protocol === 'wss:') targetUrl.protocol = 'https:';
   const target = targetUrl.origin;
@@ -683,13 +890,19 @@ async function selectPort(url: string): Promise<number> {
   return open(target, key);
 }
 
-async function directRouteReachable(coreUrl: string, key: string): Promise<boolean> {
+async function directRouteReachable(
+  coreUrl: string,
+  key: string,
+  diagnosticRequestId?: string,
+): Promise<boolean> {
   const known = directRoute?.key === key ? directRoute : null;
   if (
     known !== null &&
     Date.now() - known.checkedAt < (known.reachable ? DIRECT_ROUTE_TTL_MS : DIRECT_FAILURE_TTL_MS)
-  )
+  ) {
+    markSwitchTransportRequest(diagnosticRequestId, 'route-cache-hit', known.reachable ? 1 : 0);
     return known.reachable;
+  }
   const generation = routeGeneration;
   let currentProbe = directProbe?.key === key ? directProbe : null;
   if (currentProbe === null) {
@@ -709,9 +922,12 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
   // While a live tunnel carries traffic, look for the direct route without
   // stalling requests on it; the next request after it answers switches back.
   if (known?.reachable === false && active?.key === key) return false;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-probe-start');
   const reachable = await currentProbe.promise;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-probe-end', reachable ? 1 : 0);
   if (keyFor(coreUrl) !== key) return false;
-  if (routeGeneration !== generation) return directRouteReachable(coreUrl, key);
+  if (routeGeneration !== generation)
+    return directRouteReachable(coreUrl, key, diagnosticRequestId);
   return directRoute?.key === key ? directRoute.reachable : reachable;
 }
 
@@ -748,7 +964,9 @@ async function probeDirect(
 async function open(
   coreUrl: string,
   key: string,
-  options: { retryStall: boolean } = { retryStall: true },
+  options: { retryStall: boolean; beforeAttach?: (sessionId: string) => Promise<void> } = {
+    retryStall: true,
+  },
 ): Promise<number> {
   const profile = getServerProfile();
   const descriptor = profile?.remoteControl;
@@ -766,10 +984,18 @@ async function open(
       uplinkOrigin: descriptor.uplinkOrigin,
       installationHandle: descriptor.installationHandle,
     });
+    await options.beforeAttach?.(admission.sessionId);
     stage = 'attachment';
     const dataUrl = new URL(descriptor.uplinkOrigin);
     dataUrl.protocol = 'wss:';
     dataUrl.pathname = '/data';
+    if (
+      (diagnosticCaptureScope === null || diagnosticCaptureScope !== recordingScope()) &&
+      !(await recordingScopeAllowed())
+    ) {
+      admission.cancel();
+      return 0;
+    }
     const port = await native.start(dataUrl.href, admission.ticket, admission.sessionId, coreUrl);
     tunnelStarted = true;
     stage = 'probe';

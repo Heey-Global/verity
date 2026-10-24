@@ -31,6 +31,7 @@ function view(
     command: 'node server.mjs --port {port}',
     workdir: '.',
     approved: true,
+    secretBindings: [],
     accessSwitches: true,
     instance:
       instance === null
@@ -237,4 +238,67 @@ describe('Preview sheet routes', () => {
       { local: undefined },
     );
   });
+});
+
+it('forwards alias-only registration metadata and rejects accidental value fields', async () => {
+  const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
+  const add = vi.fn(async () => ({
+    id: 'srv',
+    projectId: 'p1',
+    name: 'API',
+    nameKey: 'API',
+    command: 'node server.mjs',
+    workdir: '.',
+    approved: false,
+    secretBindings,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }));
+  const app = agentApp({ add });
+  const body = {
+    action: 'add',
+    sessionId: 's1',
+    name: 'API',
+    command: 'node server.mjs',
+    secretBindings,
+  };
+  const response = await post(app, body);
+  expect(response.statusCode).toBe(200);
+  expect(add).toHaveBeenCalledWith('s1', {
+    name: 'API',
+    command: 'node server.mjs',
+    workdir: undefined,
+    secretBindings,
+  });
+  expect(response.json<{ message: string }>().message).toContain('Preview first');
+  expect(
+    (
+      await post(app, {
+        ...body,
+        secretBindings: [{ ...secretBindings[0], value: 'synthetic-key' }],
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect(add).toHaveBeenCalledTimes(1);
+});
+
+it('passes the exact displayed secret mapping through Preview approval', async () => {
+  const app = Fastify();
+  apps.push(app);
+  const approve = vi.fn(async () => []);
+  registerManagedDevServerRoutes(app, {
+    manager: { approve } as unknown as ManagedDevServerManager,
+  });
+  const seen = {
+    command: 'node server.mjs',
+    workdir: '.',
+    secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+  };
+  const response = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/managed-dev-servers/srv/approve',
+    payload: seen,
+  });
+  expect(response.statusCode).toBe(200);
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
 });

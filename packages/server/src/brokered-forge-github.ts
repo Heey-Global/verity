@@ -23,9 +23,11 @@ export type ForgeAction =
   | 'actions-write'
   | 'releases-write'
   | 'checks-read'
+  | 'repository-rules-read'
   | 'packages-read';
 interface ForgeBinding {
   projectId: string;
+  forgeConnectionId?: string | null;
   owner: string;
   repo: string;
   containerGeneration?: string | undefined;
@@ -37,6 +39,7 @@ export interface ForgeRequest {
   body?: Buffer;
 }
 interface ForgeAuthorization {
+  upstream?: { hostname: string; port: number; ca?: string; allowPrivateAddress?: boolean };
   registryTokenResponse?: boolean;
   verifyRelatedIssues?: boolean;
   action: ForgeAction;
@@ -128,6 +131,10 @@ async function collectJson(response: IncomingMessage): Promise<unknown> {
 
 export function createGitHubForgeAdapter(options: {
   mint(binding: { owner: string; repo: string }): Promise<string | undefined>;
+  mintDiagnostic?(
+    binding: { owner: string; repo: string },
+    permission: 'statuses' | 'administration' | 'contents',
+  ): Promise<string | undefined>;
   transport: BrokeredHttpStreamTransport;
 }): BrokeredForgeAdapter {
   return {
@@ -744,7 +751,26 @@ export function createGitHubForgeAdapter(options: {
           },
         });
       }
-      const token = await options.mint(binding);
+      // Optional diagnostic grants must never affect ordinary project-token issuance.
+      const diagnosticPermission =
+        action === 'repository-rules-read'
+          ? /^\/branches\/[^/]+\/protection(?:\/|$)/.test(
+              url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+            )
+            ? 'administration'
+            : 'contents'
+          : action === 'checks-read' &&
+              !graph &&
+              request.hostname === 'api.github.com' &&
+              /^\/commits\/[^/]+\/status(?:es)?$/.test(
+                url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+              )
+            ? 'statuses'
+            : undefined;
+      const token =
+        diagnosticPermission === undefined
+          ? await options.mint(binding)
+          : await options.mintDiagnostic?.(binding, diagnosticPermission);
       if (!token || token.length > 4096 || /[\r\n]/.test(token)) rejected();
       for (const node of pendingNodes) {
         const type = await verifyNode(node.id, node.type, token);

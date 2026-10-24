@@ -1,4 +1,18 @@
-import { randomUUID } from 'node:crypto';
+import {
+  DIAGNOSTICS_CAPABILITY,
+  DIAGNOSTICS_V2_CAPABILITY,
+  DIAGNOSTICS_V3_CAPABILITY,
+  DIAGNOSTICS_TIMEOUT_MS,
+  parseRecordingResponse,
+} from './uplink-recording.js';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+  selectedEvidenceMetadataSchema,
+  socketEvidenceExportSchema,
+  socketEvidenceHashInput,
+} from '@verity/events';
 import type { VeritySettingsPatch, VeritySettingsRecord, EventStore } from '@verity/store';
 import WebSocket from 'ws';
 import type {
@@ -6,14 +20,19 @@ import type {
   PreviewEdgeControl,
   PreviewEdgeCreate,
 } from './preview-share-manager.js';
-import { PreviewShareUpstreamError } from './preview-share-manager.js';
+import {
+  PreviewShareUpstreamError,
+  PreviewShareRemovalQueuedError,
+} from './preview-share-manager.js';
 
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
+export const DEMAND_CHECK_TIMEOUT_MS = 15_000;
+export const REMOVAL_TIMEOUT_MS = 5_000;
 /** A WebSocket close handshake is cooperative. Do not let a peer that never
  * completes it strand the control client in CLOSING forever. */
-export const CLOSE_TIMEOUT_MS = 5_000;
+const CLOSE_TIMEOUT_MS = 5_000;
 /** Exported so the guards can derive their timings from the schedule rather
  * than restating it. */
 export const RECONNECT_MAX_MS = 30_000;
@@ -37,19 +56,9 @@ const MAX_REFUSAL_REASON_CHARS = 200;
 const MAX_CLOSE_REASON_BYTES = 123;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
 
-/** Refusals that are about who this installation is: dialling again with the
- * same key cannot change the answer, so the client stops and reports the reason.
- * Everything else — a named capacity limit, a version mismatch, or a reason this
- * client has never heard of — is treated as temporary and retried on the slower
- * schedule. That default direction is the safe one: retrying a permanent refusal
- * wastes a connection every few minutes, while giving up on a temporary one
- * leaves sharing dead until someone restarts the server.
- *
- * `protocol_unsupported` belongs on the temporary side despite naming something
- * this installation cannot change: a mixed-version fleet or a rolled-back
- * deployment resolves it without anyone touching the installation, and the fix
- * that *is* the installation's — upgrading it — restarts the process anyway, so
- * treating it as permanent would buy nothing and cost the self-healing case. */
+/** Identity refusals remain terminal until an explicit retry. Capacity and
+ * protocol refusals use slower back-off while established Remote access still
+ * needs recovery; initial and explicit rights checks have a fixed budget. */
 const IDENTITY_REJECTS: ReadonlySet<string> = new Set(['unknown_key', 'revoked', 'expired']);
 
 interface SettingsStore extends EventStore {
@@ -71,6 +80,7 @@ interface Pending {
 }
 
 export interface RemoteConnectorReservation {
+  readonly diagnosticId?: string;
   /** Resolves only after the data attachment succeeds; owns the fixed TLS destination. */
   attach(ticket: string, expiresAt: number, signal: AbortSignal): Promise<void>;
   release(reason: string): void;
@@ -94,9 +104,12 @@ interface RemoteSession {
 
 export interface UplinkControlClientOptions {
   url: string;
+  /** Diagnostic endpoint selection is restricted to an already admitted installation. */
+  expectedInstallationId?: string;
   store: SettingsStore;
   serverVersion: string;
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
+  restoreShareIds?: () => Promise<string[]>;
   onFeaturesDisabled?: (reason: string) => Promise<void>;
   onSharePinLocked?: (shareId: string) => Promise<void>;
   onShareExpired?: (shareId: string) => Promise<void>;
@@ -137,8 +150,10 @@ interface PremiumFeatureState {
 }
 
 export interface UplinkDiagnostics {
-  control: 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
+  control: 'idle' | 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
   sharing: 'ready' | 'unavailable';
+  entitlement?: 'unchecked' | 'checked';
+  idleReason?: 'no-demand' | 'not-granted';
   remoteControl: 'ready' | 'unavailable';
   reason?: 'unknown_key' | 'revoked' | 'expired';
   lastCloseCode?: number;
@@ -156,10 +171,23 @@ export function premiumFeatureSwitches(
   };
 }
 
-/** Long-lived fail-closed client for the paid Uplink control plane. Credentials
+/** Demand-driven, fail-closed client for the paid Uplink control plane. Credentials
  * are read from the encrypted settings store only. No environment/file fallback
  * is accepted by this class. */
 export class UplinkControlClient implements PreviewEdgeControl {
+  private activeShares = new Set<string>();
+  private shareOperations = 0;
+  private idle = false;
+  private grants: Set<string> | undefined;
+  private grantExpiresAt = 0;
+  private offlineLeaseTimer: NodeJS.Timeout | undefined;
+  private checkTimer: NodeJS.Timeout | undefined;
+  private drainTimer: NodeJS.Timeout | undefined;
+  private readyWaiters = new Set<(error?: Error) => void>();
+  private initialized: Promise<void> | undefined;
+  private probing = false;
+  private remoteSupported = false;
+  private sharingDisabledListeners = new Set<() => void>();
   private socket: WebSocket | undefined;
   private stopped = true;
   private retryMs = 1_000;
@@ -175,6 +203,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
   // switches behaves exactly as before they existed.
   private switches: PremiumFeatureSwitches = { sharing: true, remoteAccess: true };
   private remoteNegotiated = false;
+  private diagnosticsNegotiated = false;
+  private diagnosticsV2Negotiated = false;
+  private diagnosticsV3Negotiated = false;
+  private readonly recordingVersions = new Map<
+    string,
+    { version: 1 | 2 | 3; until: number; targetSessionId?: string }
+  >();
   private lastRemoteDescriptorState: string | undefined;
   private remoteInstallation:
     { readonly installationId: string; readonly installationHandle: string } | undefined;
@@ -208,16 +243,169 @@ export class UplinkControlClient implements PreviewEdgeControl {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.idle = false;
+    this.grants = undefined;
     // A stop/start cycle inside one process is a fresh attempt, not a
     // continuation of whatever back-off the previous one ended on.
     this.retryMs = 1_000;
     this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
-    void this.connect();
+    const initialGeneration = this.generation;
+    this.initialized = (async () => {
+      const ids = await this.options.restoreShareIds?.();
+      if (this.stopped || initialGeneration !== this.generation) return;
+      for (const id of ids ?? []) this.activeShares.add(id);
+      await this.connect();
+    })().catch((error: unknown) => {
+      this.options.log?.error({ error }, 'failed to initialize Uplink demand');
+      if (!this.stopped && initialGeneration === this.generation) {
+        this.clearAuthority('Failed to restore Uplink demand');
+        this.park();
+      }
+    });
+  }
+
+  private remoteDemand(): boolean {
+    return (
+      this.switches.remoteAccess &&
+      this.options.offerRemoteControl === true &&
+      this.options.reserveRemoteConnector !== undefined &&
+      (this.grants === undefined ||
+        (this.grants.has('remote-control') &&
+          this.remoteSupported &&
+          this.grantExpiresAt > Date.now()))
+    );
+  }
+
+  private hasDemand(): boolean {
+    return (
+      this.probing ||
+      this.remoteDemand() ||
+      (this.switches.sharing &&
+        (this.grants === undefined || this.grants.has('sharing')) &&
+        (this.activeShares.size > 0 || this.shareOperations > 0))
+    );
+  }
+
+  /** Idle is distinct from shutdown: a new explicit share can wake the client. */
+  private park(shutdown = false): void {
+    this.idle = true;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
+    this.probing = false;
+    this.generation += 1;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
+    if (this.drainTimer) clearTimeout(this.drainTimer);
+    this.drainTimer = undefined;
+    const socket = this.socket;
+    this.socket = undefined;
+    this.clearAuthority('Uplink has no effective demand', false);
+    this.resolveReady(new Error('Uplink has no effective demand'));
+    if (shutdown) socket?.close(1000, 'server shutdown');
+    else socket?.terminate();
+  }
+
+  private settleDemand(): void {
+    if (this.stopped || this.hasDemand()) return;
+    // Local connector shutdown may need a final bounded revocation exchange.
+    if (this.pending.size > 0 || this.orphanShareIds.size > 0) {
+      this.beginDrain();
+    } else this.park();
+  }
+
+  private beginDrain(): void {
+    if (this.drainTimer) return;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = undefined;
+      if (!this.hasDemand()) this.park();
+    }, REMOVAL_TIMEOUT_MS);
+    this.drainTimer.unref();
+  }
+
+  private resolveReady(error?: Error): void {
+    for (const waiter of this.readyWaiters) waiter(error);
+    this.readyWaiters.clear();
+  }
+
+  private notifySharingDisabled(): void {
+    for (const listener of this.sharingDisabledListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.options.log?.error({ error }, 'failed to notify sharing shutdown');
+      }
+    }
+  }
+
+  onSharingDisabled(listener: () => void): () => void {
+    this.sharingDisabledListeners.add(listener);
+    return () => this.sharingDisabledListeners.delete(listener);
+  }
+
+  canStartSharing(): boolean {
+    return !this.stopped && this.switches.sharing;
+  }
+
+  async checkEntitlements(): Promise<UplinkDiagnostics> {
+    await this.initialized;
+    if (this.stopped) throw new Error('Uplink client is stopped');
+    let ready: Promise<void>;
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      ready = this.waitForReady();
+      this.socket.send(JSON.stringify({ type: 'renew' }));
+    } else {
+      this.refreshCredentials();
+      ready = this.waitForReady();
+    }
+    try {
+      await ready;
+    } finally {
+      this.probing = false;
+      this.settleDemand();
+    }
+    return this.diagnostics();
+  }
+
+  private async ensureSharing(): Promise<void> {
+    await this.initialized;
+    if (!this.canStartSharing()) throw new Error('Online sharing is switched off');
+    if (this.isAvailable()) return;
+    if (this.idle) {
+      this.grants = undefined;
+      this.lastReject = undefined;
+      this.idle = false;
+    }
+    const ready = this.waitForReady();
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: 'renew' }));
+    }
+    await ready;
+    if (!this.isAvailable()) throw new Error('Sharing is not granted by Uplink');
+  }
+
+  private waitForReady(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.readyWaiters.delete(done);
+        reject(new Error('Uplink rights check timed out'));
+      }, DEMAND_CHECK_TIMEOUT_MS);
+      const done = (error?: Error) => {
+        clearTimeout(timer);
+        this.readyWaiters.delete(done);
+        if (error) reject(error);
+        else resolve();
+      };
+      this.readyWaiters.add(done);
+      void this.connect();
+    });
   }
 
   async stop(options: { revoke?: boolean } = {}): Promise<void> {
     this.stopped = true;
+    this.park(true);
     this.generation += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
@@ -230,6 +418,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
   /** Called after a settings write so a new/replaced key takes effect now rather
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(notifyFeatureLoss = true): void {
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
+    this.grants = undefined;
+    this.idle = false;
+    this.probing = notifyFeatureLoss;
     this.lastReject = undefined;
     this.lastCloseCode = undefined;
     this.retryMs = 1_000;
@@ -244,8 +439,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.closeAndReconnect(4000, 'feature switches changed');
       return;
     }
-    this.socket?.close(4000, 'credentials changed');
-    if (!this.socket) this.scheduleReconnect(0);
+    if (this.socket) this.closeAndReconnect(4000, 'credentials changed');
+    else this.scheduleReconnect(0);
   }
 
   isAvailable(): boolean {
@@ -261,13 +456,29 @@ export class UplinkControlClient implements PreviewEdgeControl {
    * Renegotiating remote access must not revoke unrelated public links. */
   applyFeatureSwitches(next: PremiumFeatureSwitches): void {
     const previous = this.switches;
+    const needsDrain =
+      this.activeShares.size > 0 || this.pending.size > 0 || this.orphanShareIds.size > 0;
+    if ((!previous.remoteAccess && next.remoteAccess) || (!previous.sharing && next.sharing))
+      this.grants = undefined;
     this.switches = { ...next };
     if (previous.remoteAccess && !next.remoteAccess) {
       this.clearRemoteSessions('remote access switched off in settings');
     }
     if (previous.sharing !== next.sharing || previous.remoteAccess !== next.remoteAccess) {
       this.options.log?.info({ switches: this.switches }, 'premium feature switches applied');
-      if (previous.remoteAccess !== next.remoteAccess) this.refreshCredentials(false);
+      if (!next.sharing) {
+        this.activeShares.clear();
+        this.notifySharingDisabled();
+      }
+      if (!this.hasDemand()) {
+        if (needsDrain) this.beginDrain();
+        else this.park();
+        this.resolveReady(new Error('Uplink features disabled'));
+      } else if (previous.remoteAccess !== next.remoteAccess) this.refreshCredentials(false);
+      else if (this.idle) {
+        this.idle = false;
+        void this.connect();
+      }
     }
   }
 
@@ -279,25 +490,40 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const connected = this.welcomed && this.socket?.readyState === WebSocket.OPEN;
     const control = this.stopped
       ? 'disabled'
-      : connected
-        ? 'connected'
-        : this.lastReject !== undefined
-          ? 'rejected'
-          : this.socket?.readyState === WebSocket.OPEN
-            ? 'connecting'
-            : 'reconnecting';
+      : this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason)
+        ? 'rejected'
+        : this.idle
+          ? 'idle'
+          : connected
+            ? 'connected'
+            : this.lastReject !== undefined
+              ? 'rejected'
+              : this.socket?.readyState === WebSocket.OPEN
+                ? 'connecting'
+                : 'reconnecting';
     const reason = this.lastReject?.reason;
-    const sharingGranted = connected && this.features.has('sharing');
-    const remoteGranted = connected && this.features.has('remote-control');
+    const sharingGranted = this.grants?.has('sharing') ?? false;
+    const remoteGranted = this.grants?.has('remote-control') ?? false;
     return {
       control,
+      entitlement: this.grants === undefined ? 'unchecked' : 'checked',
+      ...(this.idle && !this.stopped
+        ? {
+            idleReason:
+              this.grants !== undefined &&
+              (this.switches.sharing || this.switches.remoteAccess) &&
+              !((this.switches.sharing && this.grants.has('sharing')) || this.remoteDemand())
+                ? ('not-granted' as const)
+                : ('no-demand' as const),
+          }
+        : {}),
       sharing: this.isAvailable() ? 'ready' : 'unavailable',
       remoteControl: this.remoteControlDescriptor().enabled ? 'ready' : 'unavailable',
       features: {
         sharing: {
           granted: sharingGranted,
           enabled: this.switches.sharing,
-          effective: sharingGranted && this.switches.sharing,
+          effective: this.isAvailable(),
         },
         remoteAccess: {
           granted: remoteGranted,
@@ -340,6 +566,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
     ) {
       return { version: 1, enabled: false, reason: 'disabled' };
     }
+    if (this.grants !== undefined && !this.grants.has('remote-control')) {
+      return { version: 1, enabled: false, reason: 'disabled' };
+    }
     if (
       !this.welcomed ||
       this.socket?.readyState !== WebSocket.OPEN ||
@@ -361,7 +590,270 @@ export class UplinkControlClient implements PreviewEdgeControl {
     };
   }
 
+  private async recordingRequest(
+    action: 'start' | 'status' | 'stop' | 'export',
+    runId: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    if (
+      !this.diagnosticsNegotiated ||
+      !this.remoteControlDescriptor().enabled ||
+      this.grantExpiresAt <= Date.now()
+    )
+      throw new Error('diagnostics_not_available');
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(runId))
+      throw new Error('invalid_recording');
+    const reply =
+      action === 'start'
+        ? 'started'
+        : action === 'stop'
+          ? 'stopped'
+          : action === 'export'
+            ? 'exported'
+            : 'status';
+    const version = this.recordingVersions.get(runId)?.version ?? 1;
+    if (version === 3 && !this.diagnosticsV3Negotiated)
+      throw new Error('diagnostics_version_unavailable');
+    if (version === 2 && !this.diagnosticsV2Negotiated)
+      throw new Error('diagnostics_version_unavailable');
+    const result = parseRecordingResponse(
+      await this.request(`diagnostics.${action}`, { runId, ...fields }, [
+        `diagnostics.${reply}`,
+        'diagnostics.error',
+      ]),
+      runId,
+      version,
+    );
+    if ('version' in result && result.version === 3) {
+      const target = this.recordingVersions.get(runId)?.targetSessionId;
+      if (
+        !target ||
+        result.targetSession !== createHash('sha256').update(target).digest('hex').slice(0, 16)
+      )
+        throw new Error('diagnostics_selection_mismatch');
+    }
+    return result;
+  }
+
+  selectedRecordingConnectorId(targetSessionId: string): string {
+    const session = this.remoteSessions.get(targetSessionId);
+    const id = session?.reservation?.diagnosticId;
+    if (
+      !this.diagnosticsV3Negotiated ||
+      !this.remoteControlDescriptor().enabled ||
+      !session?.ticketReceived ||
+      session.controller.signal.aborted ||
+      !id
+    )
+      throw new Error('diagnostics_session_unavailable');
+    return id;
+  }
+
+  async startRecording(
+    runId: string,
+    durationMs: number,
+    diagnosticsVersion: 1 | 2 | 3 = 1,
+    targetSessionId?: string,
+  ) {
+    if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
+      throw new Error('invalid_recording');
+    if (
+      diagnosticsVersion === 3 &&
+      (durationMs > 30000 || !targetSessionId || !/^[A-Za-z0-9_-]{1,128}$/u.test(targetSessionId))
+    )
+      throw new Error('invalid_recording');
+    if (diagnosticsVersion !== 3 && targetSessionId !== undefined)
+      throw new Error('invalid_recording');
+    if (diagnosticsVersion === 3 && !this.diagnosticsV3Negotiated)
+      throw new Error('diagnostics_version_unavailable');
+    for (const [id, entry] of this.recordingVersions)
+      if (entry.until <= Date.now()) this.recordingVersions.delete(id);
+    const existing = this.recordingVersions.get(runId);
+    if (
+      existing &&
+      (existing.version !== diagnosticsVersion || existing.targetSessionId !== targetSessionId)
+    )
+      throw new Error('diagnostics_version_conflict');
+    if (!existing && this.recordingVersions.size >= 8) throw new Error('diagnostics_capacity');
+    if (diagnosticsVersion === 2 && !this.diagnosticsV2Negotiated)
+      throw new Error('diagnostics_version_unavailable');
+    this.recordingVersions.set(
+      runId,
+      existing ?? {
+        version: diagnosticsVersion,
+        until: Date.now() + 3600000,
+        ...(targetSessionId !== undefined ? { targetSessionId } : {}),
+      },
+    );
+    const selectedSession =
+      targetSessionId === undefined ? undefined : this.remoteSessions.get(targetSessionId);
+    const installation = this.remoteInstallation?.installationId;
+    if (diagnosticsVersion === 3) this.selectedRecordingConnectorId(targetSessionId!);
+    const result = await this.recordingRequest('start', runId, {
+      durationMs,
+      ...(diagnosticsVersion !== 1 ? { diagnosticsVersion } : {}),
+      ...(diagnosticsVersion === 3 ? { targetSessionId } : {}),
+    });
+    if (diagnosticsVersion === 3) {
+      if (
+        result.type !== 'diagnostics.started' ||
+        result.state !== 'preparing' ||
+        !('version' in result) ||
+        result.version !== 3 ||
+        result.captureDurationMs !== durationMs ||
+        result.readiness.app.bound ||
+        result.readiness.app.active ||
+        Date.parse(result.preparationExpiresAt) <= Date.now() ||
+        Date.parse(result.expiresAt) <= Date.now() ||
+        Date.parse(result.preparationExpiresAt) - Date.parse(result.startedAt) > 15000 ||
+        Date.parse(result.expiresAt) - Date.parse(result.startedAt) > durationMs + 15000 ||
+        this.remoteSessions.get(targetSessionId!) !== selectedSession ||
+        selectedSession?.controller.signal.aborted ||
+        this.remoteInstallation?.installationId !== installation
+      )
+        throw new Error('diagnostics_selection_unconfirmed');
+      return selectedEvidenceMetadataSchema.parse(
+        Object.fromEntries(
+          Object.entries(result).filter(
+            ([key]) => !['type', 'requestId', 'exportHash'].includes(key),
+          ),
+        ),
+      );
+    }
+    if (result.state !== 'recording' || Date.parse(result.expiresAt) <= Date.now())
+      throw new Error('diagnostics_not_recording');
+  }
+
+  async recordingStatus(runId: string) {
+    const result = await this.recordingRequest('status', runId);
+    if (result.type !== 'diagnostics.status') throw new Error('invalid_diagnostics_response');
+    if ('version' in result && result.version === 3) {
+      return selectedEvidenceMetadataSchema.parse(
+        Object.fromEntries(
+          Object.entries(result).filter(
+            ([key]) => !['type', 'requestId', 'exportHash'].includes(key),
+          ),
+        ),
+      );
+    }
+    return result;
+  }
+
+  async stopRecording(runId: string): Promise<void> {
+    const result = await this.recordingRequest('stop', runId);
+    if (result.state === 'recording' || result.state === 'preparing')
+      throw new Error('diagnostics_not_stopped');
+  }
+
+  async exportRecording(runId: string): Promise<unknown> {
+    const records: unknown[] = [];
+    let cursor = 0;
+    let bytes = 0;
+    let identity: string | undefined;
+    for (let page = 0; page < 128; page++) {
+      const result = await this.recordingRequest('export', runId, { cursor });
+      if (
+        result.type !== 'diagnostics.exported' ||
+        result.state === 'recording' ||
+        result.state === 'preparing' ||
+        result.cursor !== cursor
+      )
+        throw new Error('invalid_diagnostics_export');
+      const { records: batch, nextCursor } = result;
+      const metadata = {
+        ...('version' in result && result.version === 3
+          ? selectedEvidenceMetadataSchema.parse(
+              Object.fromEntries(
+                Object.entries(result).filter(
+                  ([key]) =>
+                    ![
+                      'type',
+                      'requestId',
+                      'exportHash',
+                      'cursor',
+                      'nextCursor',
+                      'records',
+                    ].includes(key),
+                ),
+              ),
+            )
+          : {}),
+        ...('version' in result
+          ? {
+              version: result.version,
+              startedAt: result.startedAt,
+              endedAt: result.endedAt,
+              stopReason: result.stopReason,
+              diagnosticErrors: result.diagnosticErrors,
+              omittedBindings: result.omittedBindings,
+              exportHash: result.exportHash,
+            }
+          : {}),
+        runId: result.runId,
+        state: result.state,
+        expiresAt: result.expiresAt,
+        retainedUntil: result.retainedUntil,
+        collectorReady: result.collectorReady,
+        recordCount: result.recordCount,
+        droppedRecords: result.droppedRecords,
+      };
+      const currentIdentity = JSON.stringify(metadata);
+      if (identity !== undefined && identity !== currentIdentity)
+        throw new Error('diagnostics_export_changed');
+      identity = currentIdentity;
+      bytes += Buffer.byteLength(JSON.stringify(batch));
+      if (bytes > 900_000 || records.length + batch.length > 2048)
+        throw new Error('diagnostics_export_limit');
+      records.push(...batch);
+      if (nextCursor === null) {
+        if (records.length !== result.recordCount) throw new Error('incomplete_diagnostics_export');
+        if ('version' in result) {
+          const evidence =
+            result.version === 3
+              ? selectedEvidenceExportSchema.parse({ ...metadata, records })
+              : socketEvidenceExportSchema.parse({ ...metadata, records });
+          const input =
+            evidence.version === 3
+              ? selectedEvidenceHashInput(evidence)
+              : socketEvidenceHashInput(evidence);
+          if (
+            Buffer.byteLength(JSON.stringify(evidence)) > 262144 ||
+            createHash('sha256').update(input, 'utf8').digest('hex') !== evidence.exportHash
+          )
+            throw new Error('invalid_diagnostics_hash');
+          return evidence;
+        }
+        return { version: 1, ...metadata, records };
+      }
+      if (
+        batch.length === 0 ||
+        nextCursor !== cursor + batch.length ||
+        nextCursor > result.recordCount
+      )
+        throw new Error('invalid_diagnostics_cursor');
+      cursor = nextCursor;
+    }
+    throw new Error('diagnostics_export_limit');
+  }
+
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
+    this.shareOperations += 1;
+    try {
+      await this.ensureSharing();
+      const binding = await this.createConnected(input);
+      if (!this.isAvailable()) {
+        await this.queueOrphanShare(binding.shareId);
+        throw new Error('Sharing authority lost during creation');
+      }
+      this.activeShares.add(binding.shareId);
+      return binding;
+    } finally {
+      this.shareOperations -= 1;
+      this.settleDemand();
+    }
+  }
+
+  private async createConnected(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
     if (input.webhook && !this.webhookNegotiated)
       throw new Error('Uplink webhook-v1 is unavailable');
     if (!this.isAvailable()) {
@@ -423,22 +915,49 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   async remove(shareId: string): Promise<void> {
+    this.activeShares.delete(shareId);
+    if (!this.hasDemand()) this.beginDrain();
+    try {
+      await this.removeConnected(shareId);
+    } finally {
+      this.settleDemand();
+    }
+  }
+
+  private async removeConnected(shareId: string): Promise<void> {
     await this.options.store.addPendingUplinkShareRemoval(shareId);
     this.orphanShareIds.add(shareId);
-    if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
-    const response = await this.request('share.remove', { shareId });
-    if (response.type === 'remove.failed') {
-      throw new Error(
-        `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+    try {
+      if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
+      const response = await this.request('share.remove', { shareId });
+      if (response.type === 'remove.failed') {
+        throw new Error(
+          `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+        );
+      }
+      if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
+      await this.options.store.deletePendingUplinkShareRemoval(shareId);
+      this.orphanShareIds.delete(shareId);
+    } catch (error) {
+      throw new PreviewShareRemovalQueuedError(
+        error instanceof Error ? error.message : 'Uplink revocation is queued',
+        { cause: error },
       );
     }
-    if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
-    await this.options.store.deletePendingUplinkShareRemoval(shareId);
-    this.orphanShareIds.delete(shareId);
   }
 
   private async connect(): Promise<void> {
-    if (this.stopped || this.socket) return;
+    if (this.stopped || this.idle || this.socket) return;
+    if (!this.checkTimer && (this.grants === undefined || this.probing)) {
+      this.checkTimer = setTimeout(() => {
+        this.checkTimer = undefined;
+        if (!this.welcomed || this.probing) {
+          this.clearAuthority('Uplink rights check timed out');
+          this.park();
+        }
+      }, DEMAND_CHECK_TIMEOUT_MS);
+      this.checkTimer.unref();
+    }
     const generation = this.generation;
     let settings: VeritySettingsRecord | undefined;
     try {
@@ -451,10 +970,25 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (this.stopped || generation !== this.generation || this.socket) return;
     if (settings !== undefined) this.switches = premiumFeatureSwitches(settings);
+    if (!this.hasDemand()) {
+      if (!this.switches.sharing && this.activeShares.size > 0)
+        void this.disableFeaturesOnce('Online sharing is switched off').catch(() => undefined);
+      this.park();
+      return;
+    }
+    if (
+      this.options.expectedInstallationId !== undefined &&
+      settings?.uplinkInstallationId !== this.options.expectedInstallationId
+    ) {
+      this.clearAuthority('diagnostic Uplink installation does not match');
+      this.options.log?.warn({}, 'diagnostic Uplink installation does not match; not dialling');
+      this.scheduleReconnect(RECONNECT_CAPACITY_MS);
+      return;
+    }
     const key: string | undefined = settings?.uplinkSubscriptionKey?.trim();
     if (!key) {
       this.clearAuthority('Uplink subscription key is not configured');
-      this.scheduleReconnect(RECONNECT_MAX_MS);
+      this.park();
       return;
     }
     if (this.lastReject?.key === key) {
@@ -504,7 +1038,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
           serverVersion: this.options.serverVersion,
           ...(this.options.offerRemoteControl === true && this.switches.remoteAccess
             ? {
-                capabilities: [REMOTE_CAPABILITY, 'webhook-v1'],
+                capabilities: [
+                  REMOTE_CAPABILITY,
+                  DIAGNOSTICS_CAPABILITY,
+                  DIAGNOSTICS_V2_CAPABILITY,
+                  DIAGNOSTICS_V3_CAPABILITY,
+                  'webhook-v1',
+                ],
                 channels: ['http', 'ws', REMOTE_CHANNEL],
               }
             : { capabilities: ['webhook-v1'], channels: ['http', 'ws'] }),
@@ -651,12 +1191,24 @@ export class UplinkControlClient implements PreviewEdgeControl {
         return;
       }
     }
+    // A timed-out diagnostic operation may finish after local rollback. It must
+    // not tear down the shared control channel or restart a recording.
+    if (requestId && /^diagnostics\.(started|status|stopped|exported|error)$/u.test(frameType))
+      return;
     if (frame.type === 'welcome') {
       const welcomeSocket = this.socket;
       const welcomeGeneration = this.generation;
       const currentWelcome = () =>
         !this.stopped && this.socket === welcomeSocket && this.generation === welcomeGeneration;
       const installationId = stringField(frame, 'installationId');
+      if (
+        this.options.expectedInstallationId !== undefined &&
+        installationId !== this.options.expectedInstallationId
+      ) {
+        this.clearAuthority('diagnostic Uplink installation changed');
+        this.socket?.close(1008, 'diagnostic installation mismatch');
+        return;
+      }
       const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
       const negotiation = remoteNegotiation(frame);
       this.retryMs = 1_000;
@@ -708,11 +1260,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
           this.options.offerRemoteControl === true &&
           negotiation.capabilities.has(REMOTE_CAPABILITY) &&
           negotiation.channels.has(REMOTE_CHANNEL);
+        this.diagnosticsNegotiated =
+          this.remoteNegotiated &&
+          (negotiation.capabilities.has(DIAGNOSTICS_CAPABILITY) ||
+            negotiation.capabilities.has(DIAGNOSTICS_V2_CAPABILITY) ||
+            negotiation.capabilities.has(DIAGNOSTICS_V3_CAPABILITY));
+        this.diagnosticsV2Negotiated =
+          this.remoteNegotiated && negotiation.capabilities.has(DIAGNOSTICS_V2_CAPABILITY);
+        this.diagnosticsV3Negotiated =
+          this.remoteNegotiated && negotiation.capabilities.has(DIAGNOSTICS_V3_CAPABILITY);
+        this.remoteSupported = this.remoteNegotiated;
         this.remoteInstallation =
           installationHandle === undefined ? undefined : { installationId, installationHandle };
         this.welcomed = true;
         this.startHeartbeat();
         if (!this.features.has('sharing') || !this.switches.sharing) {
+          if (!this.hasDemand()) this.beginDrain();
           await this.disableFeaturesOnce(
             this.switches.sharing
               ? 'Uplink did not grant public preview entitlement'
@@ -734,7 +1297,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.socket?.close(1011, 'local welcome processing failed');
         return;
       }
-      void this.flushOrphanShares();
+      if (this.checkTimer) clearTimeout(this.checkTimer);
+      this.checkTimer = undefined;
+      this.probing = false;
+      this.resolveReady();
+      void this.flushOrphanShares().finally(() => this.settleDemand());
+      this.settleDemand();
       return;
     }
     if (frame.type === 'renewed') {
@@ -754,11 +1322,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
         'Uplink lease renewed',
       );
       if (hadSharing && !this.features.has('sharing')) {
+        this.beginDrain();
         const reason = 'Uplink removed public preview entitlement';
+        this.resolveReady();
         this.cancelPending(reason);
         await this.disableFeaturesOnce(reason);
       }
       if (!hadSharing && this.features.has('sharing')) void this.flushOrphanShares();
+      this.resolveReady();
+      this.settleDemand();
       return;
     }
     if (frame.type === 'revoke') {
@@ -766,7 +1338,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.lastReject = { key, reason };
       this.options.log?.warn({ frameType: 'revoke', reason }, 'Uplink withdrew this installation');
       this.clearAuthority(reason);
-      this.socket?.close(4003, 'revoked');
+      this.activeShares.clear();
+      this.grants = new Set();
+      this.park();
       return;
     }
     if (frame.type === 'reject') {
@@ -786,7 +1360,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
         'Uplink refused the control connection',
       );
       this.clearAuthority(reason);
-      this.socket?.close(4003, closeReason(reason, 'rejected'));
+      if (identityReject) {
+        this.activeShares.clear();
+        this.grants = new Set();
+        this.park();
+      } else this.socket?.close(4003, closeReason(reason, 'rejected'));
       return;
     }
     if (frame.type === 'share.pin_locked') {
@@ -794,7 +1372,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'share.expired') {
-      await this.options.onShareExpired?.(stringField(frame, 'shareId'));
+      this.activeShares.delete(stringField(frame, 'shareId'));
+      try {
+        await this.options.onShareExpired?.(stringField(frame, 'shareId'));
+      } finally {
+        this.settleDemand();
+      }
       return;
     }
     if (frame.type === 'session.request') {
@@ -890,6 +1473,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         ? frame.features.filter((v): v is string => typeof v === 'string')
         : [],
     );
+    this.grants = new Set(this.features);
+    this.grantExpiresAt = leaseUntil;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
     if (this.leaseTimer) clearTimeout(this.leaseTimer);
     if (this.renewalTimer) clearTimeout(this.renewalTimer);
     this.leaseTimer = setTimeout(
@@ -899,7 +1486,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
           'Uplink lease expired',
         );
         this.clearAuthority('Uplink lease expired');
-        this.closeAndReconnect(4001, 'lease expired');
+        this.activeShares.clear();
+        this.grants = new Set();
+        this.park();
       },
       Math.max(0, leaseUntil - Date.now()),
     );
@@ -968,8 +1557,31 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private clearAuthority(reason: string, notify = true): void {
+    // A disconnected transport cannot extend the last granted lease by retrying.
+    if (
+      !this.stopped &&
+      !this.idle &&
+      this.grants?.has('remote-control') &&
+      this.remoteDemand() &&
+      !this.offlineLeaseTimer
+    ) {
+      this.offlineLeaseTimer = setTimeout(
+        () => {
+          this.offlineLeaseTimer = undefined;
+          this.options.log?.warn({}, 'Uplink lease expired during recovery');
+          this.grants = new Set();
+          this.clearAuthority('Uplink lease expired');
+          this.park();
+        },
+        Math.max(0, this.grantExpiresAt - Date.now()),
+      );
+      this.offlineLeaseTimer.unref();
+    }
     this.features.clear();
     this.remoteNegotiated = false;
+    this.diagnosticsNegotiated = false;
+    this.diagnosticsV2Negotiated = false;
+    this.diagnosticsV3Negotiated = false;
     this.webhookNegotiated = false;
     this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);
@@ -1124,6 +1736,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private disableFeaturesOnce(reason: string): Promise<void> {
+    this.activeShares.clear();
+    this.notifySharingDisabled();
     this.cleanupRequired = true;
     if (this.authorityLossNotified) return this.cleanupTail;
     this.authorityLossNotified = true;
@@ -1137,7 +1751,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.authorityLossNotified = false;
         this.options.log?.error({ error }, 'failed to disable paid Uplink features locally');
         throw error;
-      });
+      })
+      .finally(() => this.settleDemand());
     return this.cleanupTail;
   }
 
@@ -1150,7 +1765,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.authorityLossNotified = false;
   }
 
-  private request(type: string, fields: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private request(
+    type: string,
+    fields: Record<string, unknown>,
+    responses?: readonly string[],
+  ): Promise<Record<string, unknown>> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (type === 'share.create') {
@@ -1180,15 +1799,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
         }
         reject(error);
       };
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        if (type === 'share.create') this.rememberAbandonedCreate(requestId);
-        fail(new Error(`Uplink ${type} timed out`), 'timeout');
-      }, REQUEST_TIMEOUT_MS);
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(requestId);
+          if (type === 'share.create') this.rememberAbandonedCreate(requestId);
+          fail(new Error(`Uplink ${type} timed out`), 'timeout');
+        },
+        type.startsWith('diagnostics.')
+          ? DIAGNOSTICS_TIMEOUT_MS
+          : type === 'share.remove'
+            ? REMOVAL_TIMEOUT_MS
+            : REQUEST_TIMEOUT_MS,
+      );
       this.pending.set(requestId, {
         type,
-        expectedResponseTypes:
-          type === 'share.create'
+        expectedResponseTypes: responses
+          ? new Set(responses)
+          : type === 'share.create'
             ? new Set(['share.ready', 'share.error'])
             : new Set(['share.removed', 'remove.failed']),
         ...(type === 'share.remove' && typeof fields.shareId === 'string'
@@ -1278,7 +1905,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private scheduleReconnect(delay = this.retryMs): void {
-    if (this.stopped || this.retryTimer) return;
+    if (this.stopped || this.idle || this.retryTimer || !this.hasDemand()) return;
     const jitter = Math.floor(Math.random() * Math.max(1, delay / 4));
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;

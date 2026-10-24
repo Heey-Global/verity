@@ -5,6 +5,7 @@ import {
   copyFileSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
   rmSync,
   symlinkSync,
   readdirSync,
@@ -14,6 +15,16 @@ import {
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import console from 'node:console';
+
+/** The ACP adapter must not reopen project policy when starting a thread. */
+export function hardenCodexAcpSource(source) {
+  const automaticTrust =
+    /projects: Object\.fromEntries\(sessionRoots\.map\(\(root\) => \[root, \{\s*trust_level: "trusted"\s*\}\]\)\)/g;
+  const matches = [...source.matchAll(automaticTrust)];
+  if (matches.length !== 1)
+    throw new Error('Unsupported Codex ACP project-trust code; refusing an unhardened adapter');
+  return source.replace(automaticTrust, (match) => match.replace('"trusted"', '"untrusted"'));
+}
 
 // Keep each CLI's dependency tree isolated, while exposing the same global
 // package and executable paths used by the adapter patches and spawn broker.
@@ -29,6 +40,8 @@ export function installCli(
   if (dependencies.length !== 1) throw new Error('CLI bundle must contain exactly one dependency');
   const [name, pinned] = dependencies[0];
   const version = override ?? pinned;
+  if (id === 'codex-acp' && version !== '2.2.2')
+    throw new Error('Codex ACP security hardening requires audited adapter version 2.2.2');
   if (!/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/.test(version)) {
     throw new Error('CLI version must be exact');
   }
@@ -49,6 +62,9 @@ export function installCli(
       rmSync(link);
     }
   }
+  // V2 changes package names but still owns the same `opencode` command.
+  if (id === 'opencode')
+    rmSync(path.join(globalRoot, 'opencode-ai'), { recursive: true, force: true });
   const previousGlobal = path.join(globalRoot, name);
   rmSync(previousGlobal, { recursive: true, force: true });
   for (const file of ['package.json', 'package-lock.json']) {
@@ -80,6 +96,10 @@ export function installCli(
   const installed = JSON.parse(readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
   if (installed.name !== name || installed.version !== version)
     throw new Error('Installed CLI does not match requested version');
+  if (id === 'codex-acp') {
+    const entry = path.join(packageDir, 'dist', 'index.js');
+    writeFileSync(entry, hardenCodexAcpSource(readFileSync(entry, 'utf8')));
+  }
   const globalPackage = path.join(globalRoot, name);
   mkdirSync(path.dirname(globalPackage), { recursive: true });
   rmSync(globalPackage, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 # Verity Server image — the standalone control-plane an operator installs to run
 # Verity on any host (ADR 0003, Phase A). The compiled Fastify server
-# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
+# (packages/server -> dist) and static browser client on a minimal Node 26 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
 # The shared Expo client is exported for the browser and served under /app/.
 #
@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder-deps
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder-deps
 
 WORKDIR /app
 
@@ -86,7 +86,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
 
 WORKDIR /app
 
@@ -115,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS docker-cli
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -196,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -284,9 +284,13 @@ RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runne
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-node-modules-install /usr/local/bin/verity-node-modules-install \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs /usr/local/bin/verity-runner-worker \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs /usr/local/bin/verity-agent-spawn-broker \
+    && install -m 0644 /opt/verity-features/verity-sandbox-toolkit/bin/verity-managed-secret-servers.mjs /usr/local/bin/verity-managed-secret-servers.mjs \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs /usr/local/bin/verity-egress-connector \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector-start /usr/local/bin/verity-egress-connector-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-run /usr/local/bin/verity-agent-run
+# Control Runner bypasses the Feature installer and needs its own immutable Git baseline.
+# Keep public agent policy outside the private deployment-state directory.
+COPY --chmod=0644 deploy/control-runner.gitconfig /etc/verity-agent.gitconfig
 COPY deploy/bin/verity-control-plane-runner-start /usr/local/bin/verity-control-plane-runner-start
 COPY deploy/bin/verity-control-plane-git-sign /usr/local/bin/verity-control-plane-git-sign
 COPY deploy/bin/verity-control-plane-memory /usr/local/bin/verity-memory

@@ -17,7 +17,7 @@ import type { AuthTokenRegistry } from './auth.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import type { WorktreeProvisioner } from './worktree.js';
 import type { GitBranchService, GitOutput } from './branches.js';
-import type { GitHubIdentity, PullRequestStatus, ReleaseSummary } from './github.js';
+import type { ForgeRepoRef, PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -101,8 +101,12 @@ export interface ControlPlaneDeps {
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
+  returnPathActivation?: ServerDeps['returnPathActivation'];
+  coordinatedRecording?: ServerDeps['coordinatedRecording'];
+  returnPathConnectorCount?: ServerDeps['returnPathConnectorCount'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
+  recheckUplink?: ServerDeps['recheckUplink'];
   runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
@@ -132,6 +136,8 @@ export interface ControlPlaneDeps {
   /** GitHub-token broker capability registry (resolve side) for
    *  `POST /internal/github/token`. Forwarded to {@link buildServer}. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** The code host behind a repository project, for the sandbox `verity-repo` tool. */
+  projectRepository?: ServerDeps['projectRepository'];
   /** Mint a repo-scoped token for a resolved capability binding. Forwarded to
    *  {@link buildServer}. */
   ghTokenMint?:
@@ -183,7 +189,7 @@ export interface ControlPlaneDeps {
   /** Merge a PR by number. Omit → merge route returns 503. */
   mergePr?: ((number: number, worktree: string) => Promise<boolean>) | undefined;
   /** Resolve GitHub owner/repo for a session worktree so Issue/PR chips deep-link correctly. */
-  repoIdentity?: ((worktree: string) => Promise<GitHubIdentity | null>) | undefined;
+  repoIdentity?: ((worktree: string) => Promise<ForgeRepoRef | null>) | undefined;
   /** Latest GitHub release lookup for project overview/detail badges. */
   latestRelease?: ((owner: string, repo: string) => ReleaseSummary | null | undefined) | undefined;
   /** Awaited latest-release refresh for routes that need an immediate answer. */
@@ -237,6 +243,7 @@ export interface ControlPlaneDeps {
    * including `state='absent'` rows `listProjects` leaves out. Omit → the repo
    * picker falls back to the project overview. */
   listAvailableRepositories?: (() => Promise<ProjectRecord[]>) | undefined;
+  forgejoEnabled?: boolean;
   /** Reconciles ONE project's cached lifecycle state against its container before
    * the detail route answers, so the screen that owns Repair never offers an action
    * for a container that has already died. Omit → the cached row is served. */
@@ -380,6 +387,15 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
+    ...(deps.coordinatedRecording !== undefined
+      ? { coordinatedRecording: deps.coordinatedRecording }
+      : {}),
+    ...(deps.returnPathActivation !== undefined
+      ? { returnPathActivation: deps.returnPathActivation }
+      : {}),
+    ...(deps.returnPathConnectorCount !== undefined
+      ? { returnPathConnectorCount: deps.returnPathConnectorCount }
+      : {}),
     ...(deps.remoteControlDescriptor !== undefined
       ? { remoteControlDescriptor: deps.remoteControlDescriptor }
       : {}),
@@ -387,6 +403,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { runtimeDiagnostics: deps.runtimeDiagnostics }
       : {}),
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
+    ...(deps.recheckUplink !== undefined ? { recheckUplink: deps.recheckUplink } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),
@@ -418,6 +435,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { ghTokenCapabilities: deps.ghTokenCapabilities }
       : {}),
     ...(deps.ghTokenMint !== undefined ? { ghTokenMint: deps.ghTokenMint } : {}),
+    ...(deps.projectRepository !== undefined ? { projectRepository: deps.projectRepository } : {}),
     ...(deps.mcpGateway !== undefined ? { mcpGateway: deps.mcpGateway } : {}),
     ...(deps.mcpProxyResolveCaller !== undefined
       ? { mcpProxyResolveCaller: deps.mcpProxyResolveCaller }
@@ -462,6 +480,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.listProjectGitHubIssues !== undefined
       ? { listProjectGitHubIssues: deps.listProjectGitHubIssues }
       : {}),
+    ...(deps.forgejoEnabled !== undefined ? { forgejoEnabled: deps.forgejoEnabled } : {}),
     ...(deps.listAvailableRepositories !== undefined
       ? { listAvailableRepositories: deps.listAvailableRepositories }
       : {}),

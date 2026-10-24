@@ -17,6 +17,11 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 );
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+const mockAppStoreVersion = jest.fn((_enabled: boolean): string | null => null);
+jest.mock('../lib/appUpdateFacts', () => ({
+  useAppStoreUpdateVersion: (enabled: boolean) => mockAppStoreVersion(enabled),
+}));
+beforeEach(() => mockAppStoreVersion.mockReturnValue(null));
 jest.mock('../lib/automaticUpdates', () =>
   require('./support/settingsHarness').automaticUpdatesMock(),
 );
@@ -35,6 +40,11 @@ import {
   setSearchParams,
 } from './support/settingsHarness';
 
+// A row is announced with its subtitle and status after the title, so find it
+// by the title its spoken label starts with.
+const rowLabel = (title: string) =>
+  new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`);
+
 afterEach(() => {
   resetSettingsHarness();
   jest.restoreAllMocks();
@@ -48,9 +58,9 @@ describe('settings index — destinations', () => {
       }),
     );
     render(<SettingsIndexScreen />);
-    fireEvent.press(screen.getByLabelText('Manage devices and web browsers'));
+    fireEvent.press(screen.getByLabelText(/^Manage devices and web browsers(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/devices');
-    expect(screen.getByLabelText('Advanced mode')).toBeDisabled();
+    expect(screen.getByLabelText(/^Advanced mode(,|$)/)).toBeDisabled();
     expect(screen.queryByText('Needs setup')).toBeNull();
     await act(async () => undefined);
   });
@@ -66,6 +76,25 @@ describe('settings index — destinations', () => {
     expect(await screen.findByText('3 connected')).toBeOnTheScreen();
   });
 
+  // A stored key is not an active subscription; the row must not say "Active"
+  // while Uplink refuses it.
+  it('flags a rejected subscription key on the Verity Premium row', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({ uplinkSubscriptionKeyConfigured: true }),
+        getUplinkDiagnostics: jest.fn().mockResolvedValue({
+          control: 'rejected',
+          reason: 'revoked',
+          sharing: 'unavailable',
+          remoteControl: 'unavailable',
+        }),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Key rejected(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Active(,|$)/)).toBeNull();
+  });
+
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<SettingsIndexScreen />);
@@ -74,33 +103,34 @@ describe('settings index — destinations', () => {
 
   // Each destination must still reach its settings or recovery screen.
   it.each([
+    ['Vulnerability scan', '/settings/vulnerability-scan'],
     ['Verity Premium', '/settings/premium'],
     ['Diagnostics', '/settings/diagnostics'],
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
-    ['Server update', '/settings/server-update'],
+    ['Updates', '/settings/server-update'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage devices and web browsers', '/devices'],
   ])('routes %s to %s', async (label, href) => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText(label));
+    fireEvent.press(await screen.findByLabelText(rowLabel(label)));
     expect(mockPush).toHaveBeenCalledWith(href);
   });
 
   it('keeps update channel preferences inside server update', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
-    await screen.findByLabelText('Server update');
-    expect(screen.queryByLabelText('Update channel')).toBeNull();
+    await screen.findByLabelText(/^Updates(,|$)/);
+    expect(screen.queryByLabelText(/^Update channel(,|$)/)).toBeNull();
   });
 
   it('shows the configured server address without tapping in', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Change server address');
+    await screen.findByLabelText(/^Change server address(,|$)/);
     expect(screen.getByText(VERITY_BASE_URL)).toBeOnTheScreen();
   });
 
@@ -111,11 +141,11 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Connections');
-    expect(screen.queryByLabelText('Commit name')).toBeNull();
+    await screen.findByLabelText(/^Connections(,|$)/);
+    expect(screen.queryByLabelText(/^Commit name(,|$)/)).toBeNull();
     expect(screen.queryByPlaceholderText('Paste the Doppler token…')).toBeNull();
-    expect(screen.queryByLabelText('Apply saved settings to running containers')).toBeNull();
-    expect(screen.queryByLabelText('Set master password')).toBeNull();
+    expect(screen.queryByLabelText(/^Apply saved settings to running containers(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Set master password(,|$)/)).toBeNull();
   });
 
   it('reports GitHub as needing setup while its credentials are incomplete', async () => {
@@ -126,7 +156,7 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
     expect(screen.queryByText('Needs setup')).toBeNull();
     // Technical App/installation identifiers never appear in a summary row.
     expect(screen.queryByText('78901234')).toBeNull();
@@ -138,8 +168,8 @@ describe('settings index — destinations', () => {
       mockCreateVerityClient.mockReturnValue(makeClient(status));
       render(<SettingsIndexScreen />);
 
-      await screen.findByLabelText('Connections');
-      expect(screen.queryByLabelText('Secret store')).toBeNull();
+      await screen.findByLabelText(/^Connections(,|$)/);
+      expect(screen.queryByLabelText(/^Secret store(,|$)/)).toBeNull();
     },
   );
 
@@ -158,14 +188,28 @@ describe('settings index — destinations', () => {
     );
     render(<SettingsIndexScreen />);
 
-    expect(await screen.findByText('Version 1.4.0 available')).toBeOnTheScreen();
+    expect(await screen.findByText('Server version 1.4.0 available')).toBeOnTheScreen();
   });
 
-  it('does not badge Server update on a deployment Verity does not manage', async () => {
+  // One row leads to both, so a new App Store release has to surface on it too;
+  // a smaller update that applies on its own does not, which the hook decides.
+  it('names a new App Store version on the same row', async () => {
+    mockAppStoreVersion.mockReturnValue('1.76.0');
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Server update');
+    expect(await screen.findByText('App version 1.76.0 available')).toBeOnTheScreen();
+    expect(
+      screen.getByLabelText(/^Updates, App version 1\.76\.0 available, Update$/),
+    ).toBeOnTheScreen();
+    mockAppStoreVersion.mockReturnValue(null);
+  });
+
+  it('does not badge Updates on a deployment Verity does not manage', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+
+    await screen.findByLabelText(/^Updates, Server and app$/);
     expect(screen.queryByText(/available$/)).toBeNull();
   });
 });
@@ -194,7 +238,7 @@ describe('settings index — setup checklist', () => {
 
   it('sends every outstanding step to a screen that can fix it', async () => {
     renderWithOutstandingSteps();
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
 
     const items = CHECKLIST.kind === 'ready' ? CHECKLIST.items : [];
     expect(items.length).toBeGreaterThan(0);
@@ -223,7 +267,7 @@ describe('settings index — setup checklist', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
     // "All set" is a headline with nothing to act on; the screen shows the rows
     // instead of a panel of ticks.
     expect(screen.queryByText('All set')).toBeNull();
@@ -258,7 +302,7 @@ describe('settings index — app-level controls', () => {
     );
     render(<SettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Advanced mode'));
+    fireEvent.press(await screen.findByLabelText(/^Advanced mode(,|$)/));
 
     await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
     const patch = updateVeritySettings.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -281,7 +325,7 @@ describe('settings index — app-level controls', () => {
     );
     render(<SettingsIndexScreen />);
 
-    const toggle = await screen.findByLabelText('Advanced mode');
+    const toggle = await screen.findByLabelText(/^Advanced mode(,|$)/);
     fireEvent.press(toggle);
     fireEvent.press(toggle);
 
@@ -331,7 +375,7 @@ describe('settings index — legacy deep links', () => {
     setSearchParams({ agentLogin: provider });
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -340,7 +384,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -350,7 +394,7 @@ describe('settings index — legacy deep links', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    await screen.findByLabelText('Connections');
+    await screen.findByLabelText(/^Connections(,|$)/);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 });

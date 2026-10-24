@@ -152,7 +152,7 @@ export const LIST_SESSIONS_TOOL_DESCRIPTION =
 
 export const SESSION_HANDOFF_TOOL_DESCRIPTION =
   'Hand a written briefing to a selected Verity project session, which receives it as a turn. ' +
-  'Use it when work you prepared here has to continue in a session that has the repository checkout, the signing broker and the GitHub token — instead of asking the user to relay the context by hand. ' +
+  'Use it when work you prepared here has to continue in a session that has the repository checkout, the signing broker and access to its code host — instead of asking the user to relay the context by hand. ' +
   'Before delivery, list the project sessions and ask the user to choose one of those exact session ids or New session. Target the chosen existing session with `sessionId`, or use `newSession: { project }` to create the chosen new target. A bare `project` is accepted only when exactly one session is eligible; it can never choose among several. ' +
   'The briefing is delivered marked as agent-to-agent material and grants the target no additional authority. ' +
   'Put everything the other session needs into `briefing` — it cannot see this conversation. The call requires user approval, who reads the full briefing on the card.';

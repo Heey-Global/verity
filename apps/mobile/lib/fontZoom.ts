@@ -6,7 +6,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { UnistylesRuntime } from 'react-native-unistyles';
 
-import { baseText, type TypeRamp } from '../theme/tokens';
+import { baseText, baseTypography, type TypeRamp, type TypeStyles } from '../theme/tokens';
 
 export const MIN_FONT_SCALE = 0.8;
 export const MAX_FONT_SCALE = 1.5;
@@ -47,13 +47,37 @@ export function scaledTypeRamp(scale: number): TypeRamp {
   };
 }
 
+/** The named type styles scaled to a factor: size and leading to whole pixels,
+ *  tracking to two decimals so uppercase labels keep their exact spacing. */
+export function scaledTypography(scale: number): TypeStyles {
+  const scaled = {} as TypeStyles;
+  for (const [name, style] of Object.entries(baseTypography) as [
+    keyof TypeStyles,
+    TypeStyles[keyof TypeStyles],
+  ][]) {
+    scaled[name] = {
+      ...style,
+      fontSize: Math.round(style.fontSize * scale),
+      lineHeight: Math.round(style.lineHeight * scale),
+      letterSpacing: round2(style.letterSpacing * scale),
+    };
+  }
+  return scaled;
+}
+
 let currentScale = DEFAULT_FONT_SCALE;
 
 /** Push a scale into every registered theme so all styled components recompute. */
 function applyFontScale(scale: number): void {
   const text = scaledTypeRamp(scale);
+  const typography = scaledTypography(scale);
   for (const name of ['dark', 'light'] as const) {
-    UnistylesRuntime.updateTheme(name, (theme) => ({ ...theme, fontScale: scale, text }));
+    UnistylesRuntime.updateTheme(name, (theme) => ({
+      ...theme,
+      fontScale: scale,
+      text,
+      typography,
+    }));
   }
 }
 

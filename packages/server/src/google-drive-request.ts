@@ -1,10 +1,15 @@
 import { z } from 'zod';
 import { fileOperationRequestSchema } from '@verity/events';
 
+const accountFields = {
+  accountId: z.string().min(1).optional(),
+  folderLinkId: z.string().min(1).optional(),
+};
+
 export const googleDriveRequestSchema = z.discriminatedUnion('action', [
-  ...fileOperationRequestSchema.options,
   z
     .object({
+      ...accountFields,
       action: z.literal('read_document_url'),
       url: z
         .string()
@@ -31,12 +36,14 @@ export const googleDriveRequestSchema = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
+      ...accountFields,
       action: z.literal('select_workspace_file'),
       fileId: z.string().min(1).max(512).optional(),
       name: z.string().trim().min(1).max(255).optional(),
     })
     .strict()
     .refine((value) => Boolean(value.fileId || value.name), 'fileId or name required'),
+  ...fileOperationRequestSchema.options.map((option) => option.safeExtend(accountFields)),
 ]);
 type GoogleDriveRequest = z.infer<typeof googleDriveRequestSchema>;
 export function googleDriveIsMutation(request: GoogleDriveRequest): boolean {

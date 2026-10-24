@@ -1,10 +1,20 @@
 import type {
+  BranchList,
   LiveSocket,
   SessionAutomation,
   SessionDetail,
   StreamEventFrame,
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
+
+import {
+  isDemoShowcase,
+  SHOWCASE_DEFAULT_MODEL,
+  SHOWCASE_MODELS,
+  SHOWCASE_PROJECTS,
+  showcaseKnowledgeFiles,
+  showcaseSessions,
+} from './demoShowcase';
 
 export const DEMO_BASE_URL = 'https://demo.verity.invalid';
 export function isDemoUrl(url: string | null | undefined): boolean {
@@ -47,12 +57,78 @@ const project = {
   createdAt: DATE,
   updatedAt: DATE,
 };
+// Synthetic advisory data for UI demonstrations, never a claim about a real package.
+const sampleFinding = {
+  advisoryId: 'DEMO-example',
+  aliases: [],
+  ecosystem: 'npm',
+  package: 'example-package',
+  version: '1.0.0',
+  severity: 'high',
+  summary: 'Sample vulnerability for demonstrating scan controls.',
+  fixedVersions: ['1.0.1'],
+  source: 'package-lock.json',
+  dev: false,
+  modified: null,
+};
+const scanSettings = {
+  enabled: true,
+  schedule: { kind: 'daily', hour: 9, minute: 0, timeZone: 'UTC' },
+  sessionChanges: true,
+  includeDev: true,
+  notifyFrom: 'high',
+  dailyDigest: false,
+};
+const scanIgnores = new Map<string, Record<string, unknown>>();
 interface DemoSession {
   detail: SessionDetail;
   automation?: SessionAutomation;
   events: StreamEventFrame[];
   timers: Set<ReturnType<typeof setTimeout>>;
   files: Record<string, string>;
+  branch: string;
+  pullRequest?: NonNullable<BranchList['pullRequest']>;
+}
+// Sample subscription readings so the usage meters show their filled state.
+// Times are relative to the request: fixed timestamps would expire and the
+// overview hides a window once it has reset.
+function providerLimits() {
+  const observedAt = Date.now();
+  const hours = (count: number) => Math.floor(observedAt / 1000) + count * 3600;
+  return [
+    {
+      providerLabel: 'Claude',
+      status: 'allowed',
+      window: 'five_hour',
+      usedPercent: 38,
+      resetsAt: hours(2),
+      observedAt,
+    },
+    {
+      providerLabel: 'Claude',
+      status: 'allowed',
+      window: 'weekly',
+      usedPercent: 61,
+      resetsAt: hours(76),
+      observedAt,
+    },
+    {
+      providerLabel: 'Codex',
+      status: 'allowed',
+      window: 'five_hour',
+      usedPercent: 12,
+      resetsAt: hours(4),
+      observedAt,
+    },
+    {
+      providerLabel: 'Codex',
+      status: 'allowed',
+      window: 'weekly',
+      usedPercent: 27,
+      resetsAt: hours(120),
+      observedAt,
+    },
+  ];
 }
 const projects = new Map<string, typeof project>();
 let settings = initialSettings();
@@ -123,7 +199,7 @@ const initialKnowledgeFiles = {
   'getting-started.md':
     '# Getting started\n\nConnect your own Verity server to run real AI sessions. This demo stays on your device.\n',
 };
-let knowledgeFiles = { ...initialKnowledgeFiles };
+let knowledgeFiles: Record<string, string> = { ...initialKnowledgeFiles };
 const document = {
   id: 'demo-guide',
   folderId: 'demo-knowledge',
@@ -150,6 +226,7 @@ function makeSession(id: string, name: string | null, model = MODEL): DemoSessio
     events: [],
     timers: new Set(),
     files: { ...initialFiles },
+    branch: 'demo/button-color',
   };
 }
 function append(session: DemoSession, event: StreamEventFrame['event']): void {
@@ -169,6 +246,15 @@ function clearTimers(session: DemoSession): void {
 }
 /** Reset closes old streams and cancels replies so they cannot leak into the new demo. */
 export function resetDemoData(): void {
+  scanIgnores.clear();
+  Object.assign(scanSettings, {
+    enabled: true,
+    schedule: { kind: 'daily', hour: 9, minute: 0, timeZone: 'UTC' },
+    sessionChanges: true,
+    includeDev: true,
+    notifyFrom: 'high',
+    dailyDigest: false,
+  });
   for (const session of sessions.values()) clearTimers(session);
   for (const socket of [...sockets]) socket.close();
   sessions.clear();
@@ -179,6 +265,10 @@ export function resetDemoData(): void {
   settings = initialSettings();
   knowledgeFiles = { ...initialKnowledgeFiles };
   projects.clear();
+  if (isDemoShowcase()) {
+    seedShowcase();
+    return;
+  }
   projects.set(PROJECT_ID, { ...project });
   const session = makeSession(`demo-session-${instanceId}-${generation}`, 'Explore Verity');
   sessions.set(session.detail.sessionId, session);
@@ -222,6 +312,65 @@ export function resetDemoData(): void {
     isError: false,
   });
   append(session, { t: 'result', usage, stopReason: 'end_turn' });
+}
+function seedShowcase(): void {
+  knowledgeFiles = showcaseKnowledgeFiles();
+  for (const entry of SHOWCASE_PROJECTS) projects.set(entry.id, { ...project, ...entry });
+  for (const scenario of showcaseSessions()) {
+    const session = makeSession(
+      `showcase-${instanceId}-${generation}-${nextId++}`,
+      scenario.name,
+      scenario.model,
+    );
+    session.detail.projectId = scenario.projectId;
+    session.detail.worktree = '/workspace';
+    session.branch = scenario.branch;
+    if (scenario.pullRequest !== undefined) {
+      const { number, title, pipeline } = scenario.pullRequest;
+      const done = pipeline === 'success' ? 5 : 3;
+      session.pullRequest = {
+        number,
+        title,
+        url: `https://github.example/northwind/shop/pull/${number}`,
+        phase: 'open',
+        pipeline,
+        checks: { completed: done, total: 5, successful: done, failed: 0, pending: 5 - done },
+        mergeable: pipeline === 'success' ? true : null,
+        mergeState: pipeline === 'success' ? 'clean' : 'unstable',
+        baseRef: 'main',
+      };
+      session.detail.pullRequest = session.pullRequest;
+      session.detail.pr = {
+        phase: 'open',
+        pipeline,
+        mergeable: session.pullRequest.mergeable,
+        mergeState: session.pullRequest.mergeState,
+      };
+    }
+    if (scenario.plan !== undefined) {
+      session.detail.planning = 'active';
+      session.detail.planningPlan = scenario.plan;
+      session.detail.planningRevision = 1;
+    }
+    sessions.set(session.detail.sessionId, session);
+    append(session, {
+      t: 'session',
+      id: session.detail.sessionId,
+      model: scenario.model,
+      worktree: session.detail.worktree,
+    });
+    for (const event of scenario.events) append(session, event);
+    if (scenario.state === 'running') {
+      session.detail.busy = true;
+      session.detail.status = 'running';
+    } else if (scenario.pendingPermission !== undefined) {
+      session.detail.busy = true;
+      session.detail.status = 'awaiting_input';
+      session.detail.pendingPermissions = [scenario.pendingPermission];
+      session.detail.permissionAwaitingInput = true;
+      append(session, { t: 'status', state: 'awaiting_input' });
+    }
+  }
 }
 function schedule(session: DemoSession, delay: number, run: () => void): void {
   const timer = setTimeout(() => {
@@ -367,6 +516,56 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
     typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
   const path = url.pathname;
   const list = () => [...sessions.values()].map((session) => session.detail);
+  if (path === '/settings/vulnerability-scan') {
+    if (method === 'PATCH') Object.assign(scanSettings, body);
+    return json({ settings: scanSettings });
+  }
+  const scanRoute =
+    /^\/(projects|sessions)\/([^/]+)\/vulnerability-scan(?:\/(ignores)(?:\/([^/]+))?)?$/.exec(path);
+  if (scanRoute) {
+    const [, scope, id, ignores, ignoreId] = scanRoute;
+    if (ignores) {
+      if (method === 'DELETE') scanIgnores.delete(ignoreId!);
+      if (method === 'POST') {
+        const key = randomUUID();
+        scanIgnores.set(key, {
+          id: key,
+          package: body.package,
+          advisory_id: body.advisoryId,
+          reason: body.reason ?? '',
+          until_fix: body.untilFix ?? false,
+          expires_at: new Date(Date.now() + Number(body.days) * 86400000).toISOString(),
+        });
+      }
+      return json({ ignores: [...scanIgnores.values()] });
+    }
+    if (method === 'POST') return json({ accepted: true }, 202);
+    const findings = scanIgnores.size ? [] : [sampleFinding];
+    const state = {
+      status: 'ready',
+      detail: null,
+      attemptedAt: DATE,
+      contentHash: 'demo',
+      projectId: scope === 'projects' ? id : (sessions.get(id!)?.detail.projectId ?? PROJECT_ID),
+    };
+    if (scope === 'sessions')
+      return json({
+        enabled: scanSettings.enabled,
+        state,
+        baseline: state,
+        comparable: true,
+        new: findings,
+        fixed: [],
+      });
+    return json({
+      enabled: scanSettings.enabled,
+      scanning: false,
+      state,
+      scannedAt: DATE,
+      findings,
+      sessions: [],
+    });
+  }
   if (path === '/live/ticket' && method === 'POST')
     return json({ ticket: 'd'.repeat(43), expiresAt: new Date(Date.now() + 60000).toISOString() });
   if (path === '/healthz' && method === 'GET')
@@ -400,8 +599,11 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
   if (path === '/settings/signing-key' && method === 'GET')
     return json({ configured: false, publicKey: null });
   if (path === '/models' && method === 'GET')
-    return json({ models: [MODEL, 'claude-sonnet-4-6'], default: MODEL });
-  if (path === '/provider-limits' && method === 'GET') return json([]);
+    return json({
+      models: isDemoShowcase() ? SHOWCASE_MODELS : [MODEL, 'claude-sonnet-4-6'],
+      default: isDemoShowcase() ? SHOWCASE_DEFAULT_MODEL : MODEL,
+    });
+  if (path === '/provider-limits' && method === 'GET') return json(providerLimits());
   if (path === '/projects' && method === 'GET') return json([...projects.values()]);
   if (path === '/projects/order' && method === 'PATCH') {
     if (
@@ -585,8 +787,47 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
         queued: [],
         pendingPermissions: session.detail.pendingPermissions ?? [],
         name: session.detail.name,
-        branch: 'demo/button-color',
+        branch: session.branch,
       });
+    if (rest === '/history/v1' && method === 'GET') {
+      const snapshotSeq = Number(
+        url.searchParams.get('snapshotSeq') ?? session.events.at(-1)?.seq ?? 0,
+      );
+      const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
+      const available = session.events.filter((e) => e.seq < before && e.seq <= snapshotSeq);
+      let page = {
+        contract: 'bounded-history-v1',
+        kind: 'page',
+        snapshotSeq,
+        beforeSeq: null as number | null,
+        hasMore: false,
+        events: [] as StreamEventFrame[],
+      };
+      for (let i = available.length - 1; i >= Math.max(0, available.length - 150); i -= 1) {
+        const event = available[i]!;
+        const candidate = {
+          ...page,
+          events: [event, ...page.events],
+          beforeSeq: event.seq,
+          hasMore: i > 0,
+        };
+        const requiredBytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength;
+        if (requiredBytes > 256 * 1024) {
+          if (page.events.length === 0)
+            return json({
+              contract: page.contract,
+              kind: 'oversized-event',
+              snapshotSeq,
+              seq: event.seq,
+              requiredBytes,
+              maxBytes: 256 * 1024,
+            });
+          break;
+        }
+        page = candidate;
+      }
+      return json(page);
+    }
     if (rest === '/events' && method === 'GET') {
       const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
       const events = session.events.filter((event) => event.seq < before);
@@ -680,9 +921,11 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
     }
     if (rest === '/branches' && method === 'GET')
       return json({
-        current: 'demo/button-color',
-        switchable: ['demo/button-color'],
-        currentPr: null,
+        current: session.branch,
+        switchable: [session.branch],
+        currentPr: session.pullRequest?.number ?? null,
+        // No owner/repo: the header would link them to a real github.com namespace.
+        ...(session.pullRequest && { pullRequest: session.pullRequest }),
       });
     if (rest === '/dev-servers' && method === 'GET') return json({ devServers: [] });
     if (rest === '/links' && method === 'GET') return json({ links: [] });

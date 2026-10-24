@@ -27,6 +27,8 @@ import {
   OPENCODE_KNOWLEDGE_READ_PERMISSION,
   projectClonePath,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   RUNNER_AGENT_UID,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
@@ -39,14 +41,16 @@ const GENERATION_LABEL = 'verity.container-generation';
 const DEV_SERVER_LABEL = 'verity.dev-server-id';
 const ACTIVE_STATES: readonly PublicPreviewShareState[] = ['creating', 'active', 'revoking'];
 const CREATING_LEASE_MS = 2 * 60_000;
-/** A dev server drops its listener for a few seconds whenever it restarts (a
- *  config change, a watcher reload). Revoking on the first reconcile that misses
- *  it would burn a link and PIN already handed out, so a port has to stay gone
- *  for several passes before its share is stopped. */
-const PORT_MISS_GRACE_MS = 90_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
+
+/**
+ * Failures of connectors that were created but never became ready, raised only
+ * after the connector was removed again. Kept beside the original error rather
+ * than wrapping it, so share creation still reports what actually failed.
+ */
+const removedUnreadyConnectorFailures = new WeakSet<object>();
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
 export interface PreviewEdgeCreate {
@@ -77,6 +81,8 @@ export interface PreviewEdgeControl {
   create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding>;
   remove(shareId: string): Promise<void>;
   isAvailable?(): boolean;
+  canStartSharing?(): boolean;
+  onSharingDisabled?(listener: () => void): () => void;
 }
 
 export interface PreviewShareManagerOptions {
@@ -192,8 +198,6 @@ export interface PublicPreviewShare {
 export class PreviewShareManager {
   private readonly creations = new Map<string, Promise<void>>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
-  /** First reconcile at which a port share's listener was missing, by share id. */
-  private readonly portMissingSince = new Map<string, number>();
   private readonly now: () => Date;
   private connectorImage: string | undefined;
 
@@ -238,7 +242,7 @@ export class PreviewShareManager {
   }
 
   isAvailable(): boolean {
-    return this.options.edge.isAvailable?.() ?? true;
+    return this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.() ?? true;
   }
 
   async listStaticDirectories(
@@ -361,36 +365,6 @@ export class PreviewShareManager {
       (server) =>
         server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
     );
-  }
-
-  /** Whether a live port share should keep running. A failed probe counts as a
-   *  miss rather than an immediate revoke: it is as likely a slow exec as a gone
-   *  server, and the grace window bounds how long a dead link can linger. */
-  private async portStillServed(
-    shareId: string,
-    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
-    worktree: string,
-    port: number,
-  ): Promise<boolean> {
-    let reachable = false;
-    try {
-      if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return false;
-      const processes = await this.options.listListeningProcesses(project);
-      reachable = await this.sessionPortReachable(project, worktree, port);
-      // A different session now owns the forwarded port. Waiting through the
-      // restart grace period would expose that session through the old link.
-      if (!reachable && processes.some((process) => process.port === port)) return false;
-    } catch {
-      // A failed probe follows the same grace period as a missing listener.
-    }
-    if (reachable) {
-      this.portMissingSince.delete(shareId);
-      return true;
-    }
-    const now = this.now().getTime();
-    const since = this.portMissingSince.get(shareId) ?? now;
-    this.portMissingSince.set(shareId, since);
-    return now - since < PORT_MISS_GRACE_MS;
   }
 
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
@@ -564,7 +538,7 @@ export class PreviewShareManager {
     const staticMount =
       staticPath && staticRoot ? this.staticMount(staticRoot, staticPath) : undefined;
 
-    if (this.options.edge.isAvailable?.() === false) {
+    if ((this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.()) === false) {
       throw new PreviewShareConflictError(
         'public previews are not entitled or the Uplink is offline',
       );
@@ -828,9 +802,29 @@ export class PreviewShareManager {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
         if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.managedInstanceId && share.state === 'active')
-          await this.replaceManagedConnector(share, true);
-        else await this.stop(share.id);
+        if (share.state !== 'active') {
+          await this.stop(share.id);
+          continue;
+        }
+        try {
+          await this.replaceConnector(share, true);
+        } catch (error) {
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !removedUnreadyConnectorFailures.has(error)
+          )
+            throw error;
+          // The offline page is a courtesy to visitors, not a precondition of the
+          // mutation. A connector the edge refuses (an unknown share answers 404)
+          // failed every Repair of the project before its container was created.
+          // replaceConnector has already removed both connectors, so the link is
+          // simply unreachable until reconcile() brings one up again.
+          this.options.log?.warn(
+            { shareId: share.id, projectId, err: error },
+            'public preview stays unreachable during the project change: its offline connector did not start',
+          );
+        }
       }
       return mutation();
     });
@@ -963,7 +957,6 @@ export class PreviewShareManager {
   }
 
   async stop(id: string, terminal: 'revoked' | 'expired' = 'revoked'): Promise<boolean> {
-    this.portMissingSince.delete(id);
     const record = await this.options.store.getPublicPreviewShare(id);
     if (!record) return false;
     const claimed = await this.options.store.transitionPublicPreviewShare(
@@ -995,6 +988,13 @@ export class PreviewShareManager {
       timed(() => this.options.edge.remove(id)),
     ]);
     const [connectorRemove, uplinkRemove] = cleanup;
+    // A queued Uplink removal is durable: it is persisted before this error is
+    // raised and retried whenever the Uplink connects. Treating it as a failure
+    // left the share in `revoking` for as long as the Uplink was unreachable,
+    // so stopping it answered 500 and every Repair of its project aborted.
+    const uplinkQueued =
+      uplinkRemove?.status === 'rejected' &&
+      uplinkRemove.reason instanceof PreviewShareRemovalQueuedError;
     const complete = cleanup.every((result) => result.status === 'fulfilled');
     this.options.log?.[complete ? 'info' : 'warn'](
       {
@@ -1002,13 +1002,15 @@ export class PreviewShareManager {
         waitedForCreationMs,
         connectorRemoveMs: connectorRemove?.status === 'fulfilled' ? connectorRemove.value : null,
         uplinkRemoveMs: uplinkRemove?.status === 'fulfilled' ? uplinkRemove.value : null,
+        ...(uplinkQueued ? { uplinkRemoveQueued: true } : {}),
         totalMs: Math.round(performance.now() - startedAt),
       },
       complete ? 'public preview share stopped' : 'public preview share stop incomplete',
     );
     const failures: unknown[] = [];
     for (const result of cleanup) {
-      if (result.status === 'rejected') failures.push(result.reason);
+      if (result.status === 'rejected' && !(result === uplinkRemove && uplinkQueued))
+        failures.push(result.reason);
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, 'public preview revocation did not complete');
@@ -1087,69 +1089,10 @@ export class PreviewShareManager {
           });
           continue;
         }
-        const project = await this.options.store.getProject(share.projectId);
-        const devServer = share.devServerId
-          ? await this.options.store.getDevServer(share.devServerId)
-          : undefined;
-        const session = share.sessionId
-          ? await this.options.store.getSession(share.sessionId)
-          : undefined;
-        let matches = false;
-        try {
-          if (
-            project?.state === 'active' &&
-            (!share.sessionId ||
-              (session?.projectId === project.id &&
-                (share.staticPath !== null || share.targetPort !== null))) &&
-            share.connectorContainerId !== null &&
-            (share.targetKind === 'static-folder' ||
-              (share.devServerId === null
-                ? session !== undefined &&
-                  share.targetPort !== null &&
-                  (await this.portStillServed(
-                    share.id,
-                    project,
-                    session.worktree,
-                    share.targetPort,
-                  ))
-                : devServer?.projectId === project.id &&
-                  devServer.containerPort === String(share.targetPort) &&
-                  (await this.options.isDevServerRunning({ project, devServer }))))
-          ) {
-            const [sandbox, connector] = await Promise.all([
-              this.options.docker.inspectContainer(project.containerName),
-              this.options.docker.inspectContainer(share.connectorContainerId),
-            ]);
-            matches =
-              sandbox.running && containerGenerationOf(sandbox) === share.containerGeneration;
-            matches = matches && connector.running;
-            if (matches && share.targetPort !== null) {
-              const preparedPort =
-                (await this.options.prepareTargetPort?.(project, share.targetPort)) ??
-                share.targetPort;
-              const origin = connector.env
-                ?.find((entry) => entry.startsWith('VERITY_PREVIEW_TARGET_ORIGIN='))
-                ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
-              if (origin && Number(new URL(origin).port || '80') !== preparedPort) matches = false;
-            }
-            if (matches && share.sessionId && session && share.staticPath) {
-              const root = await this.staticSourceRoot(project, session.worktree);
-              await this.validateStaticDirectory(root, share.staticPath);
-              const expected = this.staticMount(root, share.staticPath);
-              matches = (connector.mounts ?? []).some(
-                (mount) =>
-                  mount.type === 'volume' &&
-                  mount.name === expected.volume &&
-                  mount.subpath === expected.subpath &&
-                  mount.destination === expected.target &&
-                  mount.readWrite === false,
-              );
-            }
-          }
-        } catch {
-          matches = false;
-        }
-        if (!matches) await this.stop(share.id);
+        await this.withLifecycleLocks([`project:${share.projectId}`], async () => {
+          const current = await this.options.store.getPublicPreviewShare(share.id);
+          if (current?.state === 'active') await this.reconcileTarget(current);
+        });
       } catch (error) {
         failures.push(error);
       }
@@ -1157,6 +1100,97 @@ export class PreviewShareManager {
     if (failures.length > 0) {
       throw new AggregateError(failures, 'one or more public previews did not reconcile');
     }
+  }
+
+  private async reconcileTarget(share: PublicPreviewShareRecord): Promise<void> {
+    const project = await this.options.store.getProject(share.projectId);
+    const session = share.sessionId
+      ? await this.options.store.getSession(share.sessionId)
+      : undefined;
+    const devServer = share.devServerId
+      ? await this.options.store.getDevServer(share.devServerId)
+      : undefined;
+    if (
+      !project ||
+      (share.sessionId && session?.projectId !== project.id) ||
+      (share.devServerId && devServer?.projectId !== project.id)
+    ) {
+      await this.stop(share.id);
+      return;
+    }
+    let offline = true;
+    let generation = share.containerGeneration;
+    let staticMount: ReturnType<PreviewShareManager['staticMount']> | undefined;
+    try {
+      if (project.state === 'active') {
+        const sandbox = await this.options.docker.inspectContainer(project.containerName);
+        const currentGeneration = containerGenerationOf(sandbox);
+        if (sandbox.running && currentGeneration) {
+          await assertEligibleSandbox(
+            sandbox,
+            projectNetworkName(project.id),
+            project.id,
+            projectWorkspaceSubpath(project, this.options),
+            this.options,
+            share.targetKind === 'static-folder',
+          );
+          generation = currentGeneration;
+          if (share.targetKind === 'static-folder' && share.staticPath) {
+            const root = await this.staticSourceRoot(project, session?.worktree);
+            await this.validateStaticDirectory(root, share.staticPath);
+            staticMount = this.staticMount(root, share.staticPath);
+            offline = false;
+          } else if (devServer) {
+            offline =
+              devServer.containerPort !== String(share.targetPort) ||
+              !(await this.options.isDevServerRunning({ project, devServer }));
+          } else if (session && share.targetPort !== null) {
+            // A reused port must never expose another session on the retained link.
+            offline = !(await this.sessionPortReachable(
+              project,
+              session.worktree,
+              share.targetPort,
+            ));
+          }
+        }
+      }
+    } catch {
+      // Missing storage or runtime during an update preserves the link offline.
+      offline = true;
+      staticMount = undefined;
+    }
+    const connector = share.connectorContainerId
+      ? await this.options.docker
+          .inspectContainer(share.connectorContainerId)
+          .catch(() => undefined)
+      : undefined;
+    const wasOffline = connector?.env?.includes('VERITY_PREVIEW_OFFLINE=1') ?? false;
+    let matches = connector?.running && wasOffline === offline;
+    if (matches && !offline) {
+      matches = share.containerGeneration === generation;
+      if (staticMount) {
+        matches &&= (connector?.mounts ?? []).some(
+          (mount) =>
+            mount.type === 'volume' &&
+            mount.name === staticMount.volume &&
+            mount.subpath === staticMount.subpath &&
+            mount.destination === staticMount.target &&
+            mount.readWrite === false,
+        );
+      } else {
+        const preparedPort =
+          (await this.options.prepareTargetPort?.(project, share.targetPort!)) ?? share.targetPort;
+        matches &&= connector?.env?.includes(
+          `VERITY_PREVIEW_TARGET_ORIGIN=http://${project.containerName}:${preparedPort}`,
+        );
+      }
+    }
+    if (matches) return;
+    await this.replaceConnector(
+      { ...share, containerGeneration: generation },
+      offline,
+      staticMount,
+    );
   }
 
   private async reconcileManaged(share: PublicPreviewShareRecord): Promise<void> {
@@ -1216,15 +1250,16 @@ export class PreviewShareManager {
           origin === `http://${project.containerName}:${preparedPort}`))
     )
       return;
-    await this.replaceManagedConnector(
+    await this.replaceConnector(
       { ...share, targetPort: instance.sandboxPort, containerGeneration: generation },
       offline,
     );
   }
 
-  private async replaceManagedConnector(
+  private async replaceConnector(
     share: PublicPreviewShareRecord,
     offline: boolean,
+    staticMount?: ReturnType<PreviewShareManager['staticMount']>,
   ): Promise<void> {
     await removeContainer(
       this.options.docker,
@@ -1238,21 +1273,26 @@ export class PreviewShareManager {
       share,
       project.containerName,
       await this.resolveConnectorImage(),
-      undefined,
+      staticMount,
       undefined,
       offline,
     );
-    const updated = await this.options.store.transitionPublicPreviewShare(
-      share.id,
-      ['active'],
-      'active',
-      {
-        connectorContainerId: id,
-        targetPort: share.targetPort!,
-        containerGeneration: share.containerGeneration,
-      },
-    );
-    if (!updated) await removeContainer(this.options.docker, id);
+    try {
+      const updated = await this.options.store.transitionPublicPreviewShare(
+        share.id,
+        ['active'],
+        'active',
+        {
+          connectorContainerId: id,
+          ...(share.targetPort === null ? {} : { targetPort: share.targetPort }),
+          containerGeneration: share.containerGeneration,
+        },
+      );
+      if (!updated) await removeContainer(this.options.docker, id);
+    } catch (error) {
+      await removeContainer(this.options.docker, id);
+      throw error;
+    }
   }
 
   private async createConnector(
@@ -1282,12 +1322,15 @@ export class PreviewShareManager {
         ...(share.devServerId ? { [DEV_SERVER_LABEL]: share.devServerId } : {}),
       },
       env: [
+        `VERITY_PREVIEW_SHARE_ID=${share.id}`,
         `VERITY_PREVIEW_EDGE_URL=${share.edgeUrl}`,
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
         ...(offline ? ['VERITY_PREVIEW_OFFLINE=1'] : []),
-        ...(share.targetKind === 'static-folder'
-          ? ['VERITY_PREVIEW_STATIC_ROOT=/preview-workspace', 'VERITY_PREVIEW_STATIC_PATH=public']
-          : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
+        ...(offline
+          ? []
+          : share.targetKind === 'static-folder'
+            ? ['VERITY_PREVIEW_STATIC_ROOT=/preview-workspace', 'VERITY_PREVIEW_STATIC_PATH=public']
+            : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
       network: offline ? 'verity-net' : projectNetworkName(share.projectId),
@@ -1316,7 +1359,10 @@ export class PreviewShareManager {
       timer?.mark('connectorReady');
       return created.id;
     } catch (error) {
+      // A failed removal propagates as itself: the connector it leaves behind
+      // would collide with the next one by name, so nothing may skip past it.
       await removeContainer(this.options.docker, created.id);
+      if (typeof error === 'object' && error !== null) removedUnreadyConnectorFailures.add(error);
       throw error;
     }
   }
@@ -1522,6 +1568,8 @@ export class PreviewShareInputError extends Error {}
 export class PreviewShareNotFoundError extends Error {}
 export class PreviewShareConflictError extends Error {}
 export class PreviewShareUpstreamError extends Error {}
+/** Revocation is durable locally, but Uplink has not acknowledged it yet. */
+export class PreviewShareRemovalQueuedError extends Error {}
 
 function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
   return {
@@ -1688,6 +1736,17 @@ async function assertEligibleSandbox(
       mount.readWrite === STANDARD_MOUNTS.disabledTokenScript.writable &&
       mount.destination === STANDARD_MOUNTS.disabledTokenScript.target &&
       mount.source === '/dev/null'
+    ) {
+      continue;
+    }
+    // The provisioner mounts dependencies from a separate project volume, not
+    // from Verity's data volume. Never accept an arbitrary source at this target.
+    if (
+      mount.type === 'volume' &&
+      mount.name === projectNodeModulesVolumeName(projectId) &&
+      mount.destination === NODE_MODULES_TARGET &&
+      mount.readWrite === true &&
+      (mount.subpath === undefined || mount.subpath === '')
     ) {
       continue;
     }
@@ -2063,7 +2122,11 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
       options?: unknown;
       models?: unknown;
     };
-    if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
+    if (
+      (npm !== '@opencode/ai/providers/openai-compatible' && npm !== '@ai-sdk/openai-compatible') ||
+      name !== 'OpenAI-compatible'
+    )
+      return false;
     if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
     if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
     const timeout = (gateway as { timeout?: unknown }).timeout;

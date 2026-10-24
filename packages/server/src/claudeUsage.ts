@@ -120,9 +120,40 @@ export type FetchLike = (
   init: { headers: Record<string, string>; method?: string; body?: string },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 
+export type ClaudeCredentialErrorCode =
+  | 'invalid_credentials'
+  | 'refresh_token_missing'
+  | 'refresh_unavailable'
+  | 'refresh_rejected'
+  | 'refresh_http_error'
+  | 'refresh_invalid_response'
+  | 'refresh_transport_error'
+  | 'credential_unavailable';
+
+export type ClaudeCredentialStatus = {
+  state: 'unknown' | 'missing' | 'ready' | 'refresh_failed' | 'relogin_required';
+  code: ClaudeCredentialErrorCode | null;
+};
+
+export class ClaudeOAuthResolutionError extends Error {
+  constructor(
+    readonly state: 'refresh_failed' | 'relogin_required',
+    readonly code: ClaudeCredentialErrorCode,
+  ) {
+    super(
+      state === 'relogin_required'
+        ? `Claude login needs renewal (${code}). Sign in to Claude again in settings.`
+        : `Claude token refresh is temporarily unavailable (${code}). Please retry.`,
+    );
+    this.name = 'ClaudeOAuthResolutionError';
+  }
+}
+
 export type ClaudeOAuthTokenProvider = (() => Promise<string | undefined>) & {
   /** Explicit login/logout wins over any rotated bundle retained after a failed write. */
   discardPendingCredentials?: () => void;
+  /** Last resolution of this exact stored login, without exposing credential contents. */
+  statusForCredentials?: (json: string | null | undefined) => ClaudeCredentialStatus;
 };
 type ClaudeCredentialsJsonProvider = () => Promise<string | undefined> | string | undefined;
 type ClaudeCredentialsJsonUpdater = (credentialsJson: string) => Promise<void> | void;
@@ -287,6 +318,9 @@ export function createClaudeOAuthTokenProvider(
   const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
   const expirySkewMs = opts.expirySkewMs ?? TOKEN_EXPIRY_SKEW_MS;
   let inFlight: Promise<string | undefined> | undefined;
+  let statusSource: string | undefined;
+  let lastStatus: ClaudeCredentialStatus = { state: 'unknown', code: null };
+  let resolutionWarning: ClaudeCredentialStatus | undefined;
   let pendingCredentials:
     | {
         json: string;
@@ -307,6 +341,7 @@ export function createClaudeOAuthTokenProvider(
     } else {
       writeCredentialsAtomic(credentialsPath, pendingCredentials.parsed);
     }
+    statusSource = pendingCredentials.json;
     pendingCredentials = undefined;
   };
 
@@ -318,6 +353,7 @@ export function createClaudeOAuthTokenProvider(
     if (pendingCredentials !== undefined) {
       const pending = pendingCredentials;
       const currentJson = (await currentCredentialsJson())?.trim();
+      statusSource = currentJson;
       if (currentJson === pending.json.trim()) {
         pendingCredentials = undefined;
         return pending.accessToken;
@@ -329,10 +365,13 @@ export function createClaudeOAuthTokenProvider(
       pendingCredentials = undefined;
     }
     const providedCredentialsJson = await currentCredentialsJson();
+    statusSource = providedCredentialsJson;
     if (providedCredentialsJson === undefined) return undefined;
     const credentials = parseCredentialsJson(providedCredentialsJson);
     const oauth = credentials?.claudeAiOauth;
-    if (!credentials || !oauth) return undefined;
+    if (!credentials || !oauth) {
+      throw new ClaudeOAuthResolutionError('relogin_required', 'invalid_credentials');
+    }
 
     const accessToken = oauth.accessToken;
     const expiresAt = tokenExpiresAt(oauth.expiresAt);
@@ -349,12 +388,33 @@ export function createClaudeOAuthTokenProvider(
       return usableAccessToken;
     }
 
-    if (!hasRefreshToken || !doFetch) return undefined;
+    if (!hasRefreshToken) {
+      throw new ClaudeOAuthResolutionError('relogin_required', 'refresh_token_missing');
+    }
+    if (!doFetch) {
+      throw new ClaudeOAuthResolutionError('refresh_failed', 'refresh_unavailable');
+    }
     const clientId =
       typeof oauth.clientId === 'string' && oauth.clientId.length > 0
         ? oauth.clientId
         : DEFAULT_CLAUDE_CODE_CLIENT_ID;
     const scope = scopesFromCredentials(oauth.scopes);
+
+    const refreshFailure = async (
+      state: 'refresh_failed' | 'relogin_required',
+      code: ClaudeCredentialErrorCode,
+    ): Promise<string | undefined> => {
+      // A failed request for the old login must not revoke or mask a new login
+      // (or resurrect a logout) completed while the request was in flight.
+      const currentJson = await currentCredentialsJson();
+      if (currentJson?.trim() !== providedCredentialsJson.trim()) return resolveToken();
+      const fallback = fallbackUsableToken();
+      if (fallback !== undefined) {
+        if (state === 'relogin_required') resolutionWarning = { state, code };
+        return fallback;
+      }
+      throw new ClaudeOAuthResolutionError(state, code);
+    };
 
     try {
       const res = await doFetch(TOKEN_URL, {
@@ -371,10 +431,21 @@ export function createClaudeOAuthTokenProvider(
           ...(scope === undefined ? {} : { scope }),
         }),
       });
-      if (!res.ok) return fallbackUsableToken();
+      if (!res.ok) {
+        const body: unknown = await res.json().catch(() => undefined);
+        const invalidGrant =
+          typeof body === 'object' &&
+          body !== null &&
+          'error' in body &&
+          body.error === 'invalid_grant';
+        return await refreshFailure(
+          res.status === 401 || invalidGrant ? 'relogin_required' : 'refresh_failed',
+          res.status === 401 || invalidGrant ? 'refresh_rejected' : 'refresh_http_error',
+        );
+      }
       const body = (await res.json()) as OAuthRefreshResponse;
       if (typeof body.access_token !== 'string' || body.access_token.length === 0) {
-        return fallbackUsableToken();
+        return await refreshFailure('refresh_failed', 'refresh_invalid_response');
       }
       const nextRefreshToken =
         typeof body.refresh_token === 'string' && body.refresh_token.length > 0
@@ -391,17 +462,18 @@ export function createClaudeOAuthTokenProvider(
       const latestCredentialsJson = await currentCredentialsJson();
       // Clearing the durable source while the request is in flight is logout.
       // Never resurrect the old account from the request-local snapshot.
-      if (latestCredentialsJson === undefined) return undefined;
+      if (latestCredentialsJson === undefined) {
+        statusSource = undefined;
+        return undefined;
+      }
       const latestCredentials = parseCredentialsJson(latestCredentialsJson);
-      if (latestCredentials === undefined) return undefined;
+      if (latestCredentials === undefined) return resolveToken();
       const latestOauth = latestCredentials.claudeAiOauth ?? {};
       // A login can replace the account credentials while this network request
       // is in flight outside the embedded coordinator. Its newer refresh token
       // must never be overwritten by a response obtained with the old one.
       if (latestOauth.refreshToken !== refreshToken) {
-        return typeof latestOauth.accessToken === 'string' && latestOauth.accessToken.length > 0
-          ? latestOauth.accessToken
-          : undefined;
+        return resolveToken();
       }
       const sourceJson = latestCredentialsJson ?? providedCredentialsJson;
       latestCredentials.claudeAiOauth = {
@@ -422,8 +494,9 @@ export function createClaudeOAuthTokenProvider(
       await persistPendingCredentials();
       return body.access_token;
     } catch (error) {
+      if (error instanceof ClaudeOAuthResolutionError) throw error;
       if (pendingCredentials !== undefined) throw error;
-      return fallbackUsableToken();
+      return refreshFailure('refresh_failed', 'refresh_transport_error');
     }
   };
 
@@ -432,7 +505,23 @@ export function createClaudeOAuthTokenProvider(
     // refresh attempt so concurrent session starts cannot redeem the same token
     // twice and invalidate the credentials for the losing process.
     if (inFlight !== undefined) return inFlight;
-    const pending = resolveToken();
+    resolutionWarning = undefined;
+    const pending = resolveToken().then(
+      (token) => {
+        lastStatus = resolutionWarning ?? {
+          state: token === undefined ? 'missing' : 'ready',
+          code: null,
+        };
+        return token;
+      },
+      (error: unknown) => {
+        lastStatus =
+          error instanceof ClaudeOAuthResolutionError
+            ? { state: error.state, code: error.code }
+            : { state: 'refresh_failed', code: 'credential_unavailable' };
+        throw error;
+      },
+    );
     const shared = pending.finally(() => {
       if (inFlight === shared) inFlight = undefined;
     });
@@ -441,6 +530,16 @@ export function createClaudeOAuthTokenProvider(
   };
   provider.discardPendingCredentials = () => {
     pendingCredentials = undefined;
+    statusSource = undefined;
+    lastStatus = { state: 'unknown', code: null };
+  };
+  provider.statusForCredentials = (json) => {
+    if (json === undefined || json === null || json.trim().length === 0) {
+      return { state: 'missing', code: null };
+    }
+    return json.trim() === statusSource?.trim()
+      ? { ...lastStatus }
+      : { state: 'unknown', code: null };
   };
   return provider;
 }

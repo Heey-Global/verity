@@ -73,9 +73,9 @@ function mergeSettingsChanges(
 function AgentIcon({ agent }: { agent: ProjectAgent }) {
   const { theme } = useUnistyles();
   return agent === 'opencode' ? (
-    <Icon name="terminal" size={18} color={theme.colors.primary} />
+    <Icon name="terminal" size={18} color={theme.colors.action} />
   ) : (
-    <AgentProviderIcon provider={agent} size={18} color={theme.colors.primary} />
+    <AgentProviderIcon provider={agent} size={18} color={theme.colors.action} />
   );
 }
 
@@ -158,7 +158,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   if (loading && detail === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
@@ -274,7 +274,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
           </SettingsDisclosure>
         ) : null}
         {models === undefined && modelsError === undefined ? (
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
         ) : null}
         {modelsError !== undefined ? <Text style={styles.fieldError}>{modelsError}</Text> : null}
       </SettingsGroup>

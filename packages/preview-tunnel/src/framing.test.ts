@@ -336,3 +336,34 @@ describe('size helpers', () => {
     expect(encodedPayloadLimit(body)).toBeGreaterThan(Math.ceil(body / 3) * 4);
   });
 });
+
+it.each([-1, 0.5, Number.POSITIVE_INFINITY, '10', null])(
+  'rejects invalid upstream elapsed time %s',
+  (upstreamElapsedMs) => {
+    expect(
+      validStreamFrame(
+        {
+          kind: 'stream.open',
+          streamId: 'elapsed',
+          channel: 'http',
+          meta: { status: 200, headers: {}, upstreamElapsedMs },
+        },
+        1024,
+      ),
+    ).toBe(false);
+  },
+);
+
+it.each([undefined, 0, 1200])('accepts optional upstream elapsed time %s', (upstreamElapsedMs) => {
+  expect(
+    validStreamFrame(
+      {
+        kind: 'stream.open',
+        streamId: 'elapsed',
+        channel: 'http',
+        meta: { status: 200, headers: {}, upstreamElapsedMs },
+      },
+      1024,
+    ),
+  ).toBe(true);
+});

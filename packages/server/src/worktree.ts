@@ -74,6 +74,9 @@ export interface GitWorktreeOptions {
    * resolved header NEVER appears in a thrown error — {@link redactAuthHeader}
    * strips it from any git error before it reaches `provision_error`/the client. */
   fetchAuthHeader?: (() => Promise<string | undefined>) | undefined;
+  /** Connection-scoped authentication and CA for self-hosted Git fetches. */
+  fetchConnection?:
+    (() => Promise<{ url: string; authorization: string; caPath?: string }>) | undefined;
   /** Injected git runner (tests); defaults to the real `git`. */
   git?: GitRunner;
 }
@@ -682,6 +685,7 @@ async function refreshedBase(
   repoDir: string,
   baseBranch: string,
   fetchAuthHeader?: () => Promise<string | undefined>,
+  fetchConnection?: GitWorktreeOptions['fetchConnection'],
 ): Promise<string> {
   try {
     await git(['-C', repoDir, 'remote', 'get-url', 'origin']);
@@ -692,11 +696,18 @@ async function refreshedBase(
   // Resolve the auth header FRESH per call so a rotated short-TTL project token
   // is always current. Empty/undefined → tokenless fetch (the server's own
   // `/work` repo path, which authenticates via the container credential helper).
-  const header = fetchAuthHeader ? await fetchAuthHeader() : undefined;
-  const fetchArgs =
-    header !== undefined && header.length > 0
-      ? ['-C', repoDir, '-c', `http.extraheader=${header}`, 'fetch', 'origin', baseBranch]
-      : ['-C', repoDir, 'fetch', 'origin', baseBranch];
+  const connection = await fetchConnection?.();
+  const header =
+    connection?.authorization ?? (fetchAuthHeader ? await fetchAuthHeader() : undefined);
+  const config: string[] = [];
+  if (connection) {
+    config.push('-c', 'http.followRedirects=false');
+    if (connection.caPath)
+      config.push('-c', `http.${connection.url}.sslCAInfo=${connection.caPath}`);
+  }
+  if (header)
+    config.push('-c', `http.${connection ? `${connection.url}.` : ''}extraheader=${header}`);
+  const fetchArgs = ['-C', repoDir, ...config, 'fetch', 'origin', baseBranch];
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -1117,7 +1128,13 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
       // Sync the base from origin so the spawn branches off the latest tip.
       let base = baseBranch;
       if (opts.refreshBase) {
-        base = await refreshedBase(git, opts.repoDir, baseBranch, opts.fetchAuthHeader);
+        base = await refreshedBase(
+          git,
+          opts.repoDir,
+          baseBranch,
+          opts.fetchAuthHeader,
+          opts.fetchConnection,
+        );
       }
       await git(['-C', opts.repoDir, 'worktree', 'add', worktreePath, '-b', branch, base]);
       relativizeWorktreeGitdir(opts.repoDir, worktreePath, worktreeName);

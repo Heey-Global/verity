@@ -1,11 +1,12 @@
 import { PremiumBadge } from '../premium/PremiumBadge';
 import { premiumFeatures } from '../premium/premiumFeatures';
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
 import { StatusPill } from '../StatusPill';
 import { Toggle } from '../Toggle';
+import { Button } from '../ui';
 
 // Servers the agent set up and Verity runs (concept 2.6). Each has two access
 // switches, Local and Online sharing; any switch on runs the server and none on
@@ -120,21 +121,20 @@ export function ManagedServerBlock({
         {status.note ? <Text style={styles.note}>{status.note}</Text> : null}
         <View style={styles.headerSpacer} />
         <Text style={styles.detailsLink}>{crashed ? 'View output' : 'Details'}</Text>
-        <Icon name="chevron-right" size={16} color={theme.colors.primary} />
+        <Icon name="chevron-right" size={16} color={theme.colors.action} />
       </Pressable>
       {server.elsewhere.map((other) => (
         <View key={other.instanceId} style={styles.elsewhere}>
           <Text style={styles.elsewhereText} numberOfLines={1}>
             {`Also running in ‘${other.sessionName ?? 'another session'}’`}
           </Text>
-          <Pressable
-            onPress={() => onStopElsewhere(other.instanceId)}
-            hitSlop={12}
-            accessibilityRole="button"
+          <Button
+            label="Stop"
             accessibilityLabel={`Stop ${server.name} in ${other.sessionName ?? 'the other session'}`}
-          >
-            <Text style={styles.elsewhereStop}>Stop</Text>
-          </Pressable>
+            variant="destructive"
+            size="compact"
+            onPress={() => onStopElsewhere(other.instanceId)}
+          />
         </View>
       ))}
       <View style={styles.card}>
@@ -143,7 +143,7 @@ export function ManagedServerBlock({
             <Icon
               name="wifi"
               size={18}
-              color={localOn ? theme.colors.tone.done : theme.colors.textMuted}
+              color={localOn ? theme.colors.success : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
@@ -181,7 +181,7 @@ export function ManagedServerBlock({
             <Icon
               name="globe"
               size={18}
-              color={onlineOn ? theme.colors.tone.done : theme.colors.textMuted}
+              color={onlineOn ? theme.colors.success : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
@@ -225,7 +225,7 @@ export function ManagedServerBlock({
                       <Icon
                         name={pinCopied ? 'check' : 'copy'}
                         size={14}
-                        color={theme.colors.primary}
+                        color={theme.colors.action}
                       />
                     </Pressable>
                   </View>
@@ -246,7 +246,7 @@ export function ManagedServerBlock({
               accessibilityRole="button"
               accessibilityLabel="Send link and PIN"
             >
-              <Icon name="share" size={20} color={theme.colors.primary} />
+              <Icon name="share" size={20} color={theme.colors.action} />
             </Pressable>
           ) : null}
           {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !publicLink ? (
@@ -361,51 +361,53 @@ export function ManagedServerDetail({
       <View style={styles.actions}>
         {state === 'running' || state === 'starting' ? (
           <>
-            <Pressable
-              style={[styles.secondaryButton, styles.grow]}
-              onPress={onRestart}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel="Restart"
-            >
-              <Icon name="rotate-cw" size={16} color={theme.colors.text} />
-              <Text style={styles.secondaryText}>Restart</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.dangerButton, styles.grow]}
-              onPress={onStop}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel="Stop"
-            >
-              <Icon name="square" size={16} color={theme.colors.tone.danger} />
-              <Text style={styles.dangerText}>Stop</Text>
-            </Pressable>
+            <View style={styles.grow}>
+              <Button
+                label="Restart"
+                icon="rotate-cw"
+                variant="secondary"
+                size="compact"
+                disabled={busy}
+                onPress={onRestart}
+                fullWidth
+              />
+            </View>
+            <View style={styles.grow}>
+              <Button
+                label="Stop"
+                icon="square"
+                variant="destructive"
+                size="compact"
+                disabled={busy}
+                onPress={onStop}
+                fullWidth
+              />
+            </View>
           </>
         ) : (
           <>
-            <Pressable
-              style={[styles.primaryButton, styles.grow]}
-              onPress={onStart}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={state === 'crashed' ? 'Start again' : 'Start'}
-            >
-              <Icon name="play" size={16} color={theme.colors.onPrimary} />
-              <Text style={styles.primaryText}>
-                {state === 'crashed' ? 'Start again' : 'Start'}
-              </Text>
-            </Pressable>
+            <View style={styles.grow}>
+              <Button
+                label={state === 'crashed' ? 'Start again' : 'Start'}
+                icon="play"
+                size="compact"
+                disabled={busy}
+                onPress={onStart}
+                fullWidth
+              />
+            </View>
             {state === 'crashed' && onAskAgent ? (
-              <Pressable
-                style={[styles.secondaryButton, styles.grow]}
-                onPress={onAskAgent}
-                accessibilityRole="button"
-                accessibilityLabel="Ask the agent to fix it"
-              >
-                <Icon name="message-circle" size={16} color={theme.colors.text} />
-                <Text style={styles.secondaryText}>Ask the agent</Text>
-              </Pressable>
+              <View style={styles.grow}>
+                <Button
+                  label="Ask the agent"
+                  accessibilityLabel="Ask the agent to fix it"
+                  icon="message-circle"
+                  variant="secondary"
+                  size="compact"
+                  onPress={onAskAgent}
+                  fullWidth
+                />
+              </View>
             ) : null}
           </>
         )}
@@ -426,26 +428,30 @@ export function ManagedServerDetail({
         ) : null}
       </View>
       <Text style={styles.rowDetail}>Set up by the agent. Ask it to change the command.</Text>
-      <Pressable
-        onPress={onDelete}
-        disabled={busy}
-        style={styles.dangerButton}
-        accessibilityRole="button"
-        accessibilityLabel="Delete entry"
-      >
-        <Icon name="trash-2" size={16} color={theme.colors.tone.danger} />
-        <Text style={styles.dangerText}>Delete entry</Text>
-      </Pressable>
+      <View style={styles.inline}>
+        <Button
+          label="Delete entry"
+          icon="trash-2"
+          variant="destructive"
+          size="compact"
+          disabled={busy}
+          onPress={onDelete}
+        />
+      </View>
     </ScrollView>
   );
 }
 
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
-
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.md, paddingBottom: theme.spacing.md },
-  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  label: {
+    ...theme.typography.footnote,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   block: { gap: theme.spacing.sm },
   header: {
     flexDirection: 'row',
@@ -453,13 +459,16 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     minHeight: 44,
   },
-  name: { flexShrink: 1, color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  note: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  name: { ...theme.typography.row, flexShrink: 1, color: theme.colors.text },
+  note: { ...theme.typography.footnote, color: theme.colors.textMuted },
   headerSpacer: { flex: 1 },
-  detailsLink: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  detailsLink: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.action,
+  },
   elsewhere: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  elsewhereText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
-  elsewhereStop: { color: theme.colors.tone.danger, fontSize: theme.text.xs, fontWeight: '700' },
+  elsewhereText: { ...theme.typography.footnote, flexShrink: 1, color: theme.colors.textMuted },
   card: {
     borderRadius: theme.radius.lg,
     borderWidth: 1,
@@ -481,23 +490,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowIcon: { width: 22, alignItems: 'center' },
   rowText: { flex: 1, minWidth: 0, gap: 2 },
-  rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
-  rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  warning: { color: theme.colors.tone.danger, fontSize: theme.text.xs },
-  link: { color: theme.colors.primary, fontSize: theme.text.sm, fontFamily: MONO },
+  rowTitle: { ...theme.typography.row, color: theme.colors.text },
+  rowDetail: { ...theme.typography.footnote, color: theme.colors.textMuted },
+  warning: { ...theme.typography.footnote, color: theme.colors.attention },
+  link: { ...theme.typography.code, color: theme.colors.action },
   pinLine: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   pin: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   pinValue: {
+    ...theme.typography.code,
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    fontFamily: MONO,
     fontVariant: ['tabular-nums'],
   },
   iconAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   switch: { minWidth: 52, height: 44, alignItems: 'flex-end', justifyContent: 'center' },
   premium: { minHeight: 44, justifyContent: 'center', paddingHorizontal: theme.spacing.xs },
-  premiumText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  premiumText: { ...theme.typography.button, color: theme.colors.action },
   statusLine: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -506,43 +513,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
   grow: { flex: 1 },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
-  },
-  primaryText: { color: theme.colors.onPrimary, fontWeight: '600', fontSize: theme.text.sm },
-  secondaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
-  dangerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
-    backgroundColor: theme.colors.surface,
-  },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
   output: {
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
@@ -550,7 +520,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.background,
   },
-  outputText: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontFamily: MONO },
+  outputText: { ...theme.typography.code, color: theme.colors.textMuted },
   commandBox: {
     gap: 2,
     padding: theme.spacing.md,
@@ -559,5 +529,5 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  command: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: MONO },
+  command: { ...theme.typography.code, color: theme.colors.text },
 }));

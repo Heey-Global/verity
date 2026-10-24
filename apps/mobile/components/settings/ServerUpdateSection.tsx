@@ -9,14 +9,16 @@ import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import {
   VerityApiError,
   describeServerUpdate,
+  describeServerUpdatePanel,
   publishServerUpdateStatusMutation,
   showsServerUpdatePanel,
+  type ServerUpdateCard,
   type ServerUpdateStatus,
   type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../../lib/client';
@@ -27,8 +29,9 @@ import {
 } from '../../lib/serverUpdateChannelWrite';
 import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
-import { SettingsGroup, SettingsPanel } from './SettingsChrome';
+import { SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
+import { Button, Card, CardHead, HintBox, StatusTag, Text as UiText } from '../ui';
 
 // Cadence for asking whether an unanswered install request started anything.
 // How long an unchanged status may still be the Updater catching up with a
@@ -222,29 +225,53 @@ export function ServerUpdateSection({
     [client, settle, starting, changingChannel, channelNeedsRefresh, server],
   );
 
+  const [retrying, setRetrying] = useState<string | undefined>(undefined);
+  const retry = useCallback(
+    (updateId: string) => {
+      if (retrying !== undefined) return;
+      setRetrying(updateId);
+      setActionError(undefined);
+      void client
+        .retryServerUpdate(updateId)
+        .then(
+          () => undefined,
+          (caught: unknown) => {
+            const refused = caught instanceof VerityApiError && caught.status === 409;
+            // `operation-in-progress`: a retry ran moments ago, or the update is
+            // moving again. The card would look unchanged, so say why.
+            if (refused && caught.message === 'operation-in-progress')
+              setActionError('A retry is already running. Check back in a minute.');
+            // Any other refusal means the operation moved on — finished, rolled
+            // back or replaced — and the fresh status below shows how. Anything
+            // else is a retry that may not have reached the Updater.
+            else if (!refused) setActionError('Could not retry the update.');
+          },
+        )
+        // Either way, show what the Updater is doing now rather than guessing.
+        .then(() => refresh(true))
+        .finally(() => setRetrying(undefined));
+    },
+    [client, refresh, retrying],
+  );
+
   if (status === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
   if (!showsServerUpdatePanel(status)) {
     return (
-      <SettingsPanel>
-        <Text style={styles.updateDetail}>
-          This deployment was not installed by Verity, so it updates itself externally.
-        </Text>
-      </SettingsPanel>
+      <Card stacked>
+        <CardHead
+          title="Verity Server"
+          subtitle="This deployment was not installed by Verity, so it updates itself externally."
+        />
+      </Card>
     );
   }
   const view = describeServerUpdate(status);
-  const target = view.targetDigest;
-  const attempt = view.idempotencyKey;
-
-  const publishedAt =
-    'release' in status ? formatReleaseDate(status.release.publishedAt) : undefined;
-
   if (mode === 'channel') {
     return (
       <>
@@ -264,69 +291,156 @@ export function ServerUpdateSection({
     );
   }
 
+  if (channelNeedsRefresh) {
+    return (
+      <SettingsPanel>
+        <View style={styles.updateProgressRow}>
+          <ActivityIndicator size="small" color={theme.colors.text} />
+          <Text style={styles.updateDetail}>
+            Checking the selected channel… Retrying if the server is unavailable.
+          </Text>
+        </View>
+      </SettingsPanel>
+    );
+  }
+
+  // One box for the server: its head says what runs and how it is doing, and
+  // every operation or release below it belongs to it — never a card of its own
+  // that could be read as something else's.
+  const panel = describeServerUpdatePanel(status);
   return (
     <>
-      <SettingsGroup title="Version">
-        <SettingsPanel>
-          {channelNeedsRefresh ? (
-            <View style={styles.updateProgressRow}>
-              <ActivityIndicator size="small" color={theme.colors.setup.text} />
-              <Text style={styles.updateDetail}>
-                Checking the selected channel… Retrying if the server is unavailable.
-              </Text>
-            </View>
-          ) : (
-            <>
-              <View style={styles.updateHeader}>
-                <Text style={styles.updateTitle} accessibilityRole="header">
-                  {view.title}
-                </Text>
-                {publishedAt !== undefined ? (
-                  <Text style={styles.reproSubtitle}>Released {publishedAt}</Text>
-                ) : null}
-              </View>
-              <Text style={styles.updateDetail}>{view.detail}</Text>
-              {view.progress !== null ? (
-                <View style={styles.updateProgressRow}>
-                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
-                  <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
-                    {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
-                  </Text>
-                </View>
-              ) : null}
-              {view.action !== null && target !== null && attempt !== null ? (
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    styles.updateButton,
-                    starting || changingChannel ? styles.buttonDisabled : null,
-                    pressed ? styles.pressed : null,
-                  ]}
-                  onPress={() => install(target, attempt)}
-                  disabled={starting || changingChannel}
-                  accessibilityRole="button"
-                  accessibilityLabel={view.action}
-                >
-                  {starting ? (
-                    <ActivityIndicator size="small" color={theme.colors.onPrimary} />
-                  ) : null}
-                  <Text style={styles.primaryButtonLabel}>
-                    {starting ? 'Starting…' : view.action}
-                  </Text>
-                </Pressable>
-              ) : null}
-              {actionError !== undefined ? (
-                <Text style={styles.reproHint}>{actionError}</Text>
-              ) : null}
-              {status.state === 'available' ? (
-                <ServerReleaseNotes client={client} version={status.release.version} />
-              ) : null}
-            </>
-          )}
-        </SettingsPanel>
-      </SettingsGroup>
+      <Card stacked divided attention={panel.cards.some((card) => card.status.tone === 'problem')}>
+        <CardHead
+          title="Verity Server"
+          subtitle={panel.installed === null ? undefined : installedSubtitle(panel.installed)}
+          trailing={
+            panel.tag === null ? undefined : (
+              <StatusTag intent={panel.tag.intent} label={panel.tag.label} />
+            )
+          }
+        />
+        {panel.cards.map((card) => (
+          <UpdateBlock
+            key={card.key}
+            card={card}
+            client={client}
+            busy={starting || retrying !== undefined}
+            installing={starting}
+            retrying={retrying}
+            disabled={changingChannel}
+            onInstall={install}
+            onRetry={retry}
+          />
+        ))}
+      </Card>
+      {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
     </>
   );
+}
+
+/** One operation or release inside the server's box: what happened, and its single way forward. */
+function UpdateBlock({
+  card,
+  client,
+  busy,
+  installing,
+  retrying,
+  disabled,
+  onInstall,
+  onRetry,
+}: {
+  card: ServerUpdateCard;
+  client: VerityClient;
+  busy: boolean;
+  installing: boolean;
+  retrying: string | undefined;
+  disabled: boolean;
+  onInstall: (targetDigest: string, idempotencyKey: string) => void;
+  onRetry: (updateId: string) => void;
+}) {
+  const action = card.action;
+  const releasedAt =
+    card.release === null ? undefined : formatReleaseDate(card.release.publishedAt);
+  return (
+    <View style={styles.updateBlock}>
+      <View style={styles.updateHeader}>
+        <UiText variant="title" accessibilityRole="header">
+          {card.title}
+        </UiText>
+        {releasedAt !== undefined ? (
+          <UiText variant="subtitle">Released {releasedAt}</UiText>
+        ) : null}
+      </View>
+      {card.progress !== null ? (
+        // The head tag already spins; a second spinner here said the same thing twice.
+        <UiText variant="bodySmall" accessibilityLiveRegion="polite">
+          {`${card.progress.phase} · step ${String(card.progress.step)} of ${String(card.progress.total)}`}
+        </UiText>
+      ) : null}
+      {card.stalled !== null ? (
+        <View>
+          <UiText variant="bodySmall">
+            {`${card.stalled.phase} · step ${String(card.stalled.step)} of ${String(card.stalled.total)}`}
+          </UiText>
+          <UiText variant="bodySmall" tone="attention">
+            {`No progress since ${formatStallSince(card.stalled.since)}`}
+          </UiText>
+        </View>
+      ) : null}
+      <UiText variant="bodySmall" tone="muted">
+        {card.detail}
+      </UiText>
+      {card.error !== null ? <HintBox title="Last error" message={card.error} /> : null}
+      {action?.kind === 'install' ? (
+        <Button
+          label={action.label}
+          variant={action.primary ? 'primary' : 'secondary'}
+          loading={installing}
+          disabled={disabled || (busy && !installing)}
+          onPress={() => onInstall(action.targetDigest, action.idempotencyKey)}
+          fullWidth
+        />
+      ) : null}
+      {action?.kind === 'retry' ? (
+        <Button
+          label={action.label}
+          variant={action.primary ? 'primary' : 'secondary'}
+          loading={retrying === action.updateId}
+          disabled={disabled || (busy && retrying !== action.updateId)}
+          onPress={() => onRetry(action.updateId)}
+          fullWidth
+          accessibilityHint="Resumes the stuck update where it stopped"
+        />
+      ) : null}
+      {card.notesVersion !== null ? (
+        <ServerReleaseNotes client={client} version={card.notesVersion} />
+      ) : null}
+    </View>
+  );
+}
+
+/** "20 Oct, 23:42 · 17 h" — when the operation last moved, and how long ago. */
+function formatStallSince(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'an unknown time';
+  const when = date.toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const hours = Math.floor((Date.now() - date.getTime()) / 3_600_000);
+  return hours >= 1 ? `${when} · ${String(hours)} h` : when;
+}
+
+/** "Version 4.53.0 · Released 23 Oct 2026", the date only when it is known. */
+function installedSubtitle(installed: { version: string; publishedAt: string | null }): string {
+  const releasedAt =
+    installed.publishedAt === null ? undefined : formatReleaseDate(installed.publishedAt);
+  return releasedAt === undefined
+    ? `Version ${installed.version}`
+    : `Version ${installed.version} · Released ${releasedAt}`;
 }
 
 /** "12 Aug 2026" — a release is a day, not an instant. Unparseable → omitted. */

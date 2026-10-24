@@ -17,6 +17,8 @@ const fixture = vi.hoisted(() => ({
   recorded: undefined as Record<string, unknown> | undefined,
   evidenceMissing: false,
   approved: true,
+  associationMissing: false,
+  fallbackMerge: 'a'.repeat(40),
   expired: false,
   root: '',
   calls: [] as string[],
@@ -46,6 +48,21 @@ vi.mock('node:child_process', () => ({
         expired: fixture.expired,
         archive_download_url: 'https://artifacts.example/archive',
       });
+    if (endpoint.includes('/pulls?'))
+      return JSON.stringify([
+        fixture.approved
+          ? [
+              {
+                number: 7,
+                merged_at: '2026-01-01',
+                merge_commit_sha: fixture.fallbackMerge,
+                head: { ref: 'automation/promote-mobile-production', sha: 'b'.repeat(40) },
+                base: { ref: 'main' },
+              },
+            ]
+          : [],
+      ]);
+    if (endpoint.endsWith('/pulls') && fixture.associationMissing) return '[]';
     if (endpoint.endsWith('/pulls') && !fixture.approved) return '[]';
     if (endpoint.endsWith('/pulls'))
       return JSON.stringify([
@@ -93,6 +110,8 @@ afterEach(() => {
   fixture.recorded = undefined;
   fixture.evidenceMissing = false;
   fixture.approved = true;
+  fixture.associationMissing = false;
+  fixture.fallbackMerge = 'a'.repeat(40);
   fixture.expired = false;
   if (fixture.root) rmSync(fixture.root, { recursive: true, force: true });
   fixture.root = '';
@@ -251,4 +270,18 @@ describe('native evidence compatibility', () => {
     expect(requests).toEqual([]);
     expect(fixture.calls.some((call) => call.startsWith('xcrun '))).toBe(false);
   });
+});
+
+it('recovers a missing commit association using the exact merged promotion PR', async () => {
+  setup();
+  fixture.associationMissing = true;
+  await promoteNative();
+  expect(fixture.calls.some((call) => call.includes('/pulls?state=closed'))).toBe(true);
+});
+it('rejects a fallback approval for a different merge commit', async () => {
+  setup();
+  fixture.associationMissing = true;
+  fixture.fallbackMerge = 'c'.repeat(40);
+  await expect(promoteNative()).rejects.toThrow('Production requires a merged promotion PR');
+  expect(fixture.calls.some((call) => call.startsWith('xcrun '))).toBe(false);
 });

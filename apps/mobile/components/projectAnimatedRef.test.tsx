@@ -39,10 +39,10 @@ jest.mock('react-native-worklets', () => ({
   serializableMappingCache: new WeakMap(),
 }));
 
-it('reproduces the native animated ref being invoked as a cleanup function', () => {
+it('does not invoke a native shadow node as a cleanup function', () => {
   const { result } = renderHook(() => useAnimatedRef<View>());
   const detach = passForwardedRef({} as View, result.current);
-  expect(() => detach()).toThrow(TypeError);
+  expect(() => detach()).not.toThrow();
 });
 
 it('can detach and reattach the project handle without calling a shadow node', () => {

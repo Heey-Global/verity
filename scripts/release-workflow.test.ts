@@ -810,11 +810,15 @@ describe('signed GitHub release evidence', () => {
     const finalize = workflow.jobs['finalize-backend-release'];
     expect(finalize.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(finalize.needs).toContain('publish-server-release-evidence');
-    expect(finalize.permissions?.issues).toBe('write');
-    // Recovery moves the release PR labels through the issues endpoint, which
-    // GitHub authorizes against the pull-request scope for a PR: with read
-    // access the move 403s after every artifact is published (run 36481465237).
-    expect(finalize.permissions?.['pull-requests']).toBe('write');
+    // Every write (labels, release edit, promotion PR) goes through the release
+    // app token, so the promotion PR triggers its own pull_request CI. The app
+    // holds Issues and Pull requests write: label moves on a PR are authorized
+    // against the pull-request scope (run 36481465237).
+    expect(finalize.permissions).toEqual({ contents: 'read' });
+    const approval = finalize.steps.find(
+      (step) => step.name === 'Open production approval for staged Server',
+    );
+    expect(approval?.env?.GH_TOKEN).toBe('${{ steps.app-token.outputs.token }}');
     const publish = { run: readFileSync('scripts/finalize-server-production.sh', 'utf8') };
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');
@@ -1171,9 +1175,21 @@ describe('release train concurrency', () => {
     const callers = Object.values(dispatch.jobs).filter(
       (job) => job.uses === './.github/workflows/release.yml',
     );
-    expect(callers).toHaveLength(1);
+    expect(callers).toHaveLength(3);
     const caller = callers[0];
-    expect(caller?.strategy?.matrix?.train).toEqual(['backend', 'mobile', 'website']);
+    expect(callers.flatMap((job) => job.strategy?.matrix?.train ?? [])).toEqual([
+      'backend',
+      'mobile',
+      'website',
+    ]);
+    for (const job of callers) {
+      expect(job.concurrency).toEqual({
+        group: 'release-${{ matrix.train }}',
+        queue: 'max',
+        'cancel-in-progress': false,
+      });
+      expect(job.uses).toBe('./.github/workflows/release.yml');
+    }
     expect(caller?.strategy?.['fail-fast']).toBe(false);
     expect(caller?.concurrency).toEqual({
       group: 'release-${{ matrix.train }}',
@@ -1672,15 +1688,16 @@ describe('publication reconciliation', () => {
     const [minutes, hours] = crons[0]!.split(' ');
     expect(hours).toBe('*');
     const fires = minutes!.split(',').map(Number);
-    expect(fires.length).toBeGreaterThanOrEqual(2);
+    expect(fires.length).toBeGreaterThanOrEqual(12);
     expect(fires).not.toContain(0);
     expect(fires).not.toContain(30);
     expect(sweep.on.workflow_dispatch).toBeDefined();
     expect(sweep.permissions).toBe('read-all');
     expect(sweep.concurrency?.['cancel-in-progress']).toBe(false);
-    const jobs = Object.values(sweep.jobs);
-    expect(jobs).toHaveLength(1);
-    const [job] = jobs;
+    // The sweep plus the alarm that reports its verdict; release-alarm.test.ts
+    // pins the alarm job.
+    expect(Object.keys(sweep.jobs).sort()).toEqual(['alarm', 'reconcile']);
+    const job = sweep.jobs.reconcile;
     // Drafts are listed to push access only; with read access a draft that
     // manual recovery owns reads as a release that does not exist yet.
     expect(job?.permissions).toEqual({
@@ -1734,5 +1751,24 @@ describe('publication reconciliation', () => {
     }
     checkImports(resolve('scripts/release-reconcile.mjs'));
     checkImports(resolve('scripts/pending-release-trains.mjs'));
+  });
+
+  it('forwards website planning through the dispatcher and gates it on planning mode', () => {
+    const forwarded = dispatch.jobs['release-website']?.with?.['website-replan'];
+    expect(forwarded).toContain("format('{0}', inputs['website-replan']) == 'true'");
+    expect(forwarded).toContain("matrix.train == 'website'");
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const lifecycle = steps.find((step) => step.name === 'Reconcile release lifecycle');
+    expect(lifecycle?.if).toContain("inputs.website-replan && inputs.train == 'website'");
+    const planner = steps.find(
+      (step) =>
+        step.uses?.startsWith('googleapis/release-please-action') &&
+        step.with?.['config-file'] === 'release-please-config.website.json',
+    );
+    expect(planner?.if).toContain(
+      "inputs.website-replan && inputs.train == 'website' && steps.lifecycle.outputs.mode == 'plan'",
+    );
+    const guard = steps.find((step) => step.name === 'Validate backend re-plan request');
+    expect(guard?.env?.REPLAN).toContain('inputs.website-replan');
   });
 });

@@ -1,3 +1,4 @@
+import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { EventBus } from '@verity/session';
 import type { EventStore, ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -42,6 +43,14 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('forwards temporary diagnostic consent and live connector assignment to the API', () => {
+    const activation = new ReturnPathActivation(() => ({ enabled: false }));
+    const count = () => 2;
+    const deps = forward({ returnPathActivation: activation, returnPathConnectorCount: count });
+    expect(deps.returnPathActivation).toBe(activation);
+    expect(deps.returnPathConnectorCount).toBe(count);
+    activation.dispose();
+  });
   it('keeps runtime evidence available through the production composition seam', () => {
     const runtimeDiagnostics = createRuntimeDiagnostics({});
     expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);

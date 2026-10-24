@@ -28,12 +28,45 @@ export function formatClockTime(epochSeconds: number): string {
 
 const RESET_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 
-/** Format a quota reset consistently: weekly windows always include the weekday. */
+// The 12-hour clock in its shortest unambiguous form ("9:24pm" rather than
+// "09:24 PM"), for meters whose cell is sized for a 24-hour time. A 24-hour
+// clock is returned unchanged; it is already as short as the cell expects.
+function formatCompactClockTime(epochSeconds: number): string {
+  const parts = new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: deviceHour12(),
+  }).formatToParts(new Date(epochSeconds * 1000));
+  if (!parts.some((part) => part.type === 'dayPeriod')) return formatClockTime(epochSeconds);
+  return parts
+    .filter(
+      (part, index) =>
+        !(
+          part.type === 'literal' &&
+          part.value.trim() === '' &&
+          (parts[index + 1]?.type === 'dayPeriod' || parts[index - 1]?.type === 'dayPeriod')
+        ),
+    )
+    .map((part) =>
+      part.type === 'hour'
+        ? part.value.replace(/^0(?=\d)/, '')
+        : part.type === 'dayPeriod'
+          ? part.value.toLowerCase()
+          : part.value,
+    )
+    .join('');
+}
+
+/**
+ * Format a quota reset consistently: weekly windows always include the weekday.
+ * `compact` shortens a 12-hour clock for the narrow overview meters.
+ */
 export function formatResetDisplay(
   resetsAtSeconds: number,
   window: 'five_hour' | 'weekly',
+  { compact = false }: { compact?: boolean } = {},
 ): string {
-  const time = formatClockTime(resetsAtSeconds);
+  const time = compact ? formatCompactClockTime(resetsAtSeconds) : formatClockTime(resetsAtSeconds);
   if (window === 'five_hour') return time;
   const day = RESET_WEEKDAYS[new Date(resetsAtSeconds * 1000).getDay()];
   return `${day} ${time}`;

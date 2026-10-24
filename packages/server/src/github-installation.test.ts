@@ -396,6 +396,63 @@ describe('syncProjectsFromInstallation (integration, #174)', () => {
     }
   });
 
+  it.each([false, true])(
+    'keeps Forgejo out of the GitHub sync cache (GitHub row exists: %s)',
+    async (existingGitHub) => {
+      const { createTestDb } = await import('@verity/store/testing');
+      const ctx = await createTestDb();
+      try {
+        await ctx.store.forgeConnections.upsert({
+          id: 'forgejo-sync',
+          provider: 'forgejo',
+          baseUrl: 'https://forge.test',
+          label: 'Forgejo',
+          personalToken: 'fixture',
+          githubAppId: null,
+          githubAppInstallationId: null,
+          githubAppPrivateKey: null,
+        });
+        if (existingGitHub)
+          await ctx.store.upsertProject({
+            id: 'github-sync',
+            owner: 'example',
+            repo: 'repo',
+            containerName: 'verity-example--repo',
+            state: 'active',
+            archived: true,
+          });
+        await ctx.store.upsertProject({
+          id: 'forgejo-project',
+          owner: 'example',
+          repo: 'repo',
+          kind: 'forgejo',
+          forgeConnectionId: 'forgejo-sync',
+          containerName: 'forgejo-example-repo',
+          state: 'active',
+        });
+        // The same coordinates on another forge must neither suppress a GitHub
+        // placeholder nor mask changed installation metadata.
+        await syncProjectsFromInstallation(
+          ctx.store,
+          makeFakeInstallation([{ owner: 'example', repo: 'repo' }]),
+        );
+        expect(await ctx.store.getProjectByOwnerRepo('example', 'repo')).toMatchObject({
+          kind: 'github',
+          archived: false,
+          state: existingGitHub ? 'active' : 'absent',
+        });
+        expect(await ctx.store.getProject('forgejo-project')).toMatchObject({
+          kind: 'forgejo',
+          forgeConnectionId: 'forgejo-sync',
+          state: 'active',
+          archived: false,
+        });
+      } finally {
+        await ctx.close();
+      }
+    },
+  );
+
   it('does not rewrite unchanged repositories on repeated overview refreshes', async () => {
     const { createTestDb } = await import('@verity/store/testing');
     const ctx = await createTestDb();

@@ -1,30 +1,46 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render as renderScreen, screen, waitFor } from '@testing-library/react-native';
+
+jest.mock('./ConnectionRecording', () => ({
+  ConnectionRecording: () => {
+    const { Text } = require('react-native');
+    return <Text>Unified recording</Text>;
+  },
+}));
 
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
 const mockExportData = jest.fn();
 const mockCopy = jest.fn();
+const mockRecordingRemaining = jest.fn().mockResolvedValue(0);
+const mockStopRecording = jest.fn().mockResolvedValue(true);
 jest.mock('../../lib/remoteDataDiagnostics', () => ({
   exportRemoteDataDiagnostics: () => mockExportData(),
 }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: (...args: unknown[]) => mockCopy(...args) }));
 
-jest.mock('expo-router', () => ({ useFocusEffect: jest.fn() }));
+// The screen loads its status on focus; run that effect once on mount.
+jest.mock('expo-router', () => ({
+  useFocusEffect: (effect: () => void) => require('react').useEffect(effect, [effect]),
+}));
 jest.mock('../../lib/serverProfile', () => ({
   getServerProfile: () => mockGetServerProfile(),
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
   testRemoteControlForUrl: (...args: unknown[]) => mockTestRemoteControl(...args),
+  remoteDataRecordingRemainingMs: () => mockRecordingRemaining(),
+  stopRemoteDataRecording: () => mockStopRecording(),
   remoteControlFailureForUrl: jest.fn(() => null),
-}));
-jest.mock('./SettingsChrome', () => ({
-  SettingsPanel: ({ children }: { children: React.ReactNode }) => {
-    const { View } = require('react-native');
-    return <View>{children}</View>;
-  },
 }));
 
 import { PublicPreviewDiagnostics } from './PublicPreviewDiagnostics';
+import type { ReactElement } from 'react';
+import { Text } from 'react-native';
+
+function render(element: ReactElement) {
+  const result = renderScreen(element);
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  return result;
+}
 
 it('finishes the tunnel test while the separate Core status refresh is pending', async () => {
   mockGetServerProfile.mockReturnValue({
@@ -39,10 +55,11 @@ it('finishes the tunnel test while the separate Core status refresh is pending',
 
   await waitFor(() => {
     expect(screen.getByText('Remote access failed at probe timed out.')).toBeOnTheScreen();
-    expect(screen.getByText('Test Remote access')).toBeOnTheScreen();
+    expect(screen.getByText('Test remote access')).toBeOnTheScreen();
     expect(screen.getByRole('button', { name: 'Test Remote access through Uplink' })).toBeEnabled();
   });
-  expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+  // One load on open, one after the test — neither may hold the test open.
+  expect(getUplinkDiagnostics).toHaveBeenCalledTimes(2);
 });
 
 it("shows Core's side of each tunnel stream beside the phone test result", async () => {
@@ -85,7 +102,6 @@ it("shows Core's side of each tunnel stream beside the phone test result", async
   });
 
   render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
-  fireEvent.press(screen.getByText('Refresh status'));
   // Without Core's view a request the ingress swallowed is indistinguishable
   // from one Uplink never delivered.
   await waitFor(() =>
@@ -117,7 +133,6 @@ it('offers the tunnel test when Core settings and status are unavailable', async
       keyConfigured={undefined}
     />,
   );
-  fireEvent.press(screen.getByText('Refresh status'));
   await waitFor(() => expect(screen.getByText(/Core did not answer/u)).toBeOnTheScreen());
   fireEvent.press(screen.getByRole('button', { name: 'Test Remote access through Uplink' }));
   await waitFor(() =>
@@ -143,7 +158,7 @@ it('records only the explicitly selected connection test and copies the safe nat
   await waitFor(() =>
     expect(mockTestRemoteControl).toHaveBeenCalledWith('https://verity.example', true),
   );
-  fireEvent.press(screen.getByText('Copy connection recording'));
+  fireEvent.press(screen.getByLabelText('Copy connection recording'));
   await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
   expect(screen.getByText('Connection recording copied.')).toBeOnTheScreen();
 });
@@ -161,7 +176,7 @@ it('does not copy when a safe recording is unavailable', async () => {
       keyConfigured
     />,
   );
-  fireEvent.press(screen.getByText('Copy connection recording'));
+  fireEvent.press(screen.getByLabelText('Copy connection recording'));
   await waitFor(() =>
     expect(screen.getByText(/No connection recording was retained/u)).toBeOnTheScreen(),
   );
@@ -186,7 +201,7 @@ it('copies retained stream diagnostics after leaving and reopening settings with
   first.unmount();
   render(<PublicPreviewDiagnostics client={client} keyConfigured />);
   expect(screen.queryByText('Remote access failed at probe timed out.')).toBeNull();
-  fireEvent.press(screen.getByText('Copy connection recording'));
+  fireEvent.press(screen.getByLabelText('Copy connection recording'));
   await waitFor(() => expect(mockCopy).toHaveBeenCalledWith(retained));
   expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
 });
@@ -205,7 +220,7 @@ it.each([
       keyConfigured
     />,
   );
-  fireEvent.press(screen.getByText('Copy connection recording'));
+  fireEvent.press(screen.getByLabelText('Copy connection recording'));
   await waitFor(() => expect(screen.getByText(message)).toBeOnTheScreen());
   expect(mockCopy).not.toHaveBeenCalled();
 });
@@ -222,7 +237,146 @@ it('distinguishes a local switch from an entitlement the subscription does not i
     },
   });
   render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
-  fireEvent.press(screen.getByText('Refresh status'));
-  expect(await screen.findByLabelText('Off')).toBeOnTheScreen();
-  expect(screen.getByLabelText('Not included')).toBeOnTheScreen();
+  expect(await screen.findByText('Switched off in Verity Premium')).toBeOnTheScreen();
+  expect(screen.getByText('Not included in your subscription')).toBeOnTheScreen();
+});
+
+it('shows idle sharing and explicitly checks rights without implying a reconnect loop', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'unchecked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: false, effective: false },
+      remoteAccess: { enabled: false, granted: false, effective: false },
+    },
+  });
+  const checkUplinkEntitlements = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'checked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: true, effective: false },
+      remoteAccess: { enabled: false, granted: false, effective: false },
+    },
+  });
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics, checkUplinkEntitlements } as never}
+      keyConfigured
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByText('Rights are checked when a feature is first used')).toBeOnTheScreen(),
+  );
+  expect(screen.getByText('Idle')).toBeOnTheScreen();
+  expect(screen.getByText('Not checked')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText(/^Check subscription rights(,|$)/));
+  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(2));
+  expect(screen.getByText('Connects when a feature is in use')).toBeOnTheScreen();
+  expect(checkUplinkEntitlements).toHaveBeenCalledTimes(1);
+  expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+});
+
+it('never reports Remote access as on demand while the channel idles', async () => {
+  // Only sharing dials Uplink on demand. An idle channel with Remote access
+  // granted means it is not reachable, and a green dot would hide that.
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'checked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: true, effective: false },
+      remoteAccess: { enabled: true, granted: true, effective: false },
+    },
+  });
+  render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+  // One for the Uplink channel itself, one for Online sharing — none for Remote access.
+  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(2));
+  expect(screen.getByText('–')).toBeOnTheScreen();
+});
+
+it('offers a retry when the status could not be loaded', async () => {
+  // Without a saved route every other row is inert; leaving the screen must not
+  // be the only way to try again.
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
+  render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+  fireEvent.press(await screen.findByLabelText(/^Try again(,|$)/));
+  await waitFor(() => expect(screen.getByText('Connected')).toBeOnTheScreen());
+  expect(screen.queryByLabelText(/^Try again(,|$)/)).toBeNull();
+});
+// Route loss is precisely when the retained local evidence must remain accessible.
+it.each([null, { activeUrl: 'https://verity.example' }])(
+  'exports locally without a saved route or reachable Core (%s)',
+  async (profile) => {
+    mockGetServerProfile.mockReturnValue(profile);
+    mockExportData.mockResolvedValue({ status: 'ready', recording: '[{"version":1}]' });
+    mockCopy.mockClear().mockResolvedValue(undefined);
+    const getUplinkDiagnostics = jest.fn().mockRejectedValue(new Error('offline'));
+    render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+    fireEvent.press(screen.getByLabelText('Copy connection recording'));
+    await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
+    expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('only reads recording status on mount and stops locally while a probe and Core are pending', async () => {
+  mockGetServerProfile.mockReturnValue({ activeUrl: 'https://verity.example', remoteControl: {} });
+  mockRecordingRemaining.mockResolvedValue(60_000);
+  mockTestRemoteControl.mockClear().mockReturnValue(new Promise(() => undefined));
+  mockStopRecording.mockClear().mockResolvedValue(true);
+  const client = { getUplinkDiagnostics: jest.fn(() => new Promise(() => undefined)) } as never;
+  render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  await screen.findByText('Recording · 60 seconds remaining');
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  expect(mockStopRecording).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Test Remote access through Uplink'));
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Not recording');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+  expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
+});
+
+it('keeps local stop available without a profile and reports a failed stop honestly', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockStopRecording.mockClear().mockResolvedValue(false);
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockRejectedValue(new Error('offline')) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Could not confirm recording stopped.');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+});
+
+it('keeps standalone controls advanced while unified recording stays visible', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockRecordingRemaining.mockResolvedValue(0);
+  mockTestRemoteControl.mockClear();
+  renderScreen(
+    <PublicPreviewDiagnostics client={null} keyConfigured={undefined}>
+      <Text>Server-only controls</Text>
+    </PublicPreviewDiagnostics>,
+  );
+  expect(screen.queryByText('Server-only controls')).toBeNull();
+  expect(screen.queryByText('Check subscription rights')).toBeNull();
+  expect(screen.queryByLabelText('Copy connection recording')).toBeNull();
+  expect(screen.queryByText('Stop local recording')).toBeNull();
+  expect(screen.getByText('Unified recording')).toBeOnTheScreen();
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  expect(screen.getByText('Server-only controls')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Hide advanced diagnostics'));
+  expect(screen.queryByText('Server-only controls')).toBeNull();
 });

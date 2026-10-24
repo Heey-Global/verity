@@ -4,6 +4,11 @@ export function liveResourceInterval(path: string): number | undefined {
   if (path.length > 1000 || /[\\\r\n#]/u.test(path)) return undefined;
   if (!path.startsWith('/') || path.startsWith('//')) return undefined;
   const p = path.split('?')[0]!;
+  if (
+    /^\/(projects|sessions)\/[^/]+\/vulnerability-scan$/u.test(p) ||
+    p === '/settings/vulnerability-scan'
+  )
+    return 3_000;
   if (p.split('/').some((part) => part === '.' || part === '..' || /%2e|%2f|%5c/iu.test(part)))
     return undefined;
   if (/^\/projects(?:\/[^/]+(?:\/(?:public-shares|local-shares))?)?$/u.test(p)) return 15_000;

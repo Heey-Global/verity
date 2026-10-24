@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
+import {
+  Button,
+  Group,
+  HintBox,
+  Row,
+  SectionHeader,
+  StatusDot,
+  Text,
+  TextField,
+} from '../../components/ui';
 import { liveMeetingSTT, type STTEngine, type STTEngineId } from '../../lib/liveMeetingSTT';
 import {
   applySTTEvent,
@@ -9,10 +20,6 @@ import {
   transcriptText,
   type STTTranscriptState,
 } from '../../lib/liveMeetingSTTTranscript';
-
-const TEXT = '#eee9f7';
-const MUTED = '#aaa2ba';
-const ACCENT = '#bd8bff';
 
 export default function LiveMeetingSTTScreen() {
   const [engines, setEngines] = useState<STTEngine[]>([]);
@@ -96,108 +103,87 @@ export default function LiveMeetingSTTScreen() {
   if (!liveMeetingSTT) {
     return (
       <SettingsScaffold title="Live STT test" detail>
-        <Text style={styles.message}>
-          This test needs a new iOS build with the live STT module.
-        </Text>
+        <Text tone="muted">This test needs a new iOS build with the live STT module.</Text>
       </SettingsScaffold>
     );
   }
 
+  const locked = busy || listening;
   return (
     <SettingsScaffold title="Live STT test" detail>
-      <View style={styles.content}>
-        <Text style={styles.title}>Live STT test</Text>
-        <Text style={styles.caption}>
-          Choose one engine and speak. This test does not save audio or transcript.
-        </Text>
-        <Text style={styles.label}>Engine</Text>
-        {loadingEngines ? <ActivityIndicator color={ACCENT} /> : null}
+      <Text tone="muted">
+        Choose one engine and speak. This test does not save audio or transcript.
+      </Text>
+      <View style={styles.section}>
+        <SectionHeader title="Engine" />
+        {loadingEngines ? <StatusDot intent="transient" label="Loading engines" /> : null}
         {!loadingEngines && engines.length === 0 ? (
-          <Text style={styles.caption}>This prototype requires iOS 27 or later.</Text>
+          <Text variant="subtitle">This prototype requires iOS 27 or later.</Text>
         ) : null}
-        {engines.map((engine) => (
-          <Pressable
-            key={engine.id}
-            accessibilityRole="radio"
-            accessibilityState={{
-              selected: selected === engine.id,
-              disabled: !engine.available || busy || listening,
-            }}
-            disabled={!engine.available || busy || listening}
-            onPress={() => setSelected(engine.id)}
-            style={[styles.engine, selected === engine.id && styles.selected]}
-          >
-            <Text style={styles.engineName}>{engine.name}</Text>
-            <Text style={styles.caption}>
-              {engine.available ? 'Select to test' : 'Unavailable on this device'}
-            </Text>
-          </Pressable>
-        ))}
-        <Text style={styles.label}>Language</Text>
-        <TextInput
-          style={styles.input}
-          value={locale}
-          onChangeText={setLocale}
-          autoCapitalize="none"
-          editable={!busy && !listening}
-          accessibilityLabel="Recognition locale"
-        />
-        <Text style={styles.label}>Names and terms (comma separated)</Text>
-        <TextInput
-          style={styles.input}
+        {engines.length > 0 ? (
+          <Group>
+            {engines.map((engine) => (
+              <Row
+                key={engine.id}
+                title={engine.name}
+                subtitle={engine.available ? undefined : 'Unavailable on this device'}
+                selected={selected === engine.id}
+                disabled={!engine.available || locked}
+                onPress={() => setSelected(engine.id)}
+              />
+            ))}
+          </Group>
+        ) : null}
+      </View>
+      <TextField
+        label="Language"
+        accessibilityLabel="Recognition locale"
+        value={locale}
+        onChangeText={setLocale}
+        literal
+        disabled={locked}
+      />
+      <View style={styles.section}>
+        <TextField
+          label="Names and terms (comma separated)"
+          accessibilityLabel="Names and project terms"
           value={terms}
           onChangeText={setTerms}
-          editable={!busy && !listening}
-          accessibilityLabel="Names and project terms"
+          disabled={locked}
         />
-        <Text style={styles.caption}>
+        <Text variant="footnote">
           Term hints apply to Apple Dictation and Nemotron. Other engines receive no vocabulary
           hints.
         </Text>
-        <Pressable
-          style={[styles.button, (busy || (!listening && !canStart)) && styles.disabled]}
-          disabled={busy || (!listening && !canStart)}
-          onPress={() => void (listening ? stop() : start())}
-          accessibilityRole="button"
-        >
-          {busy ? (
-            <ActivityIndicator color="#160d25" />
-          ) : (
-            <Text style={styles.buttonText}>{listening ? 'Stop test' : 'Start test'}</Text>
-          )}
-        </Pressable>
-        <Text style={styles.status}>Status: {status}</Text>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <Text style={styles.label}>Transcript</Text>
+      </View>
+      <Button
+        label={listening ? 'Stop test' : 'Start test'}
+        variant={listening ? 'secondary' : 'primary'}
+        loading={busy}
+        disabled={!listening && !canStart}
+        onPress={() => void (listening ? stop() : start())}
+        fullWidth
+      />
+      <Text variant="subtitle">Status: {status}</Text>
+      {error ? <HintBox title="Speech recognition failed" message={error} /> : null}
+      <View style={styles.section}>
+        <SectionHeader title="Transcript" />
         <View style={styles.transcript}>
-          <Text style={styles.transcriptText}>{text || 'Recognized speech appears here.'}</Text>
+          <Text tone={text ? 'default' : 'faint'}>{text || 'Recognized speech appears here.'}</Text>
         </View>
       </View>
     </SettingsScaffold>
   );
 }
 
-const styles = StyleSheet.create({
-  content: { gap: 10 },
-  title: { color: TEXT, fontSize: 24, fontWeight: '700' },
-  label: { color: TEXT, fontSize: 15, fontWeight: '600', marginTop: 10 },
-  caption: { color: MUTED, fontSize: 13 },
-  message: { color: TEXT },
-  engine: { padding: 12, borderWidth: 1, borderColor: '#393046', borderRadius: 10 },
-  selected: { borderColor: ACCENT, backgroundColor: '#24152f' },
-  engineName: { color: TEXT, fontSize: 15, fontWeight: '600' },
-  input: { backgroundColor: '#1b1524', color: TEXT, borderRadius: 8, padding: 12 },
-  button: {
-    marginTop: 10,
-    padding: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    backgroundColor: ACCENT,
+const styles = StyleSheet.create((theme) => ({
+  section: { gap: theme.spacing.sm },
+  transcript: {
+    minHeight: 180,
+    padding: theme.spacing.md + theme.spacing.xxs,
+    borderRadius: theme.radius.control,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
   },
-  disabled: { opacity: 0.5 },
-  buttonText: { color: '#160d25', fontWeight: '700' },
-  status: { color: MUTED, marginTop: 4 },
-  error: { color: '#ff8f9e' },
-  transcript: { minHeight: 180, padding: 14, borderRadius: 10, backgroundColor: '#1b1524' },
-  transcriptText: { color: TEXT, fontSize: 17, lineHeight: 25 },
-});
+}));

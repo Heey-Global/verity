@@ -22,6 +22,14 @@ jest.mock('expo-router', () => ({
   Stack: Object.assign(() => null, { Screen: () => null }),
 }));
 const mockCreateClient = jest.fn<VerityClient | null, []>();
+const mockStorage = new Map<string, string>();
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: (key: string) => Promise.resolve(mockStorage.get(key) ?? null),
+  setItem: (key: string, value: string) => {
+    mockStorage.set(key, value);
+    return Promise.resolve();
+  },
+}));
 jest.mock('../lib/client', () => ({
   createVerityClient: () => mockCreateClient(),
   getVerityBaseUrl: () => 'http://192.168.1.20:8082',
@@ -45,6 +53,7 @@ function client(overrides: Partial<VerityClient> = {}): VerityClient {
   } as unknown as VerityClient;
 }
 beforeEach(() => {
+  mockStorage.clear();
   mockParams = {};
   mockReplace.mockReset();
   mockPush.mockReset();
@@ -58,7 +67,8 @@ describe('new project', () => {
     const fake = client();
     mockCreateClient.mockReturnValue(fake);
     render(<NewProjectScreen />);
-    fireEvent.press(await screen.findByLabelText('Create project'));
+    await screen.findByText('acme/website');
+    fireEvent.press(screen.getByLabelText('Create project'));
     await waitFor(() =>
       expect(fake.setProjectSetupStatus).toHaveBeenCalledWith('project-1', 'complete'),
     );
@@ -83,7 +93,8 @@ describe('new project', () => {
     });
     mockCreateClient.mockReturnValue(fake);
     render(<NewProjectScreen />);
-    fireEvent.press(await screen.findByLabelText('Create project'));
+    await screen.findByText('acme/website');
+    fireEvent.press(screen.getByLabelText('Create project'));
     fireEvent.press(await screen.findByText('Google Drive folder'));
     expect(mockPush).toHaveBeenCalledWith({
       pathname: '/project/[id]/settings/services',
@@ -92,7 +103,7 @@ describe('new project', () => {
     expect(screen.queryByText('Matrix rooms')).toBeNull();
   });
 
-  it('starts with an empty project when GitHub is unavailable', async () => {
+  it('starts with a local project when GitHub is unavailable', async () => {
     mockCreateClient.mockReturnValue(
       client({
         listAvailableRepositories: jest
@@ -119,7 +130,7 @@ describe('new project', () => {
     const fake = client({ listAvailableRepositories: jest.fn().mockResolvedValue([]) });
     mockCreateClient.mockReturnValue(fake);
     render(<NewProjectScreen />);
-    fireEvent.press(screen.getByLabelText('Empty project'));
+    fireEvent.press(await screen.findByLabelText(/^Local project/));
     fireEvent.changeText(screen.getByLabelText('Project name'), 'notes');
     fireEvent.press(screen.getByLabelText('Create project'));
     await waitFor(() =>
@@ -136,7 +147,8 @@ describe('new project', () => {
       }),
     );
     render(<NewProjectScreen />);
-    fireEvent.press(await screen.findByLabelText('Create project'));
+    await screen.findByText('acme/website');
+    fireEvent.press(screen.getByLabelText('Create project'));
     await screen.findByText('What does this project need?');
     await waitFor(() =>
       expect(alert).toHaveBeenCalledWith('Could not prepare project', 'Build failed'),
@@ -156,7 +168,8 @@ describe('new project', () => {
       .mockResolvedValue({ ...project, state: 'container_starting' });
     mockCreateClient.mockReturnValue(client({ repairProject }));
     render(<NewProjectScreen />);
-    fireEvent.press(await screen.findByLabelText('Create project'));
+    await screen.findByText('acme/website');
+    fireEvent.press(screen.getByLabelText('Create project'));
     await waitFor(() =>
       expect(alert).toHaveBeenCalledWith(
         'Review project warning',
@@ -176,7 +189,8 @@ it('refreshes available choices after connecting a service and returning', async
   const drive = jest.fn().mockResolvedValue({ connected: false });
   mockCreateClient.mockReturnValue(client({ getGoogleDriveConnection: drive }));
   render(<NewProjectScreen />);
-  fireEvent.press(await screen.findByLabelText('Create project'));
+  await screen.findByText('acme/website');
+  fireEvent.press(screen.getByLabelText('Create project'));
   await waitFor(() => expect(drive).toHaveBeenCalledTimes(1));
   expect(screen.queryByText('Google Drive folder')).toBeNull();
   fireEvent.press(screen.getByText('Discover more connections'));
@@ -185,4 +199,159 @@ it('refreshes available choices after connecting a service and returning', async
     for (const callback of mockFocusCallbacks) callback();
   });
   expect(await screen.findByText('Google Drive folder')).toBeOnTheScreen();
+});
+
+describe('new project — code hosts', () => {
+  const forgejo = {
+    connections: [
+      {
+        id: 'forgejo-1',
+        provider: 'forgejo',
+        baseUrl: 'https://git.example.org',
+        label: 'Forgejo',
+      },
+    ],
+    forgejoProjectsAvailable: true,
+  };
+  const forgejoRepositories = jest.fn().mockResolvedValue([
+    { owner: 'team', repo: 'legacy', archived: true },
+    { owner: 'team', repo: 'website', archived: false },
+  ]);
+
+  // Each setup must offer exactly the connected hosts plus a local project:
+  // a host that is offered but not connected fails only after the user commits.
+  it.each([
+    ['GitHub only', [project], null, ['GitHub']],
+    ['Forgejo only', [], forgejo, ['Forgejo']],
+    ['both', [project], forgejo, ['GitHub', 'Forgejo']],
+    ['none', [], null, []],
+  ] as const)('%s', async (_name, repositories, connections, offered) => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest.fn().mockResolvedValue(repositories),
+        listConnections: jest.fn().mockResolvedValue(connections),
+        listConnectionRepositories: forgejoRepositories,
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByLabelText(/^Local project/)).toBeOnTheScreen();
+    for (const name of ['GitHub', 'Forgejo']) {
+      const option = screen.queryByRole('radio', { name: new RegExp(`^${name},`) });
+      if (offered.includes(name as never)) expect(option).toBeOnTheScreen();
+      else expect(option).toBeNull();
+    }
+    if (offered.length === 0) {
+      expect(screen.getByLabelText('Project name')).toBeOnTheScreen();
+      fireEvent.press(screen.getByText('Connect a code host'));
+      expect(mockPush).toHaveBeenCalledWith('/settings/services');
+    }
+  });
+
+  it('reloads code hosts after returning from connection setup', async () => {
+    const connections = jest.fn().mockResolvedValue(null);
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: forgejoRepositories,
+      }),
+    );
+    render(<NewProjectScreen />);
+    fireEvent.press(await screen.findByText('Connect a code host'));
+    connections.mockResolvedValue(forgejo);
+    act(() => {
+      for (const callback of mockFocusCallbacks) callback();
+    });
+    expect(await screen.findByRole('radio', { name: /^Forgejo,/ })).toBeOnTheScreen();
+  });
+
+  it('creates a Forgejo project with its connection and skips archived repositories', async () => {
+    const fake = client({
+      listAvailableRepositories: jest.fn().mockResolvedValue([project]),
+      listConnections: jest.fn().mockResolvedValue(forgejo),
+      listConnectionRepositories: forgejoRepositories,
+    });
+    mockCreateClient.mockReturnValue(fake);
+    render(<NewProjectScreen />);
+    fireEvent.press(await screen.findByRole('radio', { name: /^Forgejo,/ }));
+    expect(await screen.findByText('team/website')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Create project'));
+    await waitFor(() =>
+      expect(fake.createProject).toHaveBeenCalledWith({
+        repo: 'team/website',
+        kind: 'forgejo',
+        connectionId: 'forgejo-1',
+      }),
+    );
+    expect(mockStorage.get('verity.newProject.codeHost')).toBe('forgejo-1');
+  });
+
+  // A GitHub repository sent with the Forgejo connection would create a project
+  // on the wrong host; the selection must clear before the new list arrives.
+  it('clears the repository when switching code hosts', async () => {
+    const fake = client({
+      listAvailableRepositories: jest.fn().mockResolvedValue([project]),
+      listConnections: jest.fn().mockResolvedValue(forgejo),
+      listConnectionRepositories: jest.fn().mockReturnValue(new Promise(() => {})),
+    });
+    mockCreateClient.mockReturnValue(fake);
+    render(<NewProjectScreen />);
+    await screen.findByText('acme/website');
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeEnabled();
+    fireEvent.press(screen.getByRole('radio', { name: /^Forgejo,/ }));
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeDisabled();
+    fireEvent.press(screen.getByRole('button', { name: 'Create project' }));
+    expect(fake.createProject).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local project when code hosts cannot load', async () => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest.fn().mockRejectedValue(new Error('offline')),
+        listConnections: jest.fn().mockRejectedValue(new Error('offline')),
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByLabelText('Project name')).toBeOnTheScreen();
+  });
+
+  it('preselects the code host used last time', async () => {
+    mockStorage.set('verity.newProject.codeHost', 'forgejo-1');
+    mockCreateClient.mockReturnValue(
+      client({
+        listConnections: jest.fn().mockResolvedValue(forgejo),
+        listConnectionRepositories: forgejoRepositories,
+      }),
+    );
+    render(<NewProjectScreen />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: /^Forgejo,/ })).toBeChecked());
+  });
+
+  it('hides Forgejo when the server cannot run Forgejo projects', async () => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listConnections: jest
+          .fn()
+          .mockResolvedValue({ ...forgejo, forgejoProjectsAvailable: false }),
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByRole('radio', { name: /^GitHub,/ })).toBeOnTheScreen();
+    expect(screen.queryByRole('radio', { name: /^Forgejo,/ })).toBeNull();
+  });
+
+  it('filters repositories by search', async () => {
+    mockCreateClient.mockReturnValue(
+      client({
+        listAvailableRepositories: jest
+          .fn()
+          .mockResolvedValue([project, { ...project, id: 'p2', repo: 'docs' }]),
+      }),
+    );
+    render(<NewProjectScreen />);
+    expect(await screen.findByText('acme/docs')).toBeOnTheScreen();
+    fireEvent.changeText(screen.getByLabelText('Search repositories'), 'web');
+    expect(screen.queryByText('acme/docs')).toBeNull();
+    expect(screen.getByText('acme/website')).toBeOnTheScreen();
+  });
 });

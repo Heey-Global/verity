@@ -2,7 +2,7 @@
 
 ## Repository
 
-Verity is an npm-workspaces monorepo using Node.js 24 or newer and TypeScript
+Verity is an npm-workspaces monorepo using Node.js 26.12.1 or newer within the 26.x release line and TypeScript
 with NodeNext module resolution.
 
 Run verification commands from the repository root. These are the full checks;
@@ -120,6 +120,20 @@ about individual development sessions. Describe compatibility requirements,
 limitations, and recovery procedures in general terms relevant to users of the
 project. Preserve information needed to assess or use a change without
 including private context or conversational history.
+
+## Mobile UI
+
+Build `apps/mobile` screens from the shared components in
+`apps/mobile/components/ui` and the theme in `apps/mobile/theme/tokens.ts`, as
+specified in `docs/design-system.md`. Take colors from theme roles, derive
+transparencies with `tint()`, take text from `theme.typography` and weights
+from the Inter families. When a screen needs something the components do not
+offer, extend the component rather than styling a local copy.
+
+`apps/mobile/__tests__/design-system-guard.test.ts` enforces this against
+`design-system-debt.json`, which records the code written before the design
+system. Never raise a count there; when a change removes debt, lower or delete
+the entry in the same change.
 
 ## Tests
 

@@ -8,6 +8,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 export interface ProjectRelayBinding {
   projectId: string;
+  forgeConnectionId?: string | null;
   owner: string;
   repo: string;
   containerGeneration: string;
@@ -326,6 +327,7 @@ export class ProjectRelayLifecycle {
       const githubCapability = issueCapabilities
         ? await this.options.githubCapabilities.issue({
             projectId: binding.projectId,
+            forgeConnectionId: binding.forgeConnectionId ?? null,
             owner: binding.owner,
             repo: binding.repo,
             containerGeneration: binding.containerGeneration,

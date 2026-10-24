@@ -45,5 +45,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   pressed: { backgroundColor: theme.colors.surfaceAlt },
   main: { flex: 1, minWidth: 0 },
-  name: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 * theme.fontScale },
+  name: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+    lineHeight: 22 * theme.fontScale,
+  },
 }));

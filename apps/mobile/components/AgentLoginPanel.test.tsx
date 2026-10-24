@@ -16,6 +16,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { AgentLoginPanel } from './AgentLoginPanel';
 import { lightTheme } from '../theme/tokens';
+import { tint } from './ui/tint';
 
 const waitingLogin = {
   sessionId: '22222222-2222-4222-8222-222222222222',
@@ -29,16 +30,17 @@ const waitingLogin = {
 } as AgentLogin;
 
 describe('AgentLoginPanel live updates', () => {
-  it('uses the shared primary palette for agent login actions', () => {
+  // The login is the one primary action of its card: the design system's
+  // tonal fill, not a solid local color.
+  it('draws agent login actions as the shared primary button', () => {
     const client = {} as VerityClient;
     render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
 
-    expect(screen.getByLabelText('Connect Claude')).toHaveStyle({
-      backgroundColor: lightTheme.colors.primary,
-    });
-    expect(screen.getByLabelText('Connect Codex')).toHaveStyle({
-      backgroundColor: lightTheme.colors.primary,
-    });
+    for (const label of ['Connect Claude', 'Connect Codex']) {
+      expect(screen.getByLabelText(label)).toHaveStyle({
+        backgroundColor: tint(lightTheme.colors.action, 'fill'),
+      });
+    }
   });
 
   it('shows configured provider actions directly in compact settings', () => {

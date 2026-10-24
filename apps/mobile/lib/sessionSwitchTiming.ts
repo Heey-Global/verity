@@ -8,12 +8,34 @@ import {
 
 let lastTouchedSessionId: string | undefined;
 
-/** Earliest JS callback, not physical touch receipt. Native timestamps use a separate clock. */
-export function beginRowTouch(sessionId: string, nativeTimestamp?: number): void {
+let rowTouch: { timestamp: number; trace: SwitchTiming } | undefined;
+
+function touchTrace(sessionId: string, nativeTimestamp?: number): SwitchTiming {
   lastTouchedSessionId = sessionId;
+  if (
+    nativeTimestamp !== undefined &&
+    Number.isFinite(nativeTimestamp) &&
+    rowTouch?.timestamp === nativeTimestamp &&
+    sessionSwitchTiming(sessionId) === rowTouch.trace
+  )
+    return rowTouch.trace;
   const trace = beginSessionSwitch(sessionId);
-  markSessionSwitch(trace, 'js-touch-start', nativeTimestamp);
+  rowTouch =
+    nativeTimestamp !== undefined && Number.isFinite(nativeTimestamp)
+      ? { timestamp: nativeTimestamp, trace }
+      : undefined;
   startStallSampling(trace);
+  return trace;
+}
+
+/** Responder grant can precede touch-start; both callbacks must share one trace. */
+export function rowPressIn(sessionId: string, nativeTimestamp?: number): void {
+  markSessionSwitch(touchTrace(sessionId, nativeTimestamp), 'js-press-in', nativeTimestamp);
+}
+
+/** JS callback time, not physical touch receipt. Native timestamps use a separate clock. */
+export function beginRowTouch(sessionId: string, nativeTimestamp?: number): void {
+  markSessionSwitch(touchTrace(sessionId, nativeTimestamp), 'js-touch-start', nativeTimestamp);
 }
 
 export function rowPress(sessionId: string): void {

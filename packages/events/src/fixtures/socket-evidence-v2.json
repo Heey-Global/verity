@@ -1,0 +1,172 @@
+{
+  "document": {
+    "version": 2,
+    "runId": "00000000-0000-4000-8000-000000000002",
+    "state": "stopped",
+    "startedAt": "2026-10-14T09:00:00.010Z",
+    "endedAt": "2026-10-14T09:00:00.020Z",
+    "expiresAt": "2026-10-14T09:02:00.010Z",
+    "retainedUntil": "2026-10-14T10:00:00.010Z",
+    "collectorReady": true,
+    "recordCount": 2,
+    "droppedRecords": 0,
+    "stopReason": "requested",
+    "diagnosticErrors": 0,
+    "omittedBindings": 0,
+    "records": [
+      {
+        "schemaVersion": 2,
+        "event": "remote.socket_evidence",
+        "kind": "binding",
+        "runId": "00000000-0000-4000-8000-000000000002",
+        "processBootId": "00000000-0000-4000-8000-000000000004",
+        "socketLifetimeId": "00000000-0000-4000-8000-000000000003",
+        "session": "1111111111111111",
+        "generation": "2222222222222222",
+        "party": "installation",
+        "baseline": "post_auth",
+        "sequence": 1,
+        "utc": "2026-10-14T09:00:00.010Z",
+        "monotonicMs": 10,
+        "targetIntervalMs": 100,
+        "actualIntervalMs": 0,
+        "lagMs": 0,
+        "snapshot": {
+          "transport": {
+            "schemaVersion": 1,
+            "wsState": null,
+            "receiverState": null,
+            "receiverFragmented": null,
+            "socketPaused": null,
+            "bufferedBytes": null,
+            "socketBytesRead": null,
+            "socketBytesWritten": null,
+            "socketReadableLength": null,
+            "socketWritableLength": null,
+            "receiverBufferedBytes": null,
+            "receiverPayloadLength": null,
+            "receiverTotalPayloadLength": null,
+            "receiverMessageLength": null,
+            "socketEncrypted": null,
+            "socketNeedDrain": null,
+            "socketDestroyed": null,
+            "receiverFin": null,
+            "receiverNeedDrain": null,
+            "closeFrameSent": null,
+            "closeFrameReceived": null
+          },
+          "counters": {
+            "emittedMessages": 1,
+            "emittedBytes": 100,
+            "parserErrors": 0,
+            "trackerErrors": 0,
+            "wsErrors": 0
+          },
+          "dataTotals": {
+            "acceptedFrames": 1,
+            "acceptedBytes": 1,
+            "sendFrames": 0,
+            "sendBytes": 0,
+            "completedFrames": 0,
+            "completedBytes": 0,
+            "errors": 0
+          },
+          "streams": [
+            {
+              "stream": "3333333333333333",
+              "acceptedFrames": 1,
+              "acceptedBytes": 1,
+              "sendFrames": 0,
+              "sendBytes": 0,
+              "completedFrames": 0,
+              "completedBytes": 0,
+              "errors": 0
+            }
+          ],
+          "streamHashCollisions": 0,
+          "droppedStreams": 0,
+          "loggerErrors": 0,
+          "lastCloseCode": null,
+          "truncatedStreams": 0
+        }
+      },
+      {
+        "schemaVersion": 2,
+        "event": "remote.socket_evidence",
+        "kind": "final",
+        "runId": "00000000-0000-4000-8000-000000000002",
+        "processBootId": "00000000-0000-4000-8000-000000000004",
+        "socketLifetimeId": "00000000-0000-4000-8000-000000000003",
+        "session": "1111111111111111",
+        "generation": "2222222222222222",
+        "party": "installation",
+        "baseline": "post_auth",
+        "sequence": 2,
+        "utc": "2026-10-14T09:00:00.020Z",
+        "monotonicMs": 20,
+        "targetIntervalMs": 100,
+        "actualIntervalMs": 10,
+        "lagMs": 0,
+        "snapshot": {
+          "transport": {
+            "schemaVersion": 1,
+            "wsState": null,
+            "receiverState": null,
+            "receiverFragmented": null,
+            "socketPaused": null,
+            "bufferedBytes": null,
+            "socketBytesRead": null,
+            "socketBytesWritten": null,
+            "socketReadableLength": null,
+            "socketWritableLength": null,
+            "receiverBufferedBytes": null,
+            "receiverPayloadLength": null,
+            "receiverTotalPayloadLength": null,
+            "receiverMessageLength": null,
+            "socketEncrypted": null,
+            "socketNeedDrain": null,
+            "socketDestroyed": null,
+            "receiverFin": null,
+            "receiverNeedDrain": null,
+            "closeFrameSent": null,
+            "closeFrameReceived": null
+          },
+          "counters": {
+            "emittedMessages": 1,
+            "emittedBytes": 100,
+            "parserErrors": 0,
+            "trackerErrors": 0,
+            "wsErrors": 0
+          },
+          "dataTotals": {
+            "acceptedFrames": 1,
+            "acceptedBytes": 1,
+            "sendFrames": 0,
+            "sendBytes": 0,
+            "completedFrames": 0,
+            "completedBytes": 0,
+            "errors": 0
+          },
+          "streams": [
+            {
+              "stream": "3333333333333333",
+              "acceptedFrames": 1,
+              "acceptedBytes": 1,
+              "sendFrames": 0,
+              "sendBytes": 0,
+              "completedFrames": 0,
+              "completedBytes": 0,
+              "errors": 0
+            }
+          ],
+          "streamHashCollisions": 0,
+          "droppedStreams": 0,
+          "loggerErrors": 0,
+          "lastCloseCode": null,
+          "truncatedStreams": 0
+        }
+      }
+    ]
+  },
+  "exportHash": "e69f48439a430917519476c3f3c972912435b827222eac1f70ee224a799611ef"
+}

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
 
 import { settingsStyles as styles } from './settingsStyles';
+import { Button } from '../ui';
 
 const GITHUB_SIGNING_KEY_URL = 'https://github.com/settings/ssh/new';
 
@@ -101,21 +102,15 @@ export function SigningKeyDisplay({
         </Text>
         {!state.configured ? (
           <>
-            <Pressable
-              onPress={generate}
-              disabled={generating}
-              accessibilityRole="button"
-              accessibilityLabel="Create signing key"
-              style={({ pressed }) => [
-                styles.signingKeyButton,
-                generating ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-            >
-              <Text style={styles.signingKeyButtonText}>
-                {generating ? 'Creating…' : 'Create signing key'}
-              </Text>
-            </Pressable>
+            <View style={styles.signingKeyActions}>
+              <Button
+                label="Create signing key"
+                variant="secondary"
+                size="compact"
+                loading={generating}
+                onPress={generate}
+              />
+            </View>
             {generationError !== undefined ? (
               <Text style={styles.fieldError}>{generationError}</Text>
             ) : null}
@@ -140,22 +135,22 @@ export function SigningKeyDisplay({
         </Text>
       </Pressable>
       <View style={styles.signingKeyActions}>
-        <Pressable
-          onPress={() => copy(publicKey)}
-          accessibilityRole="button"
+        <Button
+          label={copied ? 'Copied' : 'Copy key'}
           accessibilityLabel="Copy signing public key"
-          style={({ pressed }) => [styles.signingKeyButton, pressed ? styles.pressed : null]}
-        >
-          <Text style={styles.signingKeyButtonText}>{copied ? 'Copied ✓' : 'Copy key'}</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => void Linking.openURL(GITHUB_SIGNING_KEY_URL).catch(() => undefined)}
-          accessibilityRole="button"
+          icon={copied ? 'check' : 'copy'}
+          variant="secondary"
+          size="compact"
+          onPress={() => copy(publicKey)}
+        />
+        <Button
+          label="Open GitHub"
           accessibilityLabel="Open GitHub SSH key settings"
-          style={({ pressed }) => [styles.signingKeyButton, pressed ? styles.pressed : null]}
-        >
-          <Text style={styles.signingKeyButtonText}>Open GitHub ↗</Text>
-        </Pressable>
+          icon="external-link"
+          variant="secondary"
+          size="compact"
+          onPress={() => void Linking.openURL(GITHUB_SIGNING_KEY_URL).catch(() => undefined)}
+        />
       </View>
       <Text style={styles.disclosureSummary}>
         On GitHub pick Key type “Signing Key” (not Authentication), on the account whose verified

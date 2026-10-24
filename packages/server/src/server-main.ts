@@ -123,7 +123,7 @@ import {
   SANDBOX_IMAGE_REPO,
   TOOLKIT_FEATURE_REPO,
 } from './sandbox-artifacts.js';
-import { UPLINK_CONTROL_URL } from './uplink-control-client.js';
+import { uplinkDiagnosticEndpoint } from './uplink-diagnostic-endpoint.js';
 import { devicePairingFromEnv, serverStartupRequiresPairing } from './pairing-env.js';
 
 /** Fixed internal port for the non-published `/internal/*` (signing-broker)
@@ -879,7 +879,7 @@ async function main(): Promise<void> {
               ),
             10_000,
           ).catch(() => undefined),
-        uplinkUrl: UPLINK_CONTROL_URL,
+        ...uplinkDiagnosticEndpoint(process.env),
         serverVersion: SERVER_VERSION,
         ...(remoteControlIngress === undefined ? {} : { remoteControl: remoteControlIngress }),
       },

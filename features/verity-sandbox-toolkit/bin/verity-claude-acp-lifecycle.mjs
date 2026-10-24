@@ -27,6 +27,30 @@ function packageDir() {
 }
 
 function replaceOnce(source, from, to, label) {
+  // Newer adapters reject events from earlier task runs. Keep that boundary
+  // ahead of our metadata emission so stale events cannot revive settled tasks.
+  const taskCase = from.match(/^ {28}case "(task_[a-z]+)":\n/);
+  if (taskCase && !source.includes(from)) {
+    const header = taskCase[0];
+    const name = taskCase[1];
+    const guard = `                                if (isLateTaskRun(session, message.task_id, message.run_id)) {
+                                    this.logger.log(\`Ignoring ${name} for task \${message.task_id} from earlier run \${message.run_id}\`);
+                                    break;
+                                }
+`;
+    let boundary = guard;
+    if (name === 'task_notification') {
+      const staleEnd = `                                // In the RFD form, a resumed child runs under the call that
+                                // resumed it, and the end of an earlier delegation ends
+                                // nothing: the child and its live task belong to the new run.
+                                if (subagents.isStaleEnd(message.task_id, message.tool_use_id))
+                                    break;
+`;
+      if (source.includes(header + guard + staleEnd)) boundary += staleEnd;
+    }
+    from = from.replace(header, header + boundary);
+    to = to.replace(header, header + boundary);
+  }
   const first = source.indexOf(from);
   if (first === -1 || source.indexOf(from, first + from.length) !== -1) {
     fail(`${label} seam is missing or ambiguous; re-derive against the pinned adapter`);
@@ -140,8 +164,7 @@ source = replaceOnce(
 source = replaceOnce(
   source,
   `                            case "task_updated":
-                                await asyncTasks.taskUpdated(message.task_id, message.patch);
-                                // terminal-status task_updated patch`,
+                                await asyncTasks.taskUpdated(message.task_id, message.patch);`,
   `                            case "task_updated":
                                 await asyncTasks.taskUpdated(message.task_id, message.patch);
                                 const status = message.patch.status;
@@ -159,8 +182,7 @@ source = replaceOnce(
                                             status,
                                         } } },
                                     },
-                                });
-                                // terminal-status task_updated patch`,
+                                });`,
   'task_updated start',
 );
 

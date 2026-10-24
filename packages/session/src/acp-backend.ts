@@ -1,4 +1,4 @@
-import * as acp from '@agentclientprotocol/sdk';
+import * as acp from '@agentclientprotocol/sdk/unstable';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
@@ -9,7 +9,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionUpdate,
-} from '@agentclientprotocol/sdk';
+} from '@agentclientprotocol/sdk/unstable';
 import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
@@ -139,8 +139,13 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
+  /** An answered `session/load` error that, besides `resourceNotFound`, names a
+   *  conversation the agent does not have — for an adapter that reports it some
+   *  other way. Only for answers that are about the conversation itself. */
+  readonly isMissingSession?:
+    ((error: acp.RequestError, requestedSessionId: string) => boolean) | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta(opts: RunTurnOptions): Record<string, unknown>;
+  sessionMeta(opts: RunTurnOptions): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Model recorded on the `session` event when the turn names none. */
   defaultModelLabel(opts: RunTurnOptions): string;
   /** The turn's prompt text — the hook for agents with no system-prompt field. */
@@ -306,6 +311,21 @@ function processStream(process: SpawnedProcess, worktree: string): acp.Stream {
       },
     }),
   );
+}
+
+/** The reason codex-acp gives for -32603 ("Internal error") travels only in the
+ *  error's `data.details`; its stderr stays empty. Without the details the operator
+ *  sees a bare "Internal error" and the failure cannot be told apart from any other. */
+const MAX_ACP_ERROR_DETAILS = 1_000;
+
+function acpErrorMessage(error: unknown, env: NodeJS.ProcessEnv): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof acp.RequestError)) return message;
+  const details = (error.data as { details?: unknown } | null | undefined)?.details;
+  if (typeof details !== 'string' || details.trim() === '' || message.includes(details)) {
+    return message;
+  }
+  return `${message}: ${redactProcessStderr(details.trim(), env).slice(0, MAX_ACP_ERROR_DETAILS)}`;
 }
 
 /** Turn and steer attachments share one shape, so one signature serves both. */
@@ -566,6 +586,7 @@ export async function runAcpTurn(
       cwd: opts.cwd,
       env: opts.env ?? process.env,
       keepStdinOpen: true,
+      ...(opts.planning === true ? { planning: true } : {}),
     });
   let child = spawn();
   const startupRecoveryDeadline = Date.now() + 16 * 60_000;
@@ -601,6 +622,10 @@ export async function runAcpTurn(
   let promptDispatched = false;
   const isPrompting = (): boolean => promptDispatched;
   const topLevelText = new AcpTextStream();
+  const capacityMessage = 'Selected model is at capacity. Please try a different model.';
+  let capacityText = '';
+  let capacityProse = false;
+  let capacityFailure = false;
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
   let aborted = false;
@@ -647,6 +672,8 @@ export async function runAcpTurn(
   // between accepting a prompt and the agent's first token gets it answered a
   // turn later instead of killing the session.
   let turnHasAgentContent = false;
+  // Replay safety is monotonic, unlike the steering/capacity classifier.
+  let executionObserved = false;
   opts.onSteer?.((message) => {
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === undefined) return false;
     sendSteering(message);
@@ -756,6 +783,23 @@ export async function runAcpTurn(
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
     if (stopped) return;
+    if (
+      profile.telemetryBackend === 'codex-acp' &&
+      isAgentContent(update) &&
+      capacityText === '' &&
+      !(
+        update.sessionUpdate === 'agent_message_chunk' &&
+        update.content.type === 'text' &&
+        parentToolId(update._meta, metaNamespace) === undefined
+      )
+    ) {
+      turnHasAgentContent = true;
+    }
+    if (update.sessionUpdate === 'tool_call' && capacityText.trim() !== capacityMessage) {
+      await writeAll(writer, topLevelText.push(capacityText));
+      capacityText = '';
+      capacityProse = false;
+    }
     // The agent switches modes on its own — a model switch that clamps a mode
     // the new model cannot run, an approval Verity answered generically. Its
     // posture is the operator's, not the turn's, so pull it back rather than
@@ -777,11 +821,31 @@ export async function runAcpTurn(
     }
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       if (parentToolId(update._meta, metaNamespace) === undefined) {
+        if (profile.telemetryBackend === 'codex-acp' && !capacityProse) {
+          turnHasAgentContent = false;
+        }
         // Keep lifecycle signals carried in `_meta`; bypassing the adapter to
         // coalesce prose used to discard task/compaction boundaries attached to
         // the same message chunk.
         for (const event of adapter.consume(update)) {
-          await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
+          if (event.t === 'text' && profile.telemetryBackend === 'codex-acp' && !capacityProse) {
+            capacityText += event.delta;
+            if (capacityMessage.startsWith(capacityText.trimStart())) {
+              turnHasAgentContent = false;
+              continue;
+            }
+            // Only the adapter's standalone refusal is infrastructure output;
+            // quoted explanations and ordinary prose keep their original text.
+            if (capacityText.trim() === capacityMessage) continue;
+            await writeAll(writer, topLevelText.push(capacityText));
+            capacityText = '';
+            // Chunk boundaries must not turn quoted provider text into a refusal.
+            capacityProse = true;
+            turnHasAgentContent = true;
+          } else {
+            if (event.t === 'text') turnHasAgentContent = true;
+            await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
+          }
         }
         return;
       }
@@ -820,7 +884,12 @@ export async function runAcpTurn(
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
           if (loadingSession || stopped) return Promise.resolve();
-          if (isAgentContent(params.update)) turnHasAgentContent = true;
+          if (isAgentContent(params.update)) executionObserved = true;
+          if (profile.telemetryBackend === 'codex-acp') {
+            // A provider refusal is not assistant content safe for steering.
+            // Keep the channel closed until the ordered classifier accepts prose.
+            if (params.update.sessionUpdate === 'agent_message_chunk') turnHasAgentContent = false;
+          } else if (isAgentContent(params.update)) turnHasAgentContent = true;
           return queueUpdate(params.update);
         })
         .connectWith(processStream(child, opts.worktree), async (agent) => {
@@ -879,10 +948,11 @@ export async function runAcpTurn(
           if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
             turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
           }
+          const metadata = profile.sessionMeta(turnOpts);
           const request = {
             cwd: opts.cwd,
             mcpServers,
-            _meta: profile.sessionMeta(turnOpts),
+            _meta: metadata instanceof Promise ? await metadata : metadata,
           };
           let session: NewSessionResponse;
           if (opts.resumeSessionId !== undefined) {
@@ -918,7 +988,11 @@ export async function runAcpTurn(
                 // (-32603), or because the request was malformed — every one of those
                 // is a condition of the moment, and dropping a live binding on one
                 // would discard a conversation the agent still has, permanently.
-                if (error instanceof acp.RequestError && error.code === RESOURCE_NOT_FOUND) {
+                if (
+                  error instanceof acp.RequestError &&
+                  (error.code === RESOURCE_NOT_FOUND ||
+                    profile.isMissingSession?.(error, opts.resumeSessionId!) === true)
+                ) {
                   loadRefused = true;
                 }
                 throw error;
@@ -1061,10 +1135,58 @@ export async function runAcpTurn(
           // belong to this turn rather than ACP's replay of canonical history.
           loadingSession = false;
           promptDispatched = true;
-          const prompt = await agent.request(acp.methods.agent.session.prompt, {
-            sessionId: session.sessionId,
-            prompt: promptBlocks(turnOpts, profile),
-          });
+          let prompt;
+          const promptUsage = { ...ZERO_USAGE };
+          for (let attempt = 0; ; attempt += 1) {
+            capacityText = '';
+            capacityProse = false;
+            capacityFailure = false;
+            turnHasAgentContent = false;
+            prompt = await agent.request(acp.methods.agent.session.prompt, {
+              sessionId: session.sessionId,
+              // Continuing the bound conversation preserves completed tool work
+              // instead of replaying the original request after side effects.
+              prompt:
+                attempt === 0
+                  ? promptBlocks(turnOpts, profile)
+                  : [{ type: 'text', text: 'Continue from where you stopped.' }],
+            });
+            const attemptUsage = usage(prompt.usage);
+            promptUsage.inputTokens += attemptUsage.inputTokens;
+            promptUsage.outputTokens += attemptUsage.outputTokens;
+            promptUsage.cacheReadTokens += attemptUsage.cacheReadTokens;
+            promptUsage.cacheCreationTokens += attemptUsage.cacheCreationTokens;
+            await drainUpdates();
+            capacityFailure = capacityText.trim() === capacityMessage;
+            if (capacityText !== '' && !capacityFailure) {
+              await writeAll(writer, topLevelText.push(capacityText));
+            }
+            capacityText = '';
+            if (!capacityFailure || stopped) break;
+            await writeAll(writer, topLevelText.flush());
+            if (attempt >= 2) {
+              await writer.write({ t: 'error', kind: 'model_capacity', message: capacityMessage });
+              break;
+            }
+            acceptingSteering = false;
+            await writer.write({
+              t: 'error',
+              kind: 'model_capacity_retry',
+              message: `Selected model is at capacity. Retrying in 5 seconds (${attempt + 1}/2).`,
+            });
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(done, 5_000);
+              function done(): void {
+                clearTimeout(timer);
+                wakeRetry = undefined;
+                resolve();
+              }
+              wakeRetry = done;
+              if (stopped) done();
+            });
+            if (stopped) throw new Error('ACP turn stopped during capacity retry');
+            acceptingSteering = true;
+          }
           acceptingSteering = false;
           // A response already queued on stdout can outlive process termination.
           // Do not let its callback settle the stopped turn a second time.
@@ -1119,7 +1241,7 @@ export async function runAcpTurn(
           }
           await writer.write({
             t: 'result',
-            usage: usage(prompt.usage),
+            usage: promptUsage,
             stopReason: prompt.stopReason,
             telemetry: {
               backend: profile.telemetryBackend,
@@ -1135,7 +1257,9 @@ export async function runAcpTurn(
           // (`deriveSessionStatus` settles on the later `interrupted`). A
           // cancellation Verity did not ask for — the turn timeout, which stops
           // the session without setting `aborted` — stays a crash.
-          if (prompt.stopReason !== 'cancelled') {
+          if (capacityFailure) {
+            await writer.write({ t: 'status', state: 'crashed' });
+          } else if (prompt.stopReason !== 'cancelled') {
             await writer.write({ t: 'status', state: 'completed' });
           } else if (!aborted) {
             await writer.write({ t: 'status', state: 'crashed' });
@@ -1143,8 +1267,13 @@ export async function runAcpTurn(
           await writer.write({
             t: 'diagnostic',
             source: 'agent',
-            outcome:
-              prompt.stopReason === 'cancelled' ? (aborted ? 'cancelled' : 'failed') : 'completed',
+            outcome: capacityFailure
+              ? 'failed'
+              : prompt.stopReason === 'cancelled'
+                ? aborted
+                  ? 'cancelled'
+                  : 'failed'
+                : 'completed',
             phase: diagnosticPhase,
             backend: profile.telemetryBackend,
           });
@@ -1210,19 +1339,23 @@ export async function runAcpTurn(
     }
     return {
       sessionId: boundSessionId,
-      exitCode: result.stopReason === 'cancelled' && !aborted ? 1 : 0,
+      exitCode: capacityFailure || (result.stopReason === 'cancelled' && !aborted) ? 1 : 0,
       stderr: child.stderr(),
       aborted,
     };
   } catch (error) {
     const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = acpErrorMessage(error, opts.env ?? process.env);
     await drainUpdates().catch(() => undefined);
     closedOut = true;
     // Unexpected disconnects preserve buffered prose and completed contracts.
     // An explicit Stop must not publish another text fragment or action card.
     if (!aborted) {
+      if (capacityText !== '') {
+        await writeAll(writer, topLevelText.push(capacityText)).catch(() => undefined);
+        capacityText = '';
+      }
       await writeAll(writer, adapter.flush()).catch(() => undefined);
       await writeAll(writer, topLevelText.flush()).catch(() => undefined);
     }
@@ -1326,7 +1459,8 @@ export async function runAcpTurn(
       stderr,
       aborted,
       ...(failedBeforeExecution ? { failedBeforeExecution: true as const } : {}),
-      ...(loadRefused && !aborted ? { staleResume: true as const } : {}),
+      ...(executionObserved ? { executionObserved: true as const } : {}),
+      ...(loadRefused && !aborted && !executionObserved ? { staleResume: true as const } : {}),
     };
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);

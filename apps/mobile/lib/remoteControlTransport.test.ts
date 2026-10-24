@@ -1,3 +1,8 @@
+import {
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  exportSessionSwitchTimings,
+} from '@verity/mobile';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -21,6 +26,8 @@ const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
 const mockDiagnosticSummary = jest.fn();
+const mockDisableDiagnostics = jest.fn().mockResolvedValue(undefined);
+const mockRecordingRemaining = jest.fn().mockResolvedValue(0);
 const mockCaptureDiagnostics = jest.fn().mockResolvedValue(true);
 const mockClearPendingDiagnostics = jest.fn().mockResolvedValue(undefined);
 const mockRecordDiagnosticEvent = jest.fn().mockResolvedValue(undefined);
@@ -43,6 +50,8 @@ jest.mock('expo-modules-core', () => ({
           stop: mockStop,
           lastStopReason: mockLastStopReason,
           diagnosticSummary: mockDiagnosticSummary,
+          disableDataDiagnostics: mockDisableDiagnostics,
+          dataDiagnosticsRemainingMs: mockRecordingRemaining,
           captureDataDiagnostics: mockCaptureDiagnostics,
           clearPendingDataDiagnostics: mockClearPendingDiagnostics,
           recordDataDiagnosticEvent: mockRecordDiagnosticEvent,
@@ -141,11 +150,12 @@ describe('shared remote control transport', () => {
     expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(4_321);
     expect(mockAdmission).toHaveBeenCalledTimes(1);
 
-    // A revoked descriptor must stop the attachment before the next request.
+    // Revocation disables routing immediately while native cleanup stays serialized.
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
-    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 
@@ -174,6 +184,11 @@ describe('shared remote control transport', () => {
     const first = remoteControlPortForUrl(`${coreUrl}/api/first`);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(resolveFirst).toBeDefined();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    // A stalled admission must not hold direct requests behind the lifecycle queue.
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     mockProfile.mockReturnValue(next);
     reportDirectRouteFailure(coreUrl);
     const second = remoteControlPortForUrl(`${coreUrl}/api/second`);
@@ -272,7 +287,14 @@ describe('shared remote control transport', () => {
 
     // On VPN or LAN every request used to detour through the hosted Uplink,
     // which is what made the app slow exactly where it had been fast.
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
+    const trace = beginSessionSwitch('route-diagnostic');
+    const requestId = beginSwitchTransportRequest(trace, 'session')!;
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`, false, requestId)).toBe(0);
+    expect(
+      exportSessionSwitchTimings()
+        .at(-1)!
+        .transportRequests[0]!.phases.map((p) => p.phase),
+    ).toEqual(['fetch-dispatch', 'route-probe-start', 'route-probe-end']);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.stringMatching(/^remote-probe-/),
       `${coreUrl}/healthz`,
@@ -282,7 +304,10 @@ describe('shared remote control transport', () => {
       profile.endpoints[0]?.tlsPin,
       0,
     );
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`)).toBe(0);
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`, false, requestId)).toBe(0);
+    expect(exportSessionSwitchTimings().at(-1)!.transportRequests[0]!.phases.at(-1)?.phase).toBe(
+      'route-cache-hit',
+    );
     expect(mockRequest).toHaveBeenCalledTimes(1);
     expect(mockAdmission).not.toHaveBeenCalled();
 
@@ -1107,7 +1132,7 @@ describe('remote diagnostics', () => {
     mockRequest.mockClear();
     mockStart.mockClear();
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
     expect(mockAdmission).not.toHaveBeenCalled();
     expect(mockRequest).not.toHaveBeenCalled();
@@ -1450,7 +1475,7 @@ describe('direct routing across background and diagnostics', () => {
 });
 
 describe('opt-in DATA capture', () => {
-  it('replaces a live tunnel before arming the selected recording and clears pending capture', async () => {
+  it('replaces a live tunnel before arming the selected recording without clearing the capture window', async () => {
     jest.resetModules();
     mockProfile.mockReturnValue(profile);
     mockToken.mockReturnValue('auth');
@@ -1487,11 +1512,11 @@ describe('opt-in DATA capture', () => {
       'probe_started',
       'probe_succeeded',
     ]);
-    expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   });
 });
 
-it('clears recording intent after a fresh attachment fails and permits another recording', async () => {
+it('retains recording intent after an attachment fails and permits a new explicit recording', async () => {
   jest.resetModules();
   mockProfile.mockReturnValue(profile);
   mockToken.mockReturnValue('auth');
@@ -1514,10 +1539,10 @@ it('clears recording intent after a fresh attachment fails and permits another r
     require('./remoteControlTransport') as typeof import('./remoteControlTransport');
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(false);
   expect(cancel).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(2);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('keeps selected capture armed until an automatic stall replacement finishes', async () => {
@@ -1546,10 +1571,7 @@ it('keeps selected capture armed until an automatic stall replacement finishes',
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockStart).toHaveBeenCalledTimes(2);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics.mock.invocationCallOrder[0]).toBeGreaterThan(
-    mockStart.mock.invocationCallOrder[1]!,
-  );
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('arms capture before starting the selected replacement of an inactive tunnel', async () => {
@@ -1577,4 +1599,209 @@ it('arms capture before starting the selected replacement of an inactive tunnel'
   expect(mockCaptureDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
     mockStart.mock.invocationCallOrder[0]!,
   );
+});
+
+it('stops recording without waiting for the serialized probe', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  mockAdmission.mockReturnValue(new Promise(() => undefined));
+  mockDisableDiagnostics.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  void transport.testRemoteControlForUrl(coreUrl);
+  await Promise.resolve();
+  expect(await transport.stopRemoteDataRecording()).toBe(true);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+});
+
+it('disarms a capture whose native activation finishes after stop', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  let completeArm!: (value: boolean) => void;
+  mockCaptureDiagnostics.mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        completeArm = resolve;
+      }),
+  );
+  mockDisableDiagnostics.mockClear();
+  mockStart.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  const test = transport.testRemoteControlForUrl(coreUrl, true);
+  for (let i = 0; i < 10 && !completeArm; i++) await Promise.resolve();
+  expect(completeArm).toBeDefined();
+  expect(await transport.stopRemoteDataRecording()).toBe(true);
+  completeArm(true);
+  expect(await test).toEqual({ ready: false, detail: 'connection recording was stopped' });
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('arms coordinated recording on a fresh tunnel without admission or a health probe', async () => {
+  jest.resetModules();
+  mockCaptureDiagnostics.mockReset().mockResolvedValue(true);
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValueOnce(119_000);
+  mockAdmission.mockClear();
+  mockRequest.mockClear();
+  mockStart.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect(await transport.startRemoteDataRecording()).toBe(119_000);
+  expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockAdmission).not.toHaveBeenCalled();
+  expect(mockRequest).not.toHaveBeenCalled();
+  expect(mockStart).not.toHaveBeenCalled();
+});
+it('does not renew an already active coordinated capture', async () => {
+  jest.resetModules();
+  mockRecordingRemaining.mockReset().mockResolvedValue(60_000);
+  mockCaptureDiagnostics.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  await expect(transport.startRemoteDataRecording()).rejects.toThrow('Recording already active');
+  expect(mockCaptureDiagnostics).not.toHaveBeenCalled();
+});
+
+async function armScopedRecording() {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  mockCaptureDiagnostics.mockReset().mockResolvedValue(true);
+  mockDisableDiagnostics.mockReset().mockResolvedValue(undefined);
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValue(119_000);
+  mockStart.mockReset().mockResolvedValue(4999);
+  mockIsActive.mockReset().mockResolvedValue(false);
+  mockRequest.mockReset().mockResolvedValue({ status: 200 });
+  mockAdmission.mockReset().mockResolvedValue({
+    ticket: 'ticket',
+    sessionId: 'session',
+    finish: jest.fn(),
+    cancel: jest.fn(),
+  });
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  await transport.startRemoteDataRecording();
+  return transport;
+}
+it('disables consent before attaching another paired server', async () => {
+  const transport = await armScopedRecording();
+  mockProfile.mockReturnValue({ ...profile, serverId: 'other-server' });
+  expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockDisableDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStart.mock.invocationCallOrder[0]!,
+  );
+});
+it('preserves consent across replacements of the same paired server', async () => {
+  const transport = await armScopedRecording();
+  expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+  expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+  expect(mockStart).toHaveBeenCalledTimes(2);
+  expect(mockDisableDiagnostics).not.toHaveBeenCalled();
+  expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+});
+it('rejects a coordinated arm queued for a different selected profile', async () => {
+  const transport = await armScopedRecording();
+  await transport.stopRemoteDataRecording();
+  mockCaptureDiagnostics.mockClear();
+  const arm = transport.startRemoteDataRecording();
+  mockProfile.mockReturnValue({ ...profile, serverId: 'other-server' });
+  await expect(arm).rejects.toThrow('Recording stopped');
+  expect(mockCaptureDiagnostics).not.toHaveBeenCalled();
+});
+it('does not attach another server if stopping the old consent fails', async () => {
+  const transport = await armScopedRecording();
+  mockProfile.mockReturnValue({ ...profile, serverId: 'other-server' });
+  mockDisableDiagnostics.mockRejectedValue(new Error('native unavailable'));
+  expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
+  expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('disables a surviving native window after JavaScript reload before attaching another server', async () => {
+  await armScopedRecording();
+  jest.resetModules();
+  mockProfile.mockReturnValue({ ...profile, serverId: 'other-server' });
+  mockDisableDiagnostics.mockClear();
+  mockStart.mockClear();
+  const reloaded = require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect((await reloaded.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockDisableDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStart.mock.invocationCallOrder[0]!,
+  );
+});
+it('reconciles a surviving native recording when status is read after JavaScript reload', async () => {
+  await armScopedRecording();
+  jest.resetModules();
+  mockDisableDiagnostics.mockClear().mockImplementationOnce(async () => {
+    mockRecordingRemaining.mockResolvedValue(0);
+  });
+  const reloaded = require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect(await reloaded.remoteDataRecordingRemainingMs()).toBe(0);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+});
+
+it('arms the authenticated selected session before App DATA attachment and probes afterwards', async () => {
+  const transport = await armScopedRecording();
+  const select = jest.fn().mockResolvedValue(undefined);
+  await transport.prepareSelectedDataRecording(select);
+  expect(select).toHaveBeenCalledWith('session');
+  expect(select.mock.invocationCallOrder[0]).toBeLessThan(mockStart.mock.invocationCallOrder[0]!);
+  expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
+    mockRequest.mock.invocationCallOrder[0]!,
+  );
+});
+it('does not attach or retry another session after selected-capture preparation fails', async () => {
+  const transport = await armScopedRecording();
+  await expect(
+    transport.prepareSelectedDataRecording(async () => {
+      throw new Error('diagnostics_version_unavailable');
+    }),
+  ).rejects.toThrow('diagnostics_version_unavailable');
+  expect(mockAdmission).toHaveBeenCalledTimes(1);
+  expect(mockStart).not.toHaveBeenCalled();
+});
+it('cancels admission when consent is stopped while selected capture is being armed', async () => {
+  const transport = await armScopedRecording();
+  let complete!: () => void;
+  const selected = transport.prepareSelectedDataRecording(
+    () =>
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+  );
+  for (let i = 0; i < 30 && !complete; i++) await Promise.resolve();
+  expect(complete).toBeDefined();
+  await transport.stopRemoteDataRecording();
+  complete();
+  await expect(selected).rejects.toThrow('Recording stopped');
+  expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('reserves native arming and selected admission ahead of competing ordinary requests', async () => {
+  const transport = await armScopedRecording();
+  await transport.stopRemoteDataRecording();
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValue(119_000);
+  mockIsActive.mockResolvedValue(true);
+  transport.reportDirectRouteFailure(coreUrl);
+  let release!: () => void;
+  const select = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const recording = transport.startRemoteDataRecording(select);
+  const ordinary = transport.remoteControlPortForUrl(`${coreUrl}/projects`, false);
+  for (let i = 0; i < 80 && !release; i++) await Promise.resolve();
+  expect(select).toHaveBeenCalledWith('session');
+  expect(mockStart).not.toHaveBeenCalled();
+  release();
+  await expect(recording).resolves.toBe(119_000);
+  await expect(ordinary).resolves.toBe(4999);
+  expect(mockAdmission).toHaveBeenCalledTimes(1);
+  expect(mockStart).toHaveBeenCalledTimes(1);
 });
