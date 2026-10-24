@@ -395,7 +395,7 @@ restore and never writes or prunes it; the old repository ages out only if the
 original host, still running, prunes it, or when an administrator deletes it.
 Two hosts restored from the same backup therefore never damage each other's
 history; at worst they both use storage. A same-host rollback keeps the
-installation id and continues the repository it rolled back from.
+installation id and continues the installation's current repository.
 
 The next sequence number is the highest committed number in the repository plus
 one, read from the directory under the repository lock, never from host state
@@ -415,6 +415,14 @@ restore or probe holds a lease on it, and a grace period has passed. Publication
 and pruning are serialized by an `flock` on the repository lock file. Reference
 tracking and deletion must survive crashes.
 
+The host cannot decrypt manifests, so it cannot read references back from them.
+At publish time the server records each snapshot's set of object IDs in
+`VERITY_ROOT/backup-state/`, fsynced before the manifest is published. Garbage
+collection works from those sets and fails closed: if the set of any retained
+snapshot is missing or incomplete, it deletes nothing and raises the "backup
+needs attention" status. Rebuilding the sets needs the recovery key, entered
+for that purpose, or a new repository with a full first run.
+
 ## Consistent capture
 
 ### Run steps
@@ -427,12 +435,15 @@ tracking and deletion must survive crashes.
    mount changes and project deletion. Turns, edits and commits keep running;
    there is no global drain.
 3. Under the lock, open the repeatable-read database transaction (see "Database
-   export") so its snapshot is taken, record its timestamp, and freeze every Git
-   repository (see "Git repositories"). Database state and frozen `.git` copies
-   therefore see the same set of projects and mounts.
+   export") and run its first statement, which is when PostgreSQL takes the
+   snapshot; record its timestamp. Then freeze every Git repository (see "Git
+   repositories"). Database state and frozen `.git` copies therefore see the
+   same set of projects and mounts.
 4. Release the lock. The lock is held only for steps 2 and 3, not while the
    export streams or files are copied, chunked or written. Stream the database
-   export from the open transaction, and copy working files and knowledge
+   export from the open transaction and commit it as soon as the export is
+   written, before any file work, so the transaction never stays open for the
+   rest of the run and holds back vacuum. Then copy working files and knowledge
    folders live, through the encryptor, with the no-follow traversal described
    under "Git capture", storing symlinks as links. `.git` directories are
    skipped here; they come only from the frozen copies. A project being copied
@@ -497,7 +508,9 @@ otherwise, never hardlinks. Traversal is fd-relative from the project root with
 fallback is a per-component `openat(O_NOFOLLOW | O_DIRECTORY)` walk with an
 `fstat` identity check). Every opened file is `fstat`ed and compared with its
 directory entry before it is read. A symlink under `.git` is recorded as a
-finding and not followed. The `gitdir:` target of a `.git` file and the
+finding, not followed and not stored, so no snapshot can carry a link inside
+`.git`; restore refuses any `.git` that contains one and takes the "not
+validated" path without running Git. The `gitdir:` target of a `.git` file and the
 `gitdir` and `commondir` entries under `worktrees/<name>` must resolve inside
 the project's own workspace or session paths; otherwise the repository is
 captured as plain files without running Git and flagged "not validated".
@@ -785,7 +798,10 @@ directory on local media. It needs no Uplink account and no subscription.
    runtime under `/var/lib/verity/host-runtime`, image pins and gVisor
    configuration), reinstate the CA key from `identity/` after checking it
    against the snapshot's CA certificate, apply the revocation journal, install
-   the recovered backup keys, and start the snapshot's release.
+   the recovered backup keys, and start the snapshot's release. The installer
+   runs as root and holds the recovery key at this point, so it also writes the
+   CA key file for the new installation id into `identity/`; the restored host
+   therefore never starts with "identity missing".
 
 Refuse snapshots the installer cannot run and unsupported downgrades. On a host
 with an existing installation, staging roughly doubles the database and data
@@ -813,7 +829,9 @@ and that later changes are lost, then for the recovery key, and verifies the
 signed manifest before it touches anything.
 
 The installation id, the identity and the host-specific state stay as they are,
-so everything stays paired. `VERITY_ROOT/backup-state/` is not in the snapshot
+so everything stays paired. The recovery key asked for is the one of the
+snapshot's key generation; if the key was replaced since, the prompt names that
+generation. `VERITY_ROOT/backup-state/` is not in the snapshot
 and is carried over unchanged from the current data volume into staging, so the
 host keeps its backup keys, index and target id. The installer runs the same
 architecture check as above, restores into staging, applies the revocation
@@ -821,8 +839,10 @@ journal (see "Device revocations across restore"), and writes the automatic
 update hold into the restored database before the swap, because the snapshot's
 own settings predate it. It then swaps staging in, pins the snapshot's release
 and starts it. Automatic updates stay held until the administrator resumes them
-in the app. The repository continues; snapshots taken after the pre-update
-snapshot remain listed and restorable.
+in the app. Backups continue in the installation's current repository, the one
+`backup-state/` belongs to, which may be newer than the snapshot's own if the
+key or format changed since; snapshots taken after the pre-update snapshot
+remain listed and restorable.
 
 ### Partial restore in the app
 

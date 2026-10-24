@@ -160,13 +160,15 @@ The repository is incremental from the first release: content-defined chunking,
 deduplication before encryption within one repository, a keyed host-local index
 that is a cache and never restore authority, a fresh data key per object,
 objects published before the immutable manifest, and garbage collection that
-honours every retained snapshot, every lease and a grace period.
+honours every retained snapshot, every lease and a grace period. Because the host
+cannot read manifests, it records each snapshot's object references at publish time
+and garbage collection fails closed when they are missing.
 
 Each installation writes only to its own repository, identified by an
 installation id that the installer writes on every fresh install and every
 fresh-host restore and that is never restored from a backup. A restored host
 opens a new repository and never writes or prunes another installation's.
-A same-host rollback keeps the installation id and continues its repository.
+A same-host rollback keeps the installation id and continues its current repository.
 The next sequence number is read from the repository, not from restorable state.
 
 ### Consistency without a global drain
