@@ -46,6 +46,11 @@ on:
         required: false
         default: false
         type: boolean
+      website-replan:
+        description: Plan pending website changes after a completed publication
+        required: false
+        default: false
+        type: boolean
       reconcile:
         description: Publish merged release PRs that no push run reconciled
         required: false
@@ -64,7 +69,7 @@ on:
 # failed re-plan or recovery run never counts against a stranded release and a
 # reconcile run that ended green without publishing is noticed. Every other
 # trigger keeps GitHub's default title.
-run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || (format('{0}', inputs['backend-replan']) == 'true' && format('Replan server {0}', github.sha) || '')) }}
+run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || (format('{0}', inputs['backend-replan']) == 'true' && format('Replan server {0}', github.sha) || (format('{0}', inputs['website-replan']) == 'true' && format('Replan website {0}', github.sha) || ''))) }}
 
 permissions: read-all
 
@@ -90,6 +95,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
+      # Release PRs merged since the release app exists carry its `<slug>[bot]`
+      # login. The slug is an output of minting a token, so mint one that can
+      # only read metadata; scripts/release-bot-logins.mjs trusts it next to
+      # github-actions[bot] for older history.
+      - name: Resolve release app identity
+        id: app-token
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - name: Reserve approved release commits
         id: reserve
         if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
@@ -97,6 +115,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_HEAD: ${{ github.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" backend
 
   register-mobile-tags:
@@ -120,6 +139,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
+      # Release PRs merged since the release app exists carry its `<slug>[bot]`
+      # login. The slug is an output of minting a token, so mint one that can
+      # only read metadata; scripts/release-bot-logins.mjs trusts it next to
+      # github-actions[bot] for older history.
+      - name: Resolve release app identity
+        id: app-token
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - name: Reserve approved release commits
         id: reserve
         if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
@@ -127,6 +159,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_HEAD: ${{ github.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" mobile
 
   register-website-tags:
@@ -150,6 +183,19 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
+      # Release PRs merged since the release app exists carry its `<slug>[bot]`
+      # login. The slug is an output of minting a token, so mint one that can
+      # only read metadata; scripts/release-bot-logins.mjs trusts it next to
+      # github-actions[bot] for older history.
+      - name: Resolve release app identity
+        id: app-token
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - name: Reserve approved release commits
         id: reserve
         if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
@@ -157,6 +203,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_HEAD: ${{ github.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
         run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD" website
 
   release-train:
@@ -197,6 +244,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}
@@ -239,6 +287,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}
@@ -281,6 +330,7 @@ jobs:
       # a string reaching this boolean input fails the whole dispatched run.
       mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
+      website-replan: ${{ matrix.train == 'website' && format('{0}', inputs['website-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}

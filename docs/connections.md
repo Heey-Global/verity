@@ -152,6 +152,10 @@ connection; server Git sets URL-specific `http.<url>.sslCAInfo`. Sandbox Git
 trusts a separate broker CA. Certificate chain, validity and DNS/IP subject
 alternative name verification remain enabled; there is no insecure TLS mode.
 A token or CA change invalidates subsequent provider lookups and cached PR data.
+Session-worktree fetches re-read the Forgejo connection credentials and CA for
+each new session. They disable redirects and scope authentication and CA trust
+to the configured repository URL. Forgejo projects never mint GitHub App tokens,
+even when a GitHub project has the same owner and repository name.
 
 A repository/issue-scoped token does not need `read:user`. Connection validation
 and listing use `/repos/search`; the search response lists repositories visible

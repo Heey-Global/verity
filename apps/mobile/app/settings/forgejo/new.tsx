@@ -110,7 +110,7 @@ function NewForgejoConnection({ client }: { client: VerityClient }) {
       </SettingsGroup>
       <SettingsGroup
         title="Access"
-        description="Create a token in Forgejo under Settings → Applications with read and write access to repositories, issues and user."
+        description="Create a token in Forgejo under Settings → Applications with read and write access to repositories and issues. Repository-specific tokens are supported; user access is not required."
       >
         <SettingsPanel>
           <SecretPasteField
