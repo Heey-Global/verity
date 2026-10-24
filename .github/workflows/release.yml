@@ -878,7 +878,7 @@ jobs:
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
       - name: Record verified staging build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1409,7 +1409,7 @@ jobs:
         if: ${{ !inputs['backend-artifact-only'] }}
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
 
       - name: Sign and verify published artifacts
         if: ${{ !inputs['backend-artifact-only'] }}
@@ -2344,7 +2344,7 @@ jobs:
       - name: Install release signature verifier
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
 
       - name: Sign and verify published artifacts
         shell: bash
@@ -2582,7 +2582,7 @@ jobs:
       - name: Install release signature verifier
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.3
+          cosign-release: v3.1.4
 
       - name: Sign and verify published artifacts
         shell: bash

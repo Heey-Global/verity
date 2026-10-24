@@ -1504,6 +1504,8 @@ export interface VulnScanStateTable {
   project_id: string;
   session_id: string | null;
   content_hash: string | null;
+  base_content_hash: ColumnType<string | null, string | null | undefined, string | null>;
+  base_checked: ColumnType<boolean, boolean | undefined, boolean>;
   status: string;
   detail: string | null;
   revision: string | null;

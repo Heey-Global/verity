@@ -22,7 +22,7 @@ RUN npx tsc -b packages/project-relay
 
 # Shell-less runtime, pinned to the exact multi-architecture manifest.
 # renovate: datasource=docker depName=gcr.io/distroless/nodejs26-debian13
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:3a6f4e6fd37efe00042667d06fd52240f2589ed09b0694fbb3b1bf860030a839
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:96455baef11b178fc135b32206e3922c515dbed2400676c94f907f8f84e6abf6
 
 # Use the builder's exact Node patch; the distroless base may lag a patch release.
 COPY --from=builder /usr/local/bin/node /nodejs/bin/node

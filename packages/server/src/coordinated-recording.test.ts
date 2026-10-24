@@ -16,7 +16,7 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 function fixture() {
-  let wall = Date.now(),
+  let wall = Date.parse('2026-01-01T00:00:00.000Z'),
     mono = 0;
   const descriptor = { enabled: true, installationId: 'secret-installation' };
   const activation = new ReturnPathActivation(
@@ -26,7 +26,10 @@ function fixture() {
     () => mono,
   );
   const uplink = {
-    start: vi.fn<RecordingUplinkAdapter['start']>(async () => {}),
+    selectedConnectorId: () => id,
+    start: vi.fn<RecordingUplinkAdapter['start']>(async (_run, _duration, version) => {
+      if (version === 3) return selectedMetadata();
+    }),
     status: vi.fn<NonNullable<RecordingUplinkAdapter['status']>>(async () => ({
       state: 'recording',
     })),
@@ -222,7 +225,7 @@ function selectedMetadata(
     state,
     startedAt: at,
     endedAt: null,
-    expiresAt: at,
+    expiresAt: '2026-01-01T00:00:45.000Z',
     retainedUntil: at,
     collectorReady: true,
     recordCount: 0,
@@ -232,7 +235,7 @@ function selectedMetadata(
     stopReason: null,
     targetSession: createHash('sha256').update('selected-session').digest('hex').slice(0, 16),
     captureDurationMs: 30000,
-    preparationExpiresAt: at,
+    preparationExpiresAt: '2026-01-01T00:00:15.000Z',
     captureStartedAt: bound ? at : null,
     captureExpiresAt: bound ? at : null,
     burstStartedAt: null,
@@ -264,7 +267,7 @@ it('keeps delayed selected attachment preparing and unrelated sessions out of Co
   const unrelated = new RemoteReturnPathDiagnostics('unrelated-session');
   const unrelatedSummary = unrelated.exportSummary();
   for (let i = 0; i < 300; i++) manager.observe(unrelatedSummary);
-  expect(manager.status(id).core).toEqual({ state: 'recording', records: 0, dropped: 0 });
+  expect(manager.status(id).core).toEqual({ state: 'recording', records: 0, dropped: 300 });
   advance(14000);
   uplink.status.mockResolvedValue(selectedMetadata('recording'));
   expect(await manager.refreshStatus(id)).toMatchObject({
@@ -288,6 +291,7 @@ it('rejects ambiguous selection, stale status and target changes without fallbac
   );
   uplink.status.mockResolvedValue(selectedMetadata('recording'));
   await manager.start(id, 30000, 3, 'selected-session');
+  expect(await manager.refreshStatus(id)).toMatchObject({ uplink: { state: 'recording' } });
   expect(await manager.refreshStatus(id)).toMatchObject({ uplink: { state: 'unavailable' } });
   await expect(manager.start(id, 30000, 3, 'other-session')).rejects.toThrow('recording_conflict');
   uplink.status.mockResolvedValue(selectedMetadata());

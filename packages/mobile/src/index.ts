@@ -493,6 +493,8 @@ export {
 export { healthSchema, type Health } from './api.js';
 export {
   connectionRecordingStatusSchema,
+  selectedConnectionRecordingStatusSchema,
+  type SelectedConnectionRecordingStatus,
   connectionRecordingExportSchema,
   type ConnectionRecordingStatus,
   type ConnectionRecordingExport,

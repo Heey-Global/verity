@@ -105,12 +105,8 @@ export function projectOverviewStatus(
 ): ProjectOverviewStatus | undefined {
   const vulnerabilities = project.vulnerabilitySummary;
   if (vulnerabilities && vulnerabilities.count > 0) {
-    const count = vulnerabilities.critical || vulnerabilities.high || vulnerabilities.count;
-    const label = vulnerabilities.critical
-      ? `${count} critical on main`
-      : vulnerabilities.high
-        ? `${count} high on main`
-        : `${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'} on main`;
+    const count = vulnerabilities.count;
+    const label = `${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'}`;
     return { label, tone: 'attention' };
   }
   const badge = projectBadge(project);

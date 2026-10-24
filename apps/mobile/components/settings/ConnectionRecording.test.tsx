@@ -1,3 +1,19 @@
+jest.mock('./SelectedConnectionTest', () => ({
+  SelectedConnectionTest: ({
+    disabled,
+    onBusy,
+  }: {
+    disabled: boolean;
+    onBusy: (busy: boolean) => void;
+  }) => {
+    const { Pressable, Text } = require('react-native');
+    return (
+      <Pressable disabled={disabled} onPress={() => onBusy(true)}>
+        <Text>Mock selected start</Text>
+      </Pressable>
+    );
+  },
+}));
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 const runId = '11111111-1111-4111-8111-111111111111';
@@ -507,4 +523,14 @@ it('retains completed preparation after reopening', async () => {
     stage: 'ready',
     failed: false,
   });
+});
+
+it('prevents legacy recording while the selected test owns the controls', async () => {
+  render(<ConnectionRecording client={client() as never} />);
+  await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+  act(() => {
+    fireEvent.press(screen.getByText('Mock selected start'));
+    fireEvent.press(screen.getByText('Record connection'));
+  });
+  expect(mockStart).not.toHaveBeenCalled();
 });
