@@ -271,8 +271,13 @@ The recovery key is entered on the host for explicit operations only: restore,
 rollback, the restore probe and partial restore. The server holds it in memory
 for that operation and never stores it, but a compromised host can capture it
 at that moment and then decrypt every snapshot made with it, including
-off-host copies. The app says so where it asks for the key. After a suspected
-compromise, restore onto a clean host and replace the recovery key there.
+off-host copies. The app says so where it asks for the key.
+
+After a suspected compromise, the host's own snapshots are not trustworthy: the
+attacker held the signing key and could forge or delete manifests. Restore onto
+a clean host from an off-host copy made before the compromise, with
+`--new-identity`, so neither forged database state nor old device tokens come
+back, and replace the recovery key there.
 
 Restore accepts the recovery key by clipboard paste, QR scan in the app, or
 typed entry with checksum validation; paste over SSH is the installer path.
@@ -311,8 +316,10 @@ reported; the restored host then generates fresh keys and asks the user to
 replace the recovery key.
 
 Bound the resources every parser may consume (manifest size, path count and
-length, link depth, object count) and validate paths and links against the
-staging root before writing. No keys in arguments, logs, diagnostics or hosted
+length, link depth, object count) and validate every path against the staging
+root before writing. Symlinks are restored as links with their recorded target,
+whatever it is, and restore never follows a link while writing, so a link
+cannot redirect a write; nothing is dropped for pointing outside the tree. No keys in arguments, logs, diagnostics or hosted
 metadata. Stream encryption; the database export streams through the encryptor
 rather than landing on disk.
 
@@ -373,9 +380,13 @@ the host for unattended deduplication.
 Each installation writes only to its own repository. An installation id is a
 random value the installer writes to `/etc/verity/installation-id` on every
 fresh install and every fresh-host restore; it is never restored from a backup.
-The repository directory is named after the installation id and the repository
-generation, and its signed header records installation id, recovery key
-generation and format version.
+Two counters are kept apart. The key generation counts recovery keys of an
+installation and changes only when the key is replaced. The repository number
+counts repositories of an installation and changes with every new repository,
+whether caused by a key replacement, a format change or an index rebuilt by a
+full first run. The repository directory is named `<installationId>-r<n>`, and
+its signed header records installation id, repository number, key generation
+and format version.
 
 An installation publishes into and prunes only repositories that carry its own
 installation id. A host restored on new hardware gets a new installation id and
@@ -423,8 +434,9 @@ tracking and deletion must survive crashes.
    export streams or files are copied, chunked or written. Stream the database
    export from the open transaction, and copy working files and knowledge
    folders live, through the encryptor, with the no-follow traversal described
-   under "Git capture", storing symlinks as links. A project being copied holds
-   a per-project lease, so its deletion waits for that copy.
+   under "Git capture", storing symlinks as links. `.git` directories are
+   skipped here; they come only from the frozen copies. A project being copied
+   holds a per-project lease, so its deletion waits for that copy.
 5. Chunk, encrypt and write the frozen Git copies, then publish the manifest.
 6. Release leases and remove capture staging on every exit path.
 
@@ -585,13 +597,14 @@ the reason. The directory layout:
 <backup dir>/
   .verity-backup-target
   repositories/
-    <installationId>-g<generation>/
+    <installationId>-r<n>/
       header            signed repository header
       lock              flock target for publish and prune
       objects/          immutable encrypted objects
-      snapshots/        immutable encrypted, signed manifests
+      snapshots/        immutable encrypted, signed manifests, named
+                        <sequence>-<kind>, kind scheduled, manual or pre-update
       keys/             signing and fingerprint keys, encrypted to the recipient
-  identity/             CA key per generation, written by the host helper
+  identity/             CA key per key generation, written by the host helper
   revocations/          signed device revocation entries
 ```
 
@@ -626,11 +639,13 @@ different owners (`deploy/bin/verity-pairing-material:95`, `:96`):
   Amendment 2). When backups are set up or the recovery key is replaced, the
   server writes the public recipient key into that request directory, which
   stays on the host. The helper encrypts the CA key to it and writes the result
-  to `<backup dir>/identity/ca-key-g<generation>`; it does the same whenever the
-  CA key changes.
+  to `<backup dir>/identity/<installationId>-ca-key-k<keyGeneration>`; it does
+  the same whenever the CA key changes. During setup and key replacement the
+  server hands the recipient key to the helper only after the confirmation
+  paste, so an abandoned replacement leaves no file behind.
 
-Nothing else from `/etc/verity` is read; the updater token and the PostgreSQL
-password stay host-specific. The encrypted CA key is not signed, because the
+Nothing else from `/etc/verity` enters a backup; the updater token and the
+PostgreSQL password stay host-specific. The encrypted CA key is not signed, because the
 helper holds no signing key. Restore authenticates it instead by checking that
 it matches the CA certificate in the signed snapshot. Each run checks that the
 CA key file for the current generation exists. A run that cannot read an
@@ -654,13 +669,22 @@ that Uplink may need re-enrollment.
 
 Reinstating device tokens must not reauthorize a device that was revoked after
 the snapshot, for example a lost phone. Every device revocation is therefore
-also written, at the moment it happens, as a signed entry encrypted to the
-recipient into `<backup dir>/revocations/`, outside any snapshot. Fresh-host
-restore and same-host rollback verify the entries against the verification key
-and apply every revocation from that directory before the restored server
-starts. A backup directory copy older than a revocation cannot know it, so the
-restore summary and the first app screen after a restore list every paired
-device with a "Revoke" action.
+also written, at the moment it happens, into `<backup dir>/revocations/`,
+outside any snapshot. An entry names the installation id, the key generation
+and the revoked token id, is encrypted to the current recipient and signed with
+the current signing key.
+
+Fresh-host restore and same-host rollback read every entry the entered recovery
+key can open and verify, from every installation in the directory, and apply
+them before the restored server starts; a token id unknown to the restored
+database is a no-op, so applying a sibling installation's revocation is safe
+and wanted. Entries written under a later key generation cannot be opened with
+an older key. The restore then reports how many entries it could not read and
+does not finish until the administrator has reviewed the paired devices.
+
+A backup directory copy older than a revocation cannot know it either, so the
+restore summary and the first app screen after every restore list all paired
+devices with a "Revoke" action.
 
 ## Operations
 
@@ -676,7 +700,8 @@ device with a "Revoke" action.
   after the server is up, not one per missed slot.
 - No overlapping runs. A scheduled run that is due while one is active is
   skipped and logged. The pre-update request cancels a running scheduled run
-  and starts its own.
+  and starts its own, with a one-hour timeout instead of the run timeout, so an
+  update never waits for hours.
 - When the directory is unwritable, missing its marker or full, the run fails
   with the reason and retries with backoff (15 minutes, doubling up to the
   schedule interval). Failed runs never replace the last good snapshot.
@@ -744,8 +769,8 @@ because they switch containers without touching data.
 directory on local media. It needs no Uplink account and no subscription.
 
 1. Read the repositories in the directory. Manifests are encrypted, so before
-   the key is entered the installer orders snapshots by the sequence number in
-   their file names and shows file modification times; after the key is
+   the key is entered the installer orders snapshots by the sequence number and
+   kind in their file names and shows file modification times; after the key is
    entered it shows the signed values. With one repository, offer its newest
    snapshot; with several, list them and ask.
 2. Read the snapshot's release from the signed manifest after the recovery key
@@ -782,8 +807,10 @@ its new installation id, with the same recovery key.
 
 `verity-install --rollback` restores the database and the data volume from the
 newest pre-update snapshot into the existing installation; `--rollback
---snapshot <sequence>` selects another one. It asks for confirmation, stating
-the snapshot time and that later changes are lost, then for the recovery key.
+--snapshot <sequence>` selects another one. It finds pre-update snapshots by
+the kind in their file names, asks for confirmation, stating the snapshot time
+and that later changes are lost, then for the recovery key, and verifies the
+signed manifest before it touches anything.
 
 The installation id, the identity and the host-specific state stay as they are,
 so everything stays paired. `VERITY_ROOT/backup-state/` is not in the snapshot
@@ -811,6 +838,17 @@ From a snapshot (screen 7):
 Both ask for the recovery key for that operation. The server holds it in memory
 only for the duration of the operation and never writes it to disk, logs or the
 database. Both are administrator-only.
+
+### Snapshot list without the key
+
+The server cannot decrypt manifests, so the app's snapshot list, status and
+size figures come from a host-local catalog in `VERITY_ROOT/backup-state/` that
+the server records whenever it publishes or deletes a snapshot: sequence, kind,
+time, releases for pre-update snapshots, key generation and per-project sizes.
+The catalog is a cache, never restore authority; when it is missing it is
+rebuilt from the file names (sequence and kind) and modification times. The
+plaintext file names reveal snapshot count, kind and order to anyone who can
+read the directory, which the size and timing of the files reveal anyway.
 
 ### Restore probe
 

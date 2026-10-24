@@ -72,9 +72,11 @@ unattended restart. A compromised host can read current data and forge new
 snapshots; it cannot open snapshots already written as long as nobody enters
 the recovery key on it. Restore, rollback, the probe and partial restore do
 enter it on the host, held in memory for that operation only; a compromised
-host can capture it then. The app says so where it asks for the key, and after
-a suspected compromise the user restores onto a clean host and replaces the key
-there.
+host can capture it then. The app says so where it asks for the key. After a
+suspected compromise the host's own snapshots are untrustworthy, because the
+attacker held the signing key; the user restores onto a clean host from an
+off-host copy made before the compromise, with `--new-identity`, and replaces
+the key there.
 
 Every manifest is signed; the signature covers the whole manifest including
 each object's ID, digest and length, the repository identity, format version and
@@ -190,9 +192,11 @@ tokens, so devices reconnect without pairing and without a question in the flow.
 
 Every device revocation is also written, when it happens, as a signed entry into
 the backup directory outside any snapshot. Fresh-host restore and same-host
-rollback apply all of them before the restored server starts, so a device
-revoked after the snapshot stays revoked; the first screen after a restore lists
-paired devices with a revoke action for revocations a stale copy cannot know. The installer
+rollback apply every entry the entered key can open before the restored server
+starts, so a device revoked after the snapshot stays revoked; entries under a
+later key generation are reported and the restore requires a review of paired
+devices. The first screen after a restore lists paired devices with a revoke
+action for revocations a stale copy cannot know. The installer
 flag `--new-identity` generates a new identity and revokes device tokens, for a
 compromised source host or a trial restore beside a running original. Preview
 links, capability generations, enrollment recovery records and queued jobs are
@@ -203,7 +207,7 @@ never revived.
 Defaults: a run every six hours, configurable from hourly to daily; retention of
 every snapshot of the last 48 hours, then 7 daily, 4 weekly and 6 monthly, plus
 the last two pre-update snapshots; one catch-up run after downtime; a six-hour
-run timeout; no overlapping runs; retry with backoff when the directory is
+run timeout and a one-hour timeout for the pre-update snapshot; no overlapping runs; retry with backoff when the directory is
 unwritable or full; low CPU and IO priority. The snapshot sequence number is
 authoritative for order and retention; timestamps are for display.
 
@@ -292,7 +296,12 @@ snapshot, database segmentation, several recovery keys, per-project exclusions.
 ## Consequences
 
 Users must keep their recovery key; losing every copy makes the backups
-unrecoverable. Each snapshot's stored credentials need the master password that
+unrecoverable. Snapshots carry device tokens, the pairing identity and the TLS
+keys, and the backup directory carries the CA key: whoever holds the directory
+and the recovery key can stand up a host that the paired devices accept. That
+is the price of restoring without pairing, and `--new-identity` is the way out
+when it is unwanted. Snapshot file names reveal count, kind and order of
+snapshots in plaintext, so the app can list them without the key. Each snapshot's stored credentials need the master password that
 was current at capture time.
 
 Version one does not survive loss of the host disk unless the administrator
