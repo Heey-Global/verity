@@ -13863,6 +13863,64 @@ describe('POST /projects/:id/sleep and /wake', () => {
     }
   });
 
+  it('rejects an active wake when a sandbox mutation prevents takeover', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-wake-mutation',
+      owner: 'test',
+      repo: 'wake-mutation',
+      containerName: 'wake-mutation',
+      state: 'active',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      wakeProject: vi.fn(),
+      tryBeginProjectSandboxActivity: vi.fn(() => false),
+      endProjectSandboxActivity: vi.fn(),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-wake-mutation/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.endProjectSandboxActivity).not.toHaveBeenCalled();
+      expect(provisioner.wakeProject).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps a stuck waking project a conflict when no wake is in flight', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-stuck-waking',
+      owner: 'heey-global',
+      repo: 'stuck-waking',
+      containerName: 'dev-heey-global-stuck-waking',
+      state: 'waking',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: vi.fn(),
+      wakeProject: vi.fn(),
+      // The real provisioner refuses a `waking` row it has no attempt for, e.g. after a restart.
+      ensureProjectSandboxAwake: vi.fn(async (id: string) => {
+        throw new ProvisioningError(`project ${id} is waking`);
+      }),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-stuck-waking/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.ensureProjectSandboxAwake).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('rejects a transition from the wrong lifecycle state', async () => {
     await ctx.store.upsertProject({
       id: 'p-failed-sleep-route',
@@ -16437,6 +16495,175 @@ it('replaces a meeting index entry by transcript path when the title changes', a
 });
 
 describe('vulnerability scan session integration', () => {
+  it('scans a paused project only after its manual start finishes and leaves it active', async () => {
+    const id = 'vuln-paused-start';
+    await ctx.store.upsertProject({
+      id,
+      owner: 'test',
+      repo: id,
+      containerName: id,
+      state: 'absent',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provision = vi.fn(async (projectId: string) => {
+      await ready;
+      return (await ctx.store.updateProjectState(projectId, 'active'))!;
+    });
+    const run = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        worktree: '/work/.verity-vuln-test1234/tree',
+        hash: 'a'.repeat(64),
+        revision: 'b'.repeat(40),
+        lockfiles: [],
+      }),
+      stderr: '',
+      timedOut: false,
+    }));
+    const runtime = {
+      runAutomationScript: run,
+    } as unknown as import('./project-runtime.js').ProjectRuntime;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision },
+      projectRuntime: runtime,
+    });
+    try {
+      expect(
+        (await server.inject({ method: 'POST', url: `/projects/${id}/repair` })).statusCode,
+      ).toBe(202);
+      expect(provision).toHaveBeenCalledOnce();
+      expect(run).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(async () =>
+        expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe('no_lockfiles'),
+      );
+      expect((await ctx.store.getProject(id))?.state).toBe('active');
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await server.close();
+    }
+  });
+
+  it.each(['success', 'failure', 'takeover', 'takeover-while-waking'] as const)(
+    'temporarily wakes a sleeping project for a manual scan: %s',
+    async (scenario) => {
+      const id = `vuln-sleeper-${scenario}`;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'test',
+        repo: id,
+        containerName: id,
+        state: 'sleeping',
+      });
+      await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+      let activity = 0;
+      const touch = () => {
+        activity++;
+      };
+      const wakeProject = vi.fn(async (projectId: string) => {
+        touch();
+        return (await ctx.store.updateProjectState(projectId, 'active'))!;
+      });
+      const sleepProject = vi.fn(
+        async (projectId: string, options?: { shouldRestore?: () => boolean }) => {
+          if (options?.shouldRestore && !options.shouldRestore())
+            return (await ctx.store.getProject(projectId))!;
+          return (await ctx.store.updateProjectState(projectId, 'sleeping'))!;
+        },
+      );
+      const provisioner = {
+        provision: vi.fn(),
+        wakeProject,
+        wakeProjectForScan: async (projectId: string) => {
+          const waking = wakeProject(projectId);
+          const activityAt = activity;
+          return { project: await waking, owned: true, activityAt };
+        },
+        sleepProject,
+        ensureProjectSandboxAwake: async (projectId: string) => {
+          touch();
+          return (await ctx.store.getProject(projectId))!;
+        },
+        tryBeginProjectSandboxActivity: () => {
+          touch();
+          return true;
+        },
+        endProjectSandboxActivity: touch,
+        projectSandboxLastActivityAt: () => activity,
+      };
+      const runtime = {
+        runAutomationScript: async (
+          _project: unknown,
+          _settings: unknown,
+          input: { script: string },
+        ) => {
+          if (input.script.includes('mktemp')) {
+            if (scenario === 'failure') throw new Error('scan preparation failed');
+            if (scenario === 'takeover-while-waking') {
+              // The user taps Wake while the scan's own wake has not finished yet.
+              await ctx.store.updateProjectState(id, 'waking');
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+              await ctx.store.updateProjectState(id, 'active');
+            }
+            if (scenario === 'takeover')
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                worktree: '/work/.verity-vuln-test1234/tree',
+                hash: 'a'.repeat(64),
+                revision: 'b'.repeat(40),
+                lockfiles: [],
+              }),
+              stderr: '',
+              timedOut: false,
+            };
+          }
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      } as unknown as import('./project-runtime.js').ProjectRuntime;
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner,
+        projectRuntime: runtime,
+      });
+      try {
+        expect(
+          (await server.inject({ method: 'POST', url: `/projects/${id}/vulnerability-scan` }))
+            .statusCode,
+        ).toBe(202);
+        await vi.waitFor(async () =>
+          expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe(
+            scenario === 'failure' ? 'error' : 'no_lockfiles',
+          ),
+        );
+        expect(wakeProject).toHaveBeenCalledOnce();
+        const takenOver = scenario === 'takeover' || scenario === 'takeover-while-waking';
+        expect((await ctx.store.getProject(id))?.state).toBe(takenOver ? 'active' : 'sleeping');
+        expect(sleepProject).toHaveBeenCalledTimes(takenOver ? 0 : 1);
+        expect(startSession).not.toHaveBeenCalled();
+        expect(sendTurn).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   it('hydrates summary warnings and scans after an interrupted turn without starting an agent', async () => {
     await ctx.store.upsertProject({
       id: 'vuln-project',
@@ -16475,6 +16702,7 @@ describe('vulnerability scan session integration', () => {
         projectId: 'vuln-project',
         sessionId,
         contentHash: sessionId ? 'integration-session' : 'integration-main',
+        ...(sessionId ? { baseChecked: true, baseContentHash: 'integration-main' } : {}),
         status: 'ready',
         detail: null,
         revision: 'abc',

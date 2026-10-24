@@ -1,3 +1,6 @@
+import { createVulnerabilityTool } from './vulnerability-tool.js';
+import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
+import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
 import {
   createVulnerabilitySessionMonitor,
@@ -3472,8 +3475,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return true;
   };
-  const afterProjectProvision = async (projectId: string): Promise<void> => {
+  const afterProjectProvision = async (
+    projectId: string,
+    scanAfterStart = false,
+  ): Promise<void> => {
     if (await discardProvisionOfDeletedProject(projectId)) return;
+    if (scanAfterStart) {
+      void scanStartedProjectIfNeeded(projectId, {
+        store: deps.eventStore.vulnerabilityScans,
+        getProject: (id) => deps.eventStore.getProject(id),
+        service: vulnerabilityService,
+      }).catch((error: unknown) =>
+        app.log.warn({ err: error, projectId }, 'Vulnerability scan after project start failed'),
+      );
+    }
   };
   /** Settle a provision the caller is not waiting on (the routes answer `202` and
    *  let the worker clone and build in the background). Either outcome ends at
@@ -3486,7 +3501,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onError: (error: unknown) => void,
   ): void => {
     void provision.then(
-      () => afterProjectProvision(projectId),
+      () => afterProjectProvision(projectId, true),
       async (error: unknown) => {
         onError(error);
         await discardProvisionOfDeletedProject(projectId);
@@ -3827,6 +3842,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
       return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
     },
+    canWakeSleeping: canWakeForScan(deps.provisioner),
+    ...(deps.provisioner?.projectSandboxLastActivityAt &&
+    deps.provisioner.tryBeginProjectSandboxActivity &&
+    deps.provisioner.endProjectSandboxActivity
+      ? {
+          acquireSandbox: vulnerabilitySandboxLease({
+            provisioner: deps.provisioner,
+            getProject: (id) => deps.eventStore.getProject(id),
+            warn: (error) =>
+              app.log.warn({ err: error }, 'Vulnerability scan sandbox restoration failed'),
+          }),
+        }
+      : {}),
     beginActivity: (id) => {
       if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
       return () => deps.provisioner?.endProjectSandboxActivity?.(id);
@@ -3842,8 +3870,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             }),
         }
       : {}),
-    changed: (id) => {
+    changed: (id, sessionId) => {
       resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
+      if (sessionId)
+        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/vulnerability-scan`);
       void vulnerabilitySessions.rebuild();
     },
   });
@@ -3879,6 +3909,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: deps.eventStore.vulnerabilityScans,
     listProjects: () => deps.eventStore.listProjects(),
     scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
+    accepts: (project) => vulnerabilityService.accepts(project),
     log: app.log,
   });
   registerVulnerabilityRoutes(app, {
@@ -6273,6 +6304,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
+    const vulnerabilityTool = createVulnerabilityTool({
+      store: deps.eventStore,
+      service: vulnerabilityService,
+      requireUser: () => deps.authRegistry?.isEnabled() === true,
+      isPlanningTurn: (id) => conductor.isPlanningTurn?.(id) === true,
+      warn: (err) => app.log.warn({ err }, 'Agent vulnerability scan failed'),
+    });
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -6282,6 +6320,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize(input);
+          return;
+        }
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
@@ -6525,6 +6567,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
+        if (toolName === 'verity_vulnerabilities') {
+          await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
+          return true;
+        }
         if (toolName === 'verity_matrix') {
           return (
             matrixRequestSchema.parse(request).action !== 'send' &&
@@ -6653,6 +6699,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       },
       invokeTool: async (input) => {
+        if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session?.projectId !== input.projectId)
@@ -7708,11 +7755,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (project === undefined || project.hiddenAt !== null) {
         return { code: 404, error: `project ${id} not found` };
       }
-      if (project.state === 'active') {
-        return {
-          code: 200,
-          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
+      if (
+        project.state === 'active' ||
+        (project.state === 'waking' && deps.provisioner.ensureProjectSandboxAwake)
+      ) {
+        // An explicit wake takes ownership from a temporary background scan, also while
+        // that scan's own wake is still in flight: it joins the wake and marks activity,
+        // so the scan does not put the sandbox back to sleep afterwards.
+        try {
+          if (project.state === 'active') {
+            // Only the activity mark matters here, which a scan lease reads as takeover;
+            // the readiness gate is not needed for a sandbox that is already running.
+            const acquired = deps.provisioner.tryBeginProjectSandboxActivity?.(id);
+            if (acquired === false)
+              return { code: 409, error: `project ${id} has a sandbox mutation in progress` };
+            if (acquired) deps.provisioner.endProjectSandboxActivity?.(id);
+            return {
+              code: 200,
+              project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+            };
+          }
+          const awake = (await deps.provisioner.ensureProjectSandboxAwake?.(id)) ?? project;
+          return {
+            code: 200,
+            project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+          };
+        } catch (error) {
+          // A row left in `waking` without a wake in flight (after a restart) stays a conflict.
+          if (project.state === 'waking' && error instanceof ProvisioningError)
+            return { code: 409, error: `project ${id} is ${project.state}` };
+          request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
+          throw error;
+        }
       }
       if (project.state !== 'sleeping') {
         return { code: 409, error: `project ${id} is ${project.state}` };

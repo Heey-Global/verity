@@ -1,7 +1,7 @@
 name: verity-release-reconcile
 
 # Publication is event-driven: the push that merges a release PR publishes it,
-# and the push that merges an OTA promotion activates its candidate. GitHub
+# and the push that merges an OTA or Server promotion activates its candidate. GitHub
 # delivers those pushes at most once, not exactly once. On 2026-09-28 the
 # promotion merge for mobile 1.41.1 produced no run of any workflow, and the
 # release merge for server 2.16.1 handed its publication to that same push. Both
@@ -11,7 +11,9 @@ name: verity-release-reconcile
 # ordinary workflows and publishes nothing itself, so a release still passes
 # every gate it would have passed on the push. States that need a human — a
 # draft waiting on manual recovery, a promotion run that failed — turn this run
-# red instead of being retried every sweep.
+# red instead of being retried every sweep, and the `alarm` job opens one
+# issue mentioning the owner (scripts/release-alarm.mjs) that closes itself
+# after the next clean sweep.
 #
 # The decision of what is stranded lives in scripts/release-reconcile.mjs and is
 # tested in scripts/release-reconcile.test.ts — deliberately not inline bash,
@@ -19,9 +21,10 @@ name: verity-release-reconcile
 
 on:
   schedule:
-    # Every twenty minutes, off the top and bottom of the hour: those are the
-    # minutes when every scheduled workflow on GitHub fires at once.
-    - cron: '13,33,53 * * * *'
+    # Every five minutes, so a lost push delays a release by minutes rather
+    # than leaving it stranded. Offset from the top and bottom of the hour:
+    # those are the minutes when every scheduled workflow on GitHub fires.
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
   workflow_dispatch:
 
 permissions: read-all
@@ -34,6 +37,8 @@ concurrency:
 jobs:
   reconcile:
     runs-on: ubuntu-26.04
+    outputs:
+      problems: ${{ steps.sweep.outputs.problems }}
     timeout-minutes: 20
     permissions:
       # `actions: write` dispatches the release and promotion workflows.
@@ -45,7 +50,7 @@ jobs:
       contents: write
       pull-requests: read
     steps:
-      # The sweep reads the release manifests and the OTA promotion manifest
+      # The sweep reads the release manifests and the promotion manifests
       # at the main head, and dates the promotion approval from its history.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,8 +63,55 @@ jobs:
         with:
           node-version: '26.12.1'
 
+      # Open release PRs are authored by the release app; its `<slug>[bot]`
+      # login is an output of minting a token, so mint one that can only read
+      # metadata.
+      - name: Resolve release app identity
+        id: app-token
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
+
       - name: Dispatch publication that no push run reconciled
+        id: sweep
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node scripts/release-reconcile.mjs
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug }}[bot]
+        # A verdict, even one naming problems, is a successful sweep; the alarm
+        # job turns problems red. Only a sweep that crashed before writing its
+        # verdict fails here, which release-alarm.mjs counts as a crash.
+        run: node scripts/release-reconcile.mjs || grep -q '^problems=' "$GITHUB_OUTPUT"
+
+  alarm:
+    # The only writer to issues; the sweep itself stays read-and-dispatch.
+    needs: reconcile
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+
+      - name: Open, update or close the release stall issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RECONCILE_RESULT: ${{ needs.reconcile.result }}
+          PROBLEMS: ${{ needs.reconcile.outputs.problems }}
+          RELEASE_ALERT_MENTION: h-teske
+        run: node scripts/release-alarm.mjs

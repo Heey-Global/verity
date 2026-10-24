@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 const [train, eventSha] = process.argv.slice(2);
 /** @type {Record<string, {component: string, path: string, prefix: string}>} */
@@ -134,11 +135,7 @@ if (main !== eventSha) {
     throw new Error('Cannot supersede a native draft while a release PR is pending');
   if (pending.length) {
     const candidate = pending[0];
-    if (
-      pending.length !== 1 ||
-      !candidate ||
-      !['app/github-actions', 'github-actions'].includes(candidate.author.login)
-    ) {
+    if (pending.length !== 1 || !candidate || !isReleaseBotLogin(candidate.author.login)) {
       throw new Error('Ambiguous pending release identity');
     }
     const sha = candidate.mergeCommit.oid;

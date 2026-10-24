@@ -940,6 +940,17 @@ export function resolveDockerGid(env, statSocketGid) {
 /** One writer may refresh policy or use native databases for a session at a time. */
 const activeSessionHomes = new Set();
 const sessionHomeLocks = new Map();
+const SESSION_HOME_WAIT_MS = 2_000;
+const SESSION_HOME_BUSY =
+  'session home is already in use; the previous agent is still shutting down. Wait a moment and try again.';
+
+async function waitForSessionHome(home) {
+  const deadline = Date.now() + SESSION_HOME_WAIT_MS;
+  while (activeSessionHomes.has(home)) {
+    if (Date.now() >= deadline) throw new Error(SESSION_HOME_BUSY);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+}
 
 export function sessionHomePath(runtimeDir, sessionId) {
   if (
@@ -988,12 +999,12 @@ async function lockSessionHome(home, options) {
   );
   try {
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn('/usr/bin/flock', ['--nonblock', '3'], {
+      const child = spawn('/usr/bin/flock', ['--wait', String(SESSION_HOME_WAIT_MS / 1000), '3'], {
         stdio: ['ignore', 'ignore', 'ignore', handle.fd],
       });
       child.once('error', rejectLock);
       child.once('exit', (code) =>
-        code === 0 ? resolveLock() : rejectLock(new Error('session home is already in use')),
+        code === 0 ? resolveLock() : rejectLock(new Error(SESSION_HOME_BUSY)),
       );
     });
     return handle;
@@ -1007,7 +1018,9 @@ async function claimSessionHome(request, options) {
   const sessionId = request.sessionEnv?.VERITY_SESSION_ID;
   if (request.knowledgeIsolation || typeof sessionId !== 'string') return undefined;
   const home = sessionHomePath(options.runtimeDir, sessionId);
-  if (activeSessionHomes.has(home)) throw new Error('session home is already in use');
+  await waitForSessionHome(home);
+  // Recheck after the await: concurrent waiters must not share a broker claim.
+  if (activeSessionHomes.has(home)) throw new Error(SESSION_HOME_BUSY);
   activeSessionHomes.add(home);
   try {
     sessionHomeLocks.set(home, await lockSessionHome(home, options));
@@ -3264,7 +3277,7 @@ export async function runAgentSpawnBroker(options = {}) {
               await lease.close();
             }
           } else {
-            if (activeSessionHomes.has(home)) throw new Error('session home is already in use');
+            await waitForSessionHome(home);
             await prepareSessionHome(raw.sessionId, options, {
               backend: raw.legacyBackend,
               sessionId: raw.legacySessionId,
@@ -3448,9 +3461,10 @@ export async function runAgentSpawnBroker(options = {}) {
         };
         child.stdout?.on('data', (chunk) => relay('stdout', chunk));
         child.stderr?.on('data', (chunk) => relay('stderr', chunk));
-        if (request.kind === 'trusted-cli') {
-          child.once('exit', () => killExitedTrustedCliProcessGroup(child));
-        }
+        // `close` waits for inherited pipes, so a surviving descendant can hold
+        // the broker's home claim forever even though the direct agent is dead.
+        // Reap the remaining group at exit before waiting for pipe drain/cleanup.
+        child.once('exit', () => killExitedTrustedCliProcessGroup(child));
         child.once('close', (code, signal) => {
           releaseCodexStartup();
           childClosed = true;
