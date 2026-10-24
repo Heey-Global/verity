@@ -219,6 +219,8 @@ interface ServiceState {
   deliveredWork?: string;
   largeReleasePayload?: boolean;
   stagedVersion?: string;
+  missingAssociation?: boolean;
+  fallbackMismatch?: 'merge' | 'branch' | 'base' | 'repository' | 'unmerged' | 'ambiguous';
   nativeRuntime?: 'missing' | 'draft' | 'staging';
 }
 
@@ -294,7 +296,8 @@ if(tool === 'gh') {
       if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
       out([releases]);
     }
-    if(endpoint?.endsWith('/pulls')) out([{number:51,merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
+    if(endpoint?.includes('/pulls?')) { const pr={number:51,merged_at:s.fallbackMismatch==='unmerged'?null:'2026-01-01',merge_commit_sha:s.fallbackMismatch==='merge'?'wrong':sha,head:{ref:s.fallbackMismatch==='branch'?'wrong':'automation/promote-mobile-ota-1.33.0',sha},base:{ref:s.fallbackMismatch==='base'?'wrong':'main',repo:{full_name:s.fallbackMismatch==='repository'?'wrong/repo':'example/repo'}}};out([[],s.fallbackMismatch==='ambiguous'?[pr,pr]:[pr]]); }
+    if(endpoint?.endsWith('/pulls')) out(s.missingAssociation?[]:[{number:51,merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
     if(endpoint?.includes('/git/commits/')) out({verification:{verified:true}});
     if(endpoint?.includes('/reviews?')) out([s.reviews ?? []]);
     if(endpoint?.endsWith('/dismissals')) {
@@ -482,6 +485,35 @@ describe('OTA CLI interrupted external operations', () => {
       expect(
         service.state().calls.some((call) => /^gh release (create|edit|upload) /.test(call)),
       ).toBe(false);
+    },
+  );
+
+  it.each([undefined, 'merge', 'branch', 'base', 'repository', 'unmerged', 'ambiguous'] as const)(
+    'recovers missing commit association only for the exact merged candidate (%s)',
+    (fallbackMismatch) => {
+      const candidate = artifact();
+      const service = serviceFixture({
+        missingAssociation: true,
+        group,
+        ...(fallbackMismatch ? { fallbackMismatch } : {}),
+        tags: {
+          [`ota-artifact/${candidate.tag}/${sha}`]: {
+            commit: sha,
+            message: JSON.stringify(candidate),
+          },
+        },
+      });
+      const result = service.run('promote');
+      if (fallbackMismatch) {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('Promotion requires a merged rolling candidate PR');
+        expect(service.state().calls.some((call) => call.startsWith('npx '))).toBe(false);
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(service.state().calls.some((call) => call.includes('channel:edit production'))).toBe(
+          true,
+        );
+      }
     },
   );
 
