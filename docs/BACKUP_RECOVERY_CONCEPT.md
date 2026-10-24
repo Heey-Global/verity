@@ -122,10 +122,11 @@ complete (`core.alternateRefsCommand`, `core.askPass`, `include.path` and
 first freezes the repository: it copies the whole `.git`, objects included,
 into the server-owned capture staging area
 (`<VERITY_ROOT>/capture/<runId>/<projectId>/<repoKey>/`, where `repoKey` is a
-hash of the Git directory's path relative to the project workspace, including
-the directory name itself, so a project with several repositories or
-submodules never collides in staging and a live `.git` and a
-`.git.verity-pending-<snapshotId>` at the same location get distinct keys; a sibling of
+hash of the Git directory's path relative to `VERITY_ROOT`, so it includes the
+root (`workspaces/<repo>`, `sessions/<sessionId>` or `restore/<projectId>`) and
+the directory name itself; a project with several repositories or submodules, a
+workspace and a session checkout of the same subpath, and a live `.git` next to
+a `.git.verity-pending-<snapshotId>` all get distinct keys; a sibling of
 `workspaces` that
 no sandbox bind mount contains; the sandbox sees only volume subpaths under
 `workspaces/<repo>` and `secrets`; each run has its own directory and a lock, so
@@ -240,7 +241,18 @@ safe.directory` as protected configuration (2.38). Reftable repositories
 (`extensions.refStorage`) and any other extension the floor does not know are
 copied as files without running Git on them and flagged "not validated".
 
-Capture, per repository that the project record ties to the connected code host:
+A code host counts as a source of pushed history only when it survives the loss
+of the Verity host. GitHub always does. A Forgejo connection does only when the
+administrator asserted at connection setup that the instance runs on a different
+machine and failure domain; a Forgejo whose URL resolves to the Verity host
+itself, to a container on it or to the same storage, including a Forgejo that
+Verity runs for its own projects, is in the same failure domain and its
+repositories are captured self-contained, with the Forgejo data itself reported
+as an in-container service the backup does not cover. The dependency is shown
+at connection setup and in the backup status per project, not only at restore.
+
+Capture, per repository that the project record ties to such an independent
+code host:
 
 1. Exclude `objects/` (loose objects and packs) of the frozen copy from the
    snapshot. Keep the rest: `HEAD`, `refs`, `packed-refs`, `index`, `logs`,
@@ -429,7 +441,11 @@ discarded by that choice; it is not a self-contained repository.
 Pending state is itself backed up, under its own manifest class. A project that
 a restore left in "Code incomplete" or "working files only" state is captured as
 `pending-rehydration`, not as self-contained: the snapshot carries its working
-files, the renamed `.git.verity-incomplete`, its
+files, its Git directory in whatever state the restore left it (an object-less
+`.git` for "Code incomplete", the renamed `.git.verity-incomplete` for
+"working files only"; classification is driven by the project's recorded
+restore state, never by the directory name, so neither is frozen, connectivity
+checked or retried), its
 `<VERITY_ROOT>/restore/<projectId>/<repoKey>/` staging directories with the
 unimported
 local-only packfile and the set-aside user config, and, copied forward
@@ -445,8 +461,8 @@ or agent ran `git init` in the resumed project, nothing is overwritten: the new
 repository stays `.git` and is restored by the normal rules for its own class,
 and the pending directory is restored as `.git.verity-pending-<snapshotId>`
 beside it for the user to reconcile. Capture of a project that holds both
-classifies the live `.git` normally and the pending directory as
-`pending-rehydration` data, so neither is lost. The user `config`, `config.worktree`
+classifies the live `.git` by the ordinary rules and the pending directory, by
+project state, as `pending-rehydration` data, so neither is lost. The user `config`, `config.worktree`
 files and `hooks` carried forward from the first restore's staging directory
 are the authoritative copies that step 4 reinstates; the versions stripped from
 the renamed directory are kept beside them for the user and are never
@@ -457,6 +473,17 @@ snapshot is attempted: it could not be enforced when the new installation
 starts a fresh repository, when the source was a portable bundle, or when the
 old host is still alive and running its own retention against the same
 destination.
+
+That last case also decides how a restored host writes. It never continues the
+original generation: it opens a new repository generation at the destination,
+with its own sequence space and its own index, under the same recipient and the
+recovered signing key, and its garbage collection only ever considers objects of
+generations it owns. Before publishing the first snapshot it writes a signed
+fence record naming the generation it was restored from; a host that finds a
+fence it did not write for its own generation stops publishing and pruning and
+reports that another installation has taken over. Two writers with one signing
+key and diverging indexes therefore never prune each other's objects, and the
+sequence number stays monotonic within every generation.
 
 A repository whose rehydration fails, because the host is unreachable, the
 connection is revoked, the repository was deleted or a prerequisite is missing,
@@ -521,7 +548,10 @@ private recovery key at that moment, recovers it, checks that its public half
 equals the kit's verification key or is reachable through the signed rotation
 chain, and only then installs it on the new host; a planted key object that
 fails that check is reported and the restored host generates a fresh signing
-key, signs it with nothing, and tells the user that the kit must be reissued. Later snapshots from the restored host therefore still verify against the
+key, signs it with nothing, and tells the user that the kit must be reissued.
+The recovered key signs only the new generation the restored host opens; see
+"Git history and code hosts" for the fence that keeps a still-living old host
+from writing beside it. Later snapshots from the restored host therefore still verify against the
 same kit, which `pending-rehydration` restores depend on. Rotating the signing
 key is done by signing the new verification key with the old one and recording
 the chain in the manifest; the kit's verification key remains the root. Setup

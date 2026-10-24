@@ -70,14 +70,18 @@ identity, a snapshot sequence number and a timestamp so a replayed older
 manifest is visible. The private signing key is never in a snapshot but travels
 in the repository encrypted to the recipient; a restore installs it only after
 checking its public half against the kit, so a restored host keeps signing
-against the same kit and a planted key is reported. Restore refuses an unsigned or wrongly signed manifest.
+against the same kit and a planted key is reported. A restored host never writes
+into the generation it was restored from: it opens a new generation with its own
+sequence and index, prunes only what it owns, and leaves a signed fence that
+stops a still-living old host from publishing or pruning beside it. Restore refuses an unsigned or wrongly signed manifest.
 A compromised host can forge both, which is the accepted host-compromise case; a
 destination cannot.
 
 The recovery kit shows the key as text with a checksum and as a QR code. Setup
 requires a successful re-entry check. Restore accepts QR scan, clipboard paste
-and typed entry with checksum validation; a 256-bit key must never have to be
-typed by hand on a phone as the only option. Recommend a password manager plus
+and typed entry with checksum validation; the kit string, which carries both
+keys and a checksum, must never have to be typed by hand on a phone as the only
+option, and typed entry is the fallback, not the design path. Recommend a password manager plus
 an independent offline copy.
 
 Use a maintained authenticated streaming-encryption implementation for payload
@@ -167,9 +171,12 @@ and edge cases live in the concept's "Git history and code hosts" section and
 are not repeated here, so that one text stays authoritative.
 
 - A repository is `remote-dependent` only when the server's project record ties
-  it to the connected code host and the server has recorded a trusted tip: the
-  default branch commit it last saw on the host through its own clone, fetch or
-  brokered push. Nothing read from `.git` can make a repository
+  it to a connected code host that survives the loss of the Verity host (GitHub,
+  or a Forgejo the administrator asserted at connection setup to run in a
+  different failure domain; a Forgejo on the Verity host itself never qualifies)
+  and the server has recorded a trusted tip: the default branch commit it last
+  saw on the host through its own clone, fetch or brokered push. The dependency
+  is shown at connection setup and in backup status, not only at restore. Nothing read from `.git` can make a repository
   remote-dependent, it can only force a self-contained copy; everything
   under `.git` is writable from the sandbox.
 - For a remote-dependent repository the snapshot replaces `.git/objects` with a
