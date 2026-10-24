@@ -739,9 +739,12 @@ devices with a "Revoke" action.
 - The lifecycle lock is held only while the database snapshot is opened and
   `.git` directories are frozen.
 - The first full run shows progress and a time estimate in the app.
-- The snapshot sequence number is authoritative for order, for "newest" and for
-  retention. Timestamps are for display only. The installer warns about a
-  snapshot timestamp in the future and about gaps in the sequence.
+- The pair of repository number and sequence number is authoritative for
+  order, for "newest" and for retention across all repositories of an
+  installation; the sequence alone orders snapshots within one repository.
+  Timestamps are for display only. The installer selects snapshots as
+  `r<n>/<sequence>` and warns about a snapshot timestamp in the future and about
+  gaps in a repository's sequence.
 
 ## Alerting
 
@@ -841,7 +844,7 @@ its new installation id, with the same recovery key.
 
 `verity-install --rollback` restores the database and the data volume from the
 newest pre-update snapshot into the existing installation; `--rollback
---snapshot <sequence>` selects another one. It finds pre-update snapshots by
+--snapshot r<n>/<sequence>` selects another one. It finds pre-update snapshots by
 the kind in their file names, asks for confirmation, stating the snapshot time
 and that later changes are lost, then for the recovery key, and verifies the
 signed manifest before it touches anything.
@@ -853,7 +856,9 @@ generation. `VERITY_ROOT/backup-state/` is not in the snapshot
 and is carried over unchanged from the current data volume into staging, so the
 host keeps its backup keys, index and target id. The installer runs the same
 architecture check as above, restores into staging, applies the revocation
-journal (see "Device revocations across restore"), and writes the automatic
+journal (see "Device revocations across restore") and every revocation recorded
+in the live database it replaces, which covers entries written under a newer
+key generation than the one entered, and writes the automatic
 update hold into the restored database before the swap, because the snapshot's
 own settings predate it. It then swaps staging in, pins the snapshot's release
 and starts it. Automatic updates stay held until the administrator resumes them
@@ -885,8 +890,9 @@ the server records whenever it publishes or deletes a snapshot: sequence, kind,
 time, releases for pre-update snapshots, key generation and per-project sizes.
 The catalog is a cache, never restore authority; when it is missing it is
 rebuilt from the file names (sequence and kind) and modification times. The
-kind is also a signed manifest field; restore refuses a snapshot whose name and
-signed kind disagree, so a renamed file cannot pass as `pre-update`. The
+repository, sequence and kind are also signed manifest fields; restore refuses
+a snapshot whose file name or repository directory disagrees with them, so a
+renamed or copied file cannot pass as newer or as `pre-update`. The
 plaintext file names reveal snapshot count, kind and order to anyone who can
 read the directory, which the size and timing of the files reveal anyway.
 
@@ -912,9 +918,14 @@ the alerting reminds after 90 days.
   objects are removed by garbage collection when no other snapshot needs them.
 - "Pause backups" stops the schedule and the pre-update snapshot and keeps every
   snapshot. The update gate does not hold updates while paused.
-- "Delete all backups" removes this installation's repositories after a typed
-  confirmation and turns backups off. Repositories of other installations in the
-  same directory are left alone.
+- "Delete all backups" removes this installation's repositories, its CA key
+  files under `identity/` and its entries under `revocations/` after a typed
+  confirmation, and turns backups off. Repositories and files of other
+  installations in the same directory are left alone.
+- A CA key file of an older key generation is removed together with the last
+  repository of that generation, so a retired recovery key stops yielding the
+  CA key once its snapshots have expired. Revocation entries of a generation
+  are removed the same way.
 - There is no per-file purge from existing snapshots in version one; a file
   removed from the workspace leaves snapshots under normal retention.
 - Premium minimum retention, which can refuse a deletion, is defined in the

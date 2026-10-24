@@ -53,7 +53,10 @@ copy taken during a run can at worst hold a newest manifest with missing
 objects; restore detects that and falls back to the newest complete snapshot.
 
 The server's mounts are fixed by the sealed deployment spec, so admitting the
-backup mount is a deployment-spec change in the first step.
+backup mount and the identity helper's writable request directory are
+deployment-spec changes in the first step. Snapshots are ordered by repository
+number and sequence, and file names must match the signed repository, sequence
+and kind.
 
 ### Recovery key
 
@@ -265,7 +268,9 @@ alerting reminds after 90 days.
 
 A single snapshot can be deleted with confirmation. "Pause backups" stops the
 schedule and the pre-update snapshot and keeps the data. "Delete all backups"
-removes this installation's repositories after typed confirmation. There is no
+removes this installation's repositories, CA key files and revocation entries
+after typed confirmation; older-generation CA key files are removed with the
+last repository of their generation. There is no
 per-file purge in version one.
 
 ### Authorization and execution identity
