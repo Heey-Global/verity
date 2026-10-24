@@ -53,6 +53,8 @@ interface Pull {
 interface AssociatedPull {
   number: number;
   merged_at: string | null;
+  merge_commit_sha?: string;
+  base?: { ref: string; repo: { full_name: string } };
   head: { ref: string; sha: string };
 }
 interface Review {
@@ -766,10 +768,30 @@ function promote() {
   // manual retries. Do not rely on repository approval-dismissal settings.
   const mergeCommit = git('log', '-1', '--format=%H', '--', manifestPath);
   const prs = api<AssociatedPull[]>(`repos/${repository()}/commits/${mergeCommit}/pulls`);
-  const pr = prs.find(
+  let pr = prs.find(
     (value) =>
       value.merged_at && value.head.ref === `automation/promote-mobile-ota-${candidate.runtime}`,
   );
+  if (!pr) {
+    // GitHub can omit merged PRs from the commit association endpoint. Recover
+    // only the exact merge that last changed the approved manifest.
+    const branch = `automation/promote-mobile-ota-${candidate.runtime}`;
+    const owner = repository().split('/')[0];
+    const closed = api<AssociatedPull[][]>(
+      '--paginate',
+      '--slurp',
+      `repos/${repository()}/pulls?state=closed&base=main&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`,
+    ).flat();
+    const matches = closed.filter(
+      (value) =>
+        value.merged_at &&
+        value.merge_commit_sha === mergeCommit &&
+        value.head.ref === branch &&
+        value.base?.ref === 'main' &&
+        value.base.repo.full_name === repository(),
+    );
+    if (matches.length === 1) pr = matches[0];
+  }
   if (!pr) throw new Error('Promotion requires a merged rolling candidate PR');
   if (staleApprovals(pr.number, pr.head.sha).length)
     throw new Error(
