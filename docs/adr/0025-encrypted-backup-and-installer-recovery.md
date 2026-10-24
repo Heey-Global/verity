@@ -10,7 +10,7 @@ Verity needs recoverable backups of configuration, credentials, project files,
 sessions and knowledge, including retained data of active, sleeping and paused
 projects. Application state spans PostgreSQL, the `verity-data` volume
 (workspaces, session worktrees, knowledge folders), a few service volumes, and
-the installation identity under `/etc/verity`; a database dump alone is
+the deployment identity under `/etc/verity`; a database dump alone is
 insufficient. Server updates run forward-only schema migrations, which makes the
 moment before an update the one where only a backup can undo damage.
 
@@ -118,7 +118,8 @@ to several recipients.
 
 Every snapshot includes the complete application database, everything under
 `VERITY_ROOT/workspaces`, `VERITY_ROOT/sessions` and the knowledge folders, the
-installation identity, and a manifest with scope, lifecycle states, release and
+deployment identity (never the installation id), and a manifest with scope,
+lifecycle states, release and
 schema version (`SERVER_COMPAT`), excluded paths with sizes, per-project size
 and warnings.
 
@@ -201,9 +202,12 @@ the backup directory outside any snapshot. Fresh-host restore and same-host
 rollback apply every entry the entered key can open before the restored server
 starts, so a device revoked after the snapshot stays revoked; entries under a
 later key generation are reported and the restore requires a review of paired
-devices. The first screen after a restore lists paired devices with a revoke
-action for revocations a stale copy cannot know. The installer
-flag `--new-identity` generates a new identity and revokes device tokens, for a
+devices. Entries carry a per-installation sequence so deleted ones show as
+gaps, revocations that cannot be written are queued and re-synced on every run,
+and every restore ends with a mandatory paired-device review. Devices paired
+after the snapshot have to pair again. The installer flag `--new-identity`
+generates a new identity and revokes device tokens locally, without journaling,
+for a
 compromised source host or a trial restore beside a running original. Preview
 links, capability generations, enrollment recovery records and queued jobs are
 never revived.
@@ -219,7 +223,8 @@ unwritable or full; low CPU and IO priority. The snapshot sequence number is
 authoritative for order and retention; timestamps are for display.
 
 Alerts use the existing push sender and stay on the backup screen until
-resolved: no committed snapshot for twice the interval or 48 hours, two
+resolved: no committed snapshot for twice the interval or for 48 hours,
+whichever is reached first and not while paused, two
 consecutive failed runs, an unwritable, unmarked or nearly full directory,
 unreadable identity files, and a restore probe older than 90 days.
 
@@ -299,10 +304,9 @@ garbage collection, the disk-full alert, recovery key, identity in snapshots,
 minimal installer restore and restore probe. Existing hosts re-run the
 installer once for the mount, the identity helper, the installation id and the
 read-only database role, in the pattern of ADR 0008 Amendment 2; until then the
-app shows that backups need the installer. 1b:
-pre-update snapshot with the gate and "Update anyway". 1c: alerting, retention settings
-and snapshot list, snapshot deletion, project and file restore, same-host
-rollback. 2: Premium Uplink upload and account-based installer download,
+app shows that backups need the installer. 1b: pre-update snapshot with the
+gate and "Update anyway", and same-host rollback. 1c: alerting, retention
+settings and snapshot list, snapshot deletion, project and file restore. 2: Premium Uplink upload and account-based installer download,
 enrollment continuity. 3: remote-dependent Git, takeover, quiesced pre-update
 snapshot, database segmentation, several recovery keys, per-project exclusions.
 

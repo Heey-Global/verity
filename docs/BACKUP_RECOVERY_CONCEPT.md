@@ -90,7 +90,8 @@ The app screens are mocked up in [`docs/assets/backup/`](assets/backup/)
 term is always "recovery key"; there is no separate "kit". The mockups show
 the main path and are not complete: the recovery key entry and the
 compromised-host note before a restore test (screen 10), the paired-device
-review after a restore (before screen 12) and the length of a real recovery key
+review after a restore (before screen 12), including devices that must pair
+again because they were paired after the snapshot, and the length of a real recovery key
 (screen 2 shows a shortened sample) are specified here but not drawn yet.
 
 ### Set up
@@ -201,7 +202,8 @@ Every snapshot includes:
   knowledge folders: working files, untracked and ignored user files such as
   `.env`, and each Git repository complete with its objects (see "Git
   repositories");
-- the installation identity (see "Identity in snapshots");
+- the deployment identity (see "Identity in snapshots"); the installation id
+  is never part of it;
 - the manifest: scope, per-project lifecycle state, the server release and
   schema version (`SERVER_COMPAT`), capture timestamps, excluded paths with
   counts and sizes, per-project captured size, and every warning below.
@@ -418,8 +420,9 @@ Two hosts restored from the same backup therefore never damage each other's
 history; at worst they both use storage. A same-host rollback keeps the
 installation id and continues the installation's current repository.
 
-The next sequence number is the highest committed number in the repository plus
-one, read from the directory under the repository lock, never from host state
+The next sequence number comes from a high-water mark file in the repository,
+advanced under the repository lock before each publish and never lowered, so a
+deleted snapshot's number is never reused. It is never taken from host state
 that a restore or rollback could have reset.
 
 ### Publication, retention and garbage collection
@@ -443,9 +446,12 @@ crashes.
 The host cannot decrypt manifests, so it cannot read references back from them.
 At publish time the server records each snapshot's set of object IDs in
 `VERITY_ROOT/backup-state/`, fsynced before the manifest is published. Garbage
-collection works from those sets and fails closed: if the set of any retained
-snapshot is missing or incomplete, it deletes nothing and raises the "backup
-needs attention" status. Rebuilding the sets needs the recovery key, entered
+collection works from those sets, which live only in `backup-state/` and never
+in the database, so a rollback keeps them. It fails closed per repository: if
+the set of any retained snapshot in a repository is missing or incomplete, it
+deletes no object of that repository and raises the "backup needs attention"
+status naming it. A retired repository with lost sets is not collected object by
+object; it is removed whole when its last snapshot expires, without an alert. Rebuilding the sets needs the recovery key, entered
 for that purpose, or a new repository with a full first run.
 
 ## Consistent capture
@@ -702,7 +708,9 @@ A fresh-host restore always reinstates the identity, together with the device
 tokens in the database, so devices reconnect without pairing. The flow asks no
 question about it. `verity-install --restore <dir> --new-identity` is the
 documented exception for a compromised source host: it generates a new
-identity, revokes all device tokens, and requires pairing again. Use it as well
+identity, revokes all device tokens locally, and requires pairing again. These
+revocations are never written to the revocation journal, because the token ids
+are shared with the source installation. Use it as well
 for a trial restore while the original host keeps running, so two hosts never
 answer with one identity.
 
@@ -716,21 +724,30 @@ that Uplink may need re-enrollment.
 Reinstating device tokens must not reauthorize a device that was revoked after
 the snapshot, for example a lost phone. Every device revocation is therefore
 also written, at the moment it happens, into `<backup dir>/revocations/`,
-outside any snapshot. An entry names the installation id, the key generation
-and the revoked token id, is encrypted to the current recipient and signed with
-the current signing key.
+outside any snapshot. An entry names the installation id, the key generation,
+a per-installation sequence number and the revoked token id, is encrypted to the
+current recipient and signed with the current signing key; the sequence makes a
+deleted entry visible as a gap.
+
+A revocation that cannot be written, because the directory is unwritable,
+unmarked or full, or backups are paused or not set up, stays queued in the
+database and is retried; every backup run also writes any database revocation
+missing from the journal. A queued revocation raises the "backup needs
+attention" status.
 
 Fresh-host restore and same-host rollback read every entry the entered recovery
 key can open and verify, from every installation in the directory, and apply
 them before the restored server starts; a token id unknown to the restored
 database is a no-op, so applying a sibling installation's revocation is safe
 and wanted. Entries written under a later key generation cannot be opened with
-an older key. The restore then reports how many entries it could not read and
-does not finish until the administrator has reviewed the paired devices.
+an older key. Restore reports entries it could not read and gaps in any
+installation's sequence.
 
-A backup directory copy older than a revocation cannot know it either, so the
-restore summary and the first app screen after every restore list all paired
-devices with a "Revoke" action.
+A backup directory copy older than a revocation cannot know it either, and a
+host-writable directory can lose entries. Every restore therefore ends with a
+mandatory review: the first app screen lists all paired devices with a "Revoke"
+action, and devices paired after the snapshot are reported as needing to pair
+again.
 
 ## Operations
 
@@ -773,8 +790,8 @@ devices with a "Revoke" action.
 Alerts use the existing push sender and also appear as a persistent status
 entry on the backup screen until resolved:
 
-- no committed snapshot for twice the schedule interval, or 48 hours, whichever
-  comes first;
+- no committed snapshot for twice the schedule interval, or for 48 hours,
+  whichever is reached first; not raised while backups are paused;
 - two consecutive failed runs;
 - destination unwritable, marker missing, or less free space than the next run
   needs;
@@ -836,12 +853,14 @@ directory on local media. It needs no Uplink account and no subscription.
 4. Restore into staging volumes: the database through the import path, the data
    volume with the Git restore steps above, and the identity.
 5. Validate: paths and links, size limits, scope, version compatibility,
-   worktree repair. Then promote staging and write the new host state into a
-   staging copy of `/etc/verity`, which replaces the live directory in one
-   rename only after the restored installation has started and the
-   administrator has accepted it; until then the existing installation stays
-   intact. The new host state is a new installation id and regenerated
-   host-specific state (updater token, PostgreSQL password, host
+   worktree repair. Then write the new host state into a staging copy of
+   `/etc/verity` and start the restored installation from staging, with the
+   staging copy mounted where the server expects `/etc/verity`, so it boots
+   with the restored identity and the new installation id. Once the
+   administrator accepts it, the staging copy replaces the live directory in
+   one rename and staging is promoted; until then the existing installation
+   stays intact and can be started again. The new host state is a new
+   installation id and regenerated host-specific state (updater token, PostgreSQL password, host
    runtime under `/var/lib/verity/host-runtime`, image pins and gVisor
    configuration), reinstate the CA key from `identity/` after checking it
    against the snapshot's CA certificate, apply the revocation journal, install
@@ -889,7 +908,9 @@ host keeps its backup keys, index and target id. The installer runs the same
 architecture check as above, restores into staging, applies the revocation
 journal (see "Device revocations across restore") and every revocation recorded
 in the live database it replaces, which covers entries written under a newer
-key generation than the one entered, and writes the automatic
+key generation than the one entered. If that database cannot be read, the
+rollback continues with the journal alone and the mandatory device review. It
+then writes the automatic
 update hold into the restored database before the swap, because the snapshot's
 own settings predate it. Before touching anything it aborts any update the
 Updater has journaled, so the restored release does not resume a failing
@@ -1038,25 +1059,25 @@ Acceptance:
 
 The pre-update snapshot after `preflight`, the update gate with its default,
 "Update anyway", the held automatic update, the unbacked record in the update
-history, and pre-update retention.
+history, pre-update retention, and the installer's same-host rollback with the
+architecture check, so the snapshot the gate waits for can be used.
 
 Acceptance: the snapshot is taken before `creating-standby`; a failed snapshot
 holds the update with the reason; "Update anyway" records an unbacked update;
 an automatic update never overrides the gate; without backups the update runs
-with the note.
+with the note; rollback restores the pre-update state, keeps the devices the
+snapshot knows paired, pins the release and holds automatic updates; a rollback
+whose release has no image for the host aborts before touching anything.
 
 ### 1c: Everyday operations
 
 Alerting, the retention settings and snapshot list in the app, single snapshot deletion,
-pause and delete all, partial restore of a project and of a single file, and
-the installer's same-host rollback with the architecture check.
+pause and delete all, and partial restore of a project and of a single file.
 
 Acceptance: each alert fires on its condition and clears; retention keeps
 exactly the defined set across a simulated six months; a shared object survives
-deletion of one snapshot; rollback restores the pre-update state, keeps devices
-paired, pins the release and holds automatic updates; a rollback whose release
-has no image for the host aborts before touching anything; the recovery key
-used for a partial restore or probe never reaches disk or logs.
+deletion of one snapshot; the recovery key used for a partial restore or probe
+never reaches disk or logs.
 
 ### 2: Premium Uplink
 
