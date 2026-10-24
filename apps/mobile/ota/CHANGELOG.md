@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.77.2](https://github.com/Heey-Global/verity/compare/mobile-v1.77.1...mobile-v1.77.2) (2026-10-24)
+
+
+### Features
+
+* **diagnostics:** add selected recording admission and bounded attempt ([#1831](https://github.com/Heey-Global/verity/issues/1831)) ([0f29617](https://github.com/Heey-Global/verity/commit/0f29617d2659eacc68f36dd30df86b70cd8772fb))
+* **mobile:** expose bounded selected connection test ([#1840](https://github.com/Heey-Global/verity/issues/1840)) ([46a2709](https://github.com/Heey-Global/verity/commit/46a270964e222c5f49e92adefe4e6e7ee4e6ef6a))
+* **security:** improve vulnerability indicators and scan lifecycle ([#1828](https://github.com/Heey-Global/verity/issues/1828)) ([079ec9f](https://github.com/Heey-Global/verity/commit/079ec9f7258b44b7c938f577e602e79643e4f62e))
+
+
+### Bug Fixes
+
+* **deps:** bump fast-uri ([#1844](https://github.com/Heey-Global/verity/issues/1844)) ([3837025](https://github.com/Heey-Global/verity/commit/38370259a8c5677f3d2cc1b9fc15f42bac9a5ede))
+* **deps:** update dependency @napi-rs/canvas to v1.0.12 ([#1836](https://github.com/Heey-Global/verity/issues/1836)) ([2beb867](https://github.com/Heey-Global/verity/commit/2beb867c05001019ebdd3dd601431db9c745828c))
+* **forgejo:** isolate session credentials and authenticate worktree fetches ([#1839](https://github.com/Heey-Global/verity/issues/1839)) ([f29de54](https://github.com/Heey-Global/verity/commit/f29de54691ca4a59ba881341727856a6bf00e5e2))
+
 ## [1.77.1](https://github.com/Heey-Global/verity/compare/mobile-v1.77.0...mobile-v1.77.1) (2026-10-23)
 
 
