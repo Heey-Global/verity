@@ -3221,7 +3221,14 @@ describe('Uplink connection demand', () => {
 describe('coordinated Uplink recordings', () => {
   const runId = '11111111-1111-4111-8111-111111111111';
   async function ready(capability: boolean | 2 | 3 = true) {
-    const fixture = setup({ offerRemoteControl: true, reserveRemoteConnector: vi.fn() });
+    const fixture = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: vi.fn(async () => ({
+        diagnosticId: runId,
+        attach: async () => {},
+        release: () => {},
+      })),
+    });
     fixture.client.start();
     await flush();
     fixture.socket.open();
@@ -3445,6 +3452,8 @@ describe('coordinated Uplink recordings', () => {
       preparing: Record<string, unknown>;
       ready: Record<string, unknown>;
     };
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse(fixture.preparing.startedAt as string));
     const { client, socket } = await ready(3);
     const target = 'selected-session';
     const targetSession = createHash('sha256').update(target).digest('hex').slice(0, 16);
@@ -3455,6 +3464,22 @@ describe('coordinated Uplink recordings', () => {
     };
     const exportHash = createHash('sha256').update(canonicalEvidenceJson(document)).digest('hex');
     const id = document.runId;
+    socket.message({
+      type: 'session.request',
+      requestId: 'selected_request',
+      sessionId: target,
+      capability: 'remote-control-v1',
+      decisionExpiresAt: Date.now() + 15000,
+    });
+    await flush();
+    socket.message({
+      type: 'session.ticket',
+      sessionId: target,
+      ticket: 'ticket',
+      expiresAt: Date.now() + 15000,
+      capability: 'remote-control-v1',
+    });
+    await flush();
     const start = client.startRecording(id, 30000, 3, target);
     const request = reply(socket, {
       ...fixture.preparing,
@@ -3505,6 +3530,7 @@ describe('coordinated Uplink recordings', () => {
       'diagnostics_version_conflict',
     );
     await client.stop();
+    vi.useRealTimers();
   });
   it('does not silently downgrade v3 on a v2 peer', async () => {
     const { client, socket } = await ready(2);

@@ -226,3 +226,84 @@ it('uses the direct recording transport with paired authentication and a validat
   ).rejects.toThrow();
   expect(direct).toHaveBeenCalledTimes(3);
 });
+
+it('uses explicit authenticated v3 start and fresh selection status without downgrade', async () => {
+  const selected = {
+    ...status,
+    phase: 'starting',
+    selection: {
+      sessionHash: 'a'.repeat(16),
+      confirmed: true,
+      preparationExpiresAt: status.expiresAt,
+      readiness: null,
+    },
+  };
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async () => new Response(JSON.stringify(selected)));
+  const client = new VerityClient({
+    baseUrl: 'https://core.example',
+    fetch: vi.fn(() => {
+      throw new Error('normal transport must remain unused');
+    }),
+    recordingFetch: fetch,
+    getToken: () => 'paired-token',
+  });
+  const controller = new AbortController();
+  await expect(
+    client.startSelectedConnectionRecording(runId, 30000, 'exact_session', controller.signal),
+  ).resolves.toEqual(selected);
+  expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+    method: 'POST',
+    signal: controller.signal,
+    headers: { authorization: 'Bearer paired-token' },
+    body: JSON.stringify({
+      runId,
+      durationMs: 30000,
+      diagnosticsVersion: 3,
+      targetSessionId: 'exact_session',
+    }),
+  });
+  await client.getSelectedConnectionRecording(runId);
+  expect(fetch.mock.calls[1]?.[0]).toContain(`/recordings/${runId}/selection`);
+  await client.stopSelectedConnectionRecording(runId);
+  expect(fetch.mock.calls[2]?.[1]?.method).toBe('DELETE');
+  await expect(
+    client.startSelectedConnectionRecording(runId, 30001, 'exact_session'),
+  ).rejects.toThrow();
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify(status)));
+  await expect(
+    client.startSelectedConnectionRecording(runId, 30000, 'exact_session'),
+  ).rejects.toThrow();
+});
+
+it('rejects a correctly hashed foreign-run export inside a matching envelope', async () => {
+  const { readFileSync } = await import('node:fs');
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { document: Record<string, unknown> & { runId: string }; exportHash: string };
+  const requestedRun = '11111111-1111-4111-8111-111111111111';
+  expect(fixture.document.runId).not.toBe(requestedRun);
+  const client = new VerityClient({
+    baseUrl: 'https://core.example',
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          version: 1,
+          status: { ...status, runId: requestedRun },
+          core: { records: [], dropped: 0 },
+          uplink: {
+            available: true,
+            data: { ...fixture.document, exportHash: fixture.exportHash },
+            error: null,
+          },
+        }),
+      ),
+  });
+  await expect(client.exportConnectionRecording(requestedRun, 2)).rejects.toThrow(
+    'does not match run',
+  );
+});
