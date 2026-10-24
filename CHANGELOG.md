@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.58.0](https://github.com/Heey-Global/verity/compare/v4.57.3...v4.58.0) (2026-10-24)
+
+
+### Features
+
+* **mobile:** prototype Apple Watch quick capture with iPhone transcription ([#1387](https://github.com/Heey-Global/verity/issues/1387)) ([0f06d68](https://github.com/Heey-Global/verity/commit/0f06d68fc72a4826ba10261b33f8f3a6a7e5918a))
+
+
+### Bug Fixes
+
+* **release:** bound production recovery by candidate and pipeline ([#1881](https://github.com/Heey-Global/verity/issues/1881)) ([cc6b7e8](https://github.com/Heey-Global/verity/commit/cc6b7e820b32eaa246056636a7370a5799fb46c8))
+
 ## [4.57.3](https://github.com/Heey-Global/verity/compare/v4.57.2...v4.57.3) (2026-10-24)
 
 
