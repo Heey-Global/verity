@@ -10,7 +10,13 @@ const hook = fileURLToPath(new URL('../agent-seed/hooks/pre-push', import.meta.u
 const cli = fileURLToPath(new URL('../agent-seed/bin/verity-code-review', import.meta.url));
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  GIT_CONFIG_COUNT: '0',
+  // Detached Git housekeeping can outlive fetch and recreate files during cleanup.
+  // Apply to every Git subprocess, including fetches launched by the shell helper.
+  GIT_CONFIG_COUNT: '2',
+  GIT_CONFIG_KEY_0: 'gc.auto',
+  GIT_CONFIG_VALUE_0: '0',
+  GIT_CONFIG_KEY_1: 'maintenance.auto',
+  GIT_CONFIG_VALUE_1: 'false',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 'Test',
