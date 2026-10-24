@@ -161,12 +161,32 @@ describe('release-please train isolation', () => {
     expect(steps.find((step) => step.name === 'Run checks for release PRs')).toBeUndefined();
     expect(JSON.stringify(steps)).not.toContain('gh workflow run ci.yml');
     expect(steps.find((step) => step.id === 'app-token')?.with?.['app-id']).toBe(
-      '${{ vars.RELEASE_APP_ID }}',
+      '${{ secrets.RELEASE_APP_ID }}',
     );
     for (const train of trains) {
       const action = steps.find((step) => step.id === `release-${train}`);
       expect(action?.with?.token, train).toBe('${{ steps.app-token.outputs.token }}');
     }
+  });
+
+  it('loads every release app token ID from the configured secret', () => {
+    // A variable reference resolves empty when deployment only supplies the
+    // secret, stopping publication before any release logic can execute.
+    const tokenSteps = readdirSync('.github/workflows')
+      .filter((file) => file.endsWith('.yml'))
+      .flatMap((file) => {
+        const workflow = parse(readFileSync(`.github/workflows/${file}`, 'utf8')) as {
+          jobs?: Record<string, { steps?: WorkflowStep[] }>;
+        };
+        return Object.values(workflow.jobs ?? {}).flatMap((job) =>
+          (job.steps ?? [])
+            .filter((step) => step.uses?.startsWith('actions/create-github-app-token@'))
+            .map((step) => ({ file, step })),
+        );
+      });
+    expect(tokenSteps.length).toBeGreaterThan(0);
+    for (const { file, step } of tokenSteps)
+      expect(step.with?.['app-id'], file).toBe('${{ secrets.RELEASE_APP_ID }}');
   });
 
   it('never plans a next PR in the invocation that creates a release', () => {
