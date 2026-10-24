@@ -128,12 +128,23 @@ a scheduled run, the warm pre-update run and a restore in progress never share
 a path, and the directory is removed on every exit path of the run because it
 holds plaintext refs, index and user `config`). The copy uses reflinks where the
 filesystem offers them and a plain copy otherwise, never hardlinks, which would
-still share the sandbox-writable inode. In the copy, `config` is replaced by a
-sanitized file holding only the repository-format keys; the main and every
-per-worktree `config.worktree`, `hooks`, `objects/info/alternates`, `shallow`,
-`info/grafts` and `refs/replace/*` are removed, and their presence is recorded
-in the manifest. Every Git command then runs with `GIT_DIR` set to that copy and
-reads nothing from the live repository, so there is no window between a check
+still share the sandbox-writable inode. The copy never follows a symlink: every
+entry is `lstat`ed, a symlink anywhere under `.git` is not copied and is
+recorded as a finding, because a link to another project's `objects/pack` or
+`refs` would otherwise let a server-identity read pull foreign data into this
+backup. Before the copy, the `gitdir:` target of a `.git` file and the `gitdir`
+and `commondir` entries under `worktrees/<name>` are resolved and must lie
+inside the project's own workspace or session paths; anything else is recorded
+and the repository is captured as plain files without running Git. In the copy,
+`config` is replaced by a sanitized file holding only the repository-format
+keys; the main and every per-worktree `config.worktree`, `hooks`,
+`objects/info/alternates`, `shallow`, `info/grafts` and `refs/replace/*` are
+moved out of Git's reach into a sibling `user-files/` directory of the staging
+copy. They are user content and go into the snapshot as such, so a shallow
+repository or user replace refs restore intact; they are only kept away from
+every Git command the backup runs. Every Git command then runs with `GIT_DIR`
+set to that copy and reads nothing from the live repository, so there is no
+window between a check
 and the pack in which the sandbox can change what Git sees. The copy is what
 the snapshot stores as the repository's metadata and, for self-contained
 repositories, as its objects, so refs, objects and pack come from one moment;
@@ -162,12 +173,12 @@ keys known to execute or redirect in the commands used (`rev-list`,
 directory, `core.fsmonitor=false`, `core.sshCommand=/bin/false`,
 `credential.helper=`, `core.askPass=/bin/false`, `core.alternateRefsCommand=`,
 `protocol.allow=never`, `gc.auto=0`, `maintenance.auto=false`,
-`core.commitGraph=false`, and `safe.directory` set to the exact repository path.
-The command scope counts as protected configuration for `safe.directory`, so the
-`-c` form is honored. `.git/shallow`, `info/grafts`, `objects/info/alternates`
-and `refs/replace/*` are checked before and after the pack; any of them present
-at either check discards the pack and classifies the repository self-contained,
-because each can hide commits behind a fake history boundary. The one
+`core.commitGraph=false`, `core.multiPackIndex=false`, and `safe.directory` set
+to the exact repository path. The command scope counts as protected
+configuration for `safe.directory`, so the `-c` form is honored. `shallow`,
+`info/grafts` and `refs/replace/*` found at the freeze classify the repository
+self-contained, because each can hide commits behind a fake history boundary;
+the frozen copy cannot gain them afterwards. The one
 credentialed fetch does not use the restored repository at all; see restore
 step 3. Classification and the remote URL come from the server's project record
 in the database, never from `.git/config`, so the sandbox cannot choose the host
@@ -196,11 +207,9 @@ Capture, per repository that the project record ties to the connected code host:
    `git rev-list --objects --all --reflog --indexed-objects --not <trusted-tip> | git pack-objects --local`,
    run once against the staging copy; since Git 2.15 `--all`, `--reflog` and
    `--indexed-objects` cover the `HEAD`, reflogs and index of every linked
-   worktree. `--local` leaves out objects borrowed through
-   `objects/info/alternates`, so an alternates file added by the sandbox between
-   the classification check and the pack cannot pull another repository's
-   objects into this project's backup; the check is repeated after the pack and
-   a hit discards the pack and reclassifies. `<trusted-tip>` is the default branch
+   worktree. `--local` is defense in depth against alternates; the freeze has
+   already moved the alternates file out of Git's reach, so the copy holds only
+   the repository's own objects. `<trusted-tip>` is the default branch
    commit that Verity itself last saw on the code host, recorded in the
    database by the server-side clone, fetch and push paths that run outside the
    sandbox with the connection credential, including pushes brokered for the
@@ -257,7 +266,9 @@ still start from an empty initial commit, fall under this; after the "project
 files without a repository" concept lands they have no Git at all and nothing
 changes here.
 
-No fetch runs during capture: the backup has no network and no credentials. A
+No fetch runs during capture: capture holds no code host credential and every
+capture command carries `protocol.allow=never`, so even a config key that
+survived sanitizing could not reach the network through Git. A
 default branch tip that is behind the real remote only makes the packfile larger.
 A default branch that was force-rewritten after the last fetch is the one case
 that loses history; restore detects it through the recorded prerequisite and
@@ -295,14 +306,20 @@ the secret store so the code host connection credentials are usable:
    a temporary bare repository in the staging area with `git init --bare` and an
    allowlisted configuration written by Verity, nothing else: the object format
    from step 1, the remote URL from the project record, the standard refspec,
-   `http.followRedirects=false`, `protocol.allow=never` and
-   `protocol.https.allow=always`. The code host credential is an in-memory
+   `http.followRedirects=false`, `protocol.allow=never` and the single allowed
+   scheme taken from the connection record: `protocol.https.allow=always`, or
+   `protocol.http.allow=always` only when the administrator configured that
+   Forgejo connection over plain HTTP, as some LAN installations are; the
+   restore never upgrades or downgrades the scheme on its own. The code host
+   credential is an in-memory
    `http.extraheader`, as the provisioner uses today, handed to this single
    `git fetch origin` through the `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
    `GIT_CONFIG_VALUE_n` environment of that one child process rather than `-c`,
    so it never appears in argv or `/proc/*/cmdline`; it is still readable in
-   `/proc/<pid>/environ` by the same uid, which is why the backup execution
-   identity is not shared with any process a sandbox can reach. No sanitized denylist is
+   `/proc/<pid>/environ` by the same uid inside the server container. Sandboxes
+   are sibling containers with their own pid namespace and never share the
+   server's `/proc`, and nothing a sandbox can reach runs in the server
+   container, which is what makes this acceptable. No sanitized denylist is
    relied on for the credentialed command: the fresh repository has no
    sandbox-written file at all, so no `include.path`, `config.worktree`,
    alternates or replace ref can reach it. The resulting packs are moved into
@@ -314,12 +331,16 @@ the secret store so the code host connection credentials are usable:
    repository without a trusted tip at capture time was already classified
    self-contained and does not reach this step. Remote-tracking refs restored
    from the snapshot are untrusted and are overwritten here.
-4. `git fsck --connectivity-only` and `git worktree repair`; rewrite absolute
-   `gitdir` pointers in `.git` files and `worktrees/<name>/gitdir` entries if
-   `VERITY_ROOT` moved. Only after `fsck` passes, put the original `config`,
-   the main and every per-worktree `config.worktree` and `hooks` back from the
-   staging area and remove the staging copy; they are user content, not restore
-   input. On failure they stay in staging, and a retry starts again from the
+4. `git fsck --connectivity-only`, then validate every `gitdir:` file target
+   and every `worktrees/<name>/gitdir` and `commondir` entry from the snapshot
+   against the project's own restored paths before `git worktree repair` runs,
+   rewriting them for a moved `VERITY_ROOT` and refusing any that point
+   elsewhere, so a snapshot cannot make the server write outside the restore
+   root. Only after `fsck` passes, put the original `config`, the main and
+   every per-worktree `config.worktree`, `hooks`, and the `shallow`, graft and
+   replace files back from the staging area and remove the staging copy; they
+   are user content, not restore input. On failure they stay in staging, and a
+   retry starts again from the
    sanitized state without overwriting them. A default branch renamed on the
    host since capture needs no handling: the rename keeps the commit, the fetch
    brings it under its new name, and the prerequisite check is by OID.
@@ -339,10 +360,15 @@ files, the renamed `.git.verity-incomplete`, its
 `<VERITY_ROOT>/restore/<projectId>/` staging directory with the unimported
 local-only packfile and the set-aside user config, and, copied forward
 unchanged from the original manifest, the remote URL, connection id, trusted
-tip and branch. A later restore treats a `pending-rehydration` project exactly
-like a remote-dependent one whose rehydration has not happened yet, so the
-local-only commits stay recoverable through the new installation's own
-unattended backups for as long as they are retained there. No pin on the source
+tip and branch. A later restore treats a `pending-rehydration` project like a
+remote-dependent one whose rehydration has not happened yet, with two
+differences spelled out: it renames `.git.verity-incomplete` back to `.git`
+before step 1, and the user `config`, `config.worktree` files and `hooks`
+carried in the staging directory are the authoritative copies, so step 1 does
+not set anything aside again and the sanitized `config` found inside the
+renamed directory is discarded. The local-only commits therefore stay
+recoverable through the new installation's own unattended backups for as long
+as they are retained there. No pin on the source
 snapshot is attempted: it could not be enforced when the new installation
 starts a fresh repository, when the source was a portable bundle, or when the
 old host is still alive and running its own retention against the same
@@ -561,8 +587,12 @@ over the private control socket. The hook adds two requests to that sequence:
    shows the wait as its own phase. Two requirements on the Updater follow:
    quiescing must leave the old Server's control socket and database connection
    usable for this request, and a failed or timed-out snapshot must return the
-   old Server to serving through the journal's existing rollback path from
-   `quiescing-old`, so the abort is a normal rolled-back update, not a stuck one.
+   old Server to serving through a rollback path from `quiescing-old`, so the
+   abort is a normal rolled-back update, not a stuck one. Both are new Updater
+   work; the journal has no such rollback from that phase today. The Updater's
+   request also preempts a scheduled capture that happens to be running: the
+   scheduled run is cancelled (it never replaced the last good backup anyway)
+   before the final snapshot starts, so lock contention cannot eat the timeout.
 
 Both snapshots use the ordinary capture path: incremental, encrypted to the
 public recovery key, no secret needed for host-path and NAS destinations. Capture
@@ -681,7 +711,8 @@ authentication/entitlement, account ownership of archives, host-independent
 retention, quotas and billing; it is outside this repository (`AGENTS.md`,
 Product boundary). Recovery key ownership stays local.
 
-Start with incremental repositories and self-contained portable exports. Prove
+Start with incremental repositories; self-contained portable exports follow in
+step 3. Prove
 reference tracking, atomic publication, retention, index recovery and restore
 before presenting the first release as reliable. Show last completed backup,
 last restore verification, actual scope, actionable failures and, per code
@@ -721,7 +752,9 @@ repositories and rewritten history, knowledge originals/revisions, settings and
 usable integration secrets after master-password unlock. Cover a session worktree
 with staged-only blobs, a branch deleted on the host after a squash merge, a
 missing trusted tip, a remote-tracking ref moved onto a local-only commit from
-inside the sandbox, a planted object under the trusted tip's OID with forged
+inside the sandbox, a symlink under `.git` pointing at another project, a
+`gitdir` or `commondir` entry pointing outside the project before freeze and
+before `worktree repair`, a planted object under the trusted tip's OID with forged
 parents, a renamed default branch, a malicious `config.worktree` in
 the main and in a linked worktree, a sandbox-written commit-graph, replace ref,
 graft or shallow file added between classification and pack, a repository with

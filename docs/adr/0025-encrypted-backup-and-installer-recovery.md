@@ -144,198 +144,87 @@ out of an ordinary dump. A partial backup must never appear to be a full backup.
 
 History that is already pushed to the project's code host, GitHub or Forgejo, is
 recoverable from that host and is not copied into the backup. This is the one
-exclusion that is derived per repository rather than listed by path, and it is
-the largest size saving after dependency directories: `.git/objects` is the bulk
-of a clone, and Git repacks it periodically into differently compressed packs
-that defeat chunk deduplication even when no commit changed.
+exclusion derived per repository rather than listed by path, and the largest
+size saving after dependency directories: `.git/objects` is the bulk of a clone
+and Git repacks it periodically, which defeats chunk deduplication even when no
+commit changed. The decisions below are binding; the mechanics, command lines
+and edge cases live in the concept's "Git history and code hosts" section and
+are not repeated here, so that one text stays authoritative.
 
-For a repository whose `origin` points at the connected code host, capture
-excludes `.git/objects` and replaces it with a packfile of every object that is
-reachable from local refs, from reflogs or from the index of any worktree but
-not from a trusted tip: the default branch commit Verity itself last saw on the
-code host, recorded in the database by the server-side clone, fetch and push
-paths that run outside the sandbox. Remote-tracking refs are not trusted for
-this, because everything under `.git` is writable from the sandbox and a ref
-moved onto a local-only commit would silently drop history from the pack. The
-objects behind the tip are sandbox-writable too, so capture verifies them with
-`git fsck <trusted-tip>` on the frozen copy before the pack and falls back to a
-self-contained copy on any mismatch; the full read of pushed history per
-snapshot, outside the lifecycle lock, is the accepted price. Only
-the default branch is excluded, not every remote branch: feature branches are
-routinely squash-merged and deleted on the host, and a stale tip for a deleted
-branch would exclude commits the host no longer holds. Without a recorded tip
-that exists locally, with alternates, submodules, or a shallow or partial clone,
-the repository is captured self-contained. Reflogs and the index matter: staged
-but uncommitted blobs, older stash entries and commits left behind by reset,
-rebase or amend are reachable only from there, and the restored `index` and
-`logs` would point at missing objects otherwise. The manifest records the
-trusted tip and its branch as the prerequisite. Everything else in `.git` is included, so
-branches, stash, index, reflogs, session worktree registrations and the remote
-URL survive. Repositories without a remote, including today's local projects
-that still hold an empty initial commit, shallow or partial clones, and
-repositories whose `origin` is not the connected code host fall back to a
-complete copy of `.git/objects`.
-
-The manifest marks each project as `remote-dependent` or `self-contained`, with
-the remote URL, the code host connection it belongs to and the single trusted
-tip with its branch as the prerequisite. Restore rehydrates a remote-dependent repository by
-restoring `.git` without objects, importing the local-only packfile, fetching
-from the code host through the restored connection into a fresh bare repository,
-moving the packs over, checking the prerequisite and running `git fsck`. The credential travels as an in-memory `http.extraheader` for that
-one command, as the provisioner does today, passed through the child's
-`GIT_CONFIG_*` environment rather than argv, never through a helper or a file.
-No Git command the backup runs reads a sandbox-written file: capture first
-freezes the repository by copying the whole `.git`, objects included, into
-server-owned staging, strips `config`, every `config.worktree`, `hooks`,
-alternates, shallow, grafts and replace refs from the copy, and runs every
-command against the copy alone; restore sets the user's `config`,
-`config.worktree` and `hooks` aside before the first command, for every
-repository. A denylist of dangerous keys cannot be complete, so this is the
-primary protection, and because check and pack read one frozen copy there is
-no window for the sandbox to change what Git sees. The Git floor on server and
-installer images is 2.39. On top of it, every command uses one hardened
-invocation: the backup execution identity, no system or global config, and
-command-line overrides for the keys known to execute or redirect in the commands
-used (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`,
-`credential.helper`, `core.askPass`, `core.alternateRefsCommand`,
-`protocol.allow`, `gc.auto`, `maintenance.auto`, `core.commitGraph`,
-`safe.directory`, plus `GIT_NO_REPLACE_OBJECTS`). Shallow, graft and replace
-files present at the freeze force a self-contained copy.
-Alternates are never honored: the freeze drops the file, the copy holds only the
-repository's own objects, restore
-removes the file, and the repository is flagged incomplete. The one
-credentialed fetch never runs against the restored repository: it fetches into
-a fresh bare repository with an allowlisted configuration written by Verity, and
-the packs are then moved into the restored `.git/objects` and the restored
-remote-tracking refs are rewritten from the staging refs in one `update-ref`
-transaction, so no sandbox-written file can redirect the credential and no
-second fetch is needed. Classification and the remote URL
-come from the project record in the database, not from `.git/config`.
-Rehydration additionally sets the restored `config`, the main and per-worktree
-`config.worktree` files and `hooks` aside in server-owned staging outside the
-sandbox-writable tree and puts a sanitized configuration in its place that
-carries only the remote URL from the project record, the repository-format keys
-(`core.repositoryformatversion`, `core.bare`, and the explicit extensions
-`objectFormat` and `worktreeConfig`) and the standard
-`remote.origin.fetch` refspec. Users and agents can edit `config` and `hooks`,
-and settings such as `core.sshCommand`, `core.fsmonitor`, `credential.helper`
-or `url.*.insteadOf` would otherwise run code or redirect the fetch credential
-during restore. The restored `config`, `config.worktree` files and `hooks` are
-put back only after `fsck` passes, and never run during restore.
-Rehydration needs the secret store unlocked, because the connection credentials
-live there, and it needs the code host reachable. When the host is unreachable,
-the connection is revoked, or the prerequisites no longer exist because history
-was rewritten or the repository was deleted, the project stays suspended with a
-"Code incomplete" warning, its working files on disk and its local commits
-preserved as the unimported packfile. That pending state is captured in later
-snapshots under its own `pending-rehydration` class, carrying the original
-remote URL, connection and trusted tip forward, so a later restore can still
-rehydrate it and the new installation's own backups never lose those commits. The user can retry rehydration after
-reconnecting, or resume the project in a defined "working files only" state in
-which the unusable `.git` is renamed aside and Code shows no history. The restore never reports such a
-project as recovered.
+- A repository is `remote-dependent` only when the server's project record ties
+  it to the connected code host and the server has recorded a trusted tip: the
+  default branch commit it last saw on the host through its own clone, fetch or
+  brokered push. Nothing read from `.git` decides classification; everything
+  under `.git` is writable from the sandbox.
+- For a remote-dependent repository the snapshot replaces `.git/objects` with a
+  packfile of the objects reachable from local refs, reflogs and every
+  worktree's index but not from the trusted tip. Only the default branch is
+  excluded, because deleted feature branches leave stale remote-tracking refs.
+  Reflogs and the index are included so staged blobs, stash entries and
+  reflog-only commits survive.
+- The objects behind the tip are verified with `git fsck` before the pack and
+  a mismatch forces a self-contained copy; the full read of pushed history per
+  snapshot, outside the lifecycle lock, is the accepted price.
+- No Git command the backup runs reads a sandbox-written file. Capture freezes
+  the repository first: a no-follow copy of the whole `.git` into server-owned
+  staging, with user `config`, `config.worktree`, `hooks`, alternates, shallow,
+  graft and replace files moved out of Git's reach and carried as user content.
+  Restore sets the same files aside before its first command and returns them
+  after `fsck`. A hardened invocation with overrides for executable keys is
+  defense in depth, not the protection. The Git floor on server and installer
+  images is 2.39.
+- Everything that does not qualify, including repositories without a remote,
+  today's local projects, shallow or partial clones, submodules, alternates,
+  unknown extensions, and any `gitdir` or symlink pointing outside the project,
+  is captured `self-contained` or, where Git cannot safely run, as plain files
+  with a "not validated" warning.
+- Rehydration at restore imports the local-only pack, fetches from the code
+  host into a fresh bare repository with a Verity-written allowlisted
+  configuration and the credential in the child's environment, moves the packs
+  over, rewrites remote-tracking refs in one `update-ref` transaction, checks
+  the prerequisite and runs `fsck`. It needs the secret store unlocked and the
+  host reachable. Failure leaves the project suspended with a "Code incomplete"
+  warning, its working files on disk and its local commits preserved as the
+  unimported pack; the user may retry or resume in a defined "working files
+  only" state.
+- Pending state is captured by later snapshots under its own
+  `pending-rehydration` class, carrying the original remote URL, connection and
+  trusted tip forward, so a later restore can still rehydrate it. No pin on the
+  source snapshot is attempted, because it could not be enforced.
 
 This makes the backup of a code project complete only together with the code
 host. The ADR accepts that: the host already is the system of record for pushed
 history, and the installations Verity targets keep their code there by design.
-The restore UI states this dependency per project before activation. A
-stale default branch tip errs on the safe side and includes more objects; a
-default branch that was force-rewritten after the last fetch is the residual
-loss case and is surfaced, not hidden. Self-contained repositories keep
-re-uploading their packs after `git gc`; the saving applies to remote-dependent
-repositories.
+The restore UI states this dependency per project before activation. A stale
+tip errs on the safe side and includes more objects; a default branch that was
+force-rewritten after the last recorded tip is the residual loss case and is
+surfaced, not hidden. Self-contained repositories keep re-uploading their packs
+after `git gc`; the saving applies to remote-dependent repositories.
 
 ### Mandatory incremental repository
 
-Incremental transfer and storage are first-release requirements. The first
-snapshot uploads all included content; later snapshots reuse unchanged encrypted
-objects and upload only new objects and a new manifest. Each snapshot describes
-its complete logical state and references objects directly, rather than requiring
-a replay of every intervening backup. Shared objects remain necessary for restore;
-a manifest alone is not a standalone backup.
-
-Use content-defined chunking for files so insertions do not shift every later
-block boundary. Deduplicate before encryption, within one repository and recovery
-key generation only. Never use plaintext hashes as public object names, derive
-encryption keys from content, or use deterministic encryption. The host keeps a
-restricted local index mapping keyed content fingerprints to random opaque
-object IDs; the fingerprint key is random per repository, kept in the same
-restricted host-local storage as the index because sealed capture must work, and
-stored in the repository encrypted to the recipient for index rebuilds. It
-protects a leaked index, not a compromised host.
-That index contains sensitive information and must not be uploaded unencrypted.
-Destination observers can still infer sizes, timing and reuse patterns.
-
-Each new object receives an independent random data key, authenticated encryption
-and an envelope to the public recovery recipient. Encrypt manifests the same way.
-Manifests carry ordered object references, envelopes, integrity information,
-file metadata and the repository/key-generation identity. Bind those identities,
-object type and format version into authentication. Reusing an object reuses its
-existing ciphertext and envelope; encrypting new objects never reuses a nonce or
-key. Use reviewed maintained primitives; the exact container format, chunk sizes
-and library selection require implementation review and cross-version fixtures.
-
-The host holds only the public recovery key and the fingerprint/reference index,
-not persistent object decryption keys. It can create new encrypted manifests by
-copying opaque envelopes from its index without opening old objects. The index is
-a cache, not restore authority: every committed snapshot contains the encrypted
-information needed to reconstruct its files and rebuild the index. After index
-loss, supply the private key in a controlled recovery process to rebuild it, or
-start a new repository with a full upload. Never silently persist the private key
-for unattended deduplication. A new recovery key starts a new repository generation
-with a full upload; sharing old objects across generations is deferred. Old
-snapshots still need their original private key.
-
-Publish immutable objects first and an immutable snapshot commit last, after the
-destination durably acknowledges all references. Resume uploads by opaque object
-ID, verify stored ciphertext checksums and lengths, and serialize publication and
-pruning with repository concurrency control. Missing or corrupt dependencies make
-a snapshot incomplete and trigger repair or re-upload when source data is
-available. A partial job never replaces a committed snapshot. Checksums detect
-transfer faults; they do not replace authenticated decryption during restore.
-
-Retention removes snapshots first; garbage collection removes objects only when
-no retained snapshot references them, no upload or restore lease needs them, and
-a safety grace period has elapsed. Reference tracking and deletion must survive
-crashes and concurrent jobs. Premium's destination-side protection covers both
-manifests and every referenced object for the entire protected lifetime; a host
-cannot erase shared dependencies to bypass snapshot retention. Other destinations
-must explicitly report whether equivalent protection is available. Write-only
-credentials alone do not provide immutable retention or enough listing/read
-access for repository reconciliation.
-
-Restore reads a selected manifest and all its referenced objects, authenticates
-them and stages a complete installation. App export assembles a self-contained
-bundle of that manifest and its reachable encrypted objects, without decrypting
-on the source host; downloading that bundle transfers the full selected state.
-Repository-to-repository replication transfers only objects missing at the target.
-An export carries the same content as the snapshot, so a remote-dependent code
-project keeps its code host dependency in the export; the export dialog offers
-"include pushed history", which adds that project's full `.git/objects` to the
-export only, and shows the size difference. The UI distinguishes incremental
-repository backups from full portable downloads and reports scanned bytes, new
-ciphertext bytes and total retained storage.
+Incremental transfer and storage are first-release requirements. Decisions:
+content-defined chunking and deduplication before encryption, within one
+repository and key generation; keyed fingerprints in a host-local index that is
+a cache, never restore authority, rebuildable with the private key; a fresh
+random data key per object wrapped to the public recipient, no deterministic
+encryption and no content-derived keys; every snapshot a complete logical
+description that references objects directly; objects published before the
+immutable snapshot commit, and garbage collection that honours every retained
+snapshot, in-flight leases and a grace period; key rotation starts a new
+repository generation, cross-generation rewrapping is deferred. Portable exports
+carry the same content as a snapshot and may optionally include pushed history.
+The concept's section of the same name holds the detailed format and retention
+rules.
 
 ### Incremental application database
 
-Do not equate chunking a compressed PostgreSQL dump with efficient database
-backup: small row changes can rewrite large portions of that stream. In the first
-release, use a versioned complete logical export under one repeatable-read
-snapshot, with stable table/primary-key ordering and bounded deterministic
-segments. Deduplicate segments before per-object compression and encryption.
-Include schema/migration metadata, sequence state, all stored secret ciphertext
-and a supported transactional import path. Define deterministic encodings for
-binary values, nulls and types; tables without stable keys require an explicit
-ordering strategy. Do not promise unchanged segment boundaries across schema or
-export-format changes: those may require a new full database upload.
-
-This approach still scans the database each time; it reduces transfer and retained
-storage, not necessarily capture time. Acceptance must measure a representative
-large database after a small row edit, insertion and deletion and prove that
-unrelated tables are not uploaded again. No incremental success claim without
-those measurements and a full restore. Physical base backups plus WAL are a
-possible later optimization, with different privileges, PostgreSQL-version
-coupling and retention dependencies; they are not silently added to version one.
+The database is captured as a transaction-consistent, deterministically
+segmented logical export through a read-only role whose credential lives
+outside the secret store, so a sealed server can still capture. Segments are
+stable across runs so that unchanged rows deduplicate; physical or WAL-based
+optimizations are deferred. Details are in the concept's section of the same
+name.
 
 ### Consistency without a global drain
 
@@ -388,8 +277,8 @@ durably acknowledged that final snapshot, because it is the rollback point; the
 warm pass exists so this wait is short, and the update status shows it as its
 own phase. Quiescing must therefore leave the old Server's control socket and
 database connection usable, and a failed or timed-out snapshot returns the old
-Server to serving through the journal's existing rollback path from
-`quiescing-old`. The snapshot is tagged `pre-update` with the previous and target
+Server to serving through a rollback path from `quiescing-old`; both are new
+Updater work, and the Updater's request preempts a running scheduled capture. The snapshot is tagged `pre-update` with the previous and target
 release and is retained by a separate rule, at least the last two pre-update
 snapshots, independent of the ordinary schedule's retention.
 
@@ -571,7 +460,9 @@ back to a self-contained copy, that a remote-tracking ref moved onto a
 local-only commit from inside the sandbox does not remove anything from the
 pack, that a malicious
 `config.worktree` in the main or a linked worktree never executes during
-restore, that a commit-graph, replace ref, graft or shallow file written by the
+restore, that a symlink or `gitdir` entry pointing outside the project is
+refused at freeze and before `worktree repair`, that a commit-graph, replace
+ref, graft or shallow file written by the
 sandbox cannot shrink the pack, and that a repository without a remote restores
 without any network. Prove that an
 update takes the final pre-update snapshot after quiescing and before the
