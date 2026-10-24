@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.77.3](https://github.com/Heey-Global/verity/compare/mobile-v1.77.2...mobile-v1.77.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** use patched zod in Expo CLI ([#1848](https://github.com/Heey-Global/verity/issues/1848)) ([e85a5d8](https://github.com/Heey-Global/verity/commit/e85a5d87d0b5388e753c041d0dcd2e8fa18b43d3))
+
 ## [1.77.2](https://github.com/Heey-Global/verity/compare/mobile-v1.77.1...mobile-v1.77.2) (2026-10-24)
 
 
