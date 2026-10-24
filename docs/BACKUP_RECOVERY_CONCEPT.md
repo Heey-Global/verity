@@ -138,7 +138,8 @@ run (see "Format and key lifecycle"). Snapshots in the old repository still need
 the old key; the snapshot list shows which key each snapshot needs, and the old
 repository expires under normal retention. Before it starts, the flow warns that
 the old key is still needed for those snapshots, including the pre-update
-snapshots a rollback would use, and names the date until which to keep it.
+snapshots a rollback would use, and states the condition for discarding it:
+the snapshot list shows when no retained snapshot needs that key any more.
 
 A user who has lost the key while the server still runs replaces it at once. The
 old snapshots stay unreadable; they are not deleted early, in case the key turns
@@ -248,7 +249,7 @@ could not rebuild.
 
 The status shows the captured size per project and warns when a project
 exceeds 2 GB, naming the largest directories, so a user can move generated
-data out of the workspace or add it to the project's ignore rules and its build.
+data out of the workspace, since ignored files are backed up as well.
 There is no per-project exclusion setting in version one.
 
 ## Encryption and key ownership
@@ -512,8 +513,10 @@ promise beyond that in version one.
 
 The export runs under a dedicated read-only role whose credential is provisioned
 like the server's own `DATABASE_URL`, outside the secret store, so a sealed
-server can capture. Restore imports through a supported transactional import
-path into an empty database of the snapshot's schema version.
+server can capture. `COPY` carries rows, not DDL: restore first creates the
+schema by running the pinned release's migrations up to the snapshot's recorded
+schema version on an empty database, then imports the rows and sets the
+sequences in one transaction.
 
 ### Git repositories
 
@@ -574,7 +577,9 @@ sandbox can delete a pack after its refs were copied. Each frozen copy therefore
 gets `git fsck --connectivity-only` before it is accepted, except one flagged
 `alternates-dropped`, whose failure is expected and which skips the check and
 the retry loop. Missing objects
-trigger a re-freeze with bounded retries; after the last attempt the latest copy
+trigger a re-freeze with bounded retries, each of which takes the lifecycle
+lock again, so a retried copy still sees the same projects and mounts as the
+database export or the project is recorded as changed; after the last attempt the latest copy
 is stored as plain files with an `unstable` flag. Repositories with unknown
 extensions (for example `extensions.refStorage`) or out-of-project pointers are
 stored as plain files and flagged "not validated".
@@ -748,11 +753,12 @@ a per-installation sequence number and the revoked token id, is encrypted to the
 current recipient and signed with the current signing key; the sequence makes a
 deleted entry visible as a gap.
 
-A revocation that cannot be written, because the directory is unwritable,
-unmarked or full, or backups are paused, stays queued in the database and is
+Pause does not stop journal writes; it stops only the schedule and the
+pre-update snapshot. A revocation that cannot be written, because the
+directory is unwritable, unmarked or full, stays queued in the database and is
 retried; every backup run also writes any database revocation missing from the
-journal. A queued revocation raises the "backup needs attention" status only
-while backups are active. Without configured backups nothing is queued, because
+journal. A queued revocation raises the "backup needs attention" status,
+paused or not. Without configured backups nothing is queued, because
 there is no backup that could bring the token back. Each snapshot manifest also
 records, signed, the highest journal sequence written so far, so restore
 detects entries deleted before that snapshot.
@@ -817,8 +823,8 @@ entries deleted after the newest snapshot, which nothing else can detect.
 Alerts use the existing push sender and also appear as a persistent status
 entry on the backup screen until resolved:
 
-- no committed snapshot for twice the schedule interval, or for 48 hours,
-  whichever is reached first; not raised while backups are paused;
+- no committed snapshot for twice the schedule interval (at most 48 hours,
+  since the interval is at most daily); not raised while backups are paused;
 - two consecutive failed runs;
 - destination unwritable, marker missing, or less free space than the next run
   needs;
@@ -909,7 +915,9 @@ were active during capture are marked interrupted, and queued work is never
 replayed automatically. The restore summary lists integration credentials that
 need reconnection, including the provider sign-ins lost with the gateway state.
 
-Backups on the restored host are active and write into a new repository under
+Backups on the restored host stay off until the administrator accepts the
+restore, so a rejected trial leaves neither a repository nor a CA key file
+behind. After acceptance they are active and write into a new repository under
 its new installation id, with the same recovery key, into the backup directory
 configured for this host (`--backup-dir`, default `/var/lib/verity/backups`).
 The installer adopts that directory's marker or writes a new one and records
@@ -947,8 +955,11 @@ Updater has journaled, so the restored release does not resume a failing
 update. Everything that survives a rollback is host-side and not in the
 snapshot: `/etc/verity` with the installation id, `VERITY_ROOT/backup-state/`
 (keys, index, target id, catalog and per-snapshot object references), and the
-backup directory itself. It then swaps staging in, pins the snapshot's release
-and starts it. Automatic updates stay held until the administrator resumes them
+backup directory itself. Like a fresh-host restore, it checks free space for
+the staging volumes first and keeps the current volumes until the rolled-back
+installation has started and the administrator has accepted it; a failure
+before that leaves the current installation untouched. It then starts staging
+with the snapshot's release pinned and, on acceptance, swaps it in. Automatic updates stay held until the administrator resumes them
 in the app. Backups continue in the installation's current repository, the one
 `backup-state/` belongs to, which may be newer than the snapshot's own if the
 key or format changed since; snapshots taken after the pre-update snapshot
@@ -1013,7 +1024,8 @@ the alerting reminds after 90 days.
 - A CA key file of an older key generation is removed together with the last
   repository of that generation, so a retired recovery key stops yielding the
   CA key once its snapshots have expired. Revocation entries of a generation
-  are removed the same way.
+  are removed the same way, and a signed low-water mark records the lowest
+  sequence still present, so removed entries never show as gaps.
 - There is no per-file purge from existing snapshots in version one; a file
   removed from the workspace leaves snapshots under normal retention.
 - Premium minimum retention, which can refuse a deletion, is defined in the
@@ -1050,8 +1062,9 @@ Self-contained capture of everything in scope, the exclusion list, the database
 export through the read-only role, the repository format with publication,
 retention and garbage collection, the disk-full alert, the host-path destination with marker and free-space check,
 the schedule with the operations defaults, recovery key setup with the
-confirmation paste, identity in snapshots, a minimal installer fresh-host
-restore and the restore probe in the app and in CI. Existing hosts receive the
+confirmation paste, identity in snapshots, the revocation journal,
+`verity-install --rotate-identity` for the leaked-key response, a minimal
+installer fresh-host restore and the restore probe in the app and in CI. Existing hosts receive the
 new mount, the identity helper, the installation id and the read-only database
 role only through the installer, so they re-run it once, in the pattern of ADR
 0008 Amendment 2; until then the app shows that backups need the installer.
@@ -1065,8 +1078,10 @@ Acceptance:
   devices reconnecting without pairing.
 - `--new-identity` requires pairing and revokes old device tokens. A device
   revoked after the snapshot stays revoked after fresh-host restore and after
-  rollback. A CA key file that does not match the snapshot's certificate is
-  refused.
+  rollback, including a revocation made after an off-host copy was taken, which
+  the mandatory device review catches. A CA key file that does not match the
+  snapshot's certificate is refused. `--rotate-identity` leaves every old
+  snapshot's identity unusable for pairing.
 - Wrong keys, tampered, truncated or reordered objects, an unsigned manifest
   encrypted to the recipient, malicious paths and links, a full disk, a missing
   marker, an interrupted run and an unsupported format version fail safely and

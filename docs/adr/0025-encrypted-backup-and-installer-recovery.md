@@ -203,7 +203,8 @@ case, and once the policy gateway removes that, the helper accepts only a
 recipient key registered by root through the installer. Restore authenticates
 that file against the CA certificate in the signed
 snapshot. A fresh-host restore always reinstates the identity, with the device
-tokens, so devices reconnect without pairing and without a question in the flow.
+tokens, so devices reconnect without pairing; the flow asks nothing about the
+identity, and its only question is the mandatory device review at the end.
 
 Every device revocation is also written, when it happens, as a signed entry into
 the backup directory outside any snapshot. Fresh-host restore and same-host
@@ -231,8 +232,8 @@ unwritable or full; low CPU and IO priority. The snapshot sequence number is
 authoritative for order and retention; timestamps are for display.
 
 Alerts use the existing push sender and stay on the backup screen until
-resolved: no committed snapshot for twice the interval or for 48 hours,
-whichever is reached first and not while paused, two
+resolved: no committed snapshot for twice the interval (at most 48 hours),
+not while paused, two
 consecutive failed runs, an unwritable, unmarked or nearly full directory,
 unreadable identity files, and a restore probe older than 90 days.
 
@@ -258,11 +259,19 @@ installation id, regenerate host-specific state, reinstate the identity and
 start the pinned release. Projects come back suspended and are resumed by the
 user.
 
+Every restore, fresh-host or same-host, checks free space for the staging
+database and data volumes first, refuses a snapshot newer than the installer
+can run and unsupported downgrades, restores into staging, and keeps the
+existing installation intact until the restored one has started and the
+administrator has accepted it. A failure at any point before that leaves the
+existing installation untouched and startable.
+
 The installer's same-host rollback restores database and data from a pre-update
 snapshot into the existing installation, keeps identity, pairing and the
 host's own backup state (keys, index, target id), applies the revocation
 journal, pins the snapshot's release and writes the automatic update hold into
-the restored database before starting it. The Updater's own rollback phases stay the first line.
+the restored database before starting it, all within the staging and
+acceptance rules above. The Updater's own rollback phases stay the first line.
 
 The app offers restoring one project from a snapshot as a new project and
 downloading a single file. Both ask for the recovery key for that operation and
@@ -309,7 +318,8 @@ plaintext or recovery keys.
 
 1a: self-contained capture, host-path destination, schedule, retention with
 garbage collection, the disk-full alert, recovery key, identity in snapshots,
-minimal installer restore and restore probe. Existing hosts re-run the
+the revocation journal, `--rotate-identity`, minimal installer restore and
+restore probe. Existing hosts re-run the
 installer once for the mount, the identity helper, the installation id and the
 read-only database role, in the pattern of ADR 0008 Amendment 2; until then the
 app shows that backups need the installer. 1b: pre-update snapshot with the
