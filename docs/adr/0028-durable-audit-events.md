@@ -77,28 +77,32 @@ trigger. Record attribution confidence/source and unknown identities explicitly;
 never accept identity claims from request text as authority.
 
 Include installation/deployment identity, Server release and generation, stable
-target/project IDs, and parent operation or approval IDs where applicable.
-The existing chain is keyed per project and stays the stream for secret-audit
-events. New domains write to a separate per-project stream so that the retention
-rules below for the legacy secret chain never pin build, image or sandbox
-events. Events without a project, such as updates, Server-generation
-replacement and audit-policy changes, form one installation-scoped stream with
-its own sequence and chain head. Two records accompany each stream and must
-not be confused. The *head record* holds the hash last confirmed by a
-verification run; it advances only when a scheduled or administrator-triggered
-verification completes, never on append, because a head that follows the tail
-detects nothing. Events appended after the last verification run are the
-undetectable truncation window; the run cadence is part of the audit policy.
-The *prune checkpoint*, introduced below, marks the removed prefix. Both live
-in the same database and share its limits.
-A project-scoped event caused by an installation operation references that
-operation's ID; streams are not interleaved into a single global order. The
-streams are pruned independently, so a reference may outlive its target;
-verification and rendering must tolerate a dangling operation reference and
-show it as expired rather than as corruption.
-Deletion must leave enough safe target identification to interpret old events.
-Use bounded fields and pagination; repository-controlled strings are untrusted
-input and must be safely rendered.
+target/project IDs, and parent operation or approval IDs where applicable. The
+existing chain is keyed per project and stays the only stream for secret
+approvals, grants, redemptions, job outcomes and cleanup: those events keep
+their format, their co-commit guarantee and their best-effort lifecycle behavior
+there and are never duplicated into a new stream. The Authorization row above
+refers to them by reference, not by re-recording. New domains, including
+credential creation, replacement and removal as configuration events distinct
+from the recorder's job lifecycle, write to a separate per-project stream so
+that the retention rules below for the legacy secret chain never pin build,
+image or sandbox events. Events without a project, such as updates,
+Server-generation replacement and audit-policy changes, form one
+installation-scoped stream with its own sequence and chain head. Two records
+accompany each stream and must not be confused. The *head record* holds the hash
+last confirmed by a verification run; it advances only when a scheduled or
+administrator-triggered verification completes, never on append, because a head
+that follows the tail detects nothing. Events appended after the last
+verification run are the undetectable truncation window; the run cadence is part
+of the audit policy. The *prune checkpoint*, introduced below, marks the removed
+prefix. Both live in the same database and share its limits. A project-scoped
+event caused by an installation operation references that operation's ID;
+streams are not interleaved into a single global order. The streams are pruned
+independently, so a reference may outlive its target; verification and rendering
+must tolerate a dangling operation reference and show it as expired rather than
+as corruption. Deletion must leave enough safe target identification to
+interpret old events. Use bounded fields and pagination; repository-controlled
+strings are untrusted input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -124,7 +128,8 @@ change the rule. The rule is about image builds Verity mediates, not about the
 Devcontainer path as such: agent-requested builds through the Docker policy
 gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
 and if a build-worker design later admits them they join this fail-closed
-group rather than the best-effort Resources domain. Image resolution is content-addressed and a wake that finds
+group rather than the best-effort Resources domain. Image resolution is
+content-addressed and a wake that finds
 its image does not build; a wake that would build, and whose intent cannot be
 committed, fails with an explicit audit-health error instead of running
 unrecorded. Secret approvals, grant issuance and gateway-served secret calls
@@ -168,16 +173,17 @@ outcome failed.
 
 A best-effort write that fails leaves no row, and no chain can detect an event
 that was never appended. The recorder therefore counts failed writes per stream
-and domain in memory and, once storage recovers, must append a *write-gap*
-event with those counts and the failure window to each affected stream before
-accepting further events on that stream. The gate is per stream: a stream that
-owes a write-gap event blocks only its own appends, so a co-committed secret
-approval in the legacy chain never waits on bookkeeping for another stream.
-Recovery may add reconciliation events describing only what is known. The audit-health
-diagnostic is a live process signal, not durable storage: when the process dies
-before recovery, the gap can go completely unevidenced. That is an accepted
-limitation of the local-only first stage and one reason external copies remain
-a later decision.
+and domain in memory and, once storage recovers, must append a *write-gap* event
+with those counts and the failure window to each affected stream before
+accepting further events on that stream. The gate is per stream and applies to
+the new streams only. The legacy secret chain does not participate in write-gap
+tracking: its post-commit lifecycle events keep their existing best-effort
+behavior, no new event kind is added to its format, and a co-committed secret
+approval never waits on write-gap bookkeeping. Recovery may add reconciliation
+events describing only what is known. The audit-health diagnostic is a live
+process signal, not durable storage: when the process dies before recovery, the
+gap can go completely unevidenced. That is an accepted limitation of the
+local-only first stage and one reason external copies remain a later decision.
 
 ### Access
 
@@ -205,8 +211,9 @@ and before results are returned, so a crashed turn still leaves evidence and
 an investigating agent cannot inflate the trail with repeated queries. The
 event names the administrator, the agent session and turn, and the stream,
 project and time scope actually requested so far; a later read that widens
-that requested scope appends a new event. Agent reads and administrator
-exports are fail-closed: when the read or
+that requested scope appends a new event, up to a bounded number of scope
+widenings per turn; beyond that bound further widening is denied until a new
+turn. Agent reads and administrator exports are fail-closed: when the read or
 export event cannot be written, the request is denied, since investigation
 can wait but an untraced read of the trail cannot be repaired. Avoid recursive
 logging of the audit recorder itself. No client-facing read path for
@@ -225,25 +232,27 @@ no ordinary edit or selective-delete API.
 Default retention is 180 days, configurable by an administrator. The existing
 secret-audit chain is never pruned today and its verification re-derives every
 event from sequence zero. Rows recorded before this ADR's rollout therefore keep
-unbounded retention until an administrator explicitly confirms the window after
-a disclosure of how many pre-existing events it removes; the upgrade itself
-must not prune them. Because pruning removes a contiguous prefix, the whole
-per-project secret chain, including rows written after rollout, stays pinned
-until that confirmation; the 180-day default applies to secret-audit chains
-only from then on. From that confirmation on, secret-audit events are pruned
-like any other event once checkpoint support exists. Retired request-MAC keys
-are kept at least until every event signed under them has expired, so retained
-events stay verifiable. Project deletion does not shorten retention; today it
-already leaves secret-audit rows untouched. Policy changes are audited;
-shortening the window
+unbounded retention until an administrator explicitly confirms the window, once
+and installation-wide, after a disclosure of how many pre-existing events it
+removes across all projects; the upgrade itself must not prune them. Because
+pruning removes a contiguous prefix, the whole per-project secret chain,
+including rows written after rollout, stays pinned until that confirmation; the
+180-day default applies to secret-audit chains only from then on. From that
+confirmation on, secret-audit events are pruned like any other event once
+checkpoint support exists. Retired request-MAC keys are kept at least until
+every event signed under them has expired, so retained events stay verifiable.
+Project deletion does not shorten retention; today it already leaves
+secret-audit rows untouched. Policy changes are audited; shortening the window
 must explicitly disclose that older history will be removed. Retention uses
 server-recorded time, not a caller-supplied timestamp, and must not split an
 operation that is still active. An operation without a terminal result cannot
 pin its stream forever: after a bounded, configurable overrun past the window,
 reconciliation appends an *operation-expired* event that closes it as
 indeterminate, and the prefix advances; this is a distinct event kind from the
-write-gap event above. The overrun is part of the audit policy and is itself
-audited.
+write-gap event above. The prune boundary never passes the stream's verified
+head record: a prefix is deleted only up to the last verification run, so a
+verification run is required before pruning can advance beyond it. The overrun
+is part of the audit policy and is itself audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
 expired contiguous prefix, persist a prune checkpoint with stream identity,
