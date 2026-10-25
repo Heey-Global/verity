@@ -73,6 +73,9 @@ export function TextField({
         <Text style={styles.label}>{label}</Text>
       )}
       <View
+        // The focus shadow creates a Fabric stacking context. Keep it present
+        // before focus too, so the native input is not reparented and blurred.
+        collapsable={false}
         style={[
           styles.field,
           multiline ? styles.multiline : null,
