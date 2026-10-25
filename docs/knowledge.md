@@ -19,6 +19,7 @@ insights/
   The `verity-memory append` command adds operator-requested facts to this file.
 - `sources/documents/` receives chat attachments selected with **Save to knowledge**,
   Google Drive imports, web sources, and source files uploaded in the explorer.
+- `sources/matrix/` keeps imported Matrix conversations and attachments. Existing Matrix sources migrate automatically from `sources/documents/matrix/`; conflicting destination files stop migration without overwriting them.
 - `sources/meetings/` keeps meeting audio and its transcript automatically.
 - For existing files in a session worktree, agents can use the project-bound
   `verity_knowledge` `import_source` operation to copy a file into
