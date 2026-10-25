@@ -60,7 +60,7 @@ actions.
 | Authorization | Approval decisions, grant issuance/use/revocation, denied sensitive requests and external actions such as push, PR creation, merge or deployment |
 | Security configuration | Permission, pairing/device-access, network-exposure and isolation-policy changes; credential creation/replacement/removal by identifier only |
 | System operations | Update attempts and results, Server-generation replacement, maintenance and audit-policy changes |
-| Automation | Job trigger and lifecycle, linked to the resource or external action it initiates |
+| Automation | Job trigger and lifecycle, linked to the resource or external action it initiates; secret jobs stay in the legacy chain and are linked by reference only |
 
 Resource events cover the long-lived project sandbox only. Disposable query
 sandboxes created for Git status reads, and similar per-command helper
@@ -86,10 +86,11 @@ their format, their co-commit guarantee and their best-effort lifecycle behavior
 there and are never duplicated into a new stream. The Authorization row above
 refers to them by reference, not by re-recording. New domains, including
 credential creation, replacement and removal as configuration events distinct
-from the recorder's job lifecycle, write to a separate per-project stream so
-that the retention rules below for the legacy secret chain never pin build,
-image or sandbox events. Events without a project, such as updates,
-Server-generation replacement and audit-policy changes, form one
+from the recorder's job lifecycle, write to a separate per-project stream, or to
+the installation-scoped stream when the credential belongs to the installation
+rather than a project, so that the retention rules below for the legacy secret
+chain never pin build, image or sandbox events. Events without a project, such
+as updates, Server-generation replacement and audit-policy changes, form one
 installation-scoped stream with its own sequence and chain head. Two records
 accompany each stream and must not be confused. The *head record* holds the hash
 last confirmed by a verification run; it advances only when a scheduled or
@@ -182,22 +183,23 @@ Completed external effects cannot be rolled back merely because writing their
 outcome failed.
 
 A best-effort write that fails leaves no row, and no chain can detect an event
-that was never appended. Because several Server processes may write at once, for
-example during generation replacement, an in-memory gate cannot hold. The
-recorder therefore counts failed writes per stream and domain in memory and,
-once storage recovers, first sets a persisted pending-gap flag on the stream's
-row, then appends a *write-gap* event with those counts and the failure window
-and clears the flag in the same transaction; every writer checks the flag before
-appending, so the gap event precedes any later event on that stream regardless
-of which process wrote it. The gate is per stream and applies to the new streams
-only. The legacy secret chain does not participate in write-gap tracking: its
-post-commit lifecycle events keep their existing best-effort behavior, no new
-event kind is added to its format, and a co-committed secret approval never
-waits on write-gap bookkeeping. Recovery may add reconciliation events
-describing only what is known. The audit-health diagnostic is a live process
-signal, not durable storage: when the process dies before recovery, the gap can
-go completely unevidenced. That is an accepted limitation of the local-only
-first stage and one reason external copies remain a later decision.
+that was never appended. Each Server process counts its own failed writes per
+stream and domain in memory and, once storage recovers, appends a *write-gap*
+event with those counts and the failure window to each affected stream before
+that process appends anything else to it. Several processes may write at once,
+for example during generation replacement, so no cross-process gate is
+attempted: the write-gap event is ordered only relative to its own process's
+later events, and its failure window, not its stream position, says which period
+it covers. Readers correlate gap events with other processes' events by
+server-recorded time. Write-gap tracking applies to the new streams only. The
+legacy secret chain does not participate in it: its post-commit lifecycle events
+keep their existing best-effort behavior, no new event kind is added to its
+format, and a co-committed secret approval never waits on write-gap bookkeeping.
+Recovery may add reconciliation events describing only what is known. The
+audit-health diagnostic is a live process signal, not durable storage: when the
+process dies before recovery, the gap can go completely unevidenced. That is an
+accepted limitation of the local-only first stage and one reason external copies
+remain a later decision.
 
 ### Access
 
@@ -261,21 +263,23 @@ keys are kept at least until every event signed under them has expired, so
 retained events stay verifiable. Project deletion does not shorten retention;
 today it already leaves secret-audit rows untouched. Policy changes are audited;
 shortening the window must explicitly disclose that older history will be
-removed. Retention uses server-recorded time, not a caller-supplied timestamp,
-and must not split an operation that is still active. An operation without a
-terminal result cannot pin its stream forever: after a bounded, configurable
-overrun past the window, reconciliation appends an *operation-expired* event
-that closes it as indeterminate, and the prefix advances; this is a distinct
-event kind from the write-gap event above. A terminal result observed after that
-closure is appended as reconciliation evidence under the same operation ID and
-supersedes the expired marker in rendering; it is never rejected and never
-invented. If the prefix holding that operation's start was already pruned,
-rendering shows the late result against an expired reference, not as corruption,
-and the late event does not re-pin retention for the removed start. The prune
-boundary never passes the stream's verified head record: a prefix is deleted
-only up to the last verification run, so a verification run is required before
-pruning can advance beyond it. The overrun is part of the audit policy and is
-itself audited.
+removed. Retention uses server-recorded time, not a caller-supplied timestamp.
+On the new streams it must not split an operation that is still active; the
+legacy secret chain is pruned by age alone, as stated below. An operation
+without a terminal result cannot pin its stream forever: after a bounded,
+configurable overrun past the window, reconciliation appends an
+*operation-expired* event that closes it as indeterminate, and the prefix
+advances; this is a distinct event kind from the write-gap event above. A
+terminal result observed after that closure is appended as reconciliation
+evidence under the same operation ID and supersedes the expired marker in
+rendering; it is never rejected and never invented. If the prefix holding that
+operation's start was already pruned, rendering shows the late result against an
+expired reference, not as corruption, and the late event does not re-pin
+retention for the removed start. The prune boundary stays strictly below the
+stream's verified head record: the event the head points to is always retained,
+so the presence check of the next verification run can succeed, and a
+verification run is required before pruning can advance further. The overrun is
+part of the audit policy and is itself audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
 expired contiguous prefix, persist a prune checkpoint with stream identity,
@@ -353,9 +357,9 @@ Before enabling each domain, verify:
   being rejected or duplicated.
 - A verification run fails, and the head record stays put, when the stored head
   is missing or its hash differs; the head never moves backward.
-- After audit storage recovers from failed best-effort writes, the affected
-  stream accepts no further event until its write-gap event with the failure
-  counts is appended; other streams are unaffected.
+- After audit storage recovers from failed best-effort writes, the recovering
+  process appends its write-gap event to each affected stream before any other
+  event of its own; other processes and streams are unaffected.
 - Crash windows and uncertain external outcomes remain indeterminate; retries and
   reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;
