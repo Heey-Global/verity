@@ -151,6 +151,18 @@ it.each([false, true])(
     expect(mockRequest).toHaveBeenCalledTimes(1);
   },
 );
+it('rejects a readiness transition without a revision advance', async () => {
+  const prepared = status(4);
+  prepared.selection.readiness.ready = false;
+  mockArm.mockResolvedValue(prepared);
+  mockFetch.mockImplementation(async (_url, init) => ({
+    ok: true,
+    json: async () => (init.method === 'DELETE' ? stopped() : status(4)),
+  }));
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('readiness unavailable');
+  expect(mockRequest).not.toHaveBeenCalled();
+  expect(mockStop).toHaveBeenCalled();
+});
 it.each([
   'revision',
   'clock',
