@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.77.6](https://github.com/Heey-Global/verity/compare/mobile-v1.77.5...mobile-v1.77.6) (2026-10-24)
+
+
+### Features
+
+* **mobile:** attribute auxiliary requests and native invocation timing ([#1871](https://github.com/Heey-Global/verity/issues/1871)) ([d636f3c](https://github.com/Heey-Global/verity/commit/d636f3cec564d343337db3d720dc79caa3e7ba76))
+
+
+### Bug Fixes
+
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
 ## [1.77.5](https://github.com/Heey-Global/verity/compare/mobile-v1.77.4...mobile-v1.77.5) (2026-10-24)
 
 

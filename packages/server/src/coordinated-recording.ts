@@ -158,14 +158,23 @@ export class CoordinatedRecordingManager {
             evidence.captureDurationMs !== run.durationMs
           )
             throw new Error('selection_mismatch');
-          // Replayed live metadata cannot establish current socket readiness.
+          // Readiness revisions describe transitions, not individual status requests.
+          // Correlated status replies may repeat both the revision and clock tick.
           if (
             run.status.evidence &&
             (evidence.readiness.revision < run.status.evidence.readiness.revision ||
               evidence.readiness.monotonicMs < run.status.evidence.readiness.monotonicMs ||
-              (['preparing', 'recording'].includes(evidence.state) &&
-                evidence.readiness.monotonicMs === run.status.evidence.readiness.monotonicMs &&
-                evidence.readiness.revision === run.status.evidence.readiness.revision))
+              (evidence.readiness.revision === run.status.evidence.readiness.revision &&
+                JSON.stringify([
+                  evidence.readiness.installation,
+                  evidence.readiness.app,
+                  evidence.readiness.ready,
+                ]) !==
+                  JSON.stringify([
+                    run.status.evidence.readiness.installation,
+                    run.status.evidence.readiness.app,
+                    run.status.evidence.readiness.ready,
+                  ])))
           )
             throw new Error('stale_status');
           const previous = run.status.selection?.readiness;
@@ -176,7 +185,7 @@ export class CoordinatedRecordingManager {
               Date.parse(evidence.expiresAt) - Date.parse(evidence.startedAt) >
                 run.durationMs + 15000 ||
               (previous &&
-                (evidence.readiness.revision <= previous.revision ||
+                (evidence.readiness.revision < previous.revision ||
                   (previous.ready &&
                     !evidence.readiness.ready &&
                     ['preparing', 'recording'].includes(evidence.state)) ||

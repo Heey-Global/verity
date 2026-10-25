@@ -1,21 +1,25 @@
 import type { GoogleAccount } from '@verity/mobile';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet } from '../ui';
-import { SettingsNavRow } from './SettingsChrome';
+import { SettingsChoiceRow } from './SettingsChrome';
 
-type Choice = { kind: 'account'; accountId: string } | { kind: 'add' | 'inherit' | 'disabled' };
 type Options = {
   accounts: GoogleAccount[];
   title?: string;
-  sessionOptions?: boolean;
-  alwaysShow?: boolean;
+  /** The account currently in use; drawn with a check mark. */
+  selectedId?: string | null;
 };
 
+/**
+ * Asks only which account to use. Disabling lives on the connection chip and
+ * adding accounts in Settings → Google, so neither competes with the choice.
+ * Resolves to the chosen account id, or null when dismissed.
+ */
 export function useGoogleAccountPicker() {
   const [options, setOptions] = useState<Options | null>(null);
-  const pending = useRef<((choice: Choice | null) => void) | null>(null);
-  const finish = useCallback((choice: Choice | null) => {
-    pending.current?.(choice);
+  const pending = useRef<((accountId: string | null) => void) | null>(null);
+  const finish = useCallback((accountId: string | null) => {
+    pending.current?.(accountId);
     pending.current = null;
     setOptions(null);
   }, []);
@@ -25,10 +29,13 @@ export function useGoogleAccountPicker() {
     },
     [],
   );
-  const choose = useCallback((next: Options): Promise<Choice | null> => {
-    if (!next.sessionOptions && !next.alwaysShow && next.accounts.length === 1)
-      return Promise.resolve({ kind: 'account', accountId: next.accounts[0]!.id });
+  const choose = useCallback((next: Options): Promise<string | null> => {
     pending.current?.(null);
+    pending.current = null;
+    if (next.accounts.length <= 1) {
+      setOptions(null);
+      return Promise.resolve(next.accounts[0]?.id ?? null);
+    }
     setOptions(next);
     return new Promise((resolve) => {
       pending.current = resolve;
@@ -40,36 +47,15 @@ export function useGoogleAccountPicker() {
       title={options?.title ?? 'Choose Google account'}
       onClose={() => finish(null)}
     >
-      {options?.sessionOptions ? (
-        <>
-          <SettingsNavRow
-            title="Use project default"
-            subtitle="Follow future project changes"
-            icon="folder"
-            onPress={() => finish({ kind: 'inherit' })}
-          />
-          <SettingsNavRow
-            title="Disable for this chat"
-            subtitle="Other chats keep their access"
-            icon="x"
-            onPress={() => finish({ kind: 'disabled' })}
-          />
-        </>
-      ) : null}
       {options?.accounts.map((account) => (
-        <SettingsNavRow
+        <SettingsChoiceRow
           key={account.id}
           title={account.displayName ?? account.email}
           subtitle={account.displayName ? account.email : undefined}
-          icon="user"
-          onPress={() => finish({ kind: 'account', accountId: account.id })}
+          selected={account.id === options.selectedId}
+          onPress={() => finish(account.id)}
         />
       ))}
-      <SettingsNavRow
-        title="Connect another account"
-        icon="plus"
-        onPress={() => finish({ kind: 'add' })}
-      />
     </Sheet>
   );
   return [choose, sheet] as const;

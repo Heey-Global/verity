@@ -8,6 +8,15 @@ on:
     branches: [main]
     paths: [apps/mobile/ota-promotion.json]
   workflow_dispatch:
+    inputs:
+      recovery-candidate:
+        description: Expected approved manifest hash for automatic recovery
+        type: string
+        default: ''
+      recovery-pipeline:
+        description: Expected promotion pipeline hash for automatic recovery
+        type: string
+        default: ''
 
 permissions: read-all
 
@@ -38,12 +47,27 @@ jobs:
         with:
           node-version: '26.12.1'
 
+      - name: Verify recovery checkout
+        id: recovery
+        env:
+          RECOVERY_CANDIDATE: ${{ inputs.recovery-candidate || '' }}
+          RECOVERY_PIPELINE: ${{ inputs.recovery-pipeline || '' }}
+        run: node scripts/promotion-recovery.mjs ota
+
       # EAS resolves the Expo app config before editing a channel. Install the
       # locked workspace so config plugins such as expo-router are available.
-      - run: npm ci
+      - if: steps.recovery.outputs.ready == 'true'
+        run: npm ci
 
       - name: Promote exact verified OTA candidate
+        id: deliver
+        if: steps.recovery.outputs.ready == 'true'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/mobile-ota-release.ts promote
+
+      # Step names persist on GitHub even if a publisher failed after preflight.
+      - name: recovery-v1:${{ steps.recovery.outputs.candidate }}:${{ steps.recovery.outputs.pipeline }}:${{ steps.recovery.outputs.ready != 'true' && 'skipped' || steps.deliver.outputs.deferred == 'true' && 'deferred' || job.status == 'cancelled' && 'cancelled' || steps.deliver.outcome == 'success' && 'success' || 'failure' }}
+        if: always() && steps.recovery.outcome == 'success'
+        run: echo 'Promotion recovery receipt recorded.'

@@ -1,6 +1,14 @@
-import { useId, type ReactNode } from 'react';
-import Svg, { Defs, LinearGradient, Rect, Stop, Text as SvgText } from 'react-native-svg';
-import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
+import { useEffect, useId, useState, type ReactNode } from 'react';
+import Svg, { Defs, LinearGradient, Stop, Text as SvgText } from 'react-native-svg';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Animated,
+  Linking,
+  Pressable,
+  Text,
+  View,
+} from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { parseInline } from '@verity/mobile';
 
@@ -14,14 +22,9 @@ type Colors = {
 };
 
 // Speakers keep one color for the whole meeting; accents appear only as rings and dots.
+// Signature is left out: in a meeting, pink is Verity's.
 export function speakerTone(colors: Colors, speaker: number): string {
-  const palette = [
-    colors.action,
-    colors.signature,
-    colors.success,
-    colors.attention,
-    colors.textMuted,
-  ];
+  const palette = [colors.action, colors.success, colors.textMuted, colors.attention];
   return palette[speaker % palette.length]!;
 }
 
@@ -165,7 +168,7 @@ function ActionRow({ actions }: { actions: CardAction[] }) {
           key={action.label}
           label={action.label}
           accessibilityLabel={action.accessibilityLabel ?? action.label}
-          variant={action.primary ? 'primary' : 'text'}
+          variant="text"
           size="compact"
           disabled={action.disabled === true}
           onPress={action.onPress}
@@ -175,63 +178,83 @@ function ActionRow({ actions }: { actions: CardAction[] }) {
   );
 }
 
+/** Who a card responds to and when, as shown in its header. */
+export type CardAttribution = { name?: string; initial?: string; tone?: string; time?: string };
+
 export function NoticedCard({
   label,
   tone,
   time,
+  attribution,
   quote,
   title,
   body,
   source,
+  sourceUrl,
   working = false,
   actions = [],
-  prominent = false,
+  fresh = false,
   onDismiss,
   dismissLabel = 'Dismiss',
   onToggle,
   children,
 }: {
-  label: string;
+  /** The kind of card when the title does not say it, such as an open question. */
+  label?: string;
   tone: string;
   time?: string;
+  attribution?: CardAttribution;
   quote?: string;
   title: string;
   body?: string;
   source?: string | null;
+  /** Opens the source when it is tapped. */
+  sourceUrl?: string | null;
+  /** Verity is still on it: `label` names what it is doing and the answer lines shimmer. */
   working?: boolean;
   actions?: CardAction[];
-  /** The title is the subject of the card, such as the question being researched. */
-  prominent?: boolean;
+  /** Verity's newest contribution, outlined in its signature color. */
+  fresh?: boolean;
   /** Shows a close button in the header that removes the card. */
   onDismiss?: () => void;
   dismissLabel?: string;
   children?: ReactNode;
   onToggle?: () => void;
 }) {
-  const gradient = useId();
   const { theme } = useUnistyles();
   const colors = theme.colors;
+  const meta = attribution ?? (time ? { time } : undefined);
+  const heading = <Text style={styles.cardTitle}>{title}</Text>;
   return (
-    <View style={styles.card}>
-      <View
-        pointerEvents="none"
-        style={{ position: 'absolute', left: 0, top: 18, bottom: 18, width: 3 }}
-      >
-        <Svg width="3" height="100%">
-          <Defs>
-            <LinearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
-              <Stop offset="0" stopColor={tone} />
-              <Stop offset="1" stopColor={colors.action} />
-            </LinearGradient>
-          </Defs>
-          <Rect width="3" height="100%" rx="1.5" fill={`url(#${gradient})`} />
-        </Svg>
-      </View>
+    <View style={[styles.card, fresh && styles.cardFresh]} testID="meeting-card">
       <View style={styles.cardHeader}>
-        <View style={[styles.dot, { backgroundColor: tone }]} />
-        <Text style={[styles.cardLabel, { color: tone }]}>{label}</Text>
-        {working ? <ActivityIndicator size="small" color={tone} /> : null}
-        {time ? <Text style={styles.cardTime}>{time}</Text> : null}
+        <View style={styles.fill}>
+          {onToggle ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Toggle meeting answer"
+              onPress={onToggle}
+            >
+              {heading}
+            </Pressable>
+          ) : (
+            heading
+          )}
+        </View>
+        {meta ? (
+          <View style={styles.cardMeta}>
+            {meta.initial ? (
+              <View style={[styles.metaAvatar, { borderColor: meta.tone ?? colors.textMuted }]}>
+                <Text style={[styles.metaInitial, { color: meta.tone ?? colors.textMuted }]}>
+                  {meta.initial}
+                </Text>
+              </View>
+            ) : null}
+            <Text style={styles.cardTime}>
+              {[meta.name, meta.time].filter(Boolean).join(' · ')}
+            </Text>
+          </View>
+        ) : null}
         {onDismiss ? (
           <Pressable
             accessibilityRole="button"
@@ -243,25 +266,88 @@ export function NoticedCard({
           </Pressable>
         ) : null}
       </View>
+      {working ? (
+        <View style={styles.workingLine}>
+          <ActivityIndicator size="small" color={colors.textMuted} />
+          {label ? <Text style={styles.workingText}>{label}</Text> : null}
+        </View>
+      ) : label ? (
+        <Text style={[styles.cardLabel, { color: tone }]}>{label}</Text>
+      ) : null}
       {quote ? <Text style={styles.cardQuote}>{quote}</Text> : null}
-      {onToggle ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Toggle meeting answer"
-          onPress={onToggle}
-        >
-          <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
+      {body ? <Text style={styles.cardBody}>{body}</Text> : null}
+      {onToggle && children ? (
+        // The answer itself toggles too; VoiceOver uses the title's button for it.
+        <Pressable accessible={false} onPress={onToggle}>
           {children}
         </Pressable>
       ) : (
-        <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
+        children
       )}
-      {body ? <Text style={styles.cardBody}>{body}</Text> : null}
-      {!onToggle ? children : null}
-      {source ? <Text style={styles.cardSource}>{source}</Text> : null}
+      {working && !children ? <WorkingLines /> : null}
+      {source ? (
+        sourceUrl ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel={`Open source ${source}`}
+            onPress={() => void Linking.openURL(sourceUrl)}
+            style={styles.sourceLink}
+          >
+            <Text style={styles.cardSource}>{source}</Text>
+            <Icon name="external-link" size={14} color={colors.action} />
+          </Pressable>
+        ) : (
+          <Text style={styles.cardSourcePlain}>{source}</Text>
+        )
+      ) : null}
       <ActionRow actions={actions} />
     </View>
   );
+}
+
+// Placeholder lines where the answer will appear; they pulse unless Reduce Motion is on.
+function WorkingLines() {
+  const [pulse] = useState(() => new Animated.Value(1));
+  const reduceMotion = useReduceMotion();
+  useEffect(() => {
+    pulse.setValue(1);
+    if (reduceMotion) return;
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.45, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [pulse, reduceMotion]);
+  return (
+    <Animated.View
+      testID="meeting-card-working"
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[styles.workingLines, { opacity: pulse }]}
+    >
+      <View style={[styles.workingBar, { width: '78%' }]} />
+      <View style={[styles.workingBar, { width: '52%' }]} />
+    </Animated.View>
+  );
+}
+
+function useReduceMotion(): boolean {
+  const [reduceMotion, setReduceMotion] = useState(true);
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((value) => {
+      if (mounted) setReduceMotion(value);
+    });
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduceMotion;
 }
 
 const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
@@ -290,7 +376,7 @@ export function MeetingAnswerText({ text }: { text: string }) {
                   <Text
                     key={spanIndex}
                     accessibilityRole={span.external ? 'link' : undefined}
-                    style={{ color: colors.signature }}
+                    style={{ color: colors.action }}
                     onPress={span.external ? () => void Linking.openURL(span.url) : undefined}
                   >
                     {span.text}
@@ -357,40 +443,52 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: colors.surface,
       borderColor: colors.border,
       borderWidth: 1,
-      borderRadius: 22,
+      borderRadius: theme.radius.card,
       padding: theme.spacing.lg,
       gap: theme.spacing.sm,
     },
-    cardHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    dot: { width: 7, height: 7, borderRadius: 4 },
-    cardLabel: {
-      flex: 1,
-      fontSize: theme.typography.footnote.fontSize,
-      fontFamily: theme.fonts.bold,
-      letterSpacing: 1.2,
+    cardFresh: { borderColor: colors.signature },
+    fill: { flex: 1 },
+    cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
+    cardMeta: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.xs,
+      paddingTop: theme.spacing.xxs,
     },
+    metaAvatar: {
+      width: 18,
+      height: 18,
+      borderRadius: 9,
+      borderWidth: 1.5,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    metaInitial: { ...theme.typography.caption, fontFamily: theme.fonts.bold },
+    cardLabel: { ...theme.typography.label, fontFamily: theme.fonts.bold },
     cardTime: {
-      color: colors.textFaint,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.footnote.fontSize,
-    },
-    cardQuote: {
+      ...theme.typography.footnote,
       color: colors.textMuted,
       fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    cardQuote: {
+      ...theme.typography.bodySmall,
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
     },
     cardTitle: {
+      ...theme.typography.row,
       color: colors.text,
+      fontFamily: theme.fonts.semibold,
+    },
+    workingLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    workingText: {
+      ...theme.typography.bodySmall,
+      color: colors.textMuted,
       fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.row.fontSize,
-      lineHeight: 22,
     },
-    cardQuestion: {
-      color: colors.text,
-      fontSize: theme.typography.title.fontSize,
-      fontFamily: theme.fonts.bold,
-      lineHeight: 24,
-    },
+    workingLines: { gap: theme.spacing.sm, paddingVertical: theme.spacing.xs },
+    workingBar: { height: 8, borderRadius: 4, backgroundColor: colors.border },
     answer: { gap: theme.spacing.xs },
     answerLine: { flexDirection: 'row', gap: theme.spacing.sm },
     answerBullet: {
@@ -413,10 +511,21 @@ const styles = StyleSheet.create((theme) => {
       fontSize: theme.typography.bodySmall.fontSize,
       lineHeight: 20,
     },
+    sourceLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.xs,
+      alignSelf: 'flex-start',
+    },
     cardSource: {
-      color: colors.signature,
+      ...theme.typography.bodySmall,
+      color: colors.action,
       fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.footnote.fontSize,
+    },
+    cardSourcePlain: {
+      ...theme.typography.footnote,
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
     },
     actions: {
       flexDirection: 'row',
