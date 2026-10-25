@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.79.0](https://github.com/Heey-Global/verity/compare/mobile-v1.78.0...mobile-v1.79.0) (2026-10-25)
+
+
+### Bug Fixes
+
+* **mobile:** draw the Verity V as a vector in the Watch complication ([#1895](https://github.com/Heey-Global/verity/issues/1895)) ([3d2dac5](https://github.com/Heey-Global/verity/commit/3d2dac55cb8c52bdfe122a0f4ca57a3c474ad312))
+* **mobile:** reduce Google account picker to the account choice ([#1897](https://github.com/Heey-Global/verity/issues/1897)) ([3ca3708](https://github.com/Heey-Global/verity/commit/3ca3708d0bae5a5c8eff8821517bb3f2a6260c8b))
+* **remote-control:** accept unchanged readiness revisions ([#1896](https://github.com/Heey-Global/verity/issues/1896)) ([84ab4d0](https://github.com/Heey-Global/verity/commit/84ab4d096103f7476ddcbfee07bf7214b9d73453))
+
 ## [1.78.0](https://github.com/Heey-Global/verity/compare/mobile-v1.77.0...mobile-v1.78.0) (2026-10-24)
 
 
