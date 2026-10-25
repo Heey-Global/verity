@@ -107,19 +107,23 @@ stream and the chosen outcome: either a fresh full re-derivation succeeds and
 re-anchors the head, or the administrator declares the mismatch as an accepted
 gap and the head is re-anchored at the current tail with that declaration
 attached. Resolving a truncated tail is the one case in which the head moves to
-a lower sequence, and it is recorded as such; sequence numbers are never reused,
-so the next append continues past the lost range and every position cited by
-exports, references or write-gap windows stays unambiguous. The declaration is a
-recognized verification boundary like a prune checkpoint, but it does not skip
-history: later runs still re-derive every retained segment between consecutive
-boundaries against that segment's own anchor, and only the declared mismatch
-point itself is exempt, so an accepted gap stays verified without opening an
-unverified hole and never re-freezes the stream by itself. The detection claim
-below excludes the declared point and nothing else. Resolution applies to the
-streams of deleted projects as well, so one broken chain cannot block legacy
-pruning indefinitely. While resolving, the administrator sees the hidden expired
-rows; only ordinary reads hide them. The first head of every stream is set only
-by a successful verification from sequence zero or from the prune checkpoint: an
+a lower sequence, and it is recorded as such; sequence numbers are never reused:
+each stream's high-water mark lives in its head record, every append on every
+stream, the legacy secret chain included, takes the next sequence from that mark
+rather than from the current tail, and so the next append continues past the
+lost range and every position cited by exports, references or write-gap windows
+stays unambiguous. This is the one change to the legacy chain's append path; its
+event format and kinds stay as they are. The declaration is a recognized
+verification boundary like a prune checkpoint, but it does not skip history:
+later runs still re-derive every retained segment between consecutive boundaries
+against that segment's own anchor, and only the declared mismatch point itself
+is exempt, so an accepted gap stays verified without opening an unverified hole
+and never re-freezes the stream by itself. The detection claim below excludes
+the declared point and nothing else. Resolution applies to the streams of
+deleted projects as well, so one broken chain cannot block legacy pruning
+indefinitely. While resolving, the administrator sees the hidden expired rows;
+only ordinary reads hide them. The first head of every stream is set only by a
+successful verification from sequence zero or from the prune checkpoint: an
 upgrade seeds no head from a tail it has not verified, a pre-existing chain that
 fails is marked unverified at upgrade, and a new or empty stream starts with a
 genesis head. The legacy-prune confirmation is unavailable while any legacy
@@ -336,11 +340,11 @@ schema/index/batching choices belong to implementation design.
 
 Database backups must include events, head records, prune checkpoints and
 required verification/key metadata. Request-MAC keys make the safe projections
-of secret-bearing inputs safe, so a backup must protect them at least as
-strongly as the live database does, or keep them out of plain backups and
-document the resulting loss of verification; a leaked key enables offline
-guessing of low-entropy inputs and MAC forgery. This ADR does not assert that
-the proposed backup system in [ADR
+of secret-bearing inputs safe, so every backup includes them and protects them
+at least as strongly as the live database does; keys are never left out, because
+a restore without them could verify no legacy chain and would freeze every one
+of them. A leaked key enables offline guessing of low-entropy inputs and MAC
+forgery. This ADR does not assert that the proposed backup system in [ADR
 0025](0025-encrypted-backup-and-installer-recovery.md) is implemented. Document
 how an installation's actual backup procedure covers these records. A restore
 only contains history through its snapshot: display the snapshot time as the
