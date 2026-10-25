@@ -78,9 +78,14 @@ never accept identity claims from request text as authority.
 
 Include installation/deployment identity, Server release and generation, stable
 target/project IDs, and parent operation or approval IDs where applicable.
-The existing chain is keyed per project. Events without a project, such as
-updates, Server-generation replacement and audit-policy changes, form one
-separate installation-scoped stream with its own sequence and chain head.
+The existing chain is keyed per project and stays the stream for secret-audit
+events. New domains write to a separate per-project stream so that the retention
+rules below for the legacy secret chain never pin build, image or sandbox
+events. Events without a project, such as updates, Server-generation
+replacement and audit-policy changes, form one installation-scoped stream with
+its own sequence and chain head. Every stream's last verified head is stored as
+a checkpoint record in the same database; truncation is detected only relative
+to that stored head, with the same limits as the existing project chains.
 A project-scoped event caused by an installation operation references that
 operation's ID; streams are not interleaved into a single global order. The
 streams are pruned independently, so a reference may outlive its target;
@@ -121,11 +126,17 @@ exports are denied when their own audit event cannot be written, as the Access
 section specifies. All other events, including pushes,
 pull-request creation, merges, deployments, permission and exposure changes,
 are recorded best-effort: the action proceeds when the audit write fails, and
-the failure is surfaced as degraded audit health. Verity observes most of
-those actions only indirectly, through the credential helper or a connector,
-and blocking them during an audit outage would stop all agent work for a
-guarantee the trail cannot fully provide anyway. Widening the fail-closed set
-is a separate decision that amends this ADR.
+the failure is surfaced as degraded audit health. Pushes, pull requests,
+merges and deployments are observed only indirectly, through the credential
+helper or a connector, and blocking them during an audit outage would stop all
+agent work for a guarantee the trail cannot fully provide anyway. Permission
+and exposure changes are different: they are database transitions Verity
+mediates directly and could co-commit cheaply. They stay best-effort in this
+first stage as a deliberate choice to keep the fail-closed set small and
+reviewable; the accepted cost is that an induced audit outage leaves such a
+change evidenced only by the gap event and the resulting state. Moving them
+into the fail-closed set is the first candidate for an amendment once the
+build and secret paths have run in production.
 
 Where a fail-closed action is a database transition, co-commit its audit event
 in the same transaction. For Docker or remote actions, persist intent first,
@@ -177,9 +188,10 @@ administrator exports as events with safe query scope metadata. Record
 admin-agent reads once per turn, written when the turn's first read is granted
 and before results are returned, so a crashed turn still leaves evidence and
 an investigating agent cannot inflate the trail with repeated queries. The
-event names the administrator, the agent session and turn, and the widest
-stream, project and time scope the turn is allowed to read; a later read that
-widens that scope appends a new event. Agent reads and administrator exports are fail-closed: when the read or
+event names the administrator, the agent session and turn, and the stream,
+project and time scope actually requested so far; a later read that widens
+that requested scope appends a new event. Agent reads and administrator
+exports are fail-closed: when the read or
 export event cannot be written, the request is denied, since investigation
 can wait but an untraced read of the trail cannot be repaired. Avoid recursive
 logging of the audit recorder itself. No client-facing read path for
@@ -233,7 +245,8 @@ metadata. This ADR does not assert that the proposed backup system in
 Document how an installation's actual backup procedure covers these records.
 A restore only contains history through its snapshot: display that coverage,
 record the restore as a new operational lineage when possible, and never replay
-recorded actions. Prune expired restored data before ordinary audit reads resume.
+recorded actions. Where pruning is enabled, prune expired restored data before ordinary audit
+reads resume; before that, restored data is simply readable.
 Backup copies and exported files have independent lifetimes; deleting live rows
 does not erase older backups or exports.
 
