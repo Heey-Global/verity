@@ -69,3 +69,29 @@ The service cache lives under `/var/lib/verity-buildkit`. Do not delete it durin
 active builds. Service upgrades and host maintenance should drain builds first.
 Keep the previous pinned installation/deployment available for rollback; never
 replace gVisor with `runc` to recover build availability.
+
+## Derived image lifetime
+
+The Server records the selected image on each project. Image collection reads
+those durable selections, including explicit overrides, on every pass. A hidden
+(deleted) project no longer retains an image; another visible project selecting
+the same image still does. A stopped container protects its image just as a
+running container does.
+
+The provisioner reserves a derived tag before testing the cache or starting a
+build and releases it after the whole provision/recreate attempt settles. The
+collector shares that reservation gate, so it cannot remove an image between a
+cache hit or image import and container creation. This assumes one active Server
+owns a project Engine; concurrent independent Servers collecting the same Engine
+are unsupported. After restart, project selections and Docker container
+references remain authoritative; temporary reservations belong to the process
+performing the provisioning attempt.
+
+Deleting a project triggers an image-only collection after the row is hidden.
+Unreferenced generations for repositories with no visible project are eligible
+immediately. Visible repositories retain the configured generation count, even
+under disk pressure, in addition to referenced images. Images are never removed
+with force. A failed reference read skips image collection; a failed deletion is
+logged and retried by the existing boot/daily/disk-pressure collector. A cleanup
+failure does not undo project deletion. Named data volumes and the dedicated
+BuildKit service's cache follow their existing, separate retention policies.

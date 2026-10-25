@@ -14133,6 +14133,40 @@ describe('DELETE /projects/:id', () => {
     };
   }
 
+  it.each([false, true])(
+    'runs image cleanup only after hiding, without making cleanup failure undo deletion (%s)',
+    async (fail) => {
+      await ctx.store.upsertProject({
+        id: 'p-image-delete',
+        owner: 'org',
+        repo: 'repo',
+        containerName: 'dev-image-delete',
+        state: 'active',
+      });
+      let hiddenAtCleanup: Date | null | undefined;
+      const cleanup = vi.fn(async (id: string) => {
+        hiddenAtCleanup = (await ctx.store.getProject(id))?.hiddenAt;
+        if (fail) throw new Error('image busy');
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        deprovisioner: fakeDeprovisioner(),
+        onProjectHidden: cleanup,
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/projects/p-image-delete' });
+        expect(res.statusCode).toBe(200);
+        expect(cleanup).toHaveBeenCalledExactlyOnceWith('p-image-delete');
+        expect(hiddenAtCleanup).toBeInstanceOf(Date);
+        expect((await ctx.store.getProject('p-image-delete'))?.hiddenAt).toBeInstanceOf(Date);
+      } finally {
+        await a.close();
+      }
+    },
+  );
+
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({
       id: 'p-delete',

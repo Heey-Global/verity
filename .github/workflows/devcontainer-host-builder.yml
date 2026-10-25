@@ -9,6 +9,10 @@ on:
       - 'deploy/gvisor/versions.env'
       - 'features/verity-sandbox-toolkit/npm/devcontainers/**'
       - 'packages/server/src/provisioner.ts'
+      - 'packages/server/src/derived-image-references.ts'
+      - 'packages/server/src/docker-gc.ts'
+      - 'packages/server/src/embedded.ts'
+      - 'packages/server/src/server.ts'
       - 'deploy/buildkit/**'
       - 'deploy/docker-compose.buildkit.yml'
   workflow_dispatch: {}

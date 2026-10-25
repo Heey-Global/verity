@@ -1410,6 +1410,8 @@ export interface ServerDeps {
    * client to take that echo for the truth.
    */
   invalidateProjectList?: () => void;
+  /** Best-effort image cleanup after a successful project soft-delete. */
+  onProjectHidden?: (projectId: string) => Promise<void>;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -7627,6 +7629,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const hidden = await projectDeleteStore(deps.eventStore).hideProject(id);
       if (!hidden) {
         return { code: 404, body: { error: `project ${id} not found` } };
+      }
+      try {
+        await deps.onProjectHidden?.(id);
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project image cleanup deferred to GC');
       }
       // The deprovision succeeded and the project is hidden, so the rows can go
       // now. Re-list rather than reusing the set from before: a spawn that raced

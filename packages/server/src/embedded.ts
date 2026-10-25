@@ -1,3 +1,4 @@
+import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
@@ -119,7 +120,7 @@ import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
+import { startDockerGcScheduler, runDockerGc, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -3428,6 +3429,7 @@ export async function buildEmbeddedServer(
     (typeof configuredDevcontainerFeatureRef === 'string'
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
+  const imageReferences = createProjectImageReferences(db);
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
@@ -3697,6 +3699,7 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      imageReferences,
       store: eventStore,
       db,
       docker,
@@ -4837,6 +4840,19 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    ...(projectDocker === undefined
+      ? {}
+      : {
+          onProjectHidden: async () => {
+            await runDockerGc({
+              docker: projectDocker,
+              log: app.log,
+              imageReferences,
+              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
+              imagesOnly: true,
+            });
+          },
+        }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
@@ -5599,6 +5615,7 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      imageReferences,
     });
     app.addHook('onClose', () => {
       dockerGc.stop();
