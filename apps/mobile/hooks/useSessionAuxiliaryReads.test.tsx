@@ -172,6 +172,9 @@ it('keeps visible link and approval reads focused and deferred, with abort on cl
 it('wires the production chat to deferred links, compact Google status and demand-only models', () => {
   const source = readFileSync(__dirname + '/../app/session/[id].tsx', 'utf8');
   expect(source).toContain('useSessionGoogleStatus(');
+  expect(source).toMatch(
+    /connectSessionGoogleService\(\s*client,\s*sessionId,\s*service,\s*accountId,\s*isCurrent,?\s*\)/,
+  );
   expect(source).toContain('useModels(client, enginePickerOpen, projectId)');
   expect(source).toContain("'linked-message-approvals',");
   expect(source).toContain('useGoogleAccountAvailability(client, sessionId, attachMenuOpen)');
