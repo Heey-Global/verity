@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.79.1](https://github.com/Heey-Global/verity/compare/mobile-v1.79.0...mobile-v1.79.1) (2026-10-25)
+
+
+### Features
+
+* **documents:** publish session documents automatically without Git ([#1841](https://github.com/Heey-Global/verity/issues/1841)) ([3f99d75](https://github.com/Heey-Global/verity/commit/3f99d75647ab06e319d122058a170773f965d693))
+
+
+### Bug Fixes
+
+* **merge:** respect credential permissions and prevent unsafe repair turns ([#1900](https://github.com/Heey-Global/verity/issues/1900)) ([d11ae75](https://github.com/Heey-Global/verity/commit/d11ae754228e2bfc4bd47c908e9aa0e22f22227e))
+* **mobile:** defer auxiliary session catalog requests ([#1913](https://github.com/Heey-Global/verity/issues/1913)) ([be4c235](https://github.com/Heey-Global/verity/commit/be4c235d21bd438b1db0d5cd8f2349fc097bfa54))
+* **mobile:** frame Google account choices as tappable rows ([#1911](https://github.com/Heey-Global/verity/issues/1911)) ([1823178](https://github.com/Heey-Global/verity/commit/18231780049446e08286094c9aa7837e236b0e29))
+* **mobile:** invalidate Google actions when leaving a chat ([#1916](https://github.com/Heey-Global/verity/issues/1916)) ([4711bdf](https://github.com/Heey-Global/verity/commit/4711bdffa83af7bfa02e155cb01b09c68f916213))
+* **mobile:** preserve text field focus when showing focus shadow ([#1914](https://github.com/Heey-Global/verity/issues/1914)) ([8d1ea99](https://github.com/Heey-Global/verity/commit/8d1ea994b6eb43f1d52bf6d7e994ec9214f458d5))
+* **mobile:** restore connection provider icons and consistent statuses ([#1915](https://github.com/Heey-Global/verity/issues/1915)) ([767b852](https://github.com/Heey-Global/verity/commit/767b85289b1c4ff60c208383b8faf5bee5822c6c))
+* **mobile:** restrict scroll reports to diagnostic recording ([#1908](https://github.com/Heey-Global/verity/issues/1908)) ([1b43130](https://github.com/Heey-Global/verity/commit/1b43130cdf9d69e932a90624fd0ecb0a76340502))
+
 ## [1.77.6](https://github.com/Heey-Global/verity/compare/mobile-v1.77.5...mobile-v1.77.6) (2026-10-24)
 
 
