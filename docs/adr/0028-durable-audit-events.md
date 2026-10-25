@@ -120,12 +120,17 @@ committed audit intent before the build is started, whatever triggered them:
 initial provisioning, the explicit rebuild action, fleet replacement after an
 update, or a wake that finds no image for the current configuration hash.
 Every such build executes repository and Feature code, so the trigger does not
-change the rule. Image resolution is content-addressed and a wake that finds
+change the rule. The rule is about image builds Verity mediates, not about the
+Devcontainer path as such: agent-requested builds through the Docker policy
+gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
+and if a build-worker design later admits them they join this fail-closed
+group rather than the best-effort Resources domain. Image resolution is content-addressed and a wake that finds
 its image does not build; a wake that would build, and whose intent cannot be
 committed, fails with an explicit audit-health error instead of running
 unrecorded. Secret approvals, grant issuance and gateway-served secret calls
 keep the fail-closed behavior that [ADR 0014](0014-acp-secret-tools-approval-gated.md)
-and the recorder already require; this ADR does not weaken it. Admin-agent reads and administrator
+and the recorder already require; this ADR does not weaken it. Admin-agent
+reads and administrator
 exports are denied when their own audit event cannot be written, as the Access
 section specifies. All other events, including pushes,
 pull-request creation, merges, deployments, permission and exposure changes,
@@ -163,9 +168,12 @@ outcome failed.
 
 A best-effort write that fails leaves no row, and no chain can detect an event
 that was never appended. The recorder therefore counts failed writes per stream
-and domain in memory and, once storage recovers, must append a gap event with
-those counts and the failure window before accepting further events. Recovery
-may add reconciliation events describing only what is known. The audit-health
+and domain in memory and, once storage recovers, must append a *write-gap*
+event with those counts and the failure window to each affected stream before
+accepting further events on that stream. The gate is per stream: a stream that
+owes a write-gap event blocks only its own appends, so a co-committed secret
+approval in the legacy chain never waits on bookkeeping for another stream.
+Recovery may add reconciliation events describing only what is known. The audit-health
 diagnostic is a live process signal, not durable storage: when the process dies
 before recovery, the gap can go completely unevidenced. That is an accepted
 limitation of the local-only first stage and one reason external copies remain
@@ -189,7 +197,9 @@ must remove access without waiting for the session to end.
 Do not expose database credentials or audit mounts to project containers.
 Agent access grants no event editing, deletion or retention-policy authority.
 Treat returned audit strings as untrusted data, never as instructions. Record
-administrator exports as events with safe query scope metadata. Record
+administrator exports as events with safe query scope metadata. Read and
+export events are written to the installation-scoped stream and reference the
+projects they covered, because one read may span several project streams. Record
 admin-agent reads once per turn, written when the turn's first read is granted
 and before results are returned, so a crashed turn still leaves evidence and
 an investigating agent cannot inflate the trail with repeated queries. The
@@ -230,8 +240,9 @@ must explicitly disclose that older history will be removed. Retention uses
 server-recorded time, not a caller-supplied timestamp, and must not split an
 operation that is still active. An operation without a terminal result cannot
 pin its stream forever: after a bounded, configurable overrun past the window,
-reconciliation appends a gap event that closes it as indeterminate-expired, and
-the prefix advances. The overrun is part of the audit policy and is itself
+reconciliation appends an *operation-expired* event that closes it as
+indeterminate, and the prefix advances; this is a distinct event kind from the
+write-gap event above. The overrun is part of the audit policy and is itself
 audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
@@ -242,7 +253,8 @@ atomically and serialize them with appends. Verification must distinguish a
 declared expired prefix from corruption and report its available coverage.
 Keep only bounded checkpoint metadata, not expired payloads. Do not reset
 chains silently. Existing verification APIs need explicit prune-checkpoint
-support before pruning is enabled; head records exist from rollout. Exact schema/index/batching choices belong to implementation design.
+support before pruning is enabled; head records exist from rollout. Exact
+schema/index/batching choices belong to implementation design.
 
 Database backups must include events, head records, prune checkpoints and
 required verification/key metadata. This ADR does not assert that the proposed
@@ -300,8 +312,9 @@ Before enabling each domain, verify:
   adds no rows.
 - An admin-agent read or administrator export is denied when its own audit
   event cannot be written.
-- After audit storage recovers from failed best-effort writes, no further event
-  is accepted until the gap event with the failure counts is appended.
+- After audit storage recovers from failed best-effort writes, the affected
+  stream accepts no further event until its write-gap event with the failure
+  counts is appended; other streams are unaffected.
 - Crash windows and uncertain external outcomes remain indeterminate; retries and
   reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;
@@ -315,7 +328,8 @@ Before enabling each domain, verify:
   records are not resurfaced.
 - Tampering with, removal of, or truncation of events up to the last verified head
   record is detected; the window after that run is documented as undetectable. A
-  gap event covers best-effort writes that failed while the process survived. No protection is claimed against replacement of
+  write-gap event covers best-effort writes that failed while the process
+  survived. No protection is claimed against replacement of
   all local state or against events that were never written.
 
 Runtime schemas, migrations, routes/tools, UI and retention workers require a
