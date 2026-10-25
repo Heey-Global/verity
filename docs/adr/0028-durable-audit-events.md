@@ -39,21 +39,23 @@ Verity already has a narrower audit implementation:
   having made the call.
 
 Extend this architecture coherently rather than introduce an unrelated second
-security history. Existing secret-event formats and verification remain readable;
-any migration must explicitly reconcile their guarantees and access rules with
-this proposal. No historical completeness is implied for newly covered actions.
+security history. Existing secret-event formats and verification remain
+readable; any migration must explicitly reconcile their guarantees and access
+rules with this proposal. No historical completeness is implied for newly
+covered actions.
 
 ## Decision
 
 ### Scope and event contract
 
-Use a shared versioned audit envelope with domain-specific, allowlisted payloads.
-Record only actions Verity mediates or observes; do not claim visibility into
-arbitrary shell commands or independently performed external actions.
+Use a shared versioned audit envelope with domain-specific, allowlisted
+payloads. Record only actions Verity mediates or observes; do not claim
+visibility into arbitrary shell commands or independently performed external
+actions.
 
 | Domain | Events to cover |
 | --- | --- |
-| Resources | Project creation/deletion, project-sandbox start/stop, image creation/removal and cleanup results |
+| Resources | Project creation/deletion, project-sandbox start/stop (wake-initiated starts excluded until a volume bound exists), image creation/removal and cleanup results |
 | Builds | Request accepted/refused, execution started, success/failure/cancellation and produced image identity |
 | Authorization | Approval decisions, grant issuance/use/revocation, denied sensitive requests and external actions such as push, PR creation, merge or deployment |
 | Security configuration | Permission, pairing/device-access, network-exposure and isolation-policy changes; credential creation/replacement/removal by identifier only |
@@ -122,35 +124,34 @@ Fail-closed applies to three groups only: Devcontainer builds, the existing
 secret paths, and reads of the trail itself. New Devcontainer builds require a
 committed audit intent before the build is started, whatever triggered them:
 initial provisioning, the explicit rebuild action, fleet replacement after an
-update, or a wake that finds no image for the current configuration hash.
-Every such build executes repository and Feature code, so the trigger does not
-change the rule. The rule is about image builds Verity mediates, not about the
+update, or a wake that finds no image for the current configuration hash. Every
+such build executes repository and Feature code, so the trigger does not change
+the rule. The rule is about image builds Verity mediates, not about the
 Devcontainer path as such: agent-requested builds through the Docker policy
 gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
-and if a build-worker design later admits them they join this fail-closed
-group rather than the best-effort Resources domain. Image resolution is
-content-addressed and a wake that finds
-its image does not build; a wake that would build, and whose intent cannot be
-committed, fails with an explicit audit-health error instead of running
-unrecorded. Secret approvals, grant issuance and gateway-served secret calls
-keep the fail-closed behavior that [ADR 0014](0014-acp-secret-tools-approval-gated.md)
-and the recorder already require; this ADR does not weaken it. Admin-agent
-reads and administrator
-exports are denied when their own audit event cannot be written, as the Access
-section specifies. All other events, including pushes,
-pull-request creation, merges, deployments, permission and exposure changes,
-are recorded best-effort: the action proceeds when the audit write fails, and
-the failure is surfaced as degraded audit health. Pushes, pull requests,
-merges and deployments are observed only indirectly, through the credential
-helper or a connector, and blocking them during an audit outage would stop all
-agent work for a guarantee the trail cannot fully provide anyway. Permission
-and exposure changes are different: they are database transitions Verity
-mediates directly and could co-commit cheaply. They stay best-effort in this
-first stage as a deliberate choice to keep the fail-closed set small and
-reviewable; the accepted cost is that an induced audit outage leaves such a
-change evidenced only by the gap event and the resulting state. Moving them
-into the fail-closed set is the first candidate for an amendment once the
-build and secret paths have run in production.
+and if a build-worker design later admits them they join this fail-closed group
+rather than the best-effort Resources domain. Image resolution is
+content-addressed and a wake that finds its image does not build; a wake that
+would build, and whose intent cannot be committed, fails with an explicit
+audit-health error instead of running unrecorded. Secret approvals, grant
+issuance and gateway-served secret calls keep the fail-closed behavior that [ADR
+0014](0014-acp-secret-tools-approval-gated.md) and the recorder already require;
+this ADR does not weaken it. Admin-agent reads and administrator exports are
+denied when their own audit event cannot be written, as the Access section
+specifies. All other events, including pushes, pull-request creation, merges,
+deployments, permission and exposure changes, are recorded best-effort: the
+action proceeds when the audit write fails, and the failure is surfaced as
+degraded audit health. Pushes, pull requests, merges and deployments are
+observed only indirectly, through the credential helper or a connector, and
+blocking them during an audit outage would stop all agent work for a guarantee
+the trail cannot fully provide anyway. Permission and exposure changes are
+different: they are database transitions Verity mediates directly and could
+co-commit cheaply. They stay best-effort in this first stage as a deliberate
+choice to keep the fail-closed set small and reviewable; the accepted cost is
+that an induced audit outage leaves such a change evidenced only by the gap
+event and the resulting state. Moving them into the fail-closed set is the first
+candidate for an amendment once the build and secret paths have run in
+production.
 
 Where a fail-closed action is a database transition, co-commit its audit event
 in the same transaction. For Docker or remote actions, persist intent first,
@@ -249,10 +250,13 @@ operation that is still active. An operation without a terminal result cannot
 pin its stream forever: after a bounded, configurable overrun past the window,
 reconciliation appends an *operation-expired* event that closes it as
 indeterminate, and the prefix advances; this is a distinct event kind from the
-write-gap event above. The prune boundary never passes the stream's verified
-head record: a prefix is deleted only up to the last verification run, so a
-verification run is required before pruning can advance beyond it. The overrun
-is part of the audit policy and is itself audited.
+write-gap event above. A terminal result observed after that closure is appended
+as reconciliation evidence under the same operation ID and supersedes the
+expired marker in rendering; it is never rejected and never invented. The prune
+boundary never passes the stream's verified head record: a prefix is deleted
+only up to the last verification run, so a verification run is required before
+pruning can advance beyond it. The overrun is part of the audit policy and is
+itself audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
 expired contiguous prefix, persist a prune checkpoint with stream identity,
@@ -268,16 +272,18 @@ schema/index/batching choices belong to implementation design.
 Database backups must include events, head records, prune checkpoints and
 required verification/key metadata. This ADR does not assert that the proposed
 backup system in [ADR 0025](0025-encrypted-backup-and-installer-recovery.md) is
-implemented. Document how an installation's actual backup procedure covers
-these records. A restore only contains history through its snapshot: display
-the snapshot time as the trail's coverage boundary, record the restore as a new
+implemented. Document how an installation's actual backup procedure covers these
+records. A restore only contains history through its snapshot: display the
+snapshot time as the trail's coverage boundary, record the restore as a new
 operational lineage when possible, and never replay recorded actions. Because
 head records are restored with the snapshot, events written after it vanish
 without detectable truncation; the trail cannot disclose what was lost, only
-where its coverage ends. Where pruning is enabled, prune expired restored data
-before ordinary audit reads resume; before that, restored data is simply
-readable. Backup copies and exported files have independent lifetimes; deleting
-live rows does not erase older backups or exports.
+where its coverage ends. Where pruning is enabled, a restore first runs
+verification on every stream, advancing head records to the restored tails, then
+prunes expired restored data before ordinary audit reads resume; before pruning
+exists, restored data is simply readable. Backup copies and exported files have
+independent lifetimes; deleting live rows does not erase older backups or
+exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
@@ -294,19 +300,21 @@ service, availability dependency and configuration burden; defer it.
 
 Failing closed reduces availability when audit storage fails. Monitor storage
 health and growth, bound payload sizes and queries, and exercise recovery before
-rollout. A full database may also prevent application state changes independently
-of audit policy. Emergency stop/cancel paths require explicit failure testing.
-Audit history is evidence of observed events, not proof of intent, complete
-external activity or protection against a fully compromised host.
+rollout. A full database may also prevent application state changes
+independently of audit policy. Emergency stop/cancel paths require explicit
+failure testing. Audit history is evidence of observed events, not proof of
+intent, complete external activity or protection against a fully compromised
+host.
 
 ## Rollout and verification requirements
 
-Begin with Devcontainer builds and image lifecycle, connecting initiator, project,
-source revision, build operation and output image across updates and deletion.
-Then integrate resource lifecycle and system maintenance, and connect remaining
-security/external-action domains to the shared envelope. Preserve existing
-secret-audit requirements throughout. Publish an explicit coverage matrix so
-unimplemented event kinds are not implied by the presence of an audit screen.
+Begin with Devcontainer builds and image lifecycle, connecting initiator,
+project, source revision, build operation and output image across updates and
+deletion. Then integrate resource lifecycle and system maintenance, and connect
+remaining security/external-action domains to the shared envelope. Preserve
+existing secret-audit requirements throughout. Publish an explicit coverage
+matrix so unimplemented event kinds are not implied by the presence of an audit
+screen.
 
 Before enabling each domain, verify:
 
