@@ -1,0 +1,48 @@
+name: devcontainer-gvisor-probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/devcontainer-gvisor-probe.yml'
+      - 'scripts/probes/devcontainer-gvisor/**'
+      - 'deploy/gvisor-ci.Dockerfile'
+      - 'deploy/gvisor/versions.env'
+      - 'features/verity-sandbox-toolkit/npm/devcontainers/**'
+      - 'packages/server/src/provisioner.ts'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devcontainer-gvisor-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Install the repository-pinned devcontainer CLI
+        run: npm ci --prefix features/verity-sandbox-toolkit/npm/devcontainers --ignore-scripts
+      - name: Check evidence rejection paths
+        run: node --test scripts/probes/devcontainer-gvisor/verify-evidence.test.mjs
+      - name: Exercise Dockerfile and Feature builds with a runsc worker
+        env:
+          DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer
+          PROBE_EVIDENCE: ${{ runner.temp }}/devcontainer-gvisor-evidence
+        run: bash scripts/probes/devcontainer-gvisor/ci.sh
+      - name: Retain build and runtime evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: devcontainer-gvisor-evidence
+          path: ${{ runner.temp }}/devcontainer-gvisor-evidence
+          if-no-files-found: warn
+          retention-days: 7
