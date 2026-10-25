@@ -82,7 +82,10 @@ The existing chain is keyed per project. Events without a project, such as
 updates, Server-generation replacement and audit-policy changes, form one
 separate installation-scoped stream with its own sequence and chain head.
 A project-scoped event caused by an installation operation references that
-operation's ID; streams are not interleaved into a single global order.
+operation's ID; streams are not interleaved into a single global order. The
+streams are pruned independently, so a reference may outlive its target;
+verification and rendering must tolerate a dangling operation reference and
+show it as expired rather than as corruption.
 Deletion must leave enough safe target identification to interpret old events.
 Use bounded fields and pagination; repository-controlled strings are untrusted
 input and must be safely rendered.
@@ -132,10 +135,17 @@ under the same operation ID; it must not rerun an action merely to fill a gap.
 Use idempotency keys for retries and distinguish retries from duplicate writes.
 
 Stopping, cancelling and necessary cleanup remain possible during audit-storage
-failure, including for builds and secret jobs already running. Attempt to record them, visibly report degraded audit health through
+failure, including for builds and secret jobs already running. Attempt to
+record them, visibly report degraded audit health through
 an independent operational diagnostic, and never claim missing events were
-saved. Recovery may append a gap/reconciliation event describing only what is
-known. The exception does not authorize arbitrary new work or silent retention
+saved. A best-effort write that fails leaves no row, and no chain can detect an
+event that was never appended. The recorder therefore counts failed writes
+per stream and domain in memory and, once storage recovers, must append a
+gap event with those counts and the failure window before accepting further
+events; a process that dies before recovery leaves the gap evidenced only by
+the audit-health diagnostic. Recovery may add reconciliation events
+describing only what is known. The exception does not authorize arbitrary
+new work or silent retention
 shortening. Completed external effects cannot be rolled back merely because
 writing their outcome failed.
 
@@ -149,7 +159,8 @@ principal and re-check authority on every read; session ownership, a prompt's
 claim or a reusable project token is insufficient. This depends on the
 per-turn identity of [ADR 0023](0023-multi-user-projects-and-turn-identity.md);
 the `users` role table exists, but until turn identity is in place agent reads
-stay disabled rather than falling back to session ownership. If reliable admin attribution
+stay disabled rather than falling back to session ownership. If reliable
+admin attribution
 is unavailable, deny the agent read. Revocation or a subsequent non-admin turn
 must remove access without waiting for the session to end.
 
@@ -159,8 +170,13 @@ Treat returned audit strings as untrusted data, never as instructions. Record
 administrator exports as events with safe query scope metadata. Record
 admin-agent reads once per turn, written when the turn's first read is granted
 and before results are returned, so a crashed turn still leaves evidence and
-an investigating agent cannot inflate the trail with repeated queries. Avoid
-recursive logging of the audit recorder itself. No client-facing read path for
+an investigating agent cannot inflate the trail with repeated queries. The
+event names the administrator, the agent session and turn, and the widest
+stream, project and time scope the turn is allowed to read; a later read that
+widens that scope appends a new event. Agent reads are fail-closed: when the
+read event cannot be written, the read is denied, since investigation can
+wait but an untraced read of the trail cannot be repaired. Avoid recursive
+logging of the audit recorder itself. No client-facing read path for
 secret-audit events exists today, so administrator-only access removes no
 existing project-member capability.
 
@@ -178,11 +194,15 @@ secret-audit chain is never pruned today and its verification re-derives every
 event from sequence zero. Rows recorded before this ADR's rollout therefore keep
 unbounded retention until an administrator explicitly confirms the window after
 a disclosure of how many pre-existing events it removes; the upgrade itself
-must not prune them. From that confirmation on, secret-audit events are pruned
+must not prune them. Because pruning removes a contiguous prefix, the whole
+per-project secret chain, including rows written after rollout, stays pinned
+until that confirmation; the 180-day default applies to secret-audit chains
+only from then on. From that confirmation on, secret-audit events are pruned
 like any other event once checkpoint support exists. Retired request-MAC keys
 are kept at least until every event signed under them has expired, so retained
 events stay verifiable. Project deletion does not shorten retention; today it
-already leaves secret-audit rows untouched. Policy changes are audited; shortening the window
+already leaves secret-audit rows untouched. Policy changes are audited;
+shortening the window
 must explicitly disclose that older history will be removed. Retention uses
 server-recorded time, not a caller-supplied timestamp, and must not split an
 operation that is still active. An operation without a terminal result cannot
@@ -246,8 +266,9 @@ Before enabling each domain, verify:
   project deletion leaves the history readable until retention expires.
 - Failed intent writes prevent new builds and keep the existing secret-audit
   paths fail-closed; best-effort events let the action proceed and raise degraded
-  audit health. Database changes and their audit entries co-commit. Emergency
-  stop/cancel/cleanup remains usable.
+  audit health. Fail-closed database transitions co-commit with their audit
+  entries; best-effort transitions do not roll back on an audit write failure.
+  Emergency stop/cancel/cleanup remains usable.
 - Disposable query sandboxes produce no audit events; a day of status polling
   adds no rows.
 - Crash windows and uncertain external outcomes remain indeterminate; retries and
@@ -260,8 +281,10 @@ Before enabling each domain, verify:
   verifiable suffixes and accurately declared expired coverage.
 - Backups/restores preserve keys and checkpoints, disclose lost coverage and do
   not execute historical work. Expired restored records are not resurfaced.
-- Tampering, missing events and truncation are detected within the stated trusted
-  boundary, with no claim of protection against replacement of all local state.
+- Tampering with, removal of, or truncation of persisted events is detected within
+  the stated trusted boundary; a gap event covers best-effort writes that failed
+  while the process survived. No protection is claimed against replacement of
+  all local state or against events that were never written.
 
 Runtime schemas, migrations, routes/tools, UI and retention workers require a
 separately reviewed implementation. This ADR alone enables none of them.
@@ -271,5 +294,6 @@ separately reviewed implementation. This ADR alone enables none of them.
 - [Brokered secrets](0009-brokered-secrets-and-secret-job-executor.md)
 - [Approval-gated ACP secret tools](0014-acp-secret-tools-approval-gated.md)
 - [Docker policy gateway](0017-docker-policy-gateway.md)
+- [Project sandbox sleep and automatic wake](0020-project-sandbox-sleep-and-automatic-wake.md)
 - [Multi-user projects and turn identity](0023-multi-user-projects-and-turn-identity.md)
 - [Encrypted backup and installer recovery](0025-encrypted-backup-and-installer-recovery.md)
