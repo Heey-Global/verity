@@ -4202,3 +4202,44 @@ it('keeps account selection and session exceptions in account-aware requests', a
     redirectUri: 'app:/oauth',
   });
 });
+
+it('preserves compact Google presentation in session detail while accepting older servers', async () => {
+  const connection = {
+    enabled: true,
+    connected: true,
+    accountEmail: 'a@example.test',
+    clientId: null,
+    source: 'project',
+    mode: 'inherit',
+  };
+  const googleStatus = {
+    gmail: connection,
+    calendar: connection,
+    contacts: connection,
+    workspaceFile: null,
+  };
+  const wire = {
+    sessionId: 's',
+    worktree: '/s',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 0,
+  };
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async () => new Response(JSON.stringify({ ...wire, googleStatus })));
+  const client = new VerityClient({
+    baseUrl: 'https://core.example',
+    fetch,
+    getToken: () => 'paired',
+  });
+  expect((await client.getSession('s')).googleStatus).toEqual(googleStatus);
+  expect(sessionDetailSchema.parse(wire).googleStatus).toBeUndefined();
+  fetch.mockImplementation(async () => new Response(JSON.stringify(googleStatus)));
+  const controller = new AbortController();
+  expect(await client.getSessionGoogleStatus('s', controller.signal)).toEqual(googleStatus);
+  expect(fetch.mock.calls.at(-1)?.[1]?.signal).toBe(controller.signal);
+  expect(fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ authorization: 'Bearer paired' });
+});

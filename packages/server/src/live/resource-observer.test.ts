@@ -186,3 +186,31 @@ it('invalidates account-wide task lists immediately after a background title upd
   await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2));
   observer.close();
 });
+
+it('refreshes compact Google status after account and inherited grant mutations', async () => {
+  vi.useFakeTimers();
+  const observer = new ResourceObserver();
+  try {
+    let body = 'before';
+    const changed = vi.fn();
+    observer.watch(
+      'user',
+      { path: '/sessions/s/google-status' },
+      async () => ({ statusCode: 200, body }),
+      changed,
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    expect(changed).toHaveBeenCalledTimes(1);
+    body = 'project-change';
+    observer.invalidate('/projects/p/google/gmail');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(changed).toHaveBeenCalledTimes(2);
+    body = 'account-removed';
+    observer.invalidate('/google/accounts/a');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(changed).toHaveBeenCalledTimes(3);
+  } finally {
+    observer.close();
+    vi.useRealTimers();
+  }
+});
