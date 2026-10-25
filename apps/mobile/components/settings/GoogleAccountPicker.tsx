@@ -30,8 +30,12 @@ export function useGoogleAccountPicker() {
     [],
   );
   const choose = useCallback((next: Options): Promise<string | null> => {
-    if (next.accounts.length <= 1) return Promise.resolve(next.accounts[0]?.id ?? null);
     pending.current?.(null);
+    pending.current = null;
+    if (next.accounts.length <= 1) {
+      setOptions(null);
+      return Promise.resolve(next.accounts[0]?.id ?? null);
+    }
     setOptions(next);
     return new Promise((resolve) => {
       pending.current = resolve;
