@@ -111,49 +111,49 @@ re-anchors the head, or the administrator declares the mismatch as an accepted
 gap and the head is re-anchored at the current tail with that declaration
 attached. Resolving a truncated tail is the one case in which the head moves to
 a lower sequence, and it is recorded as such; sequence numbers are never reused
-within one restore lineage: each stream keeps an allocation counter that is
-separate from the verified-head hash and has its own update rule, advancing on
-every append under the same row lock the existing per-project append already
-takes, while the verified head changes only through verification or resolution.
-Every append on every stream, the legacy secret chain included, takes the next
-sequence from that counter rather than from the current tail, so the next append
-continues past the lost range and every position cited by exports, references or
-write-gap windows stays unambiguous within the lineage. This is the one change
-to the legacy chain's append path, adds no lock it does not already take, and
-leaves its event format and kinds as they are. Positions carry the restore
-lineage, so a citation made before a restore names a position in the earlier
-lineage rather than colliding with a later one. The declaration is a recognized
-verification boundary like a prune checkpoint, but it does not skip history:
-later runs still re-derive every retained segment between consecutive boundaries
-against that segment's own anchor, and only the declared mismatch point itself
-is exempt, so an accepted gap stays verified without opening an unverified hole
-and never re-freezes the stream by itself. The detection claim below excludes
-the declared point and nothing else. Resolution applies to the streams of
-deleted projects as well, so one broken chain cannot block legacy pruning
-indefinitely. While resolving, the administrator sees the hidden expired rows;
-only ordinary reads hide them. The first head of every stream is set only by a
-successful verification from sequence zero or from the prune checkpoint: an
-upgrade seeds no head from a tail it has not verified, a pre-existing chain that
-fails is marked unverified at upgrade, and a new or empty stream starts with a
-genesis head. The legacy-prune confirmation is unavailable while any legacy
-chain is unverified. Otherwise the head never moves backward, and the restore
-path applies the same rule before advancing heads to restored tails. Scheduled
-verification covers the streams of deleted projects as well, so their prefixes
-can still be pruned. Events appended after the last verification run are the
-undetectable truncation window; the run cadence is part of the audit policy. The
-*prune checkpoint*, introduced below, marks the removed prefix. Both live in the
-same database and share its limits. Head records and scheduled verification
-apply to every stream, the legacy secret chain included; "by age alone" below
-refers only to the absence of operation-expired events there. A project-scoped
-event caused by an installation operation references that operation's ID;
-streams are not interleaved into a single global order. The streams are pruned
-independently, so a reference may outlive its target, and within one stream a
-later event may reference an operation or grant whose start was pruned;
-verification and rendering must tolerate both kinds of dangling reference and
-show them as expired rather than as corruption. Deletion must leave enough safe
-target identification to interpret old events. Use bounded fields and
-pagination; repository-controlled strings are untrusted input and must be safely
-rendered.
+within one restore lineage. The implementation design must therefore keep a
+per-stream allocation counter that is separate from the verified-head hash,
+advances on every append and is seeded at migration for live and deleted
+projects, and it must teach the legacy chain's verification that a declared
+boundary, not only the previous sequence, may precede an event. Those are
+required changes to the legacy append and verify paths; the legacy event format
+and kinds stay as they are, and any extra locking the counter needs is measured
+against the fail-closed latency of ADR 0014 before rollout. Every later position
+is attributable to its restore lineage, for legacy rows as well; whether that is
+a column or a side table keyed by sequence range is an implementation choice,
+but the attribution is required, so a citation made before a restore names a
+position in the earlier lineage rather than colliding with a later one. The
+declaration is a recognized verification boundary like a prune checkpoint, but
+it does not skip history: later runs still re-derive every retained segment
+between consecutive boundaries against that segment's own anchor, and only the
+declared mismatch point itself is exempt, so an accepted gap stays verified
+without opening an unverified hole and never re-freezes the stream by itself.
+The detection claim below excludes the declared point and nothing else.
+Resolution applies to the streams of deleted projects as well, so one broken
+chain cannot block legacy pruning indefinitely. While resolving, the
+administrator sees the hidden expired rows; only ordinary reads hide them. The
+first head of every stream is set only by a successful verification from
+sequence zero or from the prune checkpoint: an upgrade seeds no head from a tail
+it has not verified, a pre-existing chain that fails is marked unverified at
+upgrade, and a new or empty stream starts with a genesis head. The legacy-prune
+confirmation is unavailable while any legacy chain is unverified. Otherwise the
+head never moves backward, and the restore path applies the same rule before
+advancing heads to restored tails. Scheduled verification covers the streams of
+deleted projects as well, so their prefixes can still be pruned. Events appended
+after the last verification run are the undetectable truncation window; the run
+cadence is part of the audit policy. The *prune checkpoint*, introduced below,
+marks the removed prefix. Both live in the same database and share its limits.
+Head records and scheduled verification apply to every stream, the legacy secret
+chain included; "by age alone" below refers only to the absence of
+operation-expired events there. A project-scoped event caused by an installation
+operation references that operation's ID; streams are not interleaved into a
+single global order. The streams are pruned independently, so a reference may
+outlive its target, and within one stream a later event may reference an
+operation or grant whose start was pruned; verification and rendering must
+tolerate both kinds of dangling reference and show them as expired rather than
+as corruption. Deletion must leave enough safe target identification to
+interpret old events. Use bounded fields and pagination; repository-controlled
+strings are untrusted input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -238,7 +238,12 @@ for example during generation replacement, so no cross-process gate is
 attempted: the write-gap event is ordered only relative to its own process's
 later events, and its failure window, not its stream position, says which period
 it covers. Readers correlate gap events with other processes' events by
-server-recorded time. Write-gap tracking applies to the new streams only. The
+server-recorded time. For the recovering process the gap event is effectively
+fail-closed: while it cannot be written, that process's fail-closed intents on
+the stream are refused too, and other processes are unaffected. A stream marked
+unverified still accepts appends, since the mark concerns retained history and
+not new events; those appends are verified from the declared boundary once the
+stream is resolved. Write-gap tracking applies to the new streams only. The
 legacy secret chain does not participate in it: its post-commit lifecycle events
 keep their existing best-effort behavior, no new event kind is added to its
 format, and a co-committed secret approval never waits on write-gap bookkeeping.
@@ -262,25 +267,26 @@ disabled rather than falling back to session ownership. If reliable admin
 attribution is unavailable, deny the agent read. Revocation or a subsequent
 non-admin turn must remove access without waiting for the session to end.
 
-Do not expose database credentials or audit mounts to project containers.
-Agent access grants no event editing, deletion or retention-policy authority.
-Treat returned audit strings as untrusted data, never as instructions. Record
-administrator exports as events with safe query scope metadata. Read and
-export events are written to the installation-scoped stream and reference the
-projects they covered, because one read may span several project streams. Record
+Do not expose database credentials or audit mounts to project containers. Agent
+access grants no event editing, deletion or retention-policy authority. Treat
+returned audit strings as untrusted data, never as instructions. Record
+administrator exports as events with safe query scope metadata. Read and export
+events are written to the installation-scoped stream and reference the projects
+they covered, because one read may span several project streams. Record
 admin-agent reads once per turn, written when the turn's first read is granted
-and before results are returned, so a crashed turn still leaves evidence and
-an investigating agent cannot inflate the trail with repeated queries. The
-event names the administrator, the agent session and turn, and the stream,
-project and time scope actually requested so far; a later read that widens
-that requested scope appends a new event, up to a bounded number of scope
-widenings per turn; beyond that bound further widening is denied until a new
-turn. Agent reads and administrator exports are fail-closed: when the read or
-export event cannot be written, the request is denied, since investigation
-can wait but an untraced read of the trail cannot be repaired. Avoid recursive
-logging of the audit recorder itself. No client-facing read path for
-secret-audit events exists today, so administrator-only access removes no
-existing project-member capability.
+and before results are returned, so a crashed turn still leaves evidence and an
+investigating agent cannot inflate the trail with repeated queries. The event
+names the administrator, the agent session and turn, and the stream, project and
+time scope actually requested so far; a later read that widens that requested
+scope appends a new event, up to a bounded number of scope widenings per turn;
+beyond that bound further widening is denied until a new turn. Agent reads and
+administrator exports are fail-closed: when the read or export event cannot be
+written, the request is denied, since delegated or prompt-driven access to the
+trail is the threat these events exist to trace, and investigation by an agent
+can wait until the trace can be written. Avoid recursive logging of the audit
+recorder itself. No client-facing read path for secret-audit events exists
+today, so administrator-only access removes no existing project-member
+capability.
 
 ### Local storage, retention and integrity
 
