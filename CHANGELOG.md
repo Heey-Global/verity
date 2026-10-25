@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.59.0](https://github.com/Heey-Global/verity/compare/v4.58.1...v4.59.0) (2026-10-25)
+
+
+### Features
+
+* **documents:** publish session documents automatically without Git ([#1841](https://github.com/Heey-Global/verity/issues/1841)) ([3f99d75](https://github.com/Heey-Global/verity/commit/3f99d75647ab06e319d122058a170773f965d693))
+* **server:** isolate devcontainer builds with gVisor and registry authentication ([#1905](https://github.com/Heey-Global/verity/issues/1905)) ([90b2282](https://github.com/Heey-Global/verity/commit/90b22826a9b54077dddb9202cb651c3245a73e92))
+* **server:** retain referenced derived images during cleanup ([#1917](https://github.com/Heey-Global/verity/issues/1917)) ([befe57f](https://github.com/Heey-Global/verity/commit/befe57fba5fc5eed095a528f944acaa76184ad9a))
+
+
+### Bug Fixes
+
+* **merge:** respect credential permissions and prevent unsafe repair turns ([#1900](https://github.com/Heey-Global/verity/issues/1900)) ([d11ae75](https://github.com/Heey-Global/verity/commit/d11ae754228e2bfc4bd47c908e9aa0e22f22227e))
+* **mobile:** defer auxiliary session catalog requests ([#1913](https://github.com/Heey-Global/verity/issues/1913)) ([be4c235](https://github.com/Heey-Global/verity/commit/be4c235d21bd438b1db0d5cd8f2349fc097bfa54))
+* **release:** handle Watch archives and transient runtime downloads ([#1901](https://github.com/Heey-Global/verity/issues/1901)) ([cb05f74](https://github.com/Heey-Global/verity/commit/cb05f74c3c6f7f671e10771ba8d38291039f6ebb))
+* **server:** reduce query churn and safely maintain host containers ([#1906](https://github.com/Heey-Global/verity/issues/1906)) ([1947cdb](https://github.com/Heey-Global/verity/commit/1947cdb00cbfdbfb5c33f4eba129f71c5e90701a))
+
 ## [4.58.1](https://github.com/Heey-Global/verity/compare/v4.58.0...v4.58.1) (2026-10-25)
 
 
