@@ -49,6 +49,9 @@ accept. The CI adapter removes that exact option from the run invocation and
 preserves all other arguments. runsc's synchronous run cleans up its state;
 BuildKit's subsequent best-effort delete can encounter already-removed state.
 This is a probe-specific compatibility adapter, not a production runtime shim.
+The worker also sets `--overlay2=none`: runsc's default private root overlay
+discards guest writes, whereas BuildKit must capture them in the resulting image.
+BuildKit still supplies each step's isolated filesystem snapshot.
 
 A passing run establishes Dockerfile execution, local Feature installation,
 image loading, and the two rejection cases for this fixture and pinned tools.
