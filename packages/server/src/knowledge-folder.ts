@@ -65,7 +65,7 @@ const KNOWLEDGE_SOURCES_DIR = 'sources';
 const SHARED_LAYOUT_MARKER = '.sources-layout-v1';
 export const KNOWLEDGE_DOCUMENTS_DIR = `${KNOWLEDGE_SOURCES_DIR}/documents`;
 export const KNOWLEDGE_MATRIX_DIR = `${KNOWLEDGE_SOURCES_DIR}/matrix`;
-export const LEGACY_MATRIX_DIR = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix`;
+const LEGACY_MATRIX_DIR = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix`;
 export function currentMatrixBody(body: string): string {
   return body.startsWith(`Attachment: ${LEGACY_MATRIX_DIR}/`)
     ? body.replace(`Attachment: ${LEGACY_MATRIX_DIR}/`, `Attachment: ${KNOWLEDGE_MATRIX_DIR}/`)
