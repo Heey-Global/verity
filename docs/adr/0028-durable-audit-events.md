@@ -94,17 +94,22 @@ installation-scoped stream with its own sequence and chain head. Two records
 accompany each stream and must not be confused. The *head record* holds the hash
 last confirmed by a verification run; it advances only when a scheduled or
 administrator-triggered verification completes, never on append, because a head
-that follows the tail detects nothing. Events appended after the last
-verification run are the undetectable truncation window; the run cadence is part
-of the audit policy. The *prune checkpoint*, introduced below, marks the removed
-prefix. Both live in the same database and share its limits. A project-scoped
-event caused by an installation operation references that operation's ID;
-streams are not interleaved into a single global order. The streams are pruned
-independently, so a reference may outlive its target; verification and rendering
-must tolerate a dangling operation reference and show it as expired rather than
-as corruption. Deletion must leave enough safe target identification to
-interpret old events. Use bounded fields and pagination; repository-controlled
-strings are untrusted input and must be safely rendered.
+that follows the tail detects nothing. A run first confirms that the stored
+head's sequence and hash are still present in the chain and fails without moving
+the head if they are not; the head never moves backward, and the restore path
+applies the same rule before advancing heads to restored tails. Scheduled
+verification covers the streams of deleted projects as well, so their prefixes
+can still be pruned. Events appended after the last verification run are the
+undetectable truncation window; the run cadence is part of the audit policy. The
+*prune checkpoint*, introduced below, marks the removed prefix. Both live in the
+same database and share its limits. A project-scoped event caused by an
+installation operation references that operation's ID; streams are not
+interleaved into a single global order. The streams are pruned independently, so
+a reference may outlive its target; verification and rendering must tolerate a
+dangling operation reference and show it as expired rather than as corruption.
+Deletion must leave enough safe target identification to interpret old events.
+Use bounded fields and pagination; repository-controlled strings are untrusted
+input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -121,20 +126,24 @@ with their own access and retention rules; links to them may expire earlier.
 ### Persistence and failures
 
 Fail-closed applies to three groups only: Devcontainer builds, the existing
-secret paths, and reads of the trail itself. New Devcontainer builds require a
-committed audit intent before the build is started, whatever triggered them:
-initial provisioning, the explicit rebuild action, fleet replacement after an
-update, or a wake that finds no image for the current configuration hash. Every
-such build executes repository and Feature code, so the trigger does not change
-the rule. The rule is about image builds Verity mediates, not about the
-Devcontainer path as such: agent-requested builds through the Docker policy
-gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
-and if a build-worker design later admits them they join this fail-closed group
-rather than the best-effort Resources domain. Image resolution is
-content-addressed and a wake that finds its image does not build; a wake that
-would build, and whose intent cannot be committed, fails with an explicit
-audit-health error instead of running unrecorded. Secret approvals, grant
-issuance and gateway-served secret calls keep the fail-closed behavior that [ADR
+secret paths, and admin-agent reads and administrator exports of the trail.
+Interactive administrator reads in the app are deliberately neither recorded nor
+fail-closed in this first stage; they are limited to administrators, and
+recording them would add volume without a question the trail could newly answer.
+New Devcontainer builds require a committed audit intent before the build is
+started, whatever triggered them: initial provisioning, the explicit rebuild
+action, fleet replacement after an update, or a wake that finds no image for the
+current configuration hash. Every such build executes repository and Feature
+code, so the trigger does not change the rule. The rule is about image builds
+Verity mediates, not about the Devcontainer path as such: agent-requested builds
+through the Docker policy gateway stay denied under [ADR
+0017](0017-docker-policy-gateway.md) D5 today, and if a build-worker design
+later admits them they join this fail-closed group rather than the best-effort
+Resources domain. Image resolution is content-addressed and a wake that finds
+its image does not build; a wake that would build, and whose intent cannot be
+committed, fails with an explicit audit-health error instead of running
+unrecorded. Secret approvals, grant issuance and gateway-served secret calls
+keep the fail-closed behavior that [ADR
 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already require;
 this ADR does not weaken it. Admin-agent reads and administrator exports are
 denied when their own audit event cannot be written, as the Access section
@@ -173,18 +182,22 @@ Completed external effects cannot be rolled back merely because writing their
 outcome failed.
 
 A best-effort write that fails leaves no row, and no chain can detect an event
-that was never appended. The recorder therefore counts failed writes per stream
-and domain in memory and, once storage recovers, must append a *write-gap* event
-with those counts and the failure window to each affected stream before
-accepting further events on that stream. The gate is per stream and applies to
-the new streams only. The legacy secret chain does not participate in write-gap
-tracking: its post-commit lifecycle events keep their existing best-effort
-behavior, no new event kind is added to its format, and a co-committed secret
-approval never waits on write-gap bookkeeping. Recovery may add reconciliation
-events describing only what is known. The audit-health diagnostic is a live
-process signal, not durable storage: when the process dies before recovery, the
-gap can go completely unevidenced. That is an accepted limitation of the
-local-only first stage and one reason external copies remain a later decision.
+that was never appended. Because several Server processes may write at once, for
+example during generation replacement, an in-memory gate cannot hold. The
+recorder therefore counts failed writes per stream and domain in memory and,
+once storage recovers, first sets a persisted pending-gap flag on the stream's
+row, then appends a *write-gap* event with those counts and the failure window
+and clears the flag in the same transaction; every writer checks the flag before
+appending, so the gap event precedes any later event on that stream regardless
+of which process wrote it. The gate is per stream and applies to the new streams
+only. The legacy secret chain does not participate in write-gap tracking: its
+post-commit lifecycle events keep their existing best-effort behavior, no new
+event kind is added to its format, and a co-committed secret approval never
+waits on write-gap bookkeeping. Recovery may add reconciliation events
+describing only what is known. The audit-health diagnostic is a live process
+signal, not durable storage: when the process dies before recovery, the gap can
+go completely unevidenced. That is an accepted limitation of the local-only
+first stage and one reason external copies remain a later decision.
 
 ### Access
 
@@ -239,20 +252,26 @@ removes across all projects; the upgrade itself must not prune them. Because
 pruning removes a contiguous prefix, the whole per-project secret chain,
 including rows written after rollout, stays pinned until that confirmation; the
 180-day default applies to secret-audit chains only from then on. From that
-confirmation on, secret-audit events are pruned like any other event once
-checkpoint support exists. Retired request-MAC keys are kept at least until
-every event signed under them has expired, so retained events stay verifiable.
-Project deletion does not shorten retention; today it already leaves
-secret-audit rows untouched. Policy changes are audited; shortening the window
-must explicitly disclose that older history will be removed. Retention uses
-server-recorded time, not a caller-supplied timestamp, and must not split an
-operation that is still active. An operation without a terminal result cannot
-pin its stream forever: after a bounded, configurable overrun past the window,
-reconciliation appends an *operation-expired* event that closes it as
-indeterminate, and the prefix advances; this is a distinct event kind from the
-write-gap event above. A terminal result observed after that closure is appended
-as reconciliation evidence under the same operation ID and supersedes the
-expired marker in rendering; it is never rejected and never invented. The prune
+confirmation on, secret-audit events are pruned once prune-checkpoint support
+exists, by age alone: the legacy chain gets no operation-expired event kind, so
+an unterminated grant or job older than the window is removed with its prefix
+and stays indeterminate under the recorder's existing semantics. Verification
+treats that as a declared expired prefix, not as corruption. Retired request-MAC
+keys are kept at least until every event signed under them has expired, so
+retained events stay verifiable. Project deletion does not shorten retention;
+today it already leaves secret-audit rows untouched. Policy changes are audited;
+shortening the window must explicitly disclose that older history will be
+removed. Retention uses server-recorded time, not a caller-supplied timestamp,
+and must not split an operation that is still active. An operation without a
+terminal result cannot pin its stream forever: after a bounded, configurable
+overrun past the window, reconciliation appends an *operation-expired* event
+that closes it as indeterminate, and the prefix advances; this is a distinct
+event kind from the write-gap event above. A terminal result observed after that
+closure is appended as reconciliation evidence under the same operation ID and
+supersedes the expired marker in rendering; it is never rejected and never
+invented. If the prefix holding that operation's start was already pruned,
+rendering shows the late result against an expired reference, not as corruption,
+and the late event does not re-pin retention for the removed start. The prune
 boundary never passes the stream's verified head record: a prefix is deleted
 only up to the last verification run, so a verification run is required before
 pruning can advance beyond it. The overrun is part of the audit policy and is
@@ -280,10 +299,10 @@ head records are restored with the snapshot, events written after it vanish
 without detectable truncation; the trail cannot disclose what was lost, only
 where its coverage ends. Where pruning is enabled, a restore first runs
 verification on every stream, advancing head records to the restored tails, then
-prunes expired restored data before ordinary audit reads resume; before pruning
-exists, restored data is simply readable. Backup copies and exported files have
-independent lifetimes; deleting live rows does not erase older backups or
-exports.
+prunes data expired under the retention policy contained in the snapshot before
+ordinary audit reads resume; before pruning exists, restored data is simply
+readable. Backup copies and exported files have independent lifetimes; deleting
+live rows does not erase older backups or exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
@@ -328,7 +347,12 @@ Before enabling each domain, verify:
 - Disposable query sandboxes produce no audit events; a day of status polling
   adds no rows.
 - An admin-agent read or administrator export is denied when its own audit
-  event cannot be written.
+  event cannot be written; scope widening beyond the per-turn bound is denied.
+- An operation without a terminal result is closed as indeterminate after the
+  configured overrun, and a later observed result supersedes that marker without
+  being rejected or duplicated.
+- A verification run fails, and the head record stays put, when the stored head
+  is missing or its hash differs; the head never moves backward.
 - After audit storage recovers from failed best-effort writes, the affected
   stream accepts no further event until its write-gap event with the failure
   counts is appended; other streams are unaffected.
@@ -341,8 +365,9 @@ Before enabling each domain, verify:
 - Concurrent append/prune, policy changes and interrupted retention preserve
   verifiable suffixes and accurately declared expired coverage.
 - Backups/restores preserve keys, head records and prune checkpoints, display the
-  snapshot coverage boundary and do not execute historical work. Expired restored
-  records are not resurfaced.
+  snapshot coverage boundary and do not execute historical work. Records expired under the restored
+  snapshot's own retention policy are not resurfaced; a policy change made after
+  the snapshot is itself lost with it.
 - Tampering with, removal of, or truncation of events up to the last verified head
   record is detected; the window after that run is documented as undetectable. A
   write-gap event covers best-effort writes that failed while the process
