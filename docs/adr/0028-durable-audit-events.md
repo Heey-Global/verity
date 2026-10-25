@@ -55,7 +55,7 @@ actions.
 
 | Domain | Events to cover |
 | --- | --- |
-| Resources | Project creation/deletion, project-sandbox start/stop (wake-initiated starts excluded until a volume bound exists), image creation/removal and cleanup results |
+| Resources | Project creation/deletion, project-sandbox start/stop (sleep-initiated stops and wake-initiated starts excluded until a volume bound exists), image creation/removal and cleanup results |
 | Builds | Request accepted/refused, execution started, success/failure/cancellation and produced image identity |
 | Authorization | Approval decisions, grant issuance/use/revocation, denied sensitive requests and external actions such as push, PR creation, merge or deployment |
 | Security configuration | Permission, pairing/device-access, network-exposure and isolation-policy changes; credential creation/replacement/removal by identifier only |
@@ -93,28 +93,28 @@ chain never pin build, image or sandbox events. Events without a project, such
 as updates, Server-generation replacement and audit-policy changes, form one
 installation-scoped stream with its own sequence and chain head. Two records
 accompany each stream and must not be confused. The *head record* holds the hash
-last confirmed by a verification run; it advances only when a scheduled or
-administrator-triggered verification completes, never on append, because a head
-that follows the tail detects nothing. A run first confirms that the stored
-head's sequence and hash are still present in the chain and fails without moving
-the head if they are not; the head never moves backward, and the restore path
-applies the same rule before advancing heads to restored tails. Scheduled
-verification covers the streams of deleted projects as well, so their prefixes
-can still be pruned. Events appended after the last verification run are the
-undetectable truncation window; the run cadence is part of the audit policy. The
-*prune checkpoint*, introduced below, marks the removed prefix. Both live in the
-same database and share its limits. Head records and scheduled verification
-apply to every stream, the legacy secret chain included; "by age alone" below
-refers only to the absence of operation-expired events there. A project-scoped
-event caused by an installation operation references that operation's ID;
-streams are not interleaved into a single global order. The streams are pruned
-independently, so a reference may outlive its target, and within one stream a
-later event may reference an operation or grant whose start was pruned;
-verification and rendering must tolerate both kinds of dangling reference and
-show them as expired rather than as corruption. Deletion must leave enough safe
-target identification to interpret old events. Use bounded fields and
-pagination; repository-controlled strings are untrusted input and must be safely
-rendered.
+last confirmed by a verification run; it advances only when a scheduled,
+administrator-triggered or restore-triggered verification completes, never on
+append, because a head that follows the tail detects nothing. A run first
+confirms that the stored head's sequence and hash are still present in the chain
+and fails without moving the head if they are not; the head never moves
+backward, and the restore path applies the same rule before advancing heads to
+restored tails. Scheduled verification covers the streams of deleted projects as
+well, so their prefixes can still be pruned. Events appended after the last
+verification run are the undetectable truncation window; the run cadence is part
+of the audit policy. The *prune checkpoint*, introduced below, marks the removed
+prefix. Both live in the same database and share its limits. Head records and
+scheduled verification apply to every stream, the legacy secret chain included;
+"by age alone" below refers only to the absence of operation-expired events
+there. A project-scoped event caused by an installation operation references
+that operation's ID; streams are not interleaved into a single global order. The
+streams are pruned independently, so a reference may outlive its target, and
+within one stream a later event may reference an operation or grant whose start
+was pruned; verification and rendering must tolerate both kinds of dangling
+reference and show them as expired rather than as corruption. Deletion must
+leave enough safe target identification to interpret old events. Use bounded
+fields and pagination; repository-controlled strings are untrusted input and
+must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -308,12 +308,13 @@ without detectable truncation; the trail cannot disclose what was lost, only
 where its coverage ends. Where pruning is enabled, a restore first runs
 verification on every stream, advancing head records to the restored tails. A
 stream whose verification fails is marked unverified: its head and pruning stay
-frozen and its reads carry that mark, while every other stream proceeds, so a
-damaged backup never turns into an audit-wide outage. The restore then prunes
-data expired under the retention policy contained in the snapshot before
-ordinary audit reads resume; before pruning exists, restored data is simply
-readable. Backup copies and exported files have independent lifetimes; deleting
-live rows does not erase older backups or exports.
+frozen, its reads carry that mark and hide rows that are expired under the
+snapshot's policy until an administrator resolves the stream, while every other
+stream proceeds, so a damaged backup never turns into an audit-wide outage. The
+restore then prunes data expired under the retention policy contained in the
+snapshot before ordinary audit reads resume; before pruning exists, restored
+data is simply readable. Backup copies and exported files have independent
+lifetimes; deleting live rows does not erase older backups or exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
@@ -377,8 +378,9 @@ Before enabling each domain, verify:
   verifiable suffixes and accurately declared expired coverage.
 - Backups/restores preserve keys, head records and prune checkpoints, display the
   snapshot coverage boundary and do not execute historical work. Records expired under the restored
-  snapshot's own retention policy are not resurfaced; a policy change made after
-  the snapshot is itself lost with it.
+  snapshot's own retention policy are not resurfaced, by pruning on verified
+  streams and by hiding on unverified ones; a policy change made after the
+  snapshot is itself lost with it.
 - Tampering with, removal of, or truncation of events up to the last verified head
   record is detected; the window after that run is documented as undetectable. A
   write-gap event covers best-effort writes that failed while the process
