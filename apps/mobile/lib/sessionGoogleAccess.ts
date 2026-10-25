@@ -16,6 +16,25 @@ function sessionMethods(client: VerityClient, service: GoogleService) {
   return { get: client.getSessionContactsConnection.bind(client) };
 }
 
+/**
+ * What a pick in the chat's account sheet means. `accountId` is null when the
+ * sheet was dismissed or had nothing to offer (`supportingAccounts === 0`).
+ */
+export function chatAccountPickAction(pick: {
+  accountId: string | null;
+  supportingAccounts: number;
+  currentId: string | null;
+  projectAccountId: string | null;
+  inheriting: boolean;
+}): 'none' | 'inherit' | 'connect' {
+  // Dismissed; with no supporting account the connect flow signs one in.
+  if (pick.accountId === null) return pick.supportingAccounts > 0 ? 'none' : 'connect';
+  // The project's account follows the project default again, so a later
+  // project change reaches this chat instead of a stale pin.
+  if (pick.accountId === pick.projectAccountId) return pick.inheriting ? 'none' : 'inherit';
+  return pick.accountId === pick.currentId ? 'none' : 'connect';
+}
+
 export async function connectSessionGoogleService(
   client: VerityClient,
   sessionId: string,

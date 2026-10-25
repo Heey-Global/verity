@@ -291,6 +291,7 @@ import {
   hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
+  chatAccountPickAction,
   GOOGLE_SERVICE_NAMES,
   type GoogleService,
 } from '../../lib/sessionGoogleAccess';
@@ -3248,12 +3249,15 @@ export const SessionChat = memo(function SessionChat({
           title: `${GOOGLE_SERVICE_NAMES[service]} account`,
           selectedId: currentId,
         });
-        // No supporting account yet: the connect flow below signs one in.
-        if (accountId === null && accounts.length > 0) return;
-        // Picking the project's account follows the project default again, so
-        // a later project change reaches this chat instead of a stale pin.
-        if (accountId !== null && accountId === projectAccountId) {
-          if (status.mode === 'inherit' && status.enabled) return;
+        const action = chatAccountPickAction({
+          accountId,
+          supportingAccounts: accounts.length,
+          currentId,
+          projectAccountId,
+          inheriting: status.mode === 'inherit' && status.enabled,
+        });
+        if (action === 'none') return;
+        if (action === 'inherit') {
           await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
           const [gmail, calendar, contacts] = await Promise.all([
             client.getSessionGmailConnection(sessionId),
@@ -3265,7 +3269,6 @@ export const SessionChat = memo(function SessionChat({
           setContactsConnection(contacts);
           return;
         }
-        if (accountId !== null && accountId === currentId) return;
         const result = await connectSessionGoogleService(client, sessionId, service, accountId);
         if (result.kind === 'session') {
           setGmailConnection(result.connections.gmail);
