@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.58.1](https://github.com/Heey-Global/verity/compare/v4.58.0...v4.58.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @anthropic-ai/claude-code to v2.1.307 ([#1889](https://github.com/Heey-Global/verity/issues/1889)) ([a9441de](https://github.com/Heey-Global/verity/commit/a9441de9b4850268157ac575337f56b12c00e7ca))
+* **deps:** update dependency @napi-rs/canvas to v1.0.13 ([#1890](https://github.com/Heey-Global/verity/issues/1890)) ([ae1aceb](https://github.com/Heey-Global/verity/commit/ae1acebf8af1c858aa96313cae7b91b7f25da66b))
+* **remote-control:** accept unchanged readiness revisions ([#1896](https://github.com/Heey-Global/verity/issues/1896)) ([84ab4d0](https://github.com/Heey-Global/verity/commit/84ab4d096103f7476ddcbfee07bf7214b9d73453))
+
 ## [4.58.0](https://github.com/Heey-Global/verity/compare/v4.57.3...v4.58.0) (2026-10-24)
 
 
