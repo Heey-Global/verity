@@ -99,25 +99,26 @@ append, because a head that follows the tail detects nothing. A run first
 confirms that the stored head's sequence and hash are still present in the
 chain. If they are not, or the chain does not re-derive, the run fails without
 moving the head, the stream is marked unverified, its pruning freezes, its reads
-carry the mark, audit health reports the failure, and an administrator must
-resolve the stream explicitly; the restore path below reuses this handling.
-Otherwise the head never moves backward, and the restore path applies the same
-rule before advancing heads to restored tails. Scheduled verification covers the
-streams of deleted projects as well, so their prefixes can still be pruned.
-Events appended after the last verification run are the undetectable truncation
-window; the run cadence is part of the audit policy. The *prune checkpoint*,
-introduced below, marks the removed prefix. Both live in the same database and
-share its limits. Head records and scheduled verification apply to every stream,
-the legacy secret chain included; "by age alone" below refers only to the
-absence of operation-expired events there. A project-scoped event caused by an
-installation operation references that operation's ID; streams are not
-interleaved into a single global order. The streams are pruned independently, so
-a reference may outlive its target, and within one stream a later event may
-reference an operation or grant whose start was pruned; verification and
-rendering must tolerate both kinds of dangling reference and show them as
-expired rather than as corruption. Deletion must leave enough safe target
-identification to interpret old events. Use bounded fields and pagination;
-repository-controlled strings are untrusted input and must be safely rendered.
+carry the mark and hide rows that are expired under the current policy, audit
+health reports the failure, and an administrator must resolve the stream
+explicitly; the restore path below reuses this handling. Otherwise the head
+never moves backward, and the restore path applies the same rule before
+advancing heads to restored tails. Scheduled verification covers the streams of
+deleted projects as well, so their prefixes can still be pruned. Events appended
+after the last verification run are the undetectable truncation window; the run
+cadence is part of the audit policy. The *prune checkpoint*, introduced below,
+marks the removed prefix. Both live in the same database and share its limits.
+Head records and scheduled verification apply to every stream, the legacy secret
+chain included; "by age alone" below refers only to the absence of
+operation-expired events there. A project-scoped event caused by an installation
+operation references that operation's ID; streams are not interleaved into a
+single global order. The streams are pruned independently, so a reference may
+outlive its target, and within one stream a later event may reference an
+operation or grant whose start was pruned; verification and rendering must
+tolerate both kinds of dangling reference and show them as expired rather than
+as corruption. Deletion must leave enough safe target identification to
+interpret old events. Use bounded fields and pagination; repository-controlled
+strings are untrusted input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -133,18 +134,21 @@ with their own access and retention rules; links to them may expire earlier.
 
 ### Persistence and failures
 
-Fail-closed applies to three groups only: Devcontainer builds, the existing
-secret paths, and admin-agent reads and administrator exports of the trail.
-Interactive administrator reads in the app are deliberately neither recorded nor
-fail-closed in this first stage; they are limited to administrators, and
-recording them would add volume without a question the trail could newly answer.
-New Devcontainer builds require a committed audit intent before the build is
-started, whatever triggered them: initial provisioning, the explicit rebuild
-action, fleet replacement after an update, or a wake that finds no image for the
-current configuration hash. Every such build executes repository and Feature
-code, so the trigger does not change the rule. The rule is about image builds
-Verity mediates, not about the Devcontainer path as such: agent-requested builds
-through the Docker policy gateway stay denied under [ADR
+Fail-closed applies to four groups only: Devcontainer builds, the existing
+secret paths, admin-agent reads and administrator exports of the trail, and
+changes to the trail's own policy. Retention and overrun changes and the
+one-time legacy-prune confirmation are database transitions that delete history,
+so they co-commit with their audit event and are refused when it cannot be
+written. Interactive administrator reads in the app are deliberately neither
+recorded nor fail-closed in this first stage; they are limited to
+administrators, and recording them would add volume without a question the trail
+could newly answer. New Devcontainer builds require a committed audit intent
+before the build is started, whatever triggered them: initial provisioning, the
+explicit rebuild action, fleet replacement after an update, or a wake that finds
+no image for the current configuration hash. Every such build executes
+repository and Feature code, so the trigger does not change the rule. The rule
+is about image builds Verity mediates, not about the Devcontainer path as such:
+agent-requested builds through the Docker policy gateway stay denied under [ADR
 0017](0017-docker-policy-gateway.md) D5 today, and if a build-worker design
 later admits them they join this fail-closed group rather than the best-effort
 Resources domain. Image resolution is content-addressed and a wake that finds
@@ -300,24 +304,29 @@ support before pruning is enabled; head records exist from rollout. Exact
 schema/index/batching choices belong to implementation design.
 
 Database backups must include events, head records, prune checkpoints and
-required verification/key metadata. This ADR does not assert that the proposed
-backup system in [ADR 0025](0025-encrypted-backup-and-installer-recovery.md) is
-implemented. Document how an installation's actual backup procedure covers these
-records. A restore only contains history through its snapshot: display the
-snapshot time as the trail's coverage boundary, record the restore as a new
-operational lineage when possible, and never replay recorded actions. Because
-head records are restored with the snapshot, events written after it vanish
-without detectable truncation; the trail cannot disclose what was lost, only
-where its coverage ends. Where pruning is enabled, a restore first runs
-verification on every stream, advancing head records to the restored tails. A
-stream whose verification fails is marked unverified: its head and pruning stay
-frozen, its reads carry that mark and hide rows that are expired under the
-snapshot's policy until an administrator resolves the stream, while every other
-stream proceeds, so a damaged backup never turns into an audit-wide outage. The
-restore then prunes data expired under the retention policy contained in the
-snapshot before ordinary audit reads resume; before pruning exists, restored
-data is simply readable. Backup copies and exported files have independent
-lifetimes; deleting live rows does not erase older backups or exports.
+required verification/key metadata. Request-MAC keys make the safe projections
+of secret-bearing inputs safe, so a backup must protect them at least as
+strongly as the live database does, or keep them out of plain backups and
+document the resulting loss of verification; a leaked key enables offline
+guessing of low-entropy inputs and MAC forgery. This ADR does not assert that
+the proposed backup system in [ADR
+0025](0025-encrypted-backup-and-installer-recovery.md) is implemented. Document
+how an installation's actual backup procedure covers these records. A restore
+only contains history through its snapshot: display the snapshot time as the
+trail's coverage boundary, record the restore as a new operational lineage when
+possible, and never replay recorded actions. Because head records are restored
+with the snapshot, events written after it vanish without detectable truncation;
+the trail cannot disclose what was lost, only where its coverage ends. Where
+pruning is enabled, a restore first runs verification on every stream, advancing
+head records to the restored tails. A stream whose verification fails is marked
+unverified: its head and pruning stay frozen, its reads carry that mark and hide
+rows that are expired under the snapshot's policy until an administrator
+resolves the stream, while every other stream proceeds, so a damaged backup
+never turns into an audit-wide outage. The restore then prunes data expired
+under the retention policy contained in the snapshot before ordinary audit reads
+resume; before pruning exists, restored data is simply readable. Backup copies
+and exported files have independent lifetimes; deleting live rows does not erase
+older backups or exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
@@ -361,8 +370,11 @@ Before enabling each domain, verify:
   failure. Emergency stop/cancel/cleanup remains usable.
 - Disposable query sandboxes produce no audit events; a day of status polling
   adds no rows.
-- An admin-agent read or administrator export is denied when its own audit event
-  cannot be written; scope widening beyond the per-turn bound is denied.
+- An admin-agent read or administrator export is denied when its own audit
+  event cannot be written; scope widening beyond the per-turn bound is denied.
+- A retention or overrun change and the legacy-prune confirmation are refused
+  when their audit event cannot co-commit; no history is deleted during an
+  audit outage.
 - An operation without a terminal result is closed as indeterminate after the
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
