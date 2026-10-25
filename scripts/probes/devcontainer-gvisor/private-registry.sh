@@ -33,7 +33,7 @@ registry_start() {
     [[ $registry_ready == true ]] || return 1
     export NODE_EXTRA_CA_CERTS="$work/registry/cert.pem"
     printf '%s\n' "$registry_password" | docker --config "$work/publisher" login \
-        "$registry_address" --username probe --password-stdin > /dev/null 2>&1
+        "$registry_address" --username probe --password-stdin > "$work/login.log" 2>&1
     cp -R "$probe_dir/.devcontainer/features" "$work/registry-features"
     DOCKER_CONFIG="$work/publisher" "$DEVCONTAINER_CLI" features publish \
         "$work/registry-features" --registry "$registry_address" --namespace probe \
@@ -81,6 +81,10 @@ registry_cleanup() {
         sudo rm -f "$registry_cert_dir/ca.crt"
         sudo rmdir "$registry_cert_dir"
     fi
-    # Never upload auth material, certificates, registry logs or publisher output.
+    # Preserve diagnostics for redaction before upload; never retain config or keys.
+    for diagnostic in login publish pull push; do
+        if [[ -f $work/$diagnostic.log ]]; then cp "$work/$diagnostic.log" "$PROBE_EVIDENCE/registry-$diagnostic.log"; fi
+    done
+    # Never upload auth material, certificates or registry request logs.
     rm -rf "$work/publisher" "$work/registry"
 }
