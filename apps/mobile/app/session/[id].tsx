@@ -3239,9 +3239,7 @@ export const SessionChat = memo(function SessionChat({
         );
         const [status, project] = await Promise.all([
           client.getSessionGoogleAccess(sessionId, service),
-          projectId
-            ? client.getProjectGoogleConnection(projectId, service).catch(() => null)
-            : null,
+          projectId ? client.getProjectGoogleConnection(projectId, service) : null,
         ]);
         const currentId = status.enabled ? status.accountId : null;
         const projectAccountId = project?.enabled ? (project.accountId ?? null) : null;
