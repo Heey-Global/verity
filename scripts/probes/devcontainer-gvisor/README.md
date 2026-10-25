@@ -33,7 +33,8 @@ was executed in the authoring Sandbox, which has no Docker endpoint.
    a service container's Docker runtime or worker label alone is insufficient.
 6. Disables the selected runtime and requires a new uncached build to fail;
    then stops the builder and requires another build to fail. Neither test may
-   produce an image. A timeout or OOM does not count as expected rejection.
+   produce an image. An outer harness timeout or OOM does not count as expected
+   rejection; the stopped remote builder reports BuildKit's connection deadline.
 7. Retains diagnostics even on failure and removes only the experiment's
    builder, container, anonymous worker volume, and tagged images. No global
    Docker prune is run. The CI runner disposes of the temporary socket/config.

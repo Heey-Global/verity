@@ -141,6 +141,7 @@ expect_failure() {
 docker exec "$name" mv /usr/local/bin/runsc-real /usr/local/bin/runsc-disabled
 expect_failure "$missing_image" "$PROBE_EVIDENCE/missing-runtime.log" runsc-real
 docker stop "$name"
-expect_failure "$stopped_image" "$PROBE_EVIDENCE/stopped-builder.log" buildkitd.sock
+[[ $(docker inspect --format '{{.State.Running}}' "$name") == false ]]
+expect_failure "$stopped_image" "$PROBE_EVIDENCE/stopped-builder.log" 'context deadline exceeded'
 printf 'Dockerfile and Feature ran through runsc; both unavailable-worker tests rejected.\n' \
     > "$PROBE_EVIDENCE/result.txt"
