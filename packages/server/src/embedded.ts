@@ -1,3 +1,4 @@
+import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -3427,7 +3428,7 @@ export async function buildEmbeddedServer(
     (typeof configuredDevcontainerFeatureRef === 'string'
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
           resolveToolkitFeatureRef(
@@ -3440,6 +3441,15 @@ export async function buildEmbeddedServer(
           publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
           devcontainerFeatureRefConfigured,
         );
+  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+    selectedDevcontainerFeature === undefined
+      ? undefined
+      : async () =>
+          pinToolkitFeature(
+            typeof selectedDevcontainerFeature === 'function'
+              ? await selectedDevcontainerFeature()
+              : selectedDevcontainerFeature,
+          );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -4768,9 +4778,9 @@ export async function buildEmbeddedServer(
             defaultProjectImage,
             defaultProjectImageVersion: config.defaultProjectImageVersion,
             toolkitFeatureRef:
-              typeof devcontainerFeature === 'function'
-                ? async () => (await devcontainerFeature())?.ref
-                : devcontainerFeature?.ref,
+              devcontainerFeature === undefined
+                ? undefined
+                : async () => (await devcontainerFeature())?.ref,
           }),
         }
       : {}),

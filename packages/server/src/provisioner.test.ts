@@ -47,6 +47,7 @@ import {
   RUNNER_AGENT_UID,
   devcontainerBuildArgs,
   defaultDevcontainerBuildSpawner,
+  DEVCONTAINER_NODE_FEATURE_REF,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
   unsupportedDevcontainerRuntimeKeys,
@@ -5065,7 +5066,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     const result = await provisioner.recreateContainer(id);
@@ -5190,7 +5191,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     const result = await provisioner.recreateContainer(id);
@@ -5467,7 +5468,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
@@ -5514,7 +5515,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     const result = await provisioner.recreateContainer(id);
@@ -5559,7 +5560,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     const result = await provisioner.recreateContainer(id);
@@ -5603,7 +5604,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     await expect(provisioner.recreateContainer(id)).rejects.toThrow(/port is already allocated/);
@@ -5628,7 +5629,7 @@ describe('ProvisionerImpl (#174)', () => {
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
 
     const result = await provisioner.recreateContainer(id);
@@ -6018,7 +6019,7 @@ describe('ProvisionerImpl (#174)', () => {
       defaultImageRef: 'default',
       hostCloneRoot: '/srv/verity-dev/',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
     (provisioner as unknown as { isRepoDir: () => boolean }).isRepoDir = () => true;
 
@@ -6102,7 +6103,7 @@ describe('ProvisionerImpl (#174)', () => {
       defaultImageRef: 'default',
       hostCloneRoot: '/srv/verity-dev/',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
     (provisioner as unknown as { isRepoDir: () => boolean }).isRepoDir = () => true;
 
@@ -6159,7 +6160,7 @@ describe('ProvisionerImpl (#174)', () => {
       defaultImageRef: 'default',
       hostCloneRoot: '/srv/verity-dev/',
       git,
-      isDirectory: () => true,
+      isDirectory: (path) => !path.endsWith('/.devcontainer'),
     });
     (provisioner as unknown as { isRepoDir: () => boolean }).isRepoDir = () => true;
 
@@ -6617,6 +6618,7 @@ describe('devcontainerBuildArgs (R3.1/#299)', () => {
     const directory = mkdtempSync(join(tmpdir(), 'verity-builder-env-'));
     const previousPath = process.env.PATH;
     const previousSecret = process.env.VERITY_BUILD_TEST_SECRET;
+    const previousEndpoint = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
     try {
       writeFileSync(
         join(directory, 'devcontainer'),
@@ -6625,6 +6627,8 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
 `,
         { mode: 0o755 },
       );
+      writeFileSync(join(directory, 'docker'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = 'unix:///test/buildkit.sock';
       process.env.PATH = `${directory}:${previousPath ?? ''}`;
       process.env.VERITY_BUILD_TEST_SECRET = 'must-not-reach-image-metadata';
       const result = await defaultDevcontainerBuildSpawner({
@@ -6651,6 +6655,8 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      if (previousEndpoint === undefined) delete process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+      else process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = previousEndpoint;
       if (previousSecret === undefined) delete process.env.VERITY_BUILD_TEST_SECRET;
       else process.env.VERITY_BUILD_TEST_SECRET = previousSecret;
       rmSync(directory, { recursive: true, force: true });
@@ -6707,7 +6713,7 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
     const idx = args.indexOf('--additional-features');
     expect(idx).toBeGreaterThan(-1);
     expect(JSON.parse(args[idx + 1] ?? '{}')).toEqual({
-      'ghcr.io/devcontainers/features/node:1': { version: verifiedNodeVersion },
+      [DEVCONTAINER_NODE_FEATURE_REF]: { version: verifiedNodeVersion },
       '/opt/verity-features/verity-sandbox-toolkit': { installRunnerSupervisor: true },
     });
   });
@@ -6838,7 +6844,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
@@ -6900,7 +6906,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       const created = dockerCalls.find((c) => c.method === 'createContainer');
@@ -7091,16 +7097,19 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('redacts an inherited GITHUB_TOKEN from failed build output', async () => {
+  it('redacts inherited and scoped registry credentials from failed build output', async () => {
     const { root } = makeCloneRoot(true);
     const previous = process.env.GITHUB_TOKEN;
     const secret = 'build-token-fixture-value';
+    const registryToken = 'scoped-registry-fixture';
+    const encoded = Buffer.from(`x-access-token:${registryToken}`).toString('base64');
     process.env.GITHUB_TOKEN = secret;
     try {
       const id = await seedProject();
       const build = vi.fn<DevcontainerBuildSpawner>(async () => {
         const error = new Error('Command failed: devcontainer build');
-        (error as Error & { stderr?: string }).stderr = `fatal: leaked ${secret} while cloning`;
+        (error as Error & { stderr?: string }).stderr =
+          `fatal: leaked ${secret} ${registryToken} ${encoded} while cloning`;
         throw error;
       });
       const provisioner = createProvisioner({
@@ -7108,6 +7117,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         db: ctx.db,
         docker: fakeDocker({ imageExists: async () => false }).client,
         projectTokenMint: async () => 'server-side-token',
+        registryTokenMint: async () => registryToken,
         defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
         hostCloneRoot: root,
         devcontainerBuild: build,
@@ -7118,6 +7128,8 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
       const row = await ctx.store.getProject(id);
       expect(row?.provisionError).not.toContain(secret);
+      expect(row?.provisionError).not.toContain(registryToken);
+      expect(row?.provisionError).not.toContain(encoded);
       expect(row?.provisionError).toContain('[redacted]');
     } finally {
       if (previous === undefined) delete process.env.GITHUB_TOKEN;
@@ -7126,33 +7138,43 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('falls back to the base image when .devcontainer/ exists but the build seam is unwired', async () => {
-    const { root } = makeCloneRoot(true);
-    try {
-      const id = await seedProject();
-      const imageExists = vi.fn(async () => false);
-      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => 'tok',
-        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
-        hostCloneRoot: root,
-        // devcontainerBuild + dockerHostForBuild intentionally omitted.
-      });
+  it.each([true, false])(
+    'unwired build support fails closed unless the project explicitly disables devcontainers (enabled=%s)',
+    async (enabled) => {
+      const { root } = makeCloneRoot(true);
+      try {
+        const id = await seedProject();
+        await ctx.store.updateProjectSettings(id, { devcontainerEnabled: enabled });
+        const imageExists = vi.fn(async () => false);
+        const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => 'tok',
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          // devcontainerBuild + dockerHostForBuild intentionally omitted.
+        });
 
-      const result = await provisioner.provision(id);
-      expect(result.state).toBe('active');
-      expect(imageExists).not.toHaveBeenCalled();
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      expect((created?.payload as ContainerSpec).image).toBe(
-        'ghcr.io/heey-global/dev-base:default',
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        if (enabled) {
+          await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
+          expect(dockerCalls.some((c) => c.method === 'createContainer')).toBe(false);
+          return;
+        }
+        expect(await provisioner.provisionWarnings(id)).toEqual([]);
+        const result = await provisioner.provision(id);
+        expect(result.state).toBe('active');
+        expect(imageExists).not.toHaveBeenCalled();
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        expect((created?.payload as ContainerSpec).image).toBe(
+          'ghcr.io/heey-global/dev-base:default',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('fails closed when .devcontainer/ exists but the toolkit Feature ref is unavailable', async () => {
     const { root } = makeCloneRoot(true);
@@ -7836,7 +7858,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: verifiedNodeVersion })}\n${feature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify({ version: verifiedNodeVersion })}\n${feature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
@@ -7883,7 +7905,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         devcontainerContentHash(
           dir,
           base,
-          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+          `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify({ version: verifiedNodeVersion })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
         ),
       );
       const imageExists = vi.fn(async (tag: string) => tag === staleTag);
@@ -7951,42 +7973,50 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('(i) DORMANCY: with the build seam UNWIRED, a .devcontainer/ project runs the base image and never builds — even when a Feature IS set', async () => {
-    const { root } = makeCloneRoot(true);
-    try {
-      const id = await seedProject();
-      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
-      const imageExists = vi.fn(async () => false);
-      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        projectTokenMint: async () => 'tok',
-        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
-        hostCloneRoot: root,
-        // Build seam intentionally UNWIRED (as embedded.ts leaves it) …
-        // devcontainerBuild + dockerHostForBuild omitted …
-        // … but the Feature data IS present (as embedded.ts DOES set it).
-        devcontainerFeature: {
-          ref: '/opt/verity-features/verity-sandbox-toolkit',
-          version: '1.0.0',
-          identity: 'sha256:toolkit-v1',
-        },
-      });
+  it.each([true, false])(
+    'requires build support unless repository devcontainers are disabled (%s)',
+    async (enabled) => {
+      const { root } = makeCloneRoot(true);
+      try {
+        const id = await seedProject();
+        await ctx.store.updateProjectSettings(id, { devcontainerEnabled: enabled });
+        const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+        const imageExists = vi.fn(async () => false);
+        const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => 'tok',
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          // A missing build implementation must fail closed for enabled projects.
+          devcontainerFeature: {
+            ref: '/opt/verity-features/verity-sandbox-toolkit',
+            version: '1.0.0',
+            identity: 'sha256:toolkit-v1',
+          },
+        });
 
-      const result = await provisioner.provision(id);
-      expect(result.state).toBe('active');
-      expect(build).not.toHaveBeenCalled();
-      expect(imageExists).not.toHaveBeenCalled();
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      expect((created?.payload as ContainerSpec).image).toBe(
-        'ghcr.io/heey-global/dev-base:default',
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        if (enabled) {
+          await expect(provisioner.provision(id)).rejects.toThrow('build support is unavailable');
+          expect(dockerCalls.some((call) => call.method === 'createContainer')).toBe(false);
+          return;
+        }
+        const result = await provisioner.provision(id);
+        expect(result.state).toBe('active');
+        expect(result.provisionWarning).toBeNull();
+        expect(build).not.toHaveBeenCalled();
+        expect(imageExists).not.toHaveBeenCalled();
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        expect((created?.payload as ContainerSpec).image).toBe(
+          'ghcr.io/heey-global/dev-base:default',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('DeprovisionerImpl (#174)', () => {

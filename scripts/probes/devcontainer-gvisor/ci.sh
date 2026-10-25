@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI experiment only. No production daemon, shared builder, registry token or global prune.
+# CI experiment only. No production daemon, shared builder, production registry token or global prune.
 set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true ]] || { echo 'Run this experiment in GitHub Actions.' >&2; exit 1; }
 : "${DEVCONTAINER_CLI:?}" "${PROBE_EVIDENCE:?}" "${RUNNER_TEMP:?}"
@@ -28,7 +28,11 @@ cleanup() {
     docker buildx rm "$name"
     docker rm -fv "$name-marker" "$name"
     docker image rm "$positive_image" "$missing_image" "$stopped_image" "$worker_image" "$runtime_image"
+    if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true && -n ${registry_container:-} ]]; then
+        registry_cleanup
+    fi
     cleanup_failed=false
+    if [[ -n ${registry_container:-} ]] && docker inspect "$registry_container" > /dev/null 2>&1; then cleanup_failed=true; fi
     if ! docker info > /dev/null 2>&1; then cleanup_failed=true; fi
     for container in "$name-marker" "$name"; do
         if docker inspect "$container" > /dev/null 2>&1; then cleanup_failed=true; fi
@@ -43,6 +47,14 @@ cleanup() {
     # Worker-created files are root-owned. Make only the experiment evidence readable.
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
     sudo chmod -R u+rX "$PROBE_EVIDENCE"
+    if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true && -n ${registry_container:-} ]]; then
+        if ! registry_scrub_evidence; then
+            # If redaction cannot complete, withhold diagnostics rather than upload raw files.
+            rm -rf "$PROBE_EVIDENCE"
+            mkdir -p "$PROBE_EVIDENCE"
+            status=1
+        fi
+    fi
     printf '%s\n' "$status" > "$PROBE_EVIDENCE/exit-code.txt"
     exit "$status"
 }
@@ -81,7 +93,14 @@ cp deploy/gvisor/versions.env "$PROBE_EVIDENCE/runtime-pins.txt"
 docker build -f deploy/gvisor-ci.Dockerfile -t "$runtime_image" . > "$PROBE_EVIDENCE/runtime-image.log" 2>&1
 docker build -f "$probe_dir/BuildKit.Dockerfile" --build-arg "RUNSC_SOURCE_IMAGE=$runtime_image" \
     -t "$worker_image" . > "$PROBE_EVIDENCE/worker-image.log" 2>&1
-docker run -d --privileged --memory "$memory_bytes" --memory-swap "$memory_bytes" \
+worker_options=()
+if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true ]]; then
+    source "$probe_dir/private-registry.sh"
+    registry_start
+    # CI only: the loopback TLS registry is reachable from the worker, never published externally.
+    worker_options+=(--network host --add-host registry.verity.test:127.0.0.1 --mount "type=bind,src=$work/registry/cert.pem,dst=/etc/ssl/certs/probe-registry.pem,readonly")
+fi
+docker run -d "${worker_options[@]}" --privileged --memory "$memory_bytes" --memory-swap "$memory_bytes" \
     --cpus 1 --pids-limit 512 --name "$name" \
     --mount "type=bind,src=$work/socket,dst=/run/probe" \
     "$worker_image" --addr unix:///run/probe/buildkitd.sock
@@ -92,6 +111,9 @@ for attempt in $(seq 1 60); do
     sleep 1
 done
 [[ $ready == true ]] || { echo 'runsc worker did not become ready' >&2; exit 1; }
+if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true ]]; then
+    docker exec "$name" sh -c 'cat /etc/ssl/certs/probe-registry.pem >> /etc/ssl/certs/ca-certificates.crt'
+fi
 docker exec "$name" chmod 0666 /run/probe/buildkitd.sock
 docker exec "$name" /usr/local/bin/runsc-real --version > "$PROBE_EVIDENCE/runsc-version.txt"
 docker inspect "$name" > "$PROBE_EVIDENCE/worker-container.json"
@@ -113,6 +135,42 @@ build_probe() {
     timeout 300 "$DEVCONTAINER_CLI" build --workspace-folder "$work/fixture" \
         --image-name "$1" --no-cache --log-level trace
 }
+if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true ]]; then
+    public_base=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).build.args.PROBE_BASE_IMAGE' "$work/fixture/.devcontainer/devcontainer.json")
+    registry_seed_base "$public_base"
+    # Require independently protected image and Feature manifests before granting auth.
+    for resource in probe/base/manifests/fixture probe/isolation-probe/manifests/1; do
+        status=$(curl --silent --cacert "$work/registry/cert.pem" -o /dev/null -w '%{http_code}' "https://$registry_address/v2/$resource")
+        [[ $status == 401 ]] || { echo 'Private resource accepted anonymous access' >&2; exit 1; }
+    done
+    PROBE_CONFIG="$work/fixture/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+const path = process.env.PROBE_CONFIG;
+const config = JSON.parse(readFileSync(path, 'utf8'));
+config.build.args.PROBE_BASE_IMAGE = 'registry.verity.test:5443/probe/base:fixture';
+config.features = { 'registry.verity.test:5443/probe/isolation-probe:1': {} };
+writeFileSync(path, JSON.stringify(config));
+NODE
+    # Feature denial is tested with the public base; image denial with the local Feature.
+    cp "$work/fixture/.devcontainer/devcontainer.json" "$work/private-config.json"
+    for denied_resource in feature image; do
+        PROBE_CONFIG="$work/fixture/.devcontainer/devcontainer.json" \
+            PUBLIC_BASE="$public_base" DENIED_RESOURCE="$denied_resource" node --input-type=module - <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
+if (process.env.DENIED_RESOURCE === 'feature') config.build.args.PROBE_BASE_IMAGE = process.env.PUBLIC_BASE;
+else {
+  config.build.args.PROBE_BASE_IMAGE = 'registry.verity.test:5443/probe/base:fixture';
+  config.features = { './features/isolation-probe': {} };
+}
+writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
+NODE
+        expect_auth_failure "$missing_image" "$PROBE_EVIDENCE/anonymous-$denied_resource.log"
+    done
+    cp "$work/private-config.json" "$work/fixture/.devcontainer/devcontainer.json"
+    cp "$work/publisher/config.json" "$DOCKER_CONFIG/config.json"
+    printf 'TLS registry: anonymous image and Feature manifests rejected; anonymous CLI rejected; authenticated build follows.\n' > "$PROBE_EVIDENCE/registry-auth.txt"
+fi
 build_probe "$positive_image" > "$PROBE_EVIDENCE/positive.log" 2>&1
 docker create --name "$name-marker" "$positive_image" > /dev/null
 docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"

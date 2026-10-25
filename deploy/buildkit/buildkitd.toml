@@ -1,0 +1,22 @@
+# The socket grants build authority. Mount it only into the trusted Server.
+root = "/var/lib/verity-buildkit"
+insecure-entitlements = []
+
+[grpc]
+  address = ["unix:///run/verity-buildkit/buildkitd.sock"]
+  uid = 0
+  gid = 1102
+
+[worker.oci]
+  enabled = true
+  binary = "/usr/local/libexec/verity-buildkit/runsc"
+  snapshotter = "native"
+  max-parallelism = 1
+  noProcessSandbox = false
+  gc = true
+  reservedSpace = "1GB"
+  maxUsedSpace = "10GB"
+  minFreeSpace = "5GB"
+
+[worker.containerd]
+  enabled = false
