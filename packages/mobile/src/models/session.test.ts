@@ -1429,7 +1429,10 @@ describe('SessionModel — resumable', () => {
     await vi.waitFor(() => {
       expect(model.state.resumable).toBe(false);
     });
-    expect(getSession).toHaveBeenCalledWith('s1', { trace: undefined });
+    expect(getSession).toHaveBeenCalledWith('s1', {
+      trace: undefined,
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('stays undefined (sendable) when the detail probe fails', async () => {
@@ -3371,4 +3374,47 @@ describe('bounded history recovery', () => {
     expect(sockets).toHaveLength(0);
     expect(agentTexts(model.state)).toEqual([]);
   });
+});
+
+it('publishes Google detail metadata and discards a response after stop', async () => {
+  const client = stubClient();
+  const connection = {
+    enabled: true,
+    connected: true,
+    accountEmail: 'a@example.test',
+    clientId: null,
+  };
+  const googleStatus = {
+    gmail: connection,
+    calendar: connection,
+    contacts: connection,
+    workspaceFile: null,
+  };
+  const getSession = vi.spyOn(client, 'getSession');
+  getSession.mockResolvedValue({ googleStatus } as never);
+  const model = new SessionModel({ client, sessionId: 's', transport: new FakeTransport() });
+  model.refreshMetadata();
+  await flush();
+  expect(model.state.googleStatus).toEqual(googleStatus);
+  expect(model.state.detailLoaded).toBe(true);
+  let resolve!: (detail: Awaited<ReturnType<VerityClient['getSession']>>) => void;
+  getSession.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  model.refreshMetadata();
+  const signal = getSession.mock.calls.at(-1)?.[1]?.signal;
+  model.stop();
+  expect(signal?.aborted).toBe(true);
+  resolve({
+    googleStatus: {
+      ...googleStatus,
+      workspaceFile: null,
+      gmail: { ...connection, enabled: false },
+    },
+  } as never);
+  await flush();
+  expect(model.state.googleStatus?.gmail.enabled).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { sessionGoogleStatus, type SessionGoogleStatus } from './session-google-status.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
@@ -2990,6 +2991,7 @@ export interface SessionListEnvelope {
 }
 
 export interface SessionDetail extends SessionSummary {
+  googleStatus?: SessionGoogleStatus | undefined;
   /** True while a turn is in flight for this session (the agent is working) —
    * the live "Agent is working…" signal, server-authoritative so it survives
    * the app navigating away + back. */
@@ -8193,6 +8195,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   registerSessionReadRoutes(app, {
+    getGoogleStatus: async (id) =>
+      (await deps.eventStore.getSession(id)) ? sessionGoogleStatus(deps.eventStore, id) : undefined,
     listModels: async (projectId) => {
       const available = await availableModels();
       if (projectId === undefined) return available;
@@ -8236,6 +8240,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : projectedStatus;
       return {
         ...session,
+        googleStatus: await sessionGoogleStatus(deps.eventStore, id),
         status,
         pendingPermissions,
         ...(status === 'awaiting_input' && pendingPermissions.length > 0

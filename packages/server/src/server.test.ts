@@ -1,3 +1,4 @@
+import { sessionGoogleStatus } from './session-google-status.js';
 import { ForgeMergePermissionError } from './forge-provider.js';
 import {
   createCachedProjectTokenMint,
@@ -6694,6 +6695,7 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
+      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
       sessionId: 's1',
       worktree: '/wt/s1',
       model: 'm',
