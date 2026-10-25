@@ -75,7 +75,8 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
   return `${String(checks.total)}/${String(checks.total)} ${unit} passed`;
 }
 
-export type PullRequestBlockReason = 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
+export type PullRequestBlockReason =
+  'permission' | 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
 
 /**
  * What the merge button shows. `waiting` covers every state that resolves on its
@@ -93,6 +94,7 @@ export type PullRequestMergeButton =
   | { kind: 'closed' };
 
 const BLOCK_LABELS: Record<PullRequestBlockReason, string> = {
+  permission: 'Maintainer merge',
   rejected: 'Blocked',
   conflict: 'Conflict',
   ci_failed: 'CI failed',
@@ -111,6 +113,7 @@ export function pullRequestMergeButton(
 ): PullRequestMergeButton {
   if (state.merging) return { kind: 'merging' };
   if (pr.phase !== 'open') return { kind: 'closed' };
+  if (pr.viewerCanMerge === false) return blocked('permission');
   if (state.mergeRejected) return blocked('rejected');
   if (isPullRequestConflicted(pr)) return blocked('conflict');
   // A failing check that is not required leaves the PR `unstable`, and GitHub still

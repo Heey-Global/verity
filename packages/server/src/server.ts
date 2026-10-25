@@ -2909,6 +2909,7 @@ function makeBranch(name: string | undefined, issue?: number): string {
  * overview can mark merge-ready / merge-blocked / CI-failed sessions (#387). A projection of the
  * richer {@link PullRequestStatus} (drops title/url/checks the list doesn't need). */
 interface SessionPrSummary {
+  viewerCanMerge?: boolean;
   phase: PullRequestStatus['phase'];
   pipeline: PullRequestStatus['pipeline'];
   mergeable: PullRequestStatus['mergeable'];
@@ -4704,6 +4705,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           phase: s.phase,
           pipeline: s.pipeline,
           mergeable: s.mergeable,
+          ...(s.viewerCanMerge === undefined ? {} : { viewerCanMerge: s.viewerCanMerge }),
           ...(s.mergeState === undefined ? {} : { mergeState: s.mergeState }),
         };
   // Resolve the PR that represents a session. A session may span several branches

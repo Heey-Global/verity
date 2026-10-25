@@ -1,3 +1,4 @@
+import { ForgeMergePermissionError } from './forge-provider.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { appendExternalPromptData } from '@verity/events';
@@ -65,7 +66,7 @@ function buildPullRequestMergeRejectedDisplayPrompt(number: number): string {
 function buildPullRequestMergeRejectedPrompt(number: number): string {
   return `${buildPullRequestMergeRejectedDisplayPrompt(number)}
 
-GitHub rejected the merge for pull request #${String(number)}. Please inspect why the PR cannot be merged, fix any failing CI/checks or merge conflicts, update the branch, run the relevant verification, and report the result.`;
+The forge rejected the merge for pull request #${String(number)}. Please inspect why the PR cannot be merged, fix any failing CI/checks or merge conflicts, update the branch, run the relevant verification, and report the result. Do not change repository permissions, branch protection, review requirements, or other security policies. If permission or policy prevents merging, stop and ask the user to have a maintainer merge it.`;
 }
 
 export function registerSessionMergeRoutes(
@@ -89,7 +90,7 @@ export function registerSessionMergeRoutes(
   } = deps;
   app.post(
     '/sessions/:id/pull-request/merge',
-    async (request, reply): Promise<{ merged: true } | { error: string }> => {
+    async (request, reply): Promise<{ merged: true } | { error: string; code?: string }> => {
       const { id } = sessionParams.parse(request.params);
       const { number } = mergePullRequestBody.parse(request.body);
       if (!deps.mergePr) {
@@ -153,18 +154,48 @@ export function registerSessionMergeRoutes(
           reply.code(409);
           return { error: `pull request #${String(number)} is no longer ready to merge` };
         }
+        if (current.viewerCanMerge === false) {
+          reply.code(403);
+          return {
+            error: new ForgeMergePermissionError().message,
+            code: 'merge_permission_denied',
+          };
+        }
         // Read from the re-resolved PR, so it describes the pull request this
         // request is about to merge rather than whatever the push payload claimed.
         mergedBaseRef = current.baseRef;
       }
-      const merged = await deps.mergePr(number, session.worktree).catch(() => false);
+      let permissionDenied = false;
+      let unknownError = false;
+      const merged = await deps.mergePr(number, session.worktree).catch((error: unknown) => {
+        permissionDenied = error instanceof ForgeMergePermissionError;
+        unknownError = !permissionDenied;
+        return false;
+      });
       if (!merged) {
         invalidatePrSummaryAction(session);
-        await conductor
-          .dispatchTurn(id, buildPullRequestMergeRejectedPrompt(number), undefined, {
-            displayPrompt: buildPullRequestMergeRejectedDisplayPrompt(number),
-          })
-          .catch(() => undefined);
+        if (permissionDenied) {
+          reply.code(403);
+          return {
+            error: new ForgeMergePermissionError().message,
+            code: 'merge_permission_denied',
+          };
+        }
+        const rejected = await sessionPrStatus(session).catch(() => null);
+        if (
+          !unknownError &&
+          rejected?.number === number &&
+          rejected.phase === 'open' &&
+          rejected.viewerCanMerge !== false &&
+          (rejected.mergeState === 'dirty' ||
+            (rejected.pipeline === 'failure' && rejected.mergeState !== 'unstable'))
+        ) {
+          await conductor
+            .dispatchTurn(id, buildPullRequestMergeRejectedPrompt(number), undefined, {
+              displayPrompt: buildPullRequestMergeRejectedDisplayPrompt(number),
+            })
+            .catch(() => undefined);
+        }
         reply.code(409);
         return { error: `pull request #${String(number)} could not be merged` };
       }

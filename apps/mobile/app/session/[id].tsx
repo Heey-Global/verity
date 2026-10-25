@@ -9429,6 +9429,7 @@ function PullRequestBar({
   const [merging, setMerging] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   const { checks } = pullRequest;
@@ -9447,6 +9448,7 @@ function PullRequestBar({
         ? 'blocked'
         : 'unknown',
     pullRequest.mergeState ?? 'no-state',
+    String(pullRequest.viewerCanMerge),
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
@@ -9457,7 +9459,12 @@ function PullRequestBar({
   // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
   // `mergeable: null` right after a push means "still computing", not blocked — both
   // are resolved inside `pullRequestMergeButton`.
-  const button = pullRequestMergeButton(pullRequest, { merging, mergeRejected });
+  const button = pullRequestMergeButton(
+    mergeRejected && mergePermissionDenied
+      ? { ...pullRequest, viewerCanMerge: false }
+      : pullRequest,
+    { merging, mergeRejected },
+  );
   const mergeButtonEnabled = button.kind === 'merge';
   // Static on purpose: the waiting states show their spinner on the button, and a
   // second animation beside it only competed with it.
@@ -9472,7 +9479,8 @@ function PullRequestBar({
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
   const prNumber = String(pullRequest.number);
   const blockedLabels: Record<PullRequestBlockReason, string> = {
-    rejected: `Merge blocked because GitHub rejected pull request ${prNumber}`,
+    permission: `A maintainer must merge pull request ${prNumber}`,
+    rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
     conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
     ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
     blocked: `Merge blocked for pull request ${prNumber}`,
@@ -9517,6 +9525,7 @@ function PullRequestBar({
       setMerging(false);
       if (!result.ok) {
         setError(result.message);
+        setMergePermissionDenied(result.permissionDenied === true);
         setMergeRejectedFor(pullRequestStateKey);
         return;
       }
