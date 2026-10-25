@@ -44,6 +44,12 @@ artifact. It uses an empty Docker config and no registry or deployment secrets.
 
 ## Limits and interpretation
 
+BuildKit's runc executor passes `run --keep`, which the pinned runsc does not
+accept. The CI adapter removes that exact option from the run invocation and
+preserves all other arguments. runsc's synchronous run cleans up its state;
+BuildKit's subsequent best-effort delete can encounter already-removed state.
+This is a probe-specific compatibility adapter, not a production runtime shim.
+
 A passing run establishes Dockerfile execution, local Feature installation,
 image loading, and the two rejection cases for this fixture and pinned tools.
 It does not establish arbitrary devcontainer compatibility, production resource
@@ -63,7 +69,7 @@ build policy, image cleanup, and persistent audit implementation are unchanged.
 ## Local checks
 
 ```sh
-node --test scripts/probes/devcontainer-gvisor/verify-evidence.test.mjs
+node --test scripts/probes/devcontainer-gvisor/*.test.mjs
 bash -n scripts/probes/devcontainer-gvisor/ci.sh
 sh -n scripts/probes/devcontainer-gvisor/runsc-probe.sh
 ```

@@ -12,5 +12,6 @@ RUN set -eu; \
     rm /tmp/versions.env; \
     mkdir -p /evidence/bundles /evidence/runsc
 COPY scripts/probes/devcontainer-gvisor/runsc-probe.sh /usr/local/bin/runsc
+COPY scripts/probes/devcontainer-gvisor/runsc-buildkit-args.sh /usr/local/bin/runsc-buildkit-args
 COPY scripts/probes/devcontainer-gvisor/buildkitd.toml /etc/buildkit/buildkitd.toml
-RUN chmod 0755 /usr/local/bin/runsc
+RUN chmod 0755 /usr/local/bin/runsc /usr/local/bin/runsc-buildkit-args

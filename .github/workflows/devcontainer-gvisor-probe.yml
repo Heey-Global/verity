@@ -31,8 +31,8 @@ jobs:
           node-version: '26.12.1'
       - name: Install the repository-pinned devcontainer CLI
         run: npm ci --prefix features/verity-sandbox-toolkit/npm/devcontainers --ignore-scripts
-      - name: Check evidence rejection paths
-        run: node --test scripts/probes/devcontainer-gvisor/verify-evidence.test.mjs
+      - name: Check runtime adapter and evidence rejection paths
+        run: node --test scripts/probes/devcontainer-gvisor/*.test.mjs
       - name: Exercise Dockerfile and Feature builds with a runsc worker
         env:
           DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer

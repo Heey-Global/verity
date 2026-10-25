@@ -13,5 +13,5 @@ if [ -n "$bundle" ] && [ -f "$bundle/config.json" ]; then
     record=$(mktemp /evidence/bundles/oci.XXXXXX)
     cp "$bundle/config.json" "$record"
 fi
-exec /usr/local/bin/runsc-real --platform=systrap --network=sandbox \
+exec /usr/local/bin/runsc-buildkit-args /usr/local/bin/runsc-real --platform=systrap --network=sandbox \
     --debug --debug-log=/evidence/runsc/ "$@"
