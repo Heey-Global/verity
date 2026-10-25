@@ -345,7 +345,7 @@ const sessionGoogleWorkspaceFileSchema = z.object({
 });
 export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
-export const sessionGoogleStatusSchema = z.object({
+const sessionGoogleStatusSchema = z.object({
   gmail: gmailSessionConnectionSchema,
   calendar: gmailSessionConnectionSchema,
   contacts: gmailSessionConnectionSchema,
