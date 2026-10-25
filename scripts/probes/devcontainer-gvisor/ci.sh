@@ -165,13 +165,7 @@ else {
 }
 writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
 NODE
-        set +e
-        build_probe "$missing_image" > "$work/anonymous-$denied_resource.log" 2>&1
-        anonymous_status=$?
-        set -e
-        [[ $anonymous_status -ne 0 && $anonymous_status -ne 124 && $anonymous_status -ne 137 ]]
-        grep -Ei '401|unauthorized|authentication required' "$work/anonymous-$denied_resource.log" > /dev/null
-        if docker image inspect "$missing_image" > /dev/null 2>&1; then exit 1; fi
+        expect_auth_failure "$missing_image" "$PROBE_EVIDENCE/anonymous-$denied_resource.log"
     done
     cp "$work/private-config.json" "$work/fixture/.devcontainer/devcontainer.json"
     cp "$work/publisher/config.json" "$DOCKER_CONFIG/config.json"

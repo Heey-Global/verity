@@ -53,3 +53,60 @@ if registry_scrub_evidence; then exit 0; else exit "$?"; fi
   );
   assert.equal(result.status, 42, result.stderr);
 });
+
+for (const { status, message, imageExists, accepted } of [
+  {
+    status: 1,
+    message:
+      "[httpOci] ERR: No basic auth credentials to send for registry service 'registry.verity.test:5443'",
+    imageExists: false,
+    accepted: true,
+  },
+  { status: 1, message: 'unexpected status: 401 Unauthorized', imageExists: false, accepted: true },
+  { status: 0, message: '401 Unauthorized', imageExists: false, accepted: false },
+  { status: 124, message: '401 Unauthorized', imageExists: false, accepted: false },
+  { status: 137, message: '401 Unauthorized', imageExists: false, accepted: false },
+  { status: 1, message: 'connection refused', imageExists: false, accepted: false },
+  {
+    status: 1,
+    message: "No basic auth credentials to send for registry service 'unrelated.test'",
+    imageExists: false,
+    accepted: false,
+  },
+  { status: 1, message: '401 Unauthorized', imageExists: true, accepted: false },
+]) {
+  test(`anonymous rejection: status=${status}, image=${imageExists}, message=${message}`, () => {
+    const root = mkdtempSync(join(tmpdir(), 'registry-rejection-'));
+    try {
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          `
+set -euo pipefail
+source "$1"
+registry_address=registry.verity.test:5443
+build_probe() { printf '%s\\n' "$SAMPLE"; return "$STATUS"; }
+docker() { [[ $IMAGE_EXISTS == true ]]; }
+expect_auth_failure probe:test "$2"
+`,
+          'test',
+          helperPath,
+          join(root, 'negative.log'),
+        ],
+        {
+          env: {
+            ...process.env,
+            SAMPLE: message,
+            STATUS: String(status),
+            IMAGE_EXISTS: String(imageExists),
+          },
+          encoding: 'utf8',
+        },
+      );
+      assert.equal(result.status === 0, accepted, result.stderr);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

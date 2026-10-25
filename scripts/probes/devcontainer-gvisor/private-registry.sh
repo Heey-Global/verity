@@ -94,3 +94,19 @@ registry_cleanup() {
     # Never upload auth material, certificates or registry request logs.
     rm -rf "$work/publisher" "$work/registry"
 }
+
+# The pinned CLI handles a Basic challenge without printing the HTTP status when
+# no credential exists. Require that specific denial, never just any nonzero exit.
+expect_auth_failure() {
+    local tag=$1 log=$2 status
+    set +e
+    build_probe "$tag" > "$log" 2>&1
+    status=$?
+    set -e
+    [[ $status -ne 0 && $status -ne 124 && $status -ne 137 ]] || return 1
+    if ! grep -Ei '401|unauthorized|authentication required' "$log" > /dev/null; then
+        grep -F "No basic auth credentials to send for registry service '$registry_address'" "$log" > /dev/null || return 1
+    fi
+    if docker image inspect "$tag" > /dev/null 2>&1; then return 1; fi
+    printf 'expected anonymous registry rejection: status=%s, no output image\n' "$status"
+}
