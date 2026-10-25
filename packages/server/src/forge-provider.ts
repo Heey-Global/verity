@@ -158,6 +158,33 @@ export interface ForgeProvider {
   refreshLatestRelease(ref: ForgeRepoRef): Promise<ReleaseSummary | null | undefined>;
 }
 
+/** Classify only known policy refusals; arbitrary 405s remain unknown. */
+export function isForgeMergePermissionDenied(status: number, body?: unknown): boolean {
+  const message =
+    body !== null &&
+    typeof body === 'object' &&
+    'message' in body &&
+    typeof body.message === 'string'
+      ? body.message.slice(0, 8192)
+      : '';
+  if (/rate limit|abuse detection|temporarily blocked/i.test(message)) return false;
+  return (
+    status === 403 ||
+    ([405, 409, 422].includes(status) &&
+      /permission denied|insufficient permission|not (?:allowed|authorized|permitted) to (?:merge|push)|protected branch|resource not accessible by integration|approving review|review is required/i.test(
+        message,
+      ))
+  );
+}
+
+/** A merge refusal that must never be handed to an agent to repair. */
+export class ForgeMergePermissionError extends Error {
+  constructor() {
+    super('This connection cannot merge this pull request. A maintainer must merge it.');
+    this.name = 'ForgeMergePermissionError';
+  }
+}
+
 /**
  * Looks up the open PR number for a branch from GitHub (issue #125), so the mobile
  * header can show `PR #N` alongside the branch-derived `Issue #N`. Independent of
@@ -186,11 +213,14 @@ export interface ForgePrService {
    * {@link prStatusForBranch}. Never throws.
    */
   prStatusForBranches(branches: readonly string[]): Promise<PullRequestStatus | null>;
-  /** Merge an open PR by number. Returns false when the forge rejects or is unavailable. */
+  /** Merge an open PR by number. Permission/policy refusals throw ForgeMergePermissionError;
+   * other rejections and unavailable forges return false. */
   mergePr(number: number, expectedHeadSha?: string): Promise<boolean>;
 }
 
 export interface PullRequestStatus {
+  /** Permission of the configured credential, independent of conflict/CI status. */
+  viewerCanMerge?: boolean;
   number: number;
   title: string;
   url: string;

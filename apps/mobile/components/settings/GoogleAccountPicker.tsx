@@ -1,7 +1,7 @@
 import type { GoogleAccount } from '@verity/mobile';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet } from '../ui';
-import { SettingsChoiceRow } from './SettingsChrome';
+import { SettingsChoiceRow, SettingsListPanel } from './SettingsChrome';
 
 type Options = {
   accounts: GoogleAccount[];
@@ -47,15 +47,22 @@ export function useGoogleAccountPicker() {
       title={options?.title ?? 'Choose Google account'}
       onClose={() => finish(null)}
     >
-      {options?.accounts.map((account) => (
-        <SettingsChoiceRow
-          key={account.id}
-          title={account.displayName ?? account.email}
-          subtitle={account.displayName ? account.email : undefined}
-          selected={account.id === options.selectedId}
-          onPress={() => finish(account.id)}
-        />
-      ))}
+      {options ? (
+        // A framed list with a leading glyph per row, so the accounts read as
+        // tappable choices rather than plain text under the title.
+        <SettingsListPanel>
+          {options.accounts.map((account) => (
+            <SettingsChoiceRow
+              key={account.id}
+              icon="user"
+              title={account.displayName ?? account.email}
+              subtitle={account.displayName ? account.email : undefined}
+              selected={account.id === options.selectedId}
+              onPress={() => finish(account.id)}
+            />
+          ))}
+        </SettingsListPanel>
+      ) : null}
     </Sheet>
   );
   return [choose, sheet] as const;

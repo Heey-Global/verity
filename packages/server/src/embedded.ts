@@ -1768,12 +1768,13 @@ export function devcontainerProvisionerOptionsForDockerBaseUrl(
  * project keeps the old behavior (the branch service decides).
  */
 export async function branchRenameAppliesToSession(
-  session: { projectId: string | null },
+  session: { projectId: string | null; worktree?: string },
   getProject: (projectId: string) => Promise<Pick<ProjectRecord, 'kind'> | undefined>,
 ): Promise<boolean> {
+  if (session.worktree?.split('/').includes('.verity-document-sessions')) return false;
   if (session.projectId === null) return true;
   const project = await getProject(session.projectId);
-  return project?.kind !== 'control_plane';
+  return project?.kind !== 'control_plane' && project?.kind !== 'local';
 }
 
 /** Project-scoped admission used by embedded session backends. It serializes

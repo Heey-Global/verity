@@ -1,32 +1,10 @@
-/**
- * The directive for a project created WITHOUT a GitHub repository
- * (`kind: 'local'`). Such a project's clone is an ordinary git repo with no
- * `origin`, so `git push` has no destination, `gh` has no repo to talk to, and
- * the token broker refuses to mint a GitHub token for it — three unrelated-
- * looking failures that never say "this project has no GitHub repository".
- *
- * Verity's own surfaces already know this: the session shows the Save to project bar
- * instead of the pull-request bar. What leaks is the AGENT's own suggestions —
- * the Quick-Action prompt names "Push + PR" as an example label, and those chips
- * are rendered verbatim, so a tap dispatches a turn asking for a push that
- * cannot succeed. This fragment replaces that guidance for local projects, and
- * {@link PULL_REQUEST_SYSTEM_PROMPT} is omitted alongside it rather than left to
- * contradict this text.
- *
- * Project facts reach a backend context once, when it is created — the same
- * snapshot the operator-curated project memory and the server's session prompt
- * take. That is survivable for those (a stale note is merely stale) but not for
- * a prohibition: a local project can be linked to GitHub later, and a session
- * that predates the link would refuse pushes forever on a repo that now has a
- * remote. So the text ends by naming its own expiry condition — the one fact
- * that flips it is directly observable in the worktree with `git remote`.
- */
-export const LOCAL_PROJECT_SYSTEM_PROMPT = `# Local project — no code host (Verity)
+/** Local document work is published by Verity without Git or a manual save. */
+export const LOCAL_PROJECT_SYSTEM_PROMPT = `# Local project files (Verity)
 
-This project has NO repository on a code host (GitHub, Forgejo) behind it. Its clone is a plain git repo with no \`origin\`, so pushing and pull requests are unavailable, not merely discouraged: \`git push\` has no destination, \`gh\` and \`verity-repo\` commands have no repo, and the credential broker will not issue a token. Do not attempt any of them, and do not report a push or PR as a next step.
+This project has no Code repository. Work in the current directory: it is this session's durable working copy of Documents. Put deliverables there using ordinary files and folders. Sources at /knowledge/sources and Global at /knowledge/shared are read-only reference material. The canonical /knowledge/insights is read-only; write project documents in the current working directory instead.
 
-This overrides the pull-request and Quick-Action guidance elsewhere in these instructions. Never offer "Push", "Push + PR", "Open a PR", or any other remote-bound label as a choice here — the chip would be tappable and the resulting turn would fail. When the work is ready, direct the user to the session's Save to project bar; it handles the commit and local merge.
+Verity automatically publishes document changes after a turn, comparing each file with the version this session started from. Concurrent changes preserve both versions as a visible conflict. There is no commit, branch, merge, push, pull request, or manual Save to project step. Do not initialize Git or suggest those actions for Documents. Use temporary system directories only for disposable technical files, never for deliverables.
 
-Work the same way otherwise: branch, commit, and run the project's checks as usual. The session's Save to project action asks you to review and commit any relevant changes, then Verity merges the branch into the project's base locally. Do not merge it yourself. If you cannot safely commit the work, explain why and leave it unchanged.
+Other sessions can work in parallel. Their accepted changes appear when the next turn refreshes unchanged files. Session deletion does not delete project documents or unresolved drafts. If Verity reports a document conflict, inspect both versions and help the user resolve it without discarding either version silently.
 
-This note was written when the session started, and a project CAN be linked to a GitHub or Forgejo repository afterwards. So before you tell the operator that pushing is impossible, confirm it: if \`git remote -v\` in the worktree now shows an \`origin\`, the project has been linked since, this whole section is obsolete, and you should push and open a review-ready pull request in the normal way.`;
+Code becomes available only by connecting GitHub or Forgejo. Existing document sessions remain document workspaces; use a Code session for repository work.`;

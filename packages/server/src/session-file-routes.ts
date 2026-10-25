@@ -67,9 +67,13 @@ interface SessionFileTarget {
 }
 
 export interface SessionFileRouteDeps {
+  documentStatus?:
+    | ((sessionId: string) => Promise<{ pending: boolean; running: boolean } | undefined>)
+    | undefined;
   /** The directory backing `root` for this session, or `undefined` when the
    *  session does not exist — or, for a knowledge root, when the session has no
    *  project or the deployment has no knowledge folder configured. */
+  workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
   list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   upload: (
@@ -137,12 +141,27 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     const { root, path } = sessionFileQuery.parse(request.query);
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
-    return deps.list(reply, value, path);
+    const listed = await deps.list(reply, value, path);
+    return listed !== reply &&
+      deps.workspaceKind &&
+      listed &&
+      typeof listed === 'object' &&
+      'entries' in listed
+      ? {
+          ...listed,
+          workspaceKind: await deps.workspaceKind(id),
+          documentStatus: await deps.documentStatus?.(id),
+        }
+      : listed;
   });
 
   app.post('/sessions/:id/files', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const query = sessionFileUploadQuery.parse(request.query);
+    if (query.root === 'drafts')
+      return reply
+        .code(403)
+        .send({ error: 'Session drafts are read-only here; edit them in their session.' });
     const value = await target(id, query.root, reply);
     if (value === undefined) return reply;
     return deps.upload(request, reply, value, query);
@@ -177,6 +196,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     async (request, reply): Promise<unknown> => {
       const { id } = sessionParams.parse(request.params);
       const body = sessionFileWriteBody.parse(request.body);
+      if (body.root === 'drafts' || body.root === 'sources')
+        return reply.code(403).send({ error: 'This area is read-only.' });
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
       return deps.write(reply, value, body);
@@ -194,6 +215,10 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.delete('/sessions/:id/files', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const { root, path } = sessionFileDeleteQuery.parse(request.query);
+    if (root === 'drafts')
+      return reply
+        .code(403)
+        .send({ error: 'Session drafts are retained until explicitly resolved.' });
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
     return deps.remove(reply, value, path);
@@ -202,6 +227,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.post('/sessions/:id/files/move', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const body = sessionFileMoveBody.parse(request.body);
+    if (body.root === 'drafts' || body.toRoot === 'drafts')
+      return reply.code(403).send({ error: 'Session drafts are read-only here.' });
     if (!sameKind(body.root, body.toRoot, reply)) return reply;
     const from = await target(id, body.root, reply);
     if (from === undefined) return reply;

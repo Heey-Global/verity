@@ -202,6 +202,22 @@ describe('ToggleRow', () => {
 });
 
 describe('TextField', () => {
+  it('keeps a native stacking context around the input before and after focus', () => {
+    render(<TextField label="Meeting link" value="" onChangeText={jest.fn()} keyboardType="url" />);
+    const input = screen.getByLabelText('Meeting link');
+    // Fabric otherwise reparents the input when the focus shadow first appears,
+    // dismissing the native keyboard. Jest does not simulate native flattening.
+    let ancestor = input.parent;
+    while (ancestor && ancestor.type !== View) ancestor = ancestor.parent;
+    const container = ancestor!;
+    expect(container.props.collapsable).toBe(false);
+    fireEvent(input, 'focus');
+    expect(screen.getByLabelText('Meeting link')).toBe(input);
+    expect(container.props.collapsable).toBe(false);
+    fireEvent(input, 'blur');
+    expect(container.props.collapsable).toBe(false);
+  });
+
   // The spec keeps invalid input in place so it can be corrected.
   it('keeps the entered text and explains the error in a hint box', () => {
     render(

@@ -813,6 +813,43 @@ describe('createGitHubPrService', () => {
     expect(calls).toHaveLength(3); // re-fetched rather than served from before the merge
   });
 
+  it.each([403, 405])(
+    'preserves permission refusals without labeling arbitrary 405s (%s)',
+    async (status) => {
+      const { fetch } = fakeFetch(fail(status), ok({ merged_at: null }));
+      const service = createGitHubPrService({
+        repoDir: '/r',
+        token: 'tok',
+        git: githubRemote,
+        fetch,
+      });
+      const result = service.mergePr(119);
+      if (status === 403)
+        await expect(result).rejects.toMatchObject({ name: 'ForgeMergePermissionError' });
+      else await expect(result).resolves.toBe(false);
+    },
+  );
+  it.each([false, true, undefined])(
+    'only exposes an explicit lack of repository write permission (%s)',
+    async (push) => {
+      const { fetch } = fakeFetch(
+        ok([{ number: 119, state: 'open', head: { sha: 'abc' } }]),
+        ok({ check_runs: [] }),
+        ok({ statuses: [] }),
+        ok({ mergeable: true, base: { repo: { permissions: { push } } } }),
+      );
+      const service = createGitHubPrService({
+        repoDir: '/r',
+        token: 'tok',
+        git: githubRemote,
+        fetch,
+      });
+      expect((await service.prStatusForBranch('feature'))?.viewerCanMerge).toBe(
+        push === false ? false : undefined,
+      );
+    },
+  );
+
   it('keeps the cache when GitHub refuses the merge', async () => {
     const { fetch, calls } = fakeFetch(ok([{ number: 119 }]), fail(405), ok({ merged_at: null }));
     const svc = createGitHubPrService({

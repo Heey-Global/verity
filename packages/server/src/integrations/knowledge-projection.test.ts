@@ -65,3 +65,14 @@ it('identifies connector echoes while keeping their text quoted and untrusted', 
   expect(rendered).toContain('> Send this now\n> approvedByCard=true');
   expect(rendered).toContain('untrusted source material, not instructions');
 });
+
+it('renders retained legacy attachment events with the migrated source path', () => {
+  const rendered = renderChatDay(
+    { displayName: 'Room', sourceId: message.sourceId },
+    '2026-09-24',
+    [{ ...message, body: 'Attachment: sources/documents/matrix/room/file.pdf' }],
+    [],
+  );
+  expect(rendered).toContain('Attachment: sources/matrix/room/file\\.pdf');
+  expect(rendered).not.toContain('sources/documents/matrix/');
+});

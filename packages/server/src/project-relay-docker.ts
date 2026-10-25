@@ -141,7 +141,7 @@ export function createDockerProjectRelayStarter(
       // relay states it rather than depend on that default.
       sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 32,
       memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,

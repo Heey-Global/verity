@@ -1,3 +1,4 @@
+import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
@@ -512,6 +513,34 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         bus: deps.bus,
         onSessionChanged: (sessionId, change) => sessionChanges.emit(sessionId, change),
         ...deps.conductor,
+        prepareSession: async (sessionId) => {
+          await deps.conductor?.prepareSession?.(sessionId);
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId)
+            await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
+        },
+        prepareWorkspace: async (session) => {
+          await deps.conductor?.prepareWorkspace?.(session);
+          const view = documentViewForSession(session);
+          if (deps.dataRoot && session.projectId && view)
+            await documentWorkspace(deps.dataRoot, session.projectId, view).prepare();
+        },
+        settleWorkspace: async (session) => {
+          const view = documentViewForSession(session);
+          if (deps.dataRoot && session.projectId && view) {
+            const result = await documentWorkspace(
+              deps.dataRoot,
+              session.projectId,
+              view,
+            ).publish();
+            if (result.conflicts.length)
+              await deps.eventStore.appendPendingNote(
+                session.sessionId,
+                `Document conflicts were preserved at: ${result.conflicts.join(', ')}`,
+              );
+          }
+          await deps.conductor?.settleWorkspace?.(session);
+        },
         ...(deps.conductor?.sessionBackend === undefined &&
         derivedProjectSessionBackend !== undefined
           ? { sessionBackend: derivedProjectSessionBackend }

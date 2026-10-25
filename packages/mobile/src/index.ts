@@ -410,6 +410,7 @@ export {
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
+  type SessionGoogleStatus,
   type GmailSessionConnection,
   type CalendarSessionConnection,
   type ContactsSessionConnection,

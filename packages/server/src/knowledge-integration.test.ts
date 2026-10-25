@@ -396,3 +396,40 @@ it('uses the worker gateway bearer for Control memory rather than the proxy bear
     await app.close();
   }
 });
+
+it.each(['documents', 'code'] as const)(
+  'publishes current %s session edits to Global before turn completion',
+  async (kind) => {
+    const worktree = join(
+      sessionWorktree,
+      kind === 'documents' ? '.verity-document-sessions' : '.verity-sessions',
+      's',
+    );
+    const view =
+      kind === 'documents'
+        ? worktree
+        : join(sessionWorktree, '.verity-document-sessions', 'code-s');
+    mkdirSync(view, { recursive: true });
+    await ctx.db.updateTable('sessions').set({ worktree }).where('session_id', '=', 's').execute();
+    const h = await setup();
+    try {
+      const canonical = join(h.dataRoot, 'knowledge/p/insights');
+      mkdirSync(canonical, { recursive: true });
+      writeFileSync(join(canonical, 'profile.md'), 'Stale canonical version');
+      writeFileSync(join(view, 'profile.md'), 'Current session version');
+      writeFileSync(join(view, 'new.md'), 'New session document');
+      for (const path of ['profile.md', 'new.md']) {
+        h.permission.mockResolvedValueOnce({ decision: { behavior: 'allow' }, decidedBy: 'card' });
+        const published = await h.agent({ operation: 'publish_shared', path });
+        expect(published.isError).toBeUndefined();
+        expect(readFileSync(join(h.dataRoot, 'knowledge/shared/insights', path), 'utf8')).toBe(
+          readFileSync(join(view, path), 'utf8'),
+        );
+      }
+      expect(readFileSync(join(canonical, 'profile.md'), 'utf8')).toBe('Stale canonical version');
+      expect(existsSync(join(canonical, 'new.md'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  },
+);

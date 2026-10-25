@@ -1,4 +1,6 @@
 import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.js';
+import { createDocumentWorkspaceProvisioner } from './document-workspace.js';
+import { isLocalProject } from '@verity/store';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { DeletedProjectError, type ProjectRecord } from '@verity/store';
@@ -32,6 +34,7 @@ export interface SessionCreateRouteDeps extends Pick<
   | 'secretCipher'
   | 'projectWorktrees'
   | 'refreshProjectToken'
+  | 'dataRoot'
 > {
   projectSettingsStore: () => {
     getProjectSettings: (id: string) => Promise<ProjectSettingsRecord | undefined>;
@@ -211,6 +214,7 @@ export function registerSessionCreateRoute(
         // that raises the flag from here on finds this spawn in the pending set
         // and waits for it, instead of purging the clone root while the
         // worktree below is being created.
+        if (project.state === 'active') await deps.provisioner?.prepareLocalDocuments?.(project.id);
         admitted.release = deps.beginProjectSpawn(project.id);
         const projectStore = deps.projectSettingsStore();
         projectSettings = await projectStore.getProjectSettings(project.id);
@@ -312,6 +316,10 @@ export function registerSessionCreateRoute(
             awaitingProvisioning: true,
           };
         }
+        if (isLocalProject(project) && deps.dataRoot === undefined) {
+          reply.code(503);
+          return { error: 'Local projects require configured document storage.' };
+        }
         projectId = project.id;
         const projectClone = projectClonePath(deps.projectCloneRoot, project);
         // Every spawn refreshes its base from origin first so the new session
@@ -323,12 +331,14 @@ export function registerSessionCreateRoute(
             : {}),
         };
         projectWorktrees =
-          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-          createGitWorktreeProvisioner({
-            repoDir: projectClone,
-            worktreeRoot: join(projectClone, '.verity-sessions'),
-            ...worktreeOpts,
-          });
+          isLocalProject(project) && deps.dataRoot !== undefined
+            ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+            : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+                ...worktreeOpts,
+              }));
         await deps.refreshProjectToken?.(project);
         projectWorktree = await projectWorktrees.add(deps.makeBranch(body.name, body.issue));
       }

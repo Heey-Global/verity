@@ -16,6 +16,7 @@ RUN set -eu; \
     install_path="/opt/verity/runsc/$RUNSC_RELEASE/runsc"; \
     install -d -m 0755 "$(dirname "$install_path")"; \
     curl --fail --silent --show-error --location \
+      --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 --retry-max-time 300 \
       "https://storage.googleapis.com/gvisor/releases/release/${RUNSC_RELEASE#release-}/$arch/runsc" \
       --output "$install_path"; \
     printf '%s  %s\n' "$checksum" "$install_path" | sha512sum --check --status; \

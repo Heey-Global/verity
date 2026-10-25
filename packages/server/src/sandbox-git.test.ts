@@ -71,7 +71,7 @@ it('uses one protected query container for an entire metadata operation and boun
       readOnlyRootfs: true,
       binds: ['/data/p:/work:ro'],
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
     }),
   );
   for (const call of exec.mock.calls) {
