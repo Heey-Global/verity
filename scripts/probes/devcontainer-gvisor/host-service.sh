@@ -46,6 +46,8 @@ grep -Fx 'MemorySwapMax=0' "$PROBE_EVIDENCE/limits.txt"
 grep -Fx 'CPUQuotaPerSecUSec=1s' "$PROBE_EVIDENCE/limits.txt"
 grep -Fx 'TasksMax=512' "$PROBE_EVIDENCE/limits.txt"
 main_pid=$(sudo systemctl show verity-buildkit -p MainPID --value)
+[[ $main_pid =~ ^[1-9][0-9]*$ ]]
+sudo systemctl is-active --quiet verity-buildkit
 sudo nsenter --target "$main_pid" --mount -- test ! -S /var/run/docker.sock
 cp -R scripts/probes/devcontainer-gvisor/.devcontainer "$work/"
 PROBE_CONFIG="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'

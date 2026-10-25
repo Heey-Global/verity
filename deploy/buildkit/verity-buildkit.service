@@ -4,8 +4,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/libexec/verity-buildkit/buildkitd --config /etc/verity-buildkit/buildkitd.toml
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60
+ExecStart=/usr/local/libexec/verity-buildkit/buildkitd --config /etc/verity-buildkit/buildkitd.toml --otel-socket-path=/run/verity-buildkit/otel.sock
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=verity-buildkit

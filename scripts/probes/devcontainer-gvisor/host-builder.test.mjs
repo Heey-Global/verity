@@ -64,3 +64,19 @@ test('host configuration restricts worker authority and bounds service resources
     assert(unit.includes(constraint), constraint);
   assert.match(unit, /^InaccessiblePaths=.*\/run\/docker.sock.*\/var\/run\/docker.sock/m);
 });
+
+test('service waits for BuildKit readiness and keeps its trace socket in a writable runtime directory', () => {
+  const unit = source('verity-buildkit.service');
+  assert.match(unit, /^Type=notify$/m);
+  assert.match(unit, /^NotifyAccess=main$/m);
+  assert.match(unit, /^TimeoutStartSec=60$/m);
+  const exec = /^ExecStart=(.+)$/m.exec(unit)?.[1];
+  assert(exec, 'Missing service command');
+  const traceSocket = /--otel-socket-path=(\S+)/.exec(exec)?.[1];
+  assert(traceSocket, 'BuildKit defaults its trace socket outside the service writable paths');
+  const writable = /^ReadWritePaths=(.+)$/m.exec(unit)?.[1].split(/\s+/) ?? [];
+  assert(
+    writable.some((directory) => traceSocket.startsWith(`${directory}/`)),
+    'Trace socket must remain within the narrow writable paths',
+  );
+});
