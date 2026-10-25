@@ -107,8 +107,13 @@ stream and the chosen outcome: either a fresh full re-derivation succeeds and
 re-anchors the head, or the administrator declares the mismatch as an accepted
 gap and the head is re-anchored at the current tail with that declaration
 attached. The declaration is a recognized verification boundary like a prune
-checkpoint: later runs re-derive from the latest boundary, so an accepted gap
-stays verified and never re-freezes the stream by itself. While resolving, the
+checkpoint, but it does not skip history: later runs still re-derive every
+retained segment between consecutive boundaries against that segment's own
+anchor, and only the declared mismatch point itself is exempt, so an accepted
+gap stays verified without opening an unverified hole and never re-freezes the
+stream by itself. The detection claim below excludes the declared point and
+nothing else. Resolution applies to the streams of deleted projects as well, so
+one broken chain cannot block legacy pruning indefinitely. While resolving, the
 administrator sees the hidden expired rows; only ordinary reads hide them. The
 first head of every stream is set only by a successful verification from
 sequence zero or from the prune checkpoint: an upgrade seeds no head from a tail
@@ -335,17 +340,18 @@ only contains history through its snapshot: display the snapshot time as the
 trail's coverage boundary, record the restore as a new operational lineage when
 possible, and never replay recorded actions. Because head records are restored
 with the snapshot, events written after it vanish without detectable truncation;
-the trail cannot disclose what was lost, only where its coverage ends. Where
-pruning is enabled, a restore first runs verification on every stream, advancing
-head records to the restored tails. A stream whose verification fails is marked
-unverified: its head and pruning stay frozen, its reads carry that mark and hide
-rows that are expired under the snapshot's policy until an administrator
-resolves the stream, while every other stream proceeds, so a damaged backup
-never turns into an audit-wide outage. The restore then prunes data expired
-under the retention policy contained in the snapshot before ordinary audit reads
-resume; before pruning exists, restored data is simply readable. Backup copies
-and exported files have independent lifetimes; deleting live rows does not erase
-older backups or exports.
+the trail cannot disclose what was lost, only where its coverage ends. A restore
+always runs verification on every stream first, whether or not pruning is
+enabled, advancing head records to the restored tails. A stream whose
+verification fails is marked unverified: its head and pruning stay frozen, its
+reads carry that mark and hide rows that are expired under the snapshot's policy
+until an administrator resolves the stream, while every other stream proceeds,
+so a damaged backup never turns into an audit-wide outage. Where pruning is
+enabled, the restore then prunes data expired under the retention policy
+contained in the snapshot before ordinary audit reads resume; before pruning
+exists, restored data is simply readable. Backup copies and exported files have
+independent lifetimes; deleting live rows does not erase older backups or
+exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
