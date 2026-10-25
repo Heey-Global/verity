@@ -104,17 +104,21 @@ with their own access and retention rules; links to them may expire earlier.
 
 ### Persistence and failures
 
-Fail-closed applies to two groups only. New Devcontainer builds require a
+Fail-closed applies to three groups only: Devcontainer builds, the existing
+secret paths, and reads of the trail itself. New Devcontainer builds require a
 committed audit intent before the build is started, whatever triggered them:
 initial provisioning, the explicit rebuild action, fleet replacement after an
 update, or a wake that finds no image for the current configuration hash.
 Every such build executes repository and Feature code, so the trigger does not
 change the rule. Image resolution is content-addressed and a wake that finds
-its image does not build; a wake that would build fails with an explicit
-audit-health error instead of running unrecorded. Secret approvals, grant
+its image does not build; a wake that would build, and whose intent cannot be
+committed, fails with an explicit audit-health error instead of running
+unrecorded. Secret approvals, grant
 issuance and gateway-served secret calls keep the fail-closed behavior that
 [ADR 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already
-require; this ADR does not weaken it. All other events, including pushes,
+require; this ADR does not weaken it. Admin-agent reads and administrator
+exports are denied when their own audit event cannot be written, as the Access
+section specifies. All other events, including pushes,
 pull-request creation, merges, deployments, permission and exposure changes,
 are recorded best-effort: the action proceeds when the audit write fails, and
 the failure is surfaced as degraded audit health. Verity observes most of
@@ -142,8 +146,10 @@ saved. A best-effort write that fails leaves no row, and no chain can detect an
 event that was never appended. The recorder therefore counts failed writes
 per stream and domain in memory and, once storage recovers, must append a
 gap event with those counts and the failure window before accepting further
-events; a process that dies before recovery leaves the gap evidenced only by
-the audit-health diagnostic. Recovery may add reconciliation events
+events. The audit-health diagnostic is a live process signal, not durable
+storage: when the process dies before recovery, the gap can go completely
+unevidenced. That is an accepted limitation of the local-only first stage and
+one reason external copies remain a later decision. Recovery may add reconciliation events
 describing only what is known. The exception does not authorize arbitrary
 new work or silent retention
 shortening. Completed external effects cannot be rolled back merely because
@@ -173,9 +179,9 @@ and before results are returned, so a crashed turn still leaves evidence and
 an investigating agent cannot inflate the trail with repeated queries. The
 event names the administrator, the agent session and turn, and the widest
 stream, project and time scope the turn is allowed to read; a later read that
-widens that scope appends a new event. Agent reads are fail-closed: when the
-read event cannot be written, the read is denied, since investigation can
-wait but an untraced read of the trail cannot be repaired. Avoid recursive
+widens that scope appends a new event. Agent reads and administrator exports are fail-closed: when the read or
+export event cannot be written, the request is denied, since investigation
+can wait but an untraced read of the trail cannot be repaired. Avoid recursive
 logging of the audit recorder itself. No client-facing read path for
 secret-audit events exists today, so administrator-only access removes no
 existing project-member capability.
@@ -271,6 +277,10 @@ Before enabling each domain, verify:
   Emergency stop/cancel/cleanup remains usable.
 - Disposable query sandboxes produce no audit events; a day of status polling
   adds no rows.
+- An admin-agent read or administrator export is denied when its own audit
+  event cannot be written.
+- After audit storage recovers from failed best-effort writes, no further event
+  is accepted until the gap event with the failure counts is appended.
 - Crash windows and uncertain external outcomes remain indeterminate; retries and
   reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;
