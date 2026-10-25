@@ -1,5 +1,5 @@
 {
-  "draft": "mobile-v1.39.0",
-  "next": "mobile-v1.40.0",
-  "reason": "Replan after correcting the failed draft's test route and release selector"
+  "draft": "mobile-v1.78.0",
+  "next": "mobile-v1.79.0",
+  "reason": "Replan the unpublished Apple Watch draft so the native build includes the vector complication mark"
 }
