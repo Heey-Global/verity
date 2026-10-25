@@ -274,3 +274,118 @@ describe('TaskStore', () => {
     expect(new TaskRevisionConflictError('t1', 3).currentRevision).toBe(3);
   });
 });
+
+describe('accepted planning tasks', () => {
+  it('commits session tasks, event and backlog exactly once when decisions race', async () => {
+    await tasks().upsert({
+      id: 'existing',
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing task',
+    });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan(
+      's1',
+      '# Plan\n## Goal\nFix gestures.\n## Steps\n1. **Threshold** — distinguish swipes.\n2. **Tests** — cover gestures.',
+    );
+    const enqueue = (id: string, r = revision!) =>
+      ctx.store.enqueuePlanImplementation(
+        { id, sessionId: 's1', prompt: 'Implement', opts: {} },
+        r,
+      );
+    expect(await enqueue('stale', revision! - 1)).toBe(false);
+    expect(await tasks().listAssigned('s1')).toHaveLength(1);
+    expect((await Promise.all([enqueue('one'), enqueue('two')])).sort()).toEqual([false, true]);
+    const assigned = await tasks().listAssigned('s1');
+    expect(assigned.filter((task) => task.origin === 'agent').map((task) => task.title)).toEqual([
+      'Threshold',
+      'Tests',
+    ]);
+    expect(assigned.every((task) => task.ownerUserId === ADMIN)).toBe(true);
+    expect(await ctx.store.listQueuedTurns()).toHaveLength(1);
+    const updates = (await ctx.store.getEvents('s1')).filter(
+      (event) => event.t === 'tasks_updated',
+    );
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      origin: 'agent',
+      change: 'added',
+      taskIds: assigned.filter((task) => task.origin === 'agent').map((task) => task.id),
+    });
+  });
+
+  it.each([
+    'new prompt',
+    'replacement turn',
+    'same turn id with new anchor',
+    'queued prompt',
+    'unchanged',
+  ] as const)('fences chat consent against %s before committing tasks or work', async (change) => {
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. Accepted step');
+    const prompt = await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Implement plan',
+      initiatedBy: { userId: ADMIN },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await ctx.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+    const consent = { turnId: 't1', promptSeq: prompt.seq, runningPromptSeq: prompt.seq };
+    // The user can revoke approval while dispatch is awaiting other work.
+    if (change === 'new prompt') {
+      await ctx.store.appendEvent('s1', {
+        t: 'prompt',
+        text: 'Wait, do not implement',
+        steered: true,
+        initiatedBy: { userId: ADMIN },
+      });
+    } else if (change === 'replacement turn') {
+      await ctx.store.bindTurnIdentity('s1', { turnId: 't2', startCommandId: 'c2' });
+    } else if (change === 'queued prompt') {
+      await ctx.store.enqueueTurn({ id: 'cancel', sessionId: 's1', prompt: 'Wait', opts: {} });
+    } else if (change === 'same turn id with new anchor') {
+      await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq + 1 });
+      await ctx.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c2' });
+    }
+    const accepted = await ctx.store.enqueuePlanImplementation(
+      { id: 'implementation', sessionId: 's1', prompt: 'Implement', opts: {} },
+      revision!,
+      undefined,
+      consent,
+    );
+    expect(accepted).toBe(change === 'unchanged');
+    expect((await ctx.store.getSession('s1'))?.planning).toBe(
+      change === 'unchanged' ? 'implemented' : 'active',
+    );
+    expect(await ctx.store.listQueuedTurns()).toHaveLength(
+      change === 'unchanged' || change === 'queued prompt' ? 1 : 0,
+    );
+    expect(await tasks().listAssigned('s1')).toHaveLength(change === 'unchanged' ? 1 : 0);
+  });
+  it('rolls back acceptance and tasks when persistence fails', async () => {
+    await tasks().upsert({
+      id: 'existing',
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing task',
+    });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. Accepted step');
+    await ctx.store.enqueueTurn({ id: 'duplicate', sessionId: 's1', prompt: 'Existing', opts: {} });
+    await expect(
+      ctx.store.enqueuePlanImplementation(
+        { id: 'duplicate', sessionId: 's1', prompt: 'Implement', opts: {} },
+        revision!,
+      ),
+    ).rejects.toThrow();
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+    expect(await tasks().listAssigned('s1')).toHaveLength(1);
+    expect(
+      (await ctx.store.getEvents('s1')).filter((event) => event.t === 'tasks_updated'),
+    ).toEqual([]);
+  });
+});

@@ -8,7 +8,7 @@ import {
   type IntegrationStore,
 } from '@verity/store';
 import { z } from 'zod';
-import { affectedChatDay, projectChatDay } from './knowledge-projection.js';
+import { affectedChatDay, orphanMessage, projectChatHistory } from './knowledge-projection.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
 import { ingestKnowledgeBytes, removeKnowledgeExtraction } from '../knowledge-file-ingest.js';
 import type { ImageTextJob } from '../knowledge-image-text.js';
@@ -204,7 +204,8 @@ export function registerIntegrationRoutes(
     });
 
     // The worker credential can only report its account, discover rooms, read its
-    // bindings, and submit events. It cannot choose a project or access Knowledge.
+    // bindings, submit events, and dispatch already-approved outbound jobs. It cannot
+    // choose a project, approve messages, enqueue sends, or access Knowledge.
     const workerOnly = async (request: FastifyRequest, reply: import('fastify').FastifyReply) => {
       const token =
         typeof deps.connectorToken === 'function'
@@ -216,6 +217,56 @@ export function registerIntegrationRoutes(
           .send({ error: 'Unauthorized connector', code: 'unauthorized_connector' });
       }
     };
+    const dispatchIdentity = z.object({ accountId: identifier.startsWith('@') }).strict();
+    const leaseIdentity = dispatchIdentity
+      .extend({ invocationId: z.uuid(), leaseId: z.uuid() })
+      .strict();
+    instance.post(
+      '/internal/integrations/matrix/outbound/claim',
+      { preHandler: workerOnly },
+      async (request) => {
+        const { accountId } = dispatchIdentity.parse(request.body);
+        return { job: await store.outbound.claim(accountId) };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/outbound/check',
+      { preHandler: workerOnly },
+      async (request) => {
+        const { accountId, invocationId, leaseId } = leaseIdentity.parse(request.body);
+        return { allowed: await store.outbound.checkLease(accountId, invocationId, leaseId) };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/outbound/result',
+      { preHandler: workerOnly },
+      async (request, reply) => {
+        const { accountId, invocationId, leaseId, ...result } = leaseIdentity
+          .extend({
+            eventId: identifier.startsWith('$').optional(),
+            error: z
+              .enum([
+                'send_failed',
+                'room_not_joined',
+                'encryption_unavailable',
+                'send_outcome_unknown',
+              ])
+              .optional(),
+            retryAfterMs: z.number().int().min(10_000).max(86_400_000).optional(),
+          })
+          .strict()
+          .refine(
+            (value) =>
+              Boolean(value.eventId) !== Boolean(value.error) &&
+              !(value.eventId && value.retryAfterMs !== undefined),
+          )
+          .parse(request.body);
+        if (!(await store.outbound.finish(accountId, invocationId, leaseId, result))) {
+          return reply.code(409).send({ error: 'Matrix claim is no longer current' });
+        }
+        return { ok: true };
+      },
+    );
     instance.get('/internal/integrations/matrix/config', { preHandler: workerOnly }, async () => ({
       config: await store.matrixConfigForWorker(),
     }));
@@ -276,8 +327,8 @@ export function registerIntegrationRoutes(
         let target = input.targetEventId
           ? await store.getEvent(input.accountId, input.sourceId, input.targetEventId)
           : null;
-        // Reject orphan edits, but persist redactions so late targets cannot resurrect deleted content.
-        if (input.kind === 'edit' && target?.kind !== 'message') {
+        // Reject non-message targets, but retain redactions to prevent late content resurrection.
+        if (input.kind === 'edit' && target !== null && target.kind !== 'message') {
           // Older workers may not report retry sidecars; access logs alone hide the failed event.
           request.log.warn(
             {
@@ -287,7 +338,7 @@ export function registerIntegrationRoutes(
               eventId: input.eventId,
               targetEventId: input.targetEventId,
               kind: input.kind,
-              targetState: target === null ? 'missing' : 'non_message',
+              targetState: 'non_message',
             },
             'Matrix event import rejected',
           );
@@ -307,9 +358,11 @@ export function registerIntegrationRoutes(
                 : 'source_unavailable',
           });
         }
-        // A target may be imported while the redaction waits for the source transaction lock.
-        if (input.kind === 'redaction' && input.targetEventId) {
-          target = await store.getEvent(input.accountId, input.sourceId, input.targetEventId);
+        // Re-read after ingestion so missing history can be projected from retained edits.
+        if (input.kind !== 'message' && input.targetEventId) {
+          target =
+            (await store.getEvent(input.accountId, input.sourceId, input.targetEventId)) ??
+            (await orphanMessage(store, input.accountId, input.sourceId, input.targetEventId));
         }
         const day = affectedChatDay(input, target);
         if (day) {
@@ -320,13 +373,14 @@ export function registerIntegrationRoutes(
             return reply
               .code(409)
               .send({ error: 'Room binding changed', code: 'source_binding_changed' });
-          await projectChatDay(store, deps.dataRoot, {
+          await projectChatHistory(store, deps.dataRoot, {
             accountId: input.accountId,
             sourceId: input.sourceId,
             projectId: result.projectId,
             displayName: binding.displayName,
             activatedAt: binding.activatedAt,
             day,
+            originalId: input.targetEventId ?? input.eventId,
           });
           if (input.kind === 'redaction' && target?.body) {
             const prefix = `Attachment: ${KNOWLEDGE_DOCUMENTS_DIR}/matrix/`;
@@ -436,13 +490,14 @@ export function registerIntegrationRoutes(
         }
         // The event is persisted before the file write; a failed write stays in the
         // connector outbox and is retried until the original and projection exist.
-        await projectChatDay(store, deps.dataRoot, {
+        await projectChatHistory(store, deps.dataRoot, {
           accountId: input.accountId,
           sourceId: input.sourceId,
           projectId: result.projectId,
           displayName: binding.displayName,
           activatedAt: binding.activatedAt,
           day: input.occurredAt.toISOString().slice(0, 10),
+          originalId: input.eventId,
         });
         await store.markProjected(input.accountId, input.sourceId);
         return { accepted: result.inserted, path: relative };

@@ -32,7 +32,7 @@ const validInspect = {
     DeviceCgroupRules: null,
     Binds: null,
     Mounts: null,
-    SecurityOpt: ['no-new-privileges:true'],
+    SecurityOpt: ['no-new-privileges=true'],
     RestartPolicy: { Name: 'no' },
     PidsLimit: 32,
     Memory: 67_108_864,

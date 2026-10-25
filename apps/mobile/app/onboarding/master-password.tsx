@@ -11,6 +11,7 @@
 //   - `ready` (unlocked, or `unmanaged` deployment): a "done" note + Next.
 // Passwords live only in this component's local state — never logged, never
 // hoisted, never sent anywhere but the two POST bodies.
+import { APP_HELP_TOPICS } from '@verity/events';
 import {
   VerityApiError,
   MIN_MASTER_PASSWORD_LENGTH,
@@ -22,7 +23,7 @@ import {
 } from '@verity/mobile';
 import { router, type Href, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Text, TextInput, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -44,6 +45,7 @@ import { clearPairingBootstrap, getPairingBootstrap } from '../../lib/pairingSes
 import { deviceLabel } from '../../lib/deviceLabel';
 import { getServerProfile } from '../../lib/serverProfile';
 import { safeReturnTo } from '../../lib/safeReturnTo';
+import { Button } from '../../components/ui';
 
 const NEXT = { href: '/onboarding/ai-backends' } as const;
 const BACK = '/onboarding/server-url';
@@ -54,7 +56,13 @@ export default function OnboardingMasterPassword() {
   return <MasterPasswordRoute returnTo={returnTo} />;
 }
 
-export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
+export function MasterPasswordRoute({
+  returnTo,
+  restartExplanation,
+}: {
+  returnTo: Href | null;
+  restartExplanation?: string | undefined;
+}) {
   const next = returnTo ? ({ href: returnTo, label: 'Continue' } as const) : NEXT;
   const back = returnTo ?? BACK;
   const client = useMemo(() => createVerityClient(), []);
@@ -72,7 +80,15 @@ export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
       </OnboardingStepScaffold>
     );
   }
-  return <MasterPasswordStep client={client} back={back} next={next} returnTo={returnTo} />;
+  return (
+    <MasterPasswordStep
+      client={client}
+      back={back}
+      next={next}
+      returnTo={returnTo}
+      restartExplanation={restartExplanation}
+    />
+  );
 }
 
 function MasterPasswordStep({
@@ -80,11 +96,13 @@ function MasterPasswordStep({
   back,
   next,
   returnTo,
+  restartExplanation,
 }: {
   client: VerityClient;
   back: Href;
   next: { href: Href; label?: string };
   returnTo: Href | null;
+  restartExplanation?: string | undefined;
 }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<SecretStatus | undefined>(undefined);
@@ -259,17 +277,10 @@ function MasterPasswordStep({
         {fetchFailed ? (
           <>
             <Text style={styles.fetchError}>Could not reach Verity. Check the connection.</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Retry"
-              onPress={refreshStatus}
-              style={styles.retry}
-            >
-              <Text style={styles.retryText}>Retry</Text>
-            </Pressable>
+            <Button label="Retry" variant="secondary" onPress={refreshStatus} />
           </>
         ) : (
-          <ActivityIndicator color={theme.colors.setup.text} />
+          <ActivityIndicator color={theme.colors.text} />
         )}
       </View>
     );
@@ -339,7 +350,8 @@ function MasterPasswordStep({
           ? 'Enter the server master password to authorize this device for the selected Verity server.'
           : mode === 'set'
             ? 'This protects GitHub keys, signing keys, and service tokens stored on your Verity server. Choose a password you can keep safe; Verity cannot recover it.'
-            : 'Enter the server master password to unlock encrypted secrets after a restart.'}
+            : (restartExplanation ??
+              APP_HELP_TOPICS.find((topic) => topic.id === 'secrets-storage')?.emptyState)}
       </Text>
 
       {mode === 'set' ? (
@@ -390,20 +402,14 @@ function MasterPasswordStep({
         </Text>
       ) : null}
 
-      <Pressable
-        style={({ pressed }) => [
-          styles.primaryButton,
-          busy || password.length === 0 ? styles.buttonDisabled : null,
-          pressed ? styles.pressed : null,
-        ]}
-        onPress={submitAction}
-        disabled={busy || password.length === 0}
-        accessibilityRole="button"
+      <Button
+        label={submitLabel}
         accessibilityLabel={submitA11yLabel}
-      >
-        {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-        <Text style={styles.primaryButtonLabel}>{submitLabel}</Text>
-      </Pressable>
+        loading={busy}
+        disabled={password.length === 0}
+        onPress={submitAction}
+        fullWidth
+      />
     </View>
   );
 
@@ -467,15 +473,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing.xl,
   },
   authEyebrow: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    ...theme.typography.label,
+    color: theme.colors.text,
   },
   title: {
+    ...theme.typography.display,
     color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontWeight: '600',
   },
   center: {
     flex: 1,
@@ -485,118 +488,64 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   fetchError: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
     textAlign: 'center',
-  },
-  retry: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-  },
-  retryText: {
-    color: theme.colors.text,
-    fontWeight: '700',
   },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   doneCard: {
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.setup.surface,
+    backgroundColor: theme.colors.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
   donePill: {
+    ...theme.typography.label,
     alignSelf: 'flex-start',
-    color: theme.colors.onPrimary,
-    backgroundColor: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    color: theme.colors.onAction,
+    backgroundColor: theme.colors.action,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.pill,
     overflow: 'hidden',
   },
   intro: {
+    ...theme.typography.body,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
   },
   guidance: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   field: {
     gap: theme.spacing.xs,
   },
   label: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  sectionTitle: {
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
   },
   input: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     minHeight: 44,
     color: theme.colors.text,
-    fontSize: theme.text.md,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
     backgroundColor: theme.colors.background,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  primaryButton: {
-    minHeight: 44,
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  secondaryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-  },
-  secondaryButtonLabel: {
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  pressed: {
-    opacity: 0.62,
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
 }));

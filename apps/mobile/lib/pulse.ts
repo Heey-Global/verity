@@ -2,10 +2,10 @@ import { useEffect } from 'react';
 import { Animated } from 'react-native';
 
 // A SINGLE shared opacity clock so every "live" indicator in the session list — the
-// working dot left of a name AND a running-CI icon on the right — breathes in the
-// exact same rhythm. One native-driver loop, started on first use and left running
-// for the app's lifetime (cheap, off the JS thread); every consumer binds its
-// `opacity` to the same value, so they can never drift out of phase.
+// working dot left of each name — breathes in the exact same rhythm. One
+// native-driver loop, started on first use and left running for the app's lifetime
+// (cheap, off the JS thread); every consumer binds its `opacity` to the same value,
+// so they can never drift out of phase.
 const syncedPulse = new Animated.Value(1);
 
 let started = false;

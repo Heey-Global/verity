@@ -1,8 +1,9 @@
-import type { BranchList, VerityClient } from '@verity/mobile';
+import { VerityApiError } from '@verity/mobile';
+import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useBranches } from './useBranches';
-import { cachedBranches, rememberBranches } from '../lib/branchesPrefetch';
+import { cachedBranches, rememberBranches, seedSessionBranches } from '../lib/branchesPrefetch';
 
 const mockLive = new Set<() => void | Promise<unknown>>();
 jest.mock('../lib/liveConnection', () => ({
@@ -78,6 +79,37 @@ describe('useBranches live updates', () => {
     jest.useRealTimers();
   });
 
+  it('aborts the previous identity and ignores its late response', async () => {
+    const old = deferred<BranchList>();
+    const next = deferred<BranchList>();
+    const getBranches = jest.fn().mockReturnValueOnce(old.promise).mockReturnValue(next.promise);
+    const client = { getBranches } as unknown as VerityClient;
+    const hook = renderHook(({ id }: { id: string }) => useBranches(client, id), {
+      initialProps: { id: 'old' },
+    });
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    hook.rerender({ id: 'next' });
+    expect(signal.aborted).toBe(true);
+    await act(async () => old.resolve({ ...branches(), current: 'stale' }));
+    expect(hook.result.current.current).not.toBe('stale');
+    await act(async () => next.resolve({ ...branches(), current: 'next' }));
+    expect(hook.result.current.current).toBe('next');
+  });
+
+  it('aborts an unfinished read on blur without publishing its late snapshot', async () => {
+    const slow = deferred<BranchList>();
+    const getBranches = jest.fn().mockReturnValue(slow.promise);
+    const client = { getBranches } as unknown as VerityClient;
+    const hook = renderHook(() => useBranches(client, 's'));
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    mockFocused = false;
+    hook.rerender({});
+    expect(signal.aborted).toBe(true);
+    await act(async () => slow.resolve(branches()));
+    expect(hook.result.current.current).toBeUndefined();
+  });
+
   it('paints a known PR synchronously and revalidates without hiding it', async () => {
     const slow = deferred<BranchList>();
     const getBranches = jest.fn().mockReturnValue(slow.promise);
@@ -88,6 +120,27 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.loading).toBe(false);
     await act(async () => slow.resolve(branches('closed', 'success')));
     expect(hook.result.current.pullRequest?.phase).toBe('closed');
+  });
+
+  it('paints a PR carried by the overview before a slow opening request resolves', async () => {
+    const slow = deferred<BranchList>();
+    const client = {
+      getBranches: jest.fn().mockReturnValue(slow.promise),
+    } as unknown as VerityClient;
+    const known = branches();
+    seedSessionBranches(client, {
+      sessionId: 's',
+      branch: known.current,
+      pullRequest: known.pullRequest,
+    } as SessionSummary);
+    const hook = renderHook(() => useBranches(client, 's'));
+    expect(hook.result.current.pullRequest).toEqual(known.pullRequest);
+    await act(async () => slow.resolve(branches('merged', 'success')));
+    expect(hook.result.current.pullRequest?.phase).toBe('merged');
+    hook.unmount();
+    const reopened = renderHook(() => useBranches(client, 's'));
+    expect(reopened.result.current.pullRequest?.phase).toBe('merged');
+    reopened.unmount();
   });
 
   it('never carries cached PR state into a different session or client', async () => {
@@ -112,6 +165,27 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.currentPr).toBeNull();
     hook.unmount();
     await act(async () => slow.resolve(branches()));
+  });
+
+  it('preserves the permission rejection reason for the PR bar', async () => {
+    const client = {
+      getBranches: jest.fn().mockResolvedValue(branches()),
+      mergePullRequest: jest.fn().mockRejectedValue(
+        new VerityApiError(403, 'A maintainer must merge it.', {
+          code: 'merge_permission_denied',
+        }),
+      ),
+    } as unknown as VerityClient;
+    const hook = renderHook(() => useBranches(client, 's'));
+    await advance(0);
+    await act(async () => {
+      expect(await hook.result.current.mergePullRequest(42)).toEqual({
+        ok: false,
+        message: 'A maintainer must merge it.',
+        permissionDenied: true,
+      });
+    });
+    expect(hook.result.current.pullRequest?.phase).toBe('open');
   });
 
   it('updates cached merge state immediately while revalidation is pending', async () => {

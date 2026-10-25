@@ -4,13 +4,15 @@ import {
   type AgentLogin,
   type AgentLoginProvider,
   type VerityClient,
+  type VeritySettings,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AgentProviderIcon } from './AgentProviderIcon';
+import { Button, HintBox, StatusTag, TextField } from './ui';
 
 type LoginState = {
   login: AgentLogin | null;
@@ -69,6 +71,7 @@ export function AgentLoginPanel({
   compact = false,
   selectedProvider,
   subscriptionPlans = {},
+  claudeCredentialStatus,
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -84,6 +87,7 @@ export function AgentLoginPanel({
   selectedProvider?: AgentLoginProvider;
   /** Plan labels the server derived from each stored login, when it knows one. */
   subscriptionPlans?: Partial<Record<AgentLoginProvider, string | null>>;
+  claudeCredentialStatus?: VeritySettings['claudeCredentialStatus'];
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -328,6 +332,7 @@ export function AgentLoginPanel({
           configured={configured.claude}
           state={logins.claude}
           subscriptionPlan={subscriptionPlans.claude ?? null}
+          credentialState={claudeCredentialStatus?.state ?? 'unknown'}
           compact={compact}
           allowDisconnect={allowDisconnect}
           onStart={() => start('claude')}
@@ -367,6 +372,7 @@ function ProviderCard({
   configured,
   state,
   subscriptionPlan,
+  credentialState = 'unknown',
   allowDisconnect,
   compact,
   onStart,
@@ -382,6 +388,7 @@ function ProviderCard({
   configured: boolean;
   state: LoginState;
   subscriptionPlan: string | null;
+  credentialState?: NonNullable<VeritySettings['claudeCredentialStatus']>['state'];
   allowDisconnect: boolean;
   compact: boolean;
   onStart: () => void;
@@ -399,17 +406,31 @@ function ProviderCard({
   // credential is saved, but the operator still needs to see and complete the
   // active login flow.
   const ready = login === null ? configured : login.configured || login.status === 'complete';
-  const statusText = ready
-    ? 'Configured'
-    : login?.status === 'failed'
-      ? 'Failed'
-      : login?.status === 'waiting'
-        ? 'Waiting'
-        : login?.status === 'ready'
-          ? 'Ready'
-          : login?.status === 'starting'
-            ? 'Starting'
-            : 'Not set';
+  const loginInactive = login === null || login.status === 'complete';
+  const needsRelogin = configured && loginInactive && credentialState === 'relogin_required';
+  const refreshFailed = configured && loginInactive && credentialState === 'refresh_failed';
+  const statusIntent = needsRelogin
+    ? 'needsSetup'
+    : refreshFailed
+      ? 'transient'
+      : ready
+        ? 'ready'
+        : 'optional';
+  const statusText = needsRelogin
+    ? 'Re-login needed'
+    : refreshFailed
+      ? 'Retrying'
+      : ready
+        ? 'Configured'
+        : login?.status === 'failed'
+          ? 'Failed'
+          : login?.status === 'waiting'
+            ? 'Waiting'
+            : login?.status === 'ready'
+              ? 'Ready'
+              : login?.status === 'starting'
+                ? 'Starting'
+                : 'Not set';
   const canOpenLoginPage =
     login?.verificationUri !== undefined &&
     login.verificationUri !== null &&
@@ -450,59 +471,57 @@ function ProviderCard({
                 : 'Connect your Codex subscription to this Verity server.'}
             </Text>
           </View>
-          <View style={[styles.pill, ready ? styles.pillReady : null]}>
-            <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
-          </View>
+          <StatusTag intent={statusIntent} label={statusText} />
         </View>
+      ) : null}
+
+      {needsRelogin ? (
+        <HintBox
+          title="Sign in to Claude again"
+          message="Claude could not renew your login. Use Re-login to reconnect; you do not need to log out first."
+        />
+      ) : refreshFailed ? (
+        <HintBox
+          title="Claude connection temporarily unavailable"
+          message="Verity will retry automatically. Your saved login has been kept."
+        />
       ) : null}
 
       {ready ? (
         <>
-          {!compact ? <Text style={styles.success}>{title} connected.</Text> : null}
+          {!compact && !needsRelogin && !refreshFailed ? (
+            <Text style={styles.success}>{title} connected.</Text>
+          ) : null}
           {allowDisconnect ? (
             <View style={styles.actionRow}>
-              <Pressable
-                style={({ pressed }) => [styles.secondaryButton, pressed ? styles.pressed : null]}
-                onPress={onStart}
-                disabled={state.busy}
-                accessibilityRole="button"
+              <Button
+                label="Re-login"
                 accessibilityLabel={'Reconnect ' + title}
-              >
-                {state.busy ? (
-                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
-                ) : null}
-                <Text style={styles.linkLabel}>Re-login</Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [styles.dangerButton, pressed ? styles.pressed : null]}
-                onPress={onDisconnect}
-                disabled={state.busy}
-                accessibilityRole="button"
+                variant="secondary"
+                size="compact"
+                loading={state.busy}
+                onPress={onStart}
+              />
+              <Button
+                label="Logout"
                 accessibilityLabel={'Logout ' + title}
-              >
-                {state.busy ? (
-                  <ActivityIndicator size="small" color={theme.colors.tone.danger} />
-                ) : null}
-                <Text style={styles.dangerLabel}>Logout</Text>
-              </Pressable>
+                variant="destructive"
+                size="compact"
+                loading={state.busy}
+                onPress={onDisconnect}
+              />
             </View>
           ) : null}
         </>
       ) : null}
 
       {primaryButtonVisible ? (
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
+        <Button
+          label={buttonLabel}
+          loading={isPreparing || isWaitingForCompletion}
           onPress={onStart}
-          disabled={isPreparing || isWaitingForCompletion}
-          accessibilityRole="button"
-          accessibilityLabel={buttonLabel}
-        >
-          {isPreparing || isWaitingForCompletion ? (
-            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
-          ) : null}
-          <Text style={styles.primaryButtonLabel}>{buttonLabel}</Text>
-        </Pressable>
+          fullWidth
+        />
       ) : null}
 
       {loginBoxVisible ? (
@@ -518,23 +537,22 @@ function ProviderCard({
                   {login.userCode}
                 </Text>
               </View>
-              <Pressable
-                onPress={() => onCopyCode(login.userCode ?? '')}
-                accessibilityRole="button"
-                accessibilityLabel={'Copy ' + title + ' code'}
-                style={({ pressed }) => [
-                  state.deviceCodeCopied ? styles.linkButton : styles.primaryButton,
-                  pressed ? styles.pressed : null,
-                ]}
-              >
-                <Text style={state.deviceCodeCopied ? styles.linkLabel : styles.primaryButtonLabel}>
-                  {state.copied
-                    ? 'Copied'
-                    : state.deviceCodeCopied
-                      ? 'Copy code again'
-                      : 'Copy code'}
-                </Text>
-              </Pressable>
+              <View style={styles.inline}>
+                <Button
+                  label={
+                    state.copied
+                      ? 'Copied'
+                      : state.deviceCodeCopied
+                        ? 'Copy code again'
+                        : 'Copy code'
+                  }
+                  accessibilityLabel={'Copy ' + title + ' code'}
+                  icon={state.copied ? 'check' : 'copy'}
+                  variant={state.deviceCodeCopied ? 'secondary' : 'primary'}
+                  size="compact"
+                  onPress={() => onCopyCode(login.userCode ?? '')}
+                />
+              </View>
             </LoginStep>
           ) : null}
           {canOpenLoginPage ? (
@@ -558,30 +576,22 @@ function ProviderCard({
                     : 'pending'
               }
             >
-              <Pressable
-                onPress={() => {
-                  onOpenLoginPage();
-                  void Linking.openURL(login.verificationUri ?? '');
-                }}
-                accessibilityRole={state.openedLoginPage ? 'link' : 'button'}
-                accessibilityLabel={openLoginLabel}
-                style={({ pressed }) => [
-                  !state.openedLoginPage && (!deviceCodeFlow || state.deviceCodeCopied)
-                    ? styles.primaryButton
-                    : styles.linkButton,
-                  pressed ? styles.pressed : null,
-                ]}
-              >
-                <Text
-                  style={
+              <View style={styles.inline}>
+                <Button
+                  label={openLoginLabel}
+                  icon="external-link"
+                  variant={
                     !state.openedLoginPage && (!deviceCodeFlow || state.deviceCodeCopied)
-                      ? styles.primaryButtonLabel
-                      : styles.linkLabel
+                      ? 'primary'
+                      : 'secondary'
                   }
-                >
-                  {openLoginLabel}
-                </Text>
-              </Pressable>
+                  size="compact"
+                  onPress={() => {
+                    onOpenLoginPage();
+                    void Linking.openURL(login.verificationUri ?? '');
+                  }}
+                />
+              </View>
             </LoginStep>
           ) : null}
           {deviceCodeFlow ? (
@@ -593,7 +603,7 @@ function ProviderCard({
             >
               {state.openedLoginPage ? (
                 <View style={styles.waitingRow}>
-                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
+                  <ActivityIndicator size="small" color={theme.colors.text} />
                   <Text style={styles.waitingText}>Waiting for sign-in…</Text>
                 </View>
               ) : null}
@@ -611,39 +621,32 @@ function ProviderCard({
               state={codeStepActive ? 'active' : 'pending'}
             >
               {returnedCodeFlow && state.openedLoginPage ? (
-                <Pressable
-                  style={({ pressed }) => [styles.pasteButton, pressed ? styles.pressed : null]}
-                  onPress={onPasteCode}
-                  accessibilityRole="button"
-                  accessibilityLabel={'Paste ' + title + ' code from clipboard'}
-                >
-                  <Text style={styles.pasteButtonLabel}>Paste from clipboard</Text>
-                </Pressable>
+                <View style={styles.inline}>
+                  <Button
+                    label="Paste from clipboard"
+                    accessibilityLabel={'Paste ' + title + ' code from clipboard'}
+                    icon="clipboard"
+                    variant="secondary"
+                    size="compact"
+                    onPress={onPasteCode}
+                  />
+                </View>
               ) : null}
-              <TextInput
-                style={styles.input}
+              <TextField
+                label={`${title} code`}
+                accessibilityLabel="Claude returned code"
                 value={state.code}
                 onChangeText={onChangeCode}
-                placeholder={`${title} code`}
-                placeholderTextColor={theme.colors.textFaint}
-                autoCapitalize="none"
-                autoCorrect={false}
-                spellCheck={false}
-                accessibilityLabel="Claude returned code"
+                literal
               />
-              <Pressable
-                style={({ pressed }) => [
-                  styles.submitButton,
-                  state.code.trim().length === 0 ? styles.buttonDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={onSubmitCode}
-                disabled={state.code.trim().length === 0 || state.busy}
-                accessibilityRole="button"
+              <Button
+                label={`Connect ${title}`}
                 accessibilityLabel="Submit Claude code"
-              >
-                <Text style={styles.secondaryButtonLabel}>Connect {title}</Text>
-              </Pressable>
+                loading={state.busy}
+                disabled={state.code.trim().length === 0}
+                onPress={onSubmitCode}
+                fullWidth
+              />
             </LoginStep>
           ) : null}
         </View>
@@ -660,6 +663,8 @@ function ProviderCard({
   // Each provider has its own settings page, so its status and actions are the
   // page: they stay visible instead of waiting behind a disclosure tap.
   const bodyVisible =
+    needsRelogin ||
+    refreshFailed ||
     (ready && allowDisconnect) ||
     primaryButtonVisible ||
     loginBoxVisible ||
@@ -668,23 +673,25 @@ function ProviderCard({
     <View style={styles.settingsCard}>
       <View style={styles.settingsCardHeader}>
         <View style={styles.settingsCardIcon}>
-          <AgentProviderIcon provider={provider} size={22} color={theme.colors.primary} />
+          <AgentProviderIcon provider={provider} size={22} color={theme.colors.action} />
         </View>
         <View style={styles.providerTitleGroup}>
           <Text style={styles.label} accessibilityRole="header">
             {title}
           </Text>
           <Text style={styles.providerCopy}>
-            {ready
-              ? subscriptionPlan !== null
-                ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
-                : 'Subscription connected to this Verity server.'
-              : 'Connect your ' + title + ' subscription to use it in sessions.'}
+            {needsRelogin
+              ? 'Sign in again to use Claude in sessions.'
+              : refreshFailed
+                ? 'Waiting for the Claude connection to recover.'
+                : ready
+                  ? subscriptionPlan !== null
+                    ? `${title} ${subscriptionPlan} subscription, connected to this Verity server.`
+                    : 'Subscription connected to this Verity server.'
+                  : 'Connect your ' + title + ' subscription to use it in sessions.'}
           </Text>
         </View>
-        <View style={[styles.pill, ready ? styles.pillReady : null]}>
-          <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
-        </View>
+        <StatusTag intent={statusIntent} label={statusText} />
       </View>
       {bodyVisible ? <View style={styles.settingsCardBody}>{content}</View> : null}
     </View>
@@ -731,6 +738,8 @@ function LoginStep({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   compactCard: { gap: theme.spacing.sm },
   settingsCard: {
     backgroundColor: theme.colors.surface,
@@ -751,7 +760,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.setup.surfaceAlt,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   settingsCardBody: {
     padding: theme.spacing.md,
@@ -762,24 +771,22 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   guidanceTitle: {
+    ...theme.typography.row,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
     marginBottom: theme.spacing.xs,
   },
   guidanceStep: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   labelRow: {
     flexDirection: 'row',
@@ -792,97 +799,23 @@ const styles = StyleSheet.create((theme) => ({
     gap: 6,
   },
   label: {
+    ...theme.typography.row,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
   },
   providerCopy: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-  },
-  pill: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.setup.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-  },
-  pillReady: {
-    borderColor: theme.colors.tone.done,
-  },
-  pillText: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-  },
-  pillTextReady: {
-    color: theme.colors.tone.done,
-  },
-  primaryButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  submitButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-  },
-  pasteButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-  },
-  pasteButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  secondaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  buttonDisabled: {
-    opacity: 0.45,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   loginBox: {
     gap: theme.spacing.sm,
     paddingTop: theme.spacing.xs,
   },
-  linkButton: {
-    alignSelf: 'flex-start',
-    paddingVertical: theme.spacing.xs,
-  },
-  linkLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
   codeRow: {
     minHeight: 50,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surfaceAlt,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -890,20 +823,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   code: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
-    letterSpacing: 0,
-  },
-  input: {
-    minHeight: 44,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    color: theme.colors.text,
-    backgroundColor: theme.colors.background,
-    fontSize: theme.text.sm,
   },
   loginStep: {
     flexDirection: 'row',
@@ -911,12 +832,12 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surfaceAlt,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   loginStepActive: {
-    borderColor: theme.colors.setup.text,
-    backgroundColor: theme.colors.setup.surface,
+    borderColor: theme.colors.text,
+    backgroundColor: theme.colors.surface,
   },
   stepBadge: {
     width: 30,
@@ -925,73 +846,54 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: 15,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surface,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   stepBadgeActive: {
-    borderColor: theme.colors.setup.text,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.text,
+    backgroundColor: theme.colors.action,
   },
   stepBadgeDone: {
-    borderColor: theme.colors.tone.done,
-    backgroundColor: theme.colors.tone.done,
+    borderColor: theme.colors.success,
+    backgroundColor: theme.colors.success,
   },
-  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
+  stepBadgeLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.onAction,
+  },
   stepBadgeLabelMuted: { color: theme.colors.textFaint },
   stepBody: { flex: 1, gap: theme.spacing.sm },
-  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+  stepTitle: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
   stepTitlePending: { color: theme.colors.textFaint },
   stepDescription: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
+    ...theme.typography.footnote,
+    color: theme.colors.textMuted,
   },
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  waitingText: { color: theme.colors.setup.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
+  waitingText: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
   success: {
-    color: theme.colors.tone.done,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.success,
   },
   actionRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
-  },
-  secondaryButton: {
-    minWidth: 136,
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.xs,
-  },
-  dangerButton: {
-    minWidth: 136,
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.xs,
-  },
-  dangerLabel: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  pressed: {
-    opacity: 0.72,
   },
 }));

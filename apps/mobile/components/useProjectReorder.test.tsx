@@ -1,7 +1,8 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type View } from 'react-native';
 import { measure, scrollTo, withSpring, type AnimatedRef } from 'react-native-reanimated';
-import { useProjectReorder, useProjectRowDrag } from './useProjectReorder';
+import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
+import { useProjectReorder, useProjectRowDrag, useSessionDragOrder } from './useProjectReorder';
 
 let mockFrame: (frame: { timeSincePreviousFrame: number }) => void;
 jest.mock('react-native-reanimated', () => {
@@ -23,7 +24,21 @@ jest.mock('react-native-reanimated', () => {
         },
       }).current;
     },
-    useAnimatedScrollHandler: (handler: unknown) => handler,
+    useAnimatedStyle: (processor: () => Record<string, unknown>) => {
+      const latest = useRef(processor);
+      latest.current = processor;
+      return useRef(
+        new Proxy(
+          {},
+          {
+            get: (_target, key) => latest.current()[key as string],
+            ownKeys: () => Reflect.ownKeys(latest.current()),
+            getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+          },
+        ),
+      ).current;
+    },
+    useAnimatedScrollHandler: (handler: unknown) => useRef(handler).current,
     useFrameCallback: (handler: typeof mockFrame) => {
       mockFrame = handler;
     },
@@ -41,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 afterEach(() => {
+  act(() => setGestureDiagnosticsEnabled(false));
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -243,6 +259,30 @@ it('leaves session content and header actions to their own gestures', () => {
   expect(fail).toHaveBeenCalledTimes(1);
 });
 
+it('records whether it holds or releases a touch only while gesture recording is on', () => {
+  const test = setup();
+  const down = (absoluteY: number) =>
+    act(() =>
+      test.hook.result.current.gesture.handlers.onTouchesDown?.(
+        { allTouches: [{ absoluteX: 100, absoluteY }] } as never,
+        { fail: jest.fn() } as never,
+      ),
+    );
+  down(300);
+  expect(exportGestureDiagnostics().events).toEqual([]);
+  act(() => setGestureDiagnosticsEnabled(true));
+  down(300);
+  down(400);
+  expect(exportGestureDiagnostics().events).toMatchObject([
+    {
+      source: 'reorder',
+      event: 'touch-down-hold',
+      detail: { target: 'project', excluded: false, headers: 4 },
+    },
+    { source: 'reorder', event: 'touch-down-fail', detail: { excluded: false } },
+  ]);
+});
+
 it('uses visible slot measurements even when earlier rows have never mounted', () => {
   const longOrder = ['control', ...Array.from({ length: 80 }, (_, index) => `p${index}`)];
   const test = setup('p79', 280, longOrder, ['p40', 'p41', 'p79']);
@@ -368,6 +408,10 @@ it('does not enable manual sorting for an unchanged pickup, but saves a move aga
       enabled: false,
     }),
   );
+  act(() =>
+    test.hook.result.current.confirmSessionOverlay(test.hook.result.current.sessionDragToken!),
+  );
+  picked.rerender({});
   expect(picked.result.current.style).toMatchObject({
     opacity: 0,
     transform: [{ translateY: -60 }],
@@ -447,4 +491,152 @@ it('leaves session links, status and sharing areas outside the drag handle', () 
   test.start(105);
   expect(test.hook.result.current.draggingId).toBeNull();
   expect(test.hook.result.current.draggingSessionId).toBe('session:b');
+});
+
+it('keeps the session visible until the measured overlay is ready and restores it on cancellation', () => {
+  const test = setupSessions();
+  test.start();
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:b',
+      scope: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:a', 'session:b'],
+      enabled: false,
+    }),
+  );
+  expect(row.result.current.style).toMatchObject({ opacity: 1 });
+  expect(test.hook.result.current.overlayStyle).toMatchObject({
+    width: 300,
+    height: 60,
+    opacity: 1,
+  });
+  const token = test.hook.result.current.sessionDragToken!;
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 0 });
+  test.end(false);
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 1, transform: [{ translateY: 0 }] });
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  test.start();
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 1 });
+});
+
+it('restores a hidden session after a drop and ignores a late overlay layout', () => {
+  const test = setupSessions();
+  test.start();
+  const token = test.hook.result.current.sessionDragToken!;
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  test.move(165);
+  test.end();
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  expect(test.hook.result.current.sessionOverlayReady.value).toBeNull();
+  expect(test.hook.result.current.drag.value).toBeNull();
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:b',
+      scope: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:b', 'session:a'],
+      enabled: false,
+    }),
+  );
+  expect(row.result.current.style).toMatchObject({ opacity: 1, transform: [{ translateY: 0 }] });
+});
+
+it('preserves the session order input across unread and polling renders', () => {
+  const first = [{ sessionId: 'a' }, { sessionId: 'b' }];
+  const hook = renderHook(
+    ({ sessions }: { sessions: { sessionId: string }[] }) => useSessionDragOrder(sessions),
+    {
+      initialProps: { sessions: first },
+    },
+  );
+  const order = hook.result.current;
+  hook.rerender({ sessions: first.map((session) => ({ ...session })) });
+  expect(hook.result.current).toBe(order);
+  hook.rerender({ sessions: [first[1]!, first[0]!] });
+  expect(hook.result.current).not.toBe(order);
+  expect(hook.result.current).toEqual(['session:b', 'session:a']);
+});
+
+it('preserves the controller identity on unrelated renders, but publishes drag changes', () => {
+  const test = setupSessions();
+  const controller = test.hook.result.current;
+  test.hook.rerender({});
+  expect(test.hook.result.current).toBe(controller);
+  test.start();
+  expect(test.hook.result.current).not.toBe(controller);
+  expect(test.hook.result.current.draggingSessionId).toBe('session:b');
+});
+
+it('rejects link touches at pickup and start while allowing free row space', () => {
+  const test = setup('a', 160);
+  const excluded = (() => ({})) as AnimatedRef<View>;
+  const row = {} as AnimatedRef<View>;
+  const handle = {} as AnimatedRef<View>;
+  const slot = {} as AnimatedRef<View>;
+  act(() => {
+    test.hook.result.current.register({ id: 'b', row, handle, slot, excluded: [excluded] });
+  });
+  const previous = jest.mocked(measure).getMockImplementation()!;
+  jest.mocked(measure).mockImplementation((ref) => {
+    if (Object.is(ref, excluded)) return { ...rect(280), pageX: 200, width: 30, height: 20 };
+    if ([handle, row, slot].some((candidate) => Object.is(ref, candidate))) return rect(280);
+    return previous(ref);
+  });
+  const fail = jest.fn();
+  act(() => {
+    test.hook.result.current.gesture.handlers.onTouchesDown?.(
+      { allTouches: [{ absoluteX: 195, absoluteY: 290 }] } as never,
+      { fail } as never,
+    );
+    test.hook.result.current.gesture.handlers.onStart?.({
+      absoluteX: 195,
+      absoluteY: 290,
+    } as never);
+  });
+  expect(fail).toHaveBeenCalledTimes(1);
+  expect(test.hook.result.current.draggingId).toBeNull();
+  act(() => {
+    test.hook.result.current.gesture.handlers.onStart?.({
+      absoluteX: 270,
+      absoluteY: 330,
+    } as never);
+  });
+  expect(test.hook.result.current.draggingId).toBe('b');
+});
+
+it('allows pickup when the optional issue link has never mounted', () => {
+  const test = setup('a', 160);
+  const excluded = (() => null) as unknown as AnimatedRef<View>;
+  const row = {} as AnimatedRef<View>;
+  const handle = {} as AnimatedRef<View>;
+  const slot = {} as AnimatedRef<View>;
+  act(() => {
+    test.hook.result.current.register({ id: 'b', row, handle, slot, excluded: [excluded] });
+  });
+  const previous = jest.mocked(measure).getMockImplementation()!;
+  jest.mocked(measure).mockImplementation((ref) => {
+    // Native measure converts the ref's result to a ShadowNode object; null throws.
+    if (Object.is(ref, excluded)) throw new TypeError('Value is null, expected an Object');
+    if ([handle, row, slot].some((candidate) => Object.is(ref, candidate))) return rect(280);
+    return previous(ref);
+  });
+  const fail = jest.fn();
+  act(() => {
+    test.hook.result.current.gesture.handlers.onTouchesDown?.(
+      { allTouches: [{ absoluteX: 270, absoluteY: 290 }] } as never,
+      { fail } as never,
+    );
+    test.hook.result.current.gesture.handlers.onStart?.({
+      absoluteX: 270,
+      absoluteY: 290,
+    } as never);
+  });
+  expect(fail).not.toHaveBeenCalled();
+  expect(measure).not.toHaveBeenCalledWith(excluded);
+  expect(test.hook.result.current.draggingId).toBe('b');
 });

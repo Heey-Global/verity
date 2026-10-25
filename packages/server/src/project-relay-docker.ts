@@ -37,6 +37,7 @@ const CONTAINER_GENERATION_LABEL = 'verity.container-generation';
 
 export interface DockerProjectRelayOptions {
   docker: DockerClient;
+  forgeAuthorities?: ((projectId: string) => Promise<readonly string[]>) | undefined;
   forgeProxyEnabled?: ((projectId: string) => boolean) | undefined;
   image: string;
   dataVolume: string;
@@ -140,7 +141,7 @@ export function createDockerProjectRelayStarter(
       // relay states it rather than depend on that default.
       sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 32,
       memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,
@@ -148,7 +149,14 @@ export function createDockerProjectRelayStarter(
       env: [
         `NODE_OPTIONS=--max-old-space-size=${String(RELAY_HEAP_LIMIT_MIB)}`,
         ...(options.forgeProxyEnabled?.(context.identity.projectId) === true
-          ? ['VERITY_FORGE_PROXY=github']
+          ? [
+              'VERITY_FORGE_PROXY=github',
+              ...(options.forgeAuthorities
+                ? [
+                    `VERITY_FORGE_AUTHORITIES=${JSON.stringify(await options.forgeAuthorities(context.identity.projectId))}`,
+                  ]
+                : []),
+            ]
           : []),
       ],
       labels: {

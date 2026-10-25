@@ -335,7 +335,7 @@ sealed_managed_image() {
   local bootstrap_image=$1
   verify_server_image "$bootstrap_image"
   run_docker run --rm --network none --read-only --cap-drop ALL --user 0:0 \
-    --security-opt no-new-privileges \
+    --security-opt no-new-privileges=true \
     --mount type=volume,source=verity-managed-deployment,target=/managed,readonly \
     --entrypoint node "$bootstrap_image" -e '
       const { readFileSync } = require("node:fs");

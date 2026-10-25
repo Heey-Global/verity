@@ -1324,7 +1324,7 @@ describe('SessionListModel polling', () => {
     vi.setSystemTime(new Date(1_700_000_000_000));
     try {
       const { client, listSessions, listProviderLimits } = makeClient();
-      listSessions.mockResolvedValue([]);
+      listSessions.mockResolvedValue([session('a', 'idle')]);
       listProviderLimits.mockResolvedValue([
         {
           status: 'allowed',
@@ -1348,9 +1348,11 @@ describe('SessionListModel polling', () => {
         }),
       );
 
+      const beforeTick = states.at(-1)?.sessions;
       vi.advanceTimersByTime(1000);
 
       expect(states.at(-1)?.providerLimitRows[0]?.fiveHour).toBeNull();
+      expect(states.at(-1)?.sessions).toBe(beforeTick);
       model.stop();
     } finally {
       vi.useRealTimers();
@@ -1409,7 +1411,7 @@ describe('session ordering', () => {
     return { model: new SessionListModel({ client }), overview, reorderSessions };
   }
 
-  it('keeps manual groups stable while new sessions precede ranked sessions', async () => {
+  it('keeps manual groups stable and appends new sessions', async () => {
     const { model } = setup([
       { ...session('a', 'crashed'), projectId: 'p', sortOrder: 1 },
       { ...session('new', 'idle'), projectId: 'p' },
@@ -1417,7 +1419,7 @@ describe('session ordering', () => {
     ]);
     await model.refresh();
     expect(model.state.sessionReordering).toBe(true);
-    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['new', 'b', 'a']);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a', 'new']);
   });
 
   it('serializes drags and rolls the latest failure back to the preceding confirmed order', async () => {
@@ -1474,7 +1476,7 @@ describe('session ordering', () => {
     resolve(['b']);
     await saving;
     expect(model.state.sessions.filter((s) => s.projectId === 'p').map((s) => s.sessionId)).toEqual(
-      ['new', 'b'],
+      ['b', 'new'],
     );
     expect(model.state.sessions.find((s) => s.sessionId === 'a')?.projectId).toBe('other');
   });
@@ -1516,4 +1518,58 @@ describe('session ordering', () => {
     expect(model.state.sessionReordering).toBe(false);
     expect(reorderSessions).not.toHaveBeenCalled();
   });
+});
+
+it('retains unchanged overview snapshots while publishing nested changes and removals', async () => {
+  const { client, listSessions } = makeClient();
+  const records = [session('a', 'idle'), session('b', 'idle')];
+  listSessions.mockImplementation(async () => structuredClone(records));
+  const model = new SessionListModel({ client });
+  await model.refresh();
+  const before = model.state.sessions;
+  expect(model.state.sessions).toBe(before);
+  await model.refresh();
+  expect(model.state.sessions).toBe(before);
+  records[0] = { ...records[0]!, usage: { ...ZERO_USAGE, inputTokens: 99 }, favorite: true };
+  await model.refresh();
+  const changed = model.state.sessions;
+  expect(changed).not.toBe(before);
+  expect(changed[0]?.usage.inputTokens).toBe(99);
+  expect(changed[0]).not.toBe(before[0]);
+  expect(changed[1]).toBe(before[1]);
+  delete records[0].favorite;
+  await model.refresh();
+  expect(model.state.sessions[0]?.favorite).toBeUndefined();
+  expect(model.state.sessions[0]).not.toBe(changed[0]);
+  expect(model.state.sessions[1]).toBe(before[1]);
+});
+
+it('retains an optimistic snapshot through a stale refresh and publishes rollback', async () => {
+  const { client, listSessions, setSessionFavorite } = makeClient();
+  listSessions.mockResolvedValueOnce([session('a', 'idle'), session('b', 'idle')]);
+  const model = new SessionListModel({ client });
+  await model.refresh();
+  const original = model.state.sessions;
+  let resolve!: (sessions: SessionSummary[]) => void;
+  listSessions.mockImplementationOnce(
+    () =>
+      new Promise((yes) => {
+        resolve = yes;
+      }),
+  );
+  const refresh = model.refresh({ silent: true });
+  setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+  await model.setFavorite('a', true);
+  const optimistic = model.state.sessions;
+  expect(optimistic[0]).not.toBe(original[0]);
+  expect(optimistic[1]).toBe(original[1]);
+  resolve([session('a', 'idle'), session('b', 'idle')]);
+  await refresh;
+  expect(model.state.sessions).toBe(optimistic);
+  setSessionFavorite.mockRejectedValueOnce(new Error('offline'));
+  const failed = model.setFavorite('a', false);
+  expect(model.state.sessions[0]?.favorite).toBeUndefined();
+  await failed;
+  expect(model.state.sessions[0]?.favorite).toBe(true);
+  expect(model.state.sessions[1]).toBe(original[1]);
 });

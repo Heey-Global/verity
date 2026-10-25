@@ -1,4 +1,10 @@
+import { ForgeMergePermissionError } from './forge-provider.js';
+import {
+  createCachedProjectTokenMint,
+  createGitHubAppProjectTokenMint,
+} from './github-app-token.js';
 import { createHash } from 'node:crypto';
+import { ResourceObserver } from './live/resource-observer.js';
 import {
   chmodSync,
   existsSync,
@@ -80,6 +86,8 @@ import {
   redactScrollDiagnosticData,
   redactScrollDiagnosticEvent,
   sortModelIds,
+  appendMeetingIndex,
+  removeCancelledMeetingTranscript,
   startProjectRelayMigrationScheduler,
   type MeetingTranscriber,
   type MeetingTranscriptResult,
@@ -803,11 +811,11 @@ describe('startProjectRelayMigrationScheduler', () => {
   });
 });
 
-describe('POST /google-drive/connect', () => {
+describe('POST /google/connect', () => {
   it('rate-limits authorization attempts', async () => {
     const request = {
       method: 'POST' as const,
-      url: '/google-drive/connect',
+      url: '/google/connect',
       payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
     };
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -817,6 +825,24 @@ describe('POST /google-drive/connect', () => {
     expect(blocked.statusCode, blocked.body).toBe(429);
     expect(blocked.headers['retry-after']).toBe('60');
     expect(blocked.json()).toEqual({ error: 'invalid request' });
+  });
+
+  it('is the only Google code exchange the server accepts', async () => {
+    // A per-service exchange left behind would store a second, narrower grant
+    // for the same account outside the unified consent.
+    for (const url of [
+      '/google-drive/connect',
+      '/gmail/connect',
+      '/calendar/connect',
+      '/contacts/connect',
+    ]) {
+      const response = await app.inject({
+        method: 'POST',
+        url,
+        payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
+      });
+      expect(response.statusCode, url).toBe(404);
+    }
   });
 });
 
@@ -918,6 +944,7 @@ describe('GET /server/updates', () => {
       state: 'unsupported',
       reason: 'deployment is not managed',
       operation: null,
+      installed: { version: expect.any(String), generation: null },
     });
   });
 
@@ -966,6 +993,12 @@ describe('GET /server/updates', () => {
         state: 'available',
         release: availableRelease,
         operation: preparingOperation,
+        installed: { version: expect.any(String), generation: null },
+        attempt: null,
+        // The fixture's operation last moved in August; this stub controller can
+        // neither read attempts nor retry, so nothing is offered for it.
+        stalled: true,
+        recovery: { retry: false, supersede: false },
       });
     } finally {
       await server.close();
@@ -1420,13 +1453,18 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     });
     const url = '/sessions/s1/live-meetings/live-1';
     const meeting = {
+      title: 'Pricing [sync]',
       engine: 'fluid-nemotron',
       startedAt: Date.UTC(2026, 9, 1, 9, 30),
       endedAt: Date.UTC(2026, 9, 1, 9, 45),
       state: 'ended',
       transcript: 'We ship on Friday.',
       timedWords: [{ text: 'We ship on Friday.', start: 4, end: 6 }],
-      speakerTurns: [{ speaker: 0, start: 3, end: 7 }],
+      speakerTurns: [
+        { speaker: 0, start: 3, end: 7 },
+        { speaker: 1, start: 8, end: 9 },
+      ],
+      speakerMerges: { '1': 0 },
       captureStatus: 'listening',
       ownerToken: 'o'.repeat(64),
       revision: 2,
@@ -1460,8 +1498,21 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
 
       const notices = async () =>
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
-      await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
+      await vi.waitFor(async () => expect((await notices()).length).toBeGreaterThanOrEqual(1));
       const [notice] = await notices();
+      expect(notice?.t === 'notice' && notice.text).toContain('[Pricing \\[sync\\]]');
+      const details = JSON.parse(
+        (notice?.t === 'notice' ? notice.text : '')
+          .split('<!-- verity-meeting: ')[1]!
+          .split(' -->')[0]!,
+      );
+      expect(details).toMatchObject({
+        sessionId: 's1',
+        meetingId: 'live-1',
+        durationMinutes: 15,
+        people: 1,
+        answers: 0,
+      });
       const link = /\]\((\/knowledge\/sources\/meetings\/[^)]+\.md)\)/.exec(
         notice?.t === 'notice' ? notice.text : '',
       )?.[1];
@@ -1476,19 +1527,31 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       );
       expect(readFileSync(filed, 'utf8')).toContain('**Speaker 1** (00:04): We ship on Friday.');
       expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).toContain(
-        `(${link!.split('/').at(-1)})`,
+        `- [Pricing \\[sync\\]](${link!.split('/').at(-1)})`,
       );
 
-      // Naming a speaker afterwards rewrites the same document without a second message.
+      // Late edits must refresh the card as well as the filed document.
       await meetingApp.inject({
         method: 'PUT',
         url,
-        payload: { ...meeting, speakerNames: { '0': 'Anna' }, revision: 3 },
+        payload: { ...meeting, speakerNames: { '0': 'Anna' }, speakerMerges: {}, revision: 3 },
       });
       await vi.waitFor(() =>
         expect(readFileSync(filed, 'utf8')).toContain('**Anna** (00:04): We ship on Friday.'),
       );
-      expect(await notices()).toHaveLength(1);
+      await vi.waitFor(async () => {
+        const latest = (await notices()).at(-1)!;
+        expect(latest.t === 'notice' && latest.text).toContain('"people":2');
+        expect(latest.t === 'notice' && latest.text).toContain('"notes":1');
+      });
+      const count = (await notices()).length;
+      await meetingApp.inject({
+        method: 'PUT',
+        url: `${url}/notes/n1`,
+        payload: { atSeconds: 5, text: 'Friday release', revision: 2 },
+      });
+      await vi.waitFor(() => expect(readFileSync(filed, 'utf8')).toContain('Friday release'));
+      expect(await notices()).toHaveLength(count);
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
@@ -2740,6 +2803,7 @@ describe('POST /sessions/:id/debug/scroll', () => {
   });
 
   it('accepts mobile scroll diagnostics for a known session', async () => {
+    const invalidate = vi.spyOn(ResourceObserver.prototype, 'invalidate');
     await ctx.store.createSession({
       sessionId: 's1',
       worktree: '/wt/s1',
@@ -2758,6 +2822,11 @@ describe('POST /sessions/:id/debug/scroll', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+    // Telemetry must not trigger Git metadata reads or sandbox listener scans.
+    expect(invalidate).not.toHaveBeenCalled();
+    await app.inject({ method: 'PATCH', url: '/sessions/s1', payload: { name: 'Renamed' } });
+    expect(invalidate).toHaveBeenCalledWith('/sessions/s1');
+    invalidate.mockRestore();
   });
 
   it('rejects non-scalar scroll diagnostic data', async () => {
@@ -2798,6 +2867,36 @@ describe('POST /sessions/:id/debug/scroll', () => {
 });
 
 describe('GET /sessions/:id/events (backward pagination)', () => {
+  it('negotiates whole byte-bounded history independently from the legacy route', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: '界'.repeat(100_000) });
+    const bounded = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(bounded.statusCode).toBe(200);
+    expect(bounded.json()).toMatchObject({
+      contract: 'bounded-history-v1',
+      kind: 'oversized-event',
+    });
+    expect(Buffer.byteLength(bounded.body)).toBeLessThanOrEqual(256 * 1024);
+    const legacy = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
+    expect(legacy.json().events[0].event.delta).toBe('界'.repeat(100_000));
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'complete tail '.repeat(1000) });
+    const plain = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(plain.json()).toMatchObject({ kind: 'page', hasMore: true });
+    expect(plain.json().events).toHaveLength(1);
+    expect(plain.json().events[0].event.delta).toBe('complete tail '.repeat(1000));
+    expect(Buffer.byteLength(plain.body)).toBeLessThanOrEqual(256 * 1024);
+    const compressed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/history/v1',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(compressed.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.body);
+
+    const invalid = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1?beforeSeq=0' });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it('negotiates compression for history while leaving other responses untouched', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'history '.repeat(1_000) });
@@ -3697,6 +3796,70 @@ describe('GET /sessions', () => {
           { displayPrompt: 'Fix failing CI for PR #7' },
         );
       });
+    } finally {
+      await prApp.close();
+    }
+  });
+
+  // A Forgejo PR described as a GitHub one sends the agent to `gh` and GitHub
+  // Actions, which cannot see it; the repair turn must name the real host.
+  it('names the Forgejo code host in the CI repair turn of a Forgejo project', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'repair-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'repair-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'repair-forgejo',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'forgejo-team-site',
+      state: 'active',
+    });
+    const branchPrStatus = vi.fn(async () => ({
+      number: 7,
+      title: 'feat: x',
+      url: 'https://git.example.org/team/site/pulls/7',
+      phase: 'open' as const,
+      headSha: 'abc123',
+      pipeline: 'failure' as const,
+      checks: { completed: 2, total: 2, successful: 1, failed: 1, pending: 0 },
+      mergeable: false,
+    }));
+    const prApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: {
+        current: vi.fn(async () => 'feat/x'),
+        switchable: vi.fn(async () => [] as string[]),
+        previewable: vi.fn(async () => [] as string[]),
+        switch: vi.fn(),
+      } as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus,
+    });
+    try {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'm',
+        projectId: 'repair-forgejo-project',
+      });
+      await prApp.inject({ method: 'GET', url: '/sessions' });
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalled());
+      const prompt = String(dispatchTurnWhenIdle.mock.calls.at(-1)?.[1]);
+      expect(prompt).toContain('Forgejo pull request #7');
+      expect(prompt).not.toContain('GitHub');
+      // verity-repo reads no check logs, so the turn must not send the agent after them.
+      expect(prompt).toContain('reproduce them locally');
     } finally {
       await prApp.close();
     }
@@ -6136,6 +6299,174 @@ describe('PATCH /projects/:id/settings', () => {
   });
 });
 
+describe('project allowed agents', () => {
+  async function project(id: string, state: 'active' | 'absent' = 'absent') {
+    await ctx.store.upsertProject({
+      id,
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state,
+    });
+  }
+  const patchSettings = (id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: `/projects/${id}/settings`, payload });
+
+  it('rejects an empty, duplicated or unknown agent list', async () => {
+    await project('p-agents-validate');
+    for (const allowedAgents of [[], ['claude', 'claude'], ['gemini']]) {
+      const res = await patchSettings('p-agents-validate', { allowedAgents });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('drops a default model the narrowed rule excludes and refuses a new excluded default', async () => {
+    await project('p-agents-default');
+    await patchSettings('p-agents-default', { defaultModel: 'claude-sonnet-5-5' });
+
+    const narrowed = await patchSettings('p-agents-default', { allowedAgents: ['codex'] });
+    expect(narrowed.statusCode).toBe(200);
+    expect(narrowed.json()).toMatchObject({
+      settings: { allowedAgents: ['codex'], defaultModel: null },
+    });
+
+    const excluded = await patchSettings('p-agents-default', { defaultModel: 'claude-opus-5-5' });
+    expect(excluded.statusCode).toBe(400);
+    expect(excluded.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+
+    const allowed = await patchSettings('p-agents-default', { defaultModel: 'codex/gpt-5.6-sol' });
+    expect(allowed.json()).toMatchObject({ settings: { defaultModel: 'codex/gpt-5.6-sol' } });
+  });
+
+  it('validates the normalized model before persisting an explicit default', async () => {
+    await project('p-agents-trim');
+    await patchSettings('p-agents-trim', { allowedAgents: ['opencode'] });
+    const excluded = await patchSettings('p-agents-trim', { defaultModel: ' codex/default ' });
+    expect(excluded.statusCode).toBe(400);
+    expect(excluded.json()).toEqual({ error: 'Codex is not allowed in this project.' });
+    expect((await ctx.store.getProjectSettings('p-agents-trim'))?.defaultModel).toBeNull();
+  });
+
+  it('narrows GET /models to the project and resolves its default to the first allowed model', async () => {
+    await project('p-agents-models');
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await patchSettings('p-agents-models', { allowedAgents: ['codex'] });
+    const withModels = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/default', 'codex/gpt-5.6-sol']),
+    });
+    try {
+      const all = (await withModels.inject('/models')).json<{ models: string[] }>();
+      expect(all.models).toContain('claude-opus-5-5');
+      const res = await withModels.inject('/models?projectId=p-agents-models');
+      expect(res.json()).toEqual({
+        models: ['codex/gpt-5.6-sol'],
+        modelOrder: ['codex/gpt-5.6-sol'],
+        default: 'codex/gpt-5.6-sol',
+        allowedAgents: ['codex'],
+      });
+    } finally {
+      await withModels.close();
+    }
+  });
+
+  it('refuses a mid-session switch onto an excluded agent but keeps the current one', async () => {
+    await project('p-agents-switch');
+    await patchSettings('p-agents-switch', { allowedAgents: ['codex'] });
+    await ctx.store.createSession({
+      sessionId: 's-agents-switch',
+      worktree: '/wt/s-agents-switch',
+      model: 'claude-opus-5-5',
+      projectId: 'p-agents-switch',
+    });
+
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s-agents-switch',
+      payload: { model: 'claude-sonnet-5-5' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+
+    // Re-naming the model the session already runs is a no-op, not a switch.
+    const unchanged = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s-agents-switch',
+      payload: { model: 'claude-opus-5-5' },
+    });
+    expect(unchanged.statusCode).toBe(200);
+  });
+
+  it('rejects excluded turn overrides while letting the current session model continue', async () => {
+    await project('p-agents-turn', 'active');
+    await patchSettings('p-agents-turn', { allowedAgents: ['codex'] });
+    await ctx.store.createSession({
+      sessionId: 's-agents-turn',
+      worktree: '/wt/s-agents-turn',
+      model: 'claude-opus-5-5',
+      projectId: 'p-agents-turn',
+    });
+    dispatchTurn.mockResolvedValue({ queued: false });
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-agents-turn/turns',
+      payload: { prompt: 'go', model: 'claude-sonnet-5-5' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+    expect(dispatchTurn).not.toHaveBeenCalled();
+    for (const model of ['codex/default', 'claude-opus-5-5', undefined]) {
+      const accepted = await app.inject({
+        method: 'POST',
+        url: '/sessions/s-agents-turn/turns',
+        payload: { prompt: 'go', ...(model === undefined ? {} : { model }) },
+      });
+      expect(accepted.statusCode).toBe(202);
+    }
+    expect(dispatchTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it('resolves dedicated Control sessions against the allowed project agents', async () => {
+    await ctx.store.updateVeritySettings({
+      advancedModeEnabled: true,
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await app.inject({ method: 'GET', url: '/projects' });
+    await patchSettings('verity-control', { allowedAgents: ['codex'] });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
+    expect(res.statusCode).toBe(201);
+    const session = await ctx.store.getSession(res.json<{ sessionId: string }>().sessionId);
+    expect(session?.model.startsWith('codex/')).toBe(true);
+    await patchSettings('verity-control', { allowedAgents: ['opencode'] });
+    const before = readdirSync(worktreeRoot);
+    const unavailable = await app.inject({ method: 'POST', url: '/verity-control/session' });
+    expect(unavailable.statusCode).toBe(400);
+    expect(readdirSync(worktreeRoot)).toEqual(before);
+  });
+
+  it.each([{ allowedAgents: null }, { allowedAgents: ['opencode'] }])(
+    'refuses an unsupported Control default with agent rule %j',
+    async ({ allowedAgents }) => {
+      await ctx.store.updateVeritySettings({ advancedModeEnabled: true });
+      await app.inject({ method: 'GET', url: '/projects' });
+      const saved = await patchSettings('verity-control', {
+        allowedAgents,
+        defaultModel: 'deepinfra/model',
+      });
+      expect(saved.statusCode).toBe(200);
+      const before = readdirSync(worktreeRoot);
+      const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
+      expect(res.statusCode).toBe(400);
+      expect(readdirSync(worktreeRoot)).toEqual(before);
+    },
+  );
+});
+
 describe('GET /models (#143)', () => {
   async function configureAgentLogins({
     claude = false,
@@ -6158,7 +6489,7 @@ describe('GET /models (#143)', () => {
       'claude-opus-5-5',
       'claude-fable-5-1',
       'claude-sonnet-5-5',
-      'claude-haiku-4-5-20251001',
+      'claude-haiku-5-5',
     ]);
     expect(DEFAULT_MODEL).toBe('claude-opus-5-5');
   });
@@ -6179,7 +6510,7 @@ describe('GET /models (#143)', () => {
     expect(body.models).toEqual([...CLAUDE_SORTED]);
     expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
-    expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-4-5-20251001']);
+    expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-5-5']);
   });
 
   it('returns Codex only when only Codex is logged in', async () => {
@@ -6242,7 +6573,7 @@ describe('GET /models (#143)', () => {
           'codex/gpt-5.3-codex-spark',
         ],
         moreModels: [
-          'claude-haiku-4-5-20251001',
+          'claude-haiku-5-5',
           'codex/gpt-5.6-luna',
           'codex/gpt-5.5',
           'codex/gpt-5.3-codex-spark',
@@ -8520,6 +8851,124 @@ describe('GET /sessions/:id/branches', () => {
     await withPrStatus.close();
   });
 
+  it('shares batched metadata between devices and the session overview', async () => {
+    await createExistingSession('s1');
+    const metadata = vi.fn(async () => ({
+      current: 'feat/batched',
+      switchable: ['main'],
+      previewableRaw: ['remote'],
+    }));
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+    });
+    try {
+      const responses = await Promise.all(
+        Array.from({ length: 3 }, () => cachedApp.inject('/sessions/s1/branches')),
+      );
+      for (const response of responses)
+        expect(response.json()).toMatchObject({
+          current: 'feat/batched',
+          switchable: ['main'],
+          previewable: ['remote'],
+        });
+      const overview = await cachedApp.inject('/sessions');
+      expect(overview.json()[0]).toMatchObject({ branch: 'feat/batched' });
+      expect(metadata).toHaveBeenCalledOnce();
+      expect(branchSvc.current).not.toHaveBeenCalled();
+      expect(branchSvc.switchable).not.toHaveBeenCalled();
+      expect(branchSvc.previewable).not.toHaveBeenCalled();
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it('handles failed metadata joined by a stale branch refresh', async () => {
+    await createExistingSession('s1');
+    let rejectRead: (error: Error) => void = () => {};
+    const metadata = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+      branchCacheTtlMs: 1,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/cached');
+      await cachedApp.inject('/sessions/s1/activity');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const pending = cachedApp.inject('/sessions/s1/branches');
+      await vi.waitFor(() => expect(metadata).toHaveBeenCalledOnce());
+      expect((await cachedApp.inject('/sessions/s1/activity')).json()).toMatchObject({
+        branch: 'feat/cached',
+      });
+      // A timeout must not escape the detached stale-cache refresh as an unhandled rejection.
+      rejectRead(new Error('metadata timeout'));
+      expect((await pending).statusCode).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      rejectRead(new Error('cleanup'));
+      await cachedApp.close();
+    }
+  });
+
+  it('disowns batched metadata that finishes after a branch switch', async () => {
+    await createExistingSession('s1');
+    let release: (value: {
+      current: string;
+      switchable: string[];
+      previewableRaw: string[];
+    }) => void = () => {};
+    const fresh: Parameters<typeof release>[0] = {
+      current: 'feat/new',
+      switchable: [],
+      previewableRaw: [],
+    };
+    const metadata = vi
+      .fn(async () => fresh)
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+    });
+    try {
+      const oldRead = cachedApp.inject('/sessions/s1/branches');
+      await vi.waitFor(() => expect(metadata).toHaveBeenCalledOnce());
+      branchSvc.switch.mockResolvedValue('feat/new');
+      const switched = await cachedApp.inject({
+        method: 'POST',
+        url: '/sessions/s1/branch',
+        payload: { branch: 'feat/new' },
+      });
+      expect(switched.statusCode).toBe(200);
+      expect((await cachedApp.inject('/sessions/s1/branches')).json()).toMatchObject({
+        current: 'feat/new',
+      });
+      release({ current: 'feat/old', switchable: [], previewableRaw: [] });
+      await oldRead;
+      expect((await cachedApp.inject('/sessions')).json()[0]).toMatchObject({ branch: 'feat/new' });
+      expect(metadata).toHaveBeenCalledTimes(2);
+    } finally {
+      release(fresh);
+      await cachedApp.close();
+    }
+  });
+
   it('shares PR status and branch enumeration between devices, overview and background polls', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/shared-pr');
@@ -8611,7 +9060,7 @@ describe('GET /sessions/:id/branches', () => {
     }
   });
 
-  it.each(['ci', 'conflict'] as const)(
+  it.each(['ci', 'conflict', 'running-conflict'] as const)(
     'repairs %s in the background without app requests or push registration',
     async (failure) => {
       let now = 0;
@@ -8623,10 +9072,13 @@ describe('GET /sessions/:id/branches', () => {
         url: 'https://github.com/heey-global/verity/pull/119',
         phase: 'open' as const,
         headSha: 'abc123',
-        pipeline: 'failure' as const,
-        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        pipeline: failure === 'running-conflict' ? ('running' as const) : ('failure' as const),
+        checks:
+          failure === 'running-conflict'
+            ? { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 }
+            : { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
         mergeable: false,
-        ...(failure === 'conflict' ? { mergeState: 'dirty' as const } : {}),
+        ...(failure !== 'ci' ? { mergeState: 'dirty' as const } : {}),
       }));
       const backgroundApp = buildServer({
         eventStore: ctx.store,
@@ -8647,9 +9099,7 @@ describe('GET /sessions/:id/branches', () => {
         expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
         expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
           displayPrompt:
-            failure === 'conflict'
-              ? 'Resolve merge conflicts for PR #119'
-              : 'Fix failing CI for PR #119',
+            failure !== 'ci' ? 'Resolve merge conflicts for PR #119' : 'Fix failing CI for PR #119',
         });
       } finally {
         await backgroundApp.close();
@@ -9034,6 +9484,45 @@ describe('GET /sessions/:id/branches', () => {
     await withPrStatus.close();
   });
 
+  it('shares the opened PR status with the overview before its next summary refresh', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('fix/status');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const status = {
+      number: 119,
+      title: 'Known PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'running' as const,
+      checks: { completed: 1, total: 2, successful: 1, failed: 0, pending: 1 },
+      mergeable: null,
+    };
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: async () => status,
+    });
+    try {
+      const branches = await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      expect(branches.statusCode).toBe(200);
+      const overview = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+      expect(overview.statusCode).toBe(200);
+      expect(
+        overview
+          .json<{ sessions: { sessionId: string }[] }>()
+          .sessions.find((s) => s.sessionId === 's1'),
+      ).toMatchObject({
+        pr: { phase: status.phase, pipeline: status.pipeline },
+        pullRequest: status,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('degrades currentPr to null when the PR lookup throws (never fails the list)', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
@@ -9074,6 +9563,90 @@ describe('GET /sessions/:id/branches', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ owner: 'Heey-Global', repo: 'Verity' });
     expect(repoIdentity).toHaveBeenCalledWith(worktree);
+    await withId.close();
+  });
+
+  // A Forgejo checkout's origin is the sandbox broker, so the remote parse is
+  // wrong for links; the chips must use the project and its instance instead.
+  it('links Forgejo project chips to the configured instance', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'branches-forgejo',
+      provider: 'forgejo',
+      baseUrl: 'https://git.example.org/forge',
+      label: 'Forgejo',
+      personalToken: 'fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'branches-forgejo-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'branches-forgejo',
+      owner: 'team',
+      repo: 'website',
+      containerName: 'forgejo-team-website',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'forgejo-'));
+    await ctx.store.createSession({
+      sessionId: 'forgejo-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-forgejo-project',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/forgejo-session/branches' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      owner: 'team',
+      repo: 'website',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org/forge' },
+    });
+    await withId.close();
+  });
+
+  it('keeps Forgejo chips unlinked when the project connection is gone', async () => {
+    await ctx.store.upsertProject({
+      id: 'branches-orphan-forgejo',
+      kind: 'forgejo',
+      owner: 'team',
+      repo: 'orphan',
+      containerName: 'forgejo-team-orphan',
+      state: 'active',
+    });
+    const worktree = mkdtempSync(join(worktreeRoot, 'orphan-'));
+    await ctx.store.createSession({
+      sessionId: 'orphan-session',
+      worktree,
+      model: 'm',
+      projectId: 'branches-orphan-forgejo',
+    });
+    branchSvc.current.mockResolvedValue('feat/12-x');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const withId = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      // The broker remote parses as a repository but names nothing real.
+      repoIdentity: vi.fn().mockResolvedValue({ owner: 'broker', repo: 'capability' }),
+    });
+    const res = await withId.inject({ method: 'GET', url: '/sessions/orphan-session/branches' });
+    expect(res.statusCode).toBe(200);
+    const body: { owner?: string; codeHost?: unknown } = res.json();
+    expect(body.owner).toBeUndefined();
+    expect(body.codeHost).toBeUndefined();
     await withId.close();
   });
 
@@ -9323,7 +9896,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it('returns 409 and asks the agent to fix the PR when GitHub rejects the merge', async () => {
+  it('returns 409 without an agent turn when merge rejection has no confirmed repairable cause', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const withMerge = buildServer({
       eventStore: ctx.store,
@@ -9342,13 +9915,166 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('#119') });
     // A rejected merge posts no marker (nothing landed).
     expect(emitMerged).not.toHaveBeenCalled();
-    expect(dispatchTurn).toHaveBeenCalledWith(
-      's1',
-      expect.stringContaining('GitHub rejected the merge for pull request #119'),
-      undefined,
-      { displayPrompt: 'Fix merge for PR #119' },
-    );
+    expect(dispatchTurn).not.toHaveBeenCalled();
     await withMerge.close();
+  });
+
+  it.each([true, false])(
+    'never dispatches an agent for permission or unknown thrown errors: %s',
+    async (permission) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        mergePr: vi
+          .fn()
+          .mockRejectedValue(
+            permission ? new ForgeMergePermissionError() : new Error('network failed'),
+          ),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(permission ? 403 : 409);
+        if (permission) expect(response.json().error).toContain('maintainer');
+        expect(dispatchTurn).not.toHaveBeenCalled();
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it.each([
+    { mergeState: 'dirty', pipeline: 'unknown', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'clean', pipeline: 'failure', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'unstable', pipeline: 'failure', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'clean', pipeline: 'unknown', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'dirty', pipeline: 'failure', viewerCanMerge: false, repair: false },
+  ] as const)(
+    'only dispatches a repair for confirmed fixable rejection: %j',
+    async ({ repair, viewerCanMerge, ...status }) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feature');
+      let calls = 0;
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<
+          Parameters<typeof buildServer>[0]['branches']
+        >,
+        branchPrStatus: vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(
+              prStatus(
+                ++calls === 1
+                  ? { pipeline: 'success', mergeable: true }
+                  : { ...status, ...(viewerCanMerge === undefined ? {} : { viewerCanMerge }) },
+              ),
+            ),
+          ),
+        mergePr: vi.fn().mockResolvedValue(false),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(409);
+        expect(dispatchTurn).toHaveBeenCalledTimes(repair ? 1 : 0);
+        if (repair)
+          expect(dispatchTurn.mock.calls[0]?.[1]).toContain('Do not change repository permissions');
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it('does not call the merge provider when its credential explicitly lacks permission', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feature');
+    const mergePr = vi.fn().mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi
+        .fn()
+        .mockResolvedValue(
+          prStatus({ pipeline: 'unknown', mergeable: true, viewerCanMerge: false }),
+        ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe('merge_permission_denied');
+      expect(mergePr).not.toHaveBeenCalled();
+      expect(dispatchTurn).not.toHaveBeenCalled();
+    } finally {
+      await withMerge.close();
+    }
+  });
+
+  it.each([
+    { pipeline: 'unknown', mergeable: true, expected: 200 },
+    { pipeline: 'success', mergeable: true, expected: 200 },
+    { pipeline: 'failure', mergeable: true, mergeState: 'unstable', expected: 200 },
+    { pipeline: 'failure', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, expected: 409 },
+    { pipeline: 'running', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: false, expected: 409 },
+    { pipeline: 'unknown', mergeable: null, expected: 409 },
+    { pipeline: 'failure', mergeable: false, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, mergeState: 'dirty', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, phase: 'closed', expected: 409 },
+  ] as const)('rechecks merge eligibility at action time: %j', async ({ expected, ...status }) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feat/119-ready');
+    const mergePr = vi
+      .fn<(number: number, wt: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn().mockResolvedValue(
+        prStatus({
+          ...status,
+          checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 },
+        }),
+      ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(expected);
+      if (expected === 200) {
+        expect(response.json()).toMatchObject({ merged: true });
+        expect(mergePr).toHaveBeenCalledWith(119, '/wt/s1');
+      } else {
+        expect(mergePr).not.toHaveBeenCalled();
+      }
+    } finally {
+      await withMerge.close();
+    }
   });
 
   it('rejects a stale or forged notification before calling GitHub merge', async () => {
@@ -10278,6 +11004,10 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     );
     branchSvc.switchable.mockResolvedValue([]);
     const app = buildLocal();
+    const warn = vi.fn();
+    app.addHook('onRequest', async (request) => {
+      request.log.warn = warn;
+    });
 
     branchSvc.hasProjectChanges.mockResolvedValue(false);
     const local = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
@@ -10287,9 +11017,28 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       localMerge: { base: 'trunk', hasChanges: false },
     });
     expect(branchSvc.hasProjectChanges).toHaveBeenCalledWith(process.cwd(), 'trunk');
+    expect(branchSvc.current).toHaveBeenCalledWith('/clones/__local__-notes', process.cwd());
     branchSvc.hasProjectChanges.mockResolvedValue(true);
     const changed = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
     expect(changed.json().localMerge.hasChanges).toBe(true);
+    const gitError = Object.assign(new Error('git failed'), {
+      stderr: 'fatal: detected dubious ownership',
+    });
+    branchSvc.hasProjectChanges.mockRejectedValueOnce(gitError);
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'file changes', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
+    branchSvc.current.mockImplementation(async (wt: string) => {
+      if (wt === '/clones/__local__-notes') throw gitError;
+      return 'feat/notes';
+    });
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'base branch', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
     await app.close();
 
     // Same session without a configured clone root: nothing to merge into locally.
@@ -10449,6 +11198,7 @@ describe('POST /sessions/:id/branch', () => {
 describe('error boundary', () => {
   it('never reflects an internal store error to the client', async () => {
     const throwing = {
+      tasks: { expirePendingTitles: async () => [] },
       listMovePreviewRestarts: async () => [],
       listSessions: () => Promise.reject(new Error('driver destroyed SECRET-INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
@@ -10560,6 +11310,72 @@ describe('GET /live (WebSocket)', () => {
     }
   });
 
+  it('announces newly discovered PR status to overview and branch watchers together', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('fix/status');
+    branchSvc.switchable.mockResolvedValue([]);
+    let now = 0;
+    let status = {
+      number: 119,
+      title: 'Known PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'running' as 'running' | 'success',
+      mergeable: false,
+      checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+    };
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: async () => status,
+      pullRequestCacheNow: () => now,
+    });
+    await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    await server.listen({ host: '127.0.0.1', port: 0 });
+    const address = server.server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing test listener');
+    const conn = await connect(address.port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      const paths = ['/sessions?envelope=1', '/sessions/s1/branches'];
+      for (const path of paths) {
+        conn.ws.send(JSON.stringify({ k: 'watch', resource: { path } }));
+        expect(await conn.next()).toEqual({ k: 'invalidate', path });
+      }
+      const invalidations: string[] = [];
+      conn.ws.addEventListener('message', (event) => {
+        const frame = JSON.parse(String(event.data)) as Frame;
+        if (frame.k === 'invalidate' && typeof frame.path === 'string')
+          invalidations.push(frame.path);
+      });
+      status = {
+        ...status,
+        pipeline: 'success',
+        mergeable: true,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      now += 15_000;
+      await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      // The overview's 30-second observation must not be needed to announce a PR
+      // that another reader has already discovered.
+      await vi.waitFor(() => expect(new Set(invalidations)).toEqual(new Set(paths)), {
+        timeout: 5_000,
+      });
+      const overview = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+      expect(
+        overview
+          .json<{ sessions: { sessionId: string; pullRequest?: unknown }[] }>()
+          .sessions.find((session) => session.sessionId === 's1')?.pullRequest,
+      ).toEqual(status);
+    } finally {
+      conn.ws.close();
+      await conn.closed;
+      await server.close();
+    }
+  });
+
   it('synchronizes project collapse between live devices after a saved mutation', async () => {
     await ctx.store.createProject({
       id: 'p-live',
@@ -10656,6 +11472,7 @@ describe('GET /live (WebSocket)', () => {
 
   it('ends the subscription without detail if the backlog read fails', async () => {
     const throwing = {
+      tasks: { expirePendingTitles: async () => [] },
       listMovePreviewRestarts: async () => [],
       getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),
@@ -11315,6 +12132,7 @@ describe('POST /sessions with project field (#174)', () => {
     dopplerTokenRef?: string | null;
     defaultBranch?: string | null;
     defaultModel?: string | null;
+    allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
   };
   const updateProjectSettings = (projectId: string, patch: ProjectSettingsPatchForTest) =>
     (
@@ -11370,6 +12188,21 @@ describe('POST /sessions with project field (#174)', () => {
     expect(startSession).not.toHaveBeenCalled();
     expect(await ctx.store.getEvents(sessionId)).toEqual([]);
     expect(await ctx.store.consumePendingNotes(sessionId)).toEqual([]);
+  });
+
+  it('enforces allowed agents before allocating a Verity Control worktree', async () => {
+    await ctx.store.updateVeritySettings({ advancedModeEnabled: true });
+    await app.inject({ method: 'GET', url: '/projects' });
+    await ctx.store.updateProjectSettings('verity-control', { allowedAgents: ['claude'] });
+    const before = readdirSync(worktreeRoot);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions',
+      payload: { project: 'verity/control', model: 'codex/default' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Codex is not allowed in this project.' });
+    expect(readdirSync(worktreeRoot)).toEqual(before);
   });
 
   it('503s when project clone root is missing and project is specified', async () => {
@@ -11700,6 +12533,84 @@ describe('POST /sessions with project field (#174)', () => {
     }
   });
 
+  it('creates a persisted Forgejo session alongside GitHub without contacting GitHub', async () => {
+    await ctx.store.forgeConnections.upsert({
+      id: 'forgejo-session',
+      provider: 'forgejo',
+      baseUrl: 'https://forge.example:3000',
+      label: 'Forgejo',
+      personalToken: 'forgejo-fixture',
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    await ctx.store.upsertProject({
+      id: 'p-active',
+      kind: 'forgejo',
+      forgeConnectionId: 'forgejo-session',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.upsertProject({
+      id: 'parallel-github',
+      owner: 'heey-global',
+      repo: 'github-repo',
+      containerName: 'dev-github-repo',
+      state: 'active',
+      kind: 'github',
+    });
+    const githubFetch = vi.fn(async () => ({ ok: false, status: 422, json: async () => ({}) }));
+    const cachedMint = createCachedProjectTokenMint(
+      createGitHubAppProjectTokenMint({
+        appId: '123',
+        defaultInstallationId: '456',
+        privateKeyPath: '/unused/github.pem',
+        fetch: githubFetch,
+      }),
+    );
+    const projectWorktrees = fakeProjectWorktrees();
+    projectWorktrees.add.mockResolvedValueOnce(
+      '/data/dev/heey-global-verity/.verity-sessions/agent-abc',
+    );
+    const refreshProjectToken = vi.fn(async (project: Parameters<typeof cachedMint>[0]) => {
+      await cachedMint.strict(project);
+    });
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: fakeProvisioner(),
+      projectCloneRoot: '/data/dev/',
+      projectBackend: fakeProjectBackend,
+      refreshProjectToken,
+      projectWorktrees: () => projectWorktrees,
+      worktrees: { add: vi.fn(async () => '/wt/s-proj'), remove: vi.fn(async () => {}) },
+    });
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { prompt: 'go', projectId: 'p-active' },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(githubFetch).not.toHaveBeenCalled();
+      const { sessionId }: { sessionId: string } = res.json();
+      expect(projectWorktrees.add).toHaveBeenCalled();
+      expect(refreshProjectToken).toHaveBeenCalledWith(expect.objectContaining({ id: 'p-active' }));
+      expect(refreshProjectToken.mock.invocationCallOrder[0]).toBeLessThan(
+        projectWorktrees.add.mock.invocationCallOrder[0]!,
+      );
+      const session = await ctx.store.getSession(sessionId);
+      expect(session?.projectId).toBe('p-active');
+      expect(session?.worktree).toBe('/data/dev/heey-global-verity/.verity-sessions/agent-abc');
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
   // A Sandbox in a sleep lifecycle state is provisioned, not missing: its clone and
   // worktrees are on the host, and `publicProject` even reports it to clients as
   // `active`. Routing the spawn to the provisioner claimed the row for `cloning` —
@@ -11892,6 +12803,130 @@ describe('POST /sessions with project field (#174)', () => {
     }
   });
 
+  describe('allowed agents', () => {
+    const codexModels = ['codex/default', 'codex/gpt-5.6-sol', 'codex/gpt-5.6-terra'];
+    async function restrictedProjectServer(
+      projectId: string,
+      agents: ('claude' | 'codex' | 'opencode')[],
+      listModels: () => Promise<string[]> = () => Promise.resolve(codexModels),
+    ) {
+      await ctx.store.updateVeritySettings({
+        claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+        codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+      });
+      await ctx.store.upsertProject({
+        id: projectId,
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: 'dev-heey-global-verity',
+        state: 'active',
+      });
+      await updateProjectSettings(projectId, { allowedAgents: agents });
+      const projectWorktrees = fakeProjectWorktrees();
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner: fakeProvisioner(),
+        projectCloneRoot: '/data/dev',
+        projectBackend: fakeProjectBackend,
+        projectWorktrees: () => projectWorktrees,
+        listModels,
+        worktrees: { add: vi.fn(async () => '/wt/unused'), remove: vi.fn(async () => {}) },
+      });
+      return { server, projectWorktrees };
+    }
+
+    it.each(['empty', 'unavailable', 'claude-connected'])(
+      'keeps the allowed Codex fallback when its catalog is %s',
+      async (catalog) => {
+        const { server } = await restrictedProjectServer(
+          'p-agents-codex-fallback',
+          ['codex'],
+          async () => {
+            if (catalog === 'unavailable') throw new Error('Catalog unavailable');
+            return [];
+          },
+        );
+        if (catalog !== 'claude-connected') {
+          await ctx.store.updateVeritySettings({ claudeCodeOauthCredentialsJson: null });
+        }
+        try {
+          const res = await server.inject({
+            method: 'POST',
+            url: '/sessions',
+            payload: { project: 'heey-global/verity' },
+          });
+          expect(res.statusCode).toBe(201);
+          expect(
+            (await ctx.store.getSession(res.json<{ sessionId: string }>().sessionId))?.model,
+          ).toBe('codex/default');
+        } finally {
+          await server.close();
+        }
+      },
+    );
+
+    it('rejects an explicit model whose agent the project excludes, before any worktree exists', async () => {
+      const { server, projectWorktrees } = await restrictedProjectServer('p-agents-explicit', [
+        'codex',
+      ]);
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity', model: 'claude-sonnet-5-5' },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+        expect(projectWorktrees.add).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('skips a remembered model on an excluded agent and starts on the first allowed model', async () => {
+      const { server } = await restrictedProjectServer('p-agents-remembered', ['codex']);
+      // The project's last session ran on Claude, which a spawn would otherwise reuse.
+      await ctx.store.createSession({
+        sessionId: 's-agents-remembered-prior',
+        worktree: '/wt/prior',
+        model: 'claude-opus-5-5',
+        projectId: 'p-agents-remembered',
+      });
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity' },
+        });
+        expect(res.statusCode).toBe(201);
+        const { sessionId }: { sessionId: string } = res.json();
+        expect((await ctx.store.getSession(sessionId))?.model).toBe('codex/gpt-5.6-sol');
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('fails instead of falling back when no allowed agent is connected', async () => {
+      const { server, projectWorktrees } = await restrictedProjectServer('p-agents-none', [
+        'opencode',
+      ]);
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity' },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json<{ error: string }>().error).toContain('No allowed agent is connected');
+        expect(projectWorktrees.add).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
+  });
+
   it('passes the project default branch into project worktree creation', async () => {
     await ctx.store.upsertProject({
       id: 'p-default-branch',
@@ -12059,6 +13094,72 @@ describe('POST /projects/:id/link-github', () => {
       ...overrides,
     };
   }
+
+  it('links through the selected Forgejo connection without adopting another connection repository', async () => {
+    await createLocal('p-forge-link');
+    for (const id of ['forge-first', 'forge-second'])
+      await ctx.store.forgeConnections.upsert({
+        id,
+        provider: 'forgejo',
+        baseUrl: 'https://forge.test/prefix',
+        label: id,
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+    await ctx.store.createProject({
+      id: 'other-forge-project',
+      kind: 'forgejo',
+      forgeConnectionId: 'forge-second',
+      owner: 'owner',
+      repo: 'repo',
+      containerName: 'other-forge',
+      state: 'active',
+    });
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('forge-admin');
+    const provisioner = fakeProvisioner();
+    const ghTokenMint = vi.fn(() => Promise.resolve('server-only-fixture'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner,
+      ghTokenMint,
+      authRegistry: registry,
+      forgejoEnabled: true,
+    });
+    try {
+      const response = await a.inject({
+        method: 'POST',
+        url: '/projects/p-forge-link/link',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { repo: 'https://forge.test/prefix/owner/repo.git', connectionId: 'forge-first' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        project: {
+          kind: 'forgejo',
+          forgeConnectionId: 'forge-first',
+          owner: 'owner',
+          repo: 'repo',
+          cloneDir: 'local-my-project',
+        },
+      });
+      expect(ghTokenMint).toHaveBeenCalledWith({
+        owner: 'owner',
+        repo: 'repo',
+        forgeConnectionId: 'forge-first',
+        kind: 'forgejo',
+      });
+      expect((await ctx.store.getProject('other-forge-project'))?.forgeConnectionId).toBe(
+        'forge-second',
+      );
+    } finally {
+      await a.close();
+    }
+  });
 
   it('503s when the provisioner cannot link', async () => {
     const res = await app.inject({
@@ -12911,6 +14012,64 @@ describe('POST /projects/:id/sleep and /wake', () => {
       expect(woke.statusCode).toBe(200);
       expect(woke.json()).toMatchObject({ project: { state: 'active' } });
       expect(wakeProject).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects an active wake when a sandbox mutation prevents takeover', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-wake-mutation',
+      owner: 'test',
+      repo: 'wake-mutation',
+      containerName: 'wake-mutation',
+      state: 'active',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      wakeProject: vi.fn(),
+      tryBeginProjectSandboxActivity: vi.fn(() => false),
+      endProjectSandboxActivity: vi.fn(),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-wake-mutation/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.endProjectSandboxActivity).not.toHaveBeenCalled();
+      expect(provisioner.wakeProject).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps a stuck waking project a conflict when no wake is in flight', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-stuck-waking',
+      owner: 'heey-global',
+      repo: 'stuck-waking',
+      containerName: 'dev-heey-global-stuck-waking',
+      state: 'waking',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: vi.fn(),
+      wakeProject: vi.fn(),
+      // The real provisioner refuses a `waking` row it has no attempt for, e.g. after a restart.
+      ensureProjectSandboxAwake: vi.fn(async (id: string) => {
+        throw new ProvisioningError(`project ${id} is waking`);
+      }),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-stuck-waking/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.ensureProjectSandboxAwake).toHaveBeenCalledOnce();
     } finally {
       await server.close();
     }
@@ -15451,6 +16610,294 @@ describe('PATCH /sessions/order', () => {
       expect((await ctx.store.listSessions()).map((session) => session.sessionId)).toEqual(history);
     } finally {
       await gated.close();
+    }
+  });
+});
+
+it('removes a cancelled transcript and its punctuated title from the meeting index', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-'));
+  const title = String.raw`Planning [Q1] \ review`;
+  try {
+    writeFileSync(join(meetingDir, 'removed.md'), '# Transcript');
+    await appendMeetingIndex(meetingDir, 'removed.md', title);
+    await appendMeetingIndex(meetingDir, 'kept.md', 'Another meeting');
+    expect(readFileSync(join(meetingDir, 'index.md'), 'utf8')).toContain('(removed.md)');
+    await removeCancelledMeetingTranscript({ meetingDir, relPath: 'removed.md', title });
+    expect(existsSync(join(meetingDir, 'removed.md'))).toBe(false);
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index).not.toContain('(removed.md)');
+    expect(index).toContain('(kept.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
+});
+
+it('replaces a meeting index entry by transcript path when the title changes', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-title-'));
+  try {
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Original title');
+    await appendMeetingIndex(meetingDir, 'other.md', 'Other meeting');
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Updated [title]');
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index.match(/\]\(meeting\.md\)/g)).toHaveLength(1);
+    expect(index).not.toContain('Original title');
+    expect(index).toContain('Updated');
+    expect(index).toContain('(other.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
+});
+
+describe('vulnerability scan session integration', () => {
+  it('scans a paused project only after its manual start finishes and leaves it active', async () => {
+    const id = 'vuln-paused-start';
+    await ctx.store.upsertProject({
+      id,
+      owner: 'test',
+      repo: id,
+      containerName: id,
+      state: 'absent',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provision = vi.fn(async (projectId: string) => {
+      await ready;
+      return (await ctx.store.updateProjectState(projectId, 'active'))!;
+    });
+    const run = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        worktree: '/work/.verity-vuln-test1234/tree',
+        hash: 'a'.repeat(64),
+        revision: 'b'.repeat(40),
+        lockfiles: [],
+      }),
+      stderr: '',
+      timedOut: false,
+    }));
+    const runtime = {
+      runAutomationScript: run,
+    } as unknown as import('./project-runtime.js').ProjectRuntime;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision },
+      projectRuntime: runtime,
+    });
+    try {
+      expect(
+        (await server.inject({ method: 'POST', url: `/projects/${id}/repair` })).statusCode,
+      ).toBe(202);
+      expect(provision).toHaveBeenCalledOnce();
+      expect(run).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(async () =>
+        expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe('no_lockfiles'),
+      );
+      expect((await ctx.store.getProject(id))?.state).toBe('active');
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await server.close();
+    }
+  });
+
+  it.each(['success', 'failure', 'takeover', 'takeover-while-waking'] as const)(
+    'temporarily wakes a sleeping project for a manual scan: %s',
+    async (scenario) => {
+      const id = `vuln-sleeper-${scenario}`;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'test',
+        repo: id,
+        containerName: id,
+        state: 'sleeping',
+      });
+      await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+      let activity = 0;
+      const touch = () => {
+        activity++;
+      };
+      const wakeProject = vi.fn(async (projectId: string) => {
+        touch();
+        return (await ctx.store.updateProjectState(projectId, 'active'))!;
+      });
+      const sleepProject = vi.fn(
+        async (projectId: string, options?: { shouldRestore?: () => boolean }) => {
+          if (options?.shouldRestore && !options.shouldRestore())
+            return (await ctx.store.getProject(projectId))!;
+          return (await ctx.store.updateProjectState(projectId, 'sleeping'))!;
+        },
+      );
+      const provisioner = {
+        provision: vi.fn(),
+        wakeProject,
+        wakeProjectForScan: async (projectId: string) => {
+          const waking = wakeProject(projectId);
+          const activityAt = activity;
+          return { project: await waking, owned: true, activityAt };
+        },
+        sleepProject,
+        ensureProjectSandboxAwake: async (projectId: string) => {
+          touch();
+          return (await ctx.store.getProject(projectId))!;
+        },
+        tryBeginProjectSandboxActivity: () => {
+          touch();
+          return true;
+        },
+        endProjectSandboxActivity: touch,
+        projectSandboxLastActivityAt: () => activity,
+      };
+      const runtime = {
+        runAutomationScript: async (
+          _project: unknown,
+          _settings: unknown,
+          input: { script: string },
+        ) => {
+          if (input.script.includes('mktemp')) {
+            if (scenario === 'failure') throw new Error('scan preparation failed');
+            if (scenario === 'takeover-while-waking') {
+              // The user taps Wake while the scan's own wake has not finished yet.
+              await ctx.store.updateProjectState(id, 'waking');
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+              await ctx.store.updateProjectState(id, 'active');
+            }
+            if (scenario === 'takeover')
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                worktree: '/work/.verity-vuln-test1234/tree',
+                hash: 'a'.repeat(64),
+                revision: 'b'.repeat(40),
+                lockfiles: [],
+              }),
+              stderr: '',
+              timedOut: false,
+            };
+          }
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      } as unknown as import('./project-runtime.js').ProjectRuntime;
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner,
+        projectRuntime: runtime,
+      });
+      try {
+        expect(
+          (await server.inject({ method: 'POST', url: `/projects/${id}/vulnerability-scan` }))
+            .statusCode,
+        ).toBe(202);
+        await vi.waitFor(async () =>
+          expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe(
+            scenario === 'failure' ? 'error' : 'no_lockfiles',
+          ),
+        );
+        expect(wakeProject).toHaveBeenCalledOnce();
+        const takenOver = scenario === 'takeover' || scenario === 'takeover-while-waking';
+        expect((await ctx.store.getProject(id))?.state).toBe(takenOver ? 'active' : 'sleeping');
+        expect(sleepProject).toHaveBeenCalledTimes(takenOver ? 0 : 1);
+        expect(startSession).not.toHaveBeenCalled();
+        expect(sendTurn).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  it('hydrates summary warnings and scans after an interrupted turn without starting an agent', async () => {
+    await ctx.store.upsertProject({
+      id: 'vuln-project',
+      owner: 'test',
+      repo: 'vuln',
+      containerName: 'vuln',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'vuln-session',
+      worktree: '/work/session',
+      projectId: 'vuln-project',
+      model: 'm',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, sessionChanges: true });
+    const finding = {
+      category: 'security' as const,
+      classificationSource: 'osv',
+      classificationVersion: 1,
+      advisoryId: 'GHSA-example',
+      aliases: [],
+      ecosystem: 'npm',
+      package: 'example',
+      version: '1',
+      severity: 'high' as const,
+      summary: '',
+      fixedVersions: [],
+      source: 'package-lock.json',
+      dev: false,
+      modified: null,
+    };
+    await ctx.store.vulnerabilityScans.putCached('integration-main', [finding]);
+    await ctx.store.vulnerabilityScans.putCached('integration-session', [
+      finding,
+      { ...finding, package: 'added' },
+    ]);
+    for (const sessionId of [null, 'vuln-session'])
+      await ctx.store.vulnerabilityScans.setState({
+        projectId: 'vuln-project',
+        sessionId,
+        contentHash: sessionId ? 'integration-session' : 'integration-main',
+        ...(sessionId ? { baseChecked: true, baseContentHash: 'integration-main' } : {}),
+        status: 'ready',
+        detail: null,
+        revision: 'abc',
+        attemptedAt: new Date(),
+      });
+    const server = buildServer({ eventStore: ctx.store, bus, conductor });
+    try {
+      await vi.waitFor(async () => {
+        const sessions = (await server.inject('/sessions')).json<
+          { sessionId: string; attention?: { code: string; message: string }[] }[]
+        >();
+        expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
+          code: 'vulnerability_new',
+          message: '1 new vulnerability',
+        });
+      });
+      const projects = (await server.inject('/projects')).json<
+        { id: string; vulnerabilitySummary?: unknown }[]
+      >();
+      expect(projects.find((p) => p.id === 'vuln-project')?.vulnerabilitySummary).toEqual({
+        count: 1,
+        critical: 0,
+        high: 1,
+        maintenance: 0,
+        unclassified: 0,
+      });
+      bus.publish('vuln-session', { seq: 1, ts: Date.now(), event: { t: 'interrupted' } });
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await ctx.store.vulnerabilityScans.getState('vuln-project', 'vuln-session'))?.status,
+          ).toBe('unavailable'),
+        { timeout: 5000 },
+      );
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
     }
   });
 });

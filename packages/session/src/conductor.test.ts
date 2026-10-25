@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
@@ -5,9 +8,11 @@ import {
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
+  repoToolPullRequestSystemPrompt,
   MEMORY_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
@@ -627,6 +632,43 @@ describe('Conductor.sendTurn', () => {
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
   });
 
+  it('keeps the error an adapter printed above its exit stack trace', async () => {
+    await ctx.store.createSession({ sessionId: 's-stack', worktree: '/wt/x', model: 'm' });
+    // Shape of a Codex ACP exit: the app-server's reason, then the adapter's Node
+    // stack for the rejected request. The stack alone used to fill the excerpt, so
+    // the operator saw only "Internal error" and never the reason above it.
+    const frame = (n: number) =>
+      `    at handleResponse (file:///usr/local/lib/node_modules/.verity-cli/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js:${2409 + n}:40)`;
+    const stderr = [
+      'ERROR codex_app_server: thread/resume failed: example reason',
+      'ResponseError: Internal error',
+      ...Array.from({ length: 8 }, (_, n) => frame(n)),
+      '',
+      'Internal error',
+    ].join('\n');
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr,
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s-stack', 'go');
+
+    const crashed = (await ctx.store.getEvents('s-stack')).find((e) => e.t === 'error');
+    expect(crashed).toMatchObject({ t: 'error', kind: 'crashed' });
+    expect(crashed && 'message' in crashed ? crashed.message : '').toContain(
+      'thread/resume failed: example reason',
+    );
+  });
+
   it.each([
     "You've hit your session limit · resets 7:30pm (UTC)",
     "You've reached your Fable limit. Switch to another model to continue.",
@@ -1105,6 +1147,30 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().permissionMode).toBe('acceptEdits');
     expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('keeps a dismissed plan as history without authorizing its implementation on resumed turns', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    await ctx.store.presentSessionPlan('s1', '1. Change the gestures');
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A resumed backend may still carry the old planning instructions and plan.
+    for (const message of ['Discuss another approach', 'What about step 1?']) {
+      await conductor.sendTurn('s1', message);
+      expect(fake.last().appendSystemPrompt).toContain(DISMISSED_PLAN_SYSTEM_PROMPT);
+      expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+      expect(fake.last().planning).toBeUndefined();
+      expect(fake.last().permissionMode).toBe('auto');
+    }
+    expect((await ctx.store.getSession('s1'))?.planningPlan).toBe('1. Change the gestures');
   });
 
   it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
@@ -2325,6 +2391,7 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
       displayPrompt: 'queued while stopping',
     });
     await vi.waitFor(() => expect(enqueueStarted).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(turnSignal).toBeDefined());
     const stop = conductor.stopSession('s1');
     try {
       // A stalled durable enqueue must not delay signalling the active agent.
@@ -2342,6 +2409,36 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     expect(conductor.queuedCount('s1')).toBe(0);
     expect(await ctx.store.listQueuedTurns()).toHaveLength(0);
+  });
+
+  it('Stop during runner acquisition never launches the cancelled turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let releaseRunner!: () => void;
+    const runnerGate = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    const startTurn = vi.fn<RunnerClient['startTurn']>();
+    const runnerRequested = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: scriptedBackend({ text: 'unused' }).backend,
+      worktreeExists: async () => true,
+      runner: async () => {
+        runnerRequested();
+        await runnerGate;
+        return { startTurn };
+      },
+    });
+    await conductor.dispatchTurn('s1', 'one');
+    await vi.waitFor(() => expect(runnerRequested).toHaveBeenCalledOnce());
+    try {
+      await expect(conductor.stopSession('s1')).resolves.toMatchObject({ cancelled: true });
+    } finally {
+      releaseRunner();
+    }
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(startTurn).not.toHaveBeenCalled();
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
   });
 
   it('stopSession still cancels the active turn when durable queue cleanup fails', async () => {
@@ -2953,13 +3050,90 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     run: () => Promise.reject(new Error('backend.run must not be called on a reattach')),
   };
 
-  async function seedMarker(turnId: string): Promise<number> {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+  async function seedMarker(turnId: string, worktree = '/wt/s1'): Promise<number> {
+    await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
     const { seq } = await ctx.store.appendEvent('s1', { t: 'prompt', text: 'go' });
     await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
     await ctx.store.bindTurnIdentity('s1', { turnId, startCommandId: `${turnId}-start` });
     return seq;
   }
+
+  it.each(['result', 'forced-cancel'] as const)(
+    'cleans staged images after recovered %s termination',
+    async (termination) => {
+      const worktree = await mkdtemp(join(tmpdir(), 'verity-image-settle-'));
+      const turnId = 'image-settle';
+      const directory = join(worktree, '.verity-sessions', 'attachments', `turn-${turnId}`);
+      try {
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, 'image.png'), 'original image bytes');
+        await seedMarker(turnId, worktree);
+        let finish!: (result: RunResult) => void;
+        const result = new Promise<RunResult>((resolve) => (finish = resolve));
+        const runner = fakeAttachRunner(result, true);
+        const { recovery } = fakeRecovery({
+          status: 'live',
+          target: {
+            turnId,
+            sessionId: 's1',
+            eventFilePath: '/rt/events.jsonl',
+            controlSocketPath: '/rt/control.sock',
+          },
+        });
+        const conductor = new Conductor({
+          store: ctx.store,
+          backend: inertBackend,
+          worktreeExists: async () => true,
+          runner: runner.factory,
+          runnerRecovery: recovery,
+        });
+        await conductor.recover();
+        await expect(stat(directory)).resolves.toBeDefined();
+        if (termination === 'result') {
+          finish({ sessionId: 's1', exitCode: 0, stderr: '', aborted: false });
+        } else {
+          await conductor.cancelTurn('s1');
+        }
+        await vi.waitFor(
+          async () => {
+            await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+          },
+          { timeout: 10000 },
+        );
+        await conductor.drainOnShutdown();
+      } finally {
+        await rm(worktree, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['dead', 'uncertain'] as const)(
+    'removes staged images only for a confirmed %s recovery outcome',
+    async (status) => {
+      const worktree = await mkdtemp(join(tmpdir(), 'verity-image-recovery-'));
+      const turnId = 'image-recovery';
+      const directory = join(worktree, '.verity-sessions', 'attachments', `turn-${turnId}`);
+      try {
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, 'image.png'), 'original image bytes');
+        await seedMarker(turnId, worktree);
+        const { recovery } = fakeRecovery({ status });
+        const conductor = new Conductor({
+          store: ctx.store,
+          backend: inertBackend,
+          worktreeExists: async () => true,
+          runnerRecovery: recovery,
+        });
+        await conductor.recover();
+        if (status === 'dead')
+          await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+        else await expect(stat(directory)).resolves.toBeDefined();
+        await conductor.drainOnShutdown();
+      } finally {
+        await rm(worktree, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('reattaches a LIVE recovered turn instead of settling it, and settles on the terminal frame', async () => {
     await seedMarker('turn-1');
@@ -2989,6 +3163,7 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     expect(calls).toEqual([{ sessionId: 's1', turnId: 'turn-1' }]);
     expect(runner.attachTargets).toEqual([
       {
+        attachmentCwd: '/wt/s1',
         turnId: 'turn-1',
         sessionId: 's1',
         eventFilePath: '/rt/events.jsonl',
@@ -4598,8 +4773,19 @@ describe('Conductor.startSession', () => {
    *  the runtime prompt its first turn is launched with. */
   async function freshTurnSystemPrompt(
     sessionId: string,
-    kind: 'github' | 'local',
+    kind: 'github' | 'forgejo' | 'local',
   ): Promise<string> {
+    if (kind === 'forgejo')
+      await ctx.store.forgeConnections.upsert({
+        id: `forgejo-${sessionId}`,
+        provider: 'forgejo',
+        baseUrl: 'https://git.example.org',
+        label: 'Forgejo',
+        personalToken: 'fixture',
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
     await ctx.store.upsertProject({
       id: `project-${sessionId}`,
       owner: kind === 'local' ? '__local__' : 'acme',
@@ -4607,6 +4793,7 @@ describe('Conductor.startSession', () => {
       containerName: `verity-${sessionId}`,
       state: 'active',
       kind,
+      ...(kind === 'forgejo' ? { forgeConnectionId: `forgejo-${sessionId}` } : {}),
     });
     await ctx.store.createSession({
       sessionId,
@@ -4666,6 +4853,17 @@ describe('Conductor.startSession', () => {
 
     expect(appended).toContain(PULL_REQUEST_SYSTEM_PROMPT);
     expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+  });
+
+  // `gh` cannot reach Forgejo; the first fresh turn must already name the tool
+  // that can, and must not also carry the `gh` instructions it would follow.
+  it('gives a Forgejo project the verity-repo pull-request directive', async () => {
+    const appended = await freshTurnSystemPrompt('s-forgejo-project', 'forgejo');
+
+    expect(appended).toContain(repoToolPullRequestSystemPrompt('Forgejo'));
+    expect(appended).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
+    expect(appended).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
+    expect(appended.split(REPO_CONVENTIONS_SYSTEM_PROMPT)).toHaveLength(2);
   });
 
   it('reclassifies a linked project on its next fresh context, not on resumed turns', async () => {
@@ -5166,11 +5364,12 @@ describe('Conductor.cancelTurn (#79)', () => {
   // cancel, and the abort is observed the way a real backend observes it. The
   // already-aborted case is handled too: the cancel can land while the partial
   // output is still being persisted, and a listener added after that fires never.
-  function cancellableBackend(onAbort: () => void): Backend {
+  function cancellableBackend(onAbort: () => void, onReady: () => void): Backend {
     return scriptedBackend({
       text: 'hi', // partial output BEFORE the cancel
       abortable: true,
       during: (turn) => {
+        onReady();
         if (turn.opts.signal?.aborted === true) onAbort();
         else turn.opts.signal?.addEventListener('abort', onAbort, { once: true });
       },
@@ -5180,16 +5379,23 @@ describe('Conductor.cancelTurn (#79)', () => {
   it('aborts the in-flight turn, keeps partial output, and appends a terminal interrupted event', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     let aborted = false;
+    let ready = false;
     const conductor = new Conductor({
       store: ctx.store,
-      backend: cancellableBackend(() => {
-        aborted = true;
-      }),
+      backend: cancellableBackend(
+        () => {
+          aborted = true;
+        },
+        () => {
+          ready = true;
+        },
+      ),
       worktreeExists: async () => true,
     });
 
     await conductor.dispatchTurn('s1', 'go');
-    await waitFor(() => conductor.isBusy('s1')); // turn is running
+    // The lock is acquired before preparation; cancel only after partial output persisted.
+    await waitFor(() => ready);
     await expect(conductor.cancelTurn('s1')).resolves.toBe(true);
     await waitFor(() => !conductor.isBusy('s1')); // run settled after the abort
 
@@ -6494,7 +6700,8 @@ describe('Conductor.cancelTurn (#79)', () => {
     });
 
     await conductor.dispatchTurn('s1', 'first');
-    await waitFor(() => conductor.isBusy('s1'));
+    // Cancelling during preparation would skip this backend attempt entirely.
+    await waitFor(() => fake.calls.length === 1);
     await conductor.dispatchTurn('s1', 'second'); // queued behind the in-flight first
     expect(conductor.queuedCount('s1')).toBe(1);
 
@@ -6561,6 +6768,185 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('refuses chat implementation while newer steering awaits prompt persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) await barrier;
+      return append(...args);
+    });
+    const steer = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    await waitFor(() => fake.steered.length === 1);
+    try {
+      // The backend already sees the cancellation, while durable history still
+      // contains the previous approval. It must not reopen write access.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: {
+              turnId: running.turnId!,
+              promptSeq: running.promptSeq,
+              runningPromptSeq: running.promptSeq,
+            },
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    } finally {
+      unblock();
+      await steer;
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('keeps chat consent revoked after delivered steering fails persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    const consent = {
+      turnId: running.turnId!,
+      promptSeq: running.promptSeq,
+      runningPromptSeq: running.promptSeq,
+    };
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) throw new Error('prompt storage unavailable');
+      return append(...args);
+    });
+    try {
+      await conductor.dispatchTurn('s1', 'Wait, do not implement');
+      expect(fake.steered).toHaveLength(1);
+      // Dispatch has finished, so no pending counter protects the old approval.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: consent,
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+      spy.mockRestore();
+      await conductor.dispatchTurn('s1', 'Implement plan', {}, { initiatedBy: { userId: 'u1' } });
+      const latest = (await ctx.store.getEventsAfter('s1', running.promptSeq))
+        .filter(({ event }) => event.t === 'prompt')
+        .at(-1)!;
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: { ...consent, promptSeq: latest.seq },
+          },
+        ),
+      ).toEqual({ queued: true });
+    } finally {
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('orders steering delivery after a chat acceptance already committing', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    let accepting = false;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const enqueue = ctx.store.enqueuePlanImplementation.bind(ctx.store);
+    const spy = vi
+      .spyOn(ctx.store, 'enqueuePlanImplementation')
+      .mockImplementation(async (...args) => {
+        accepting = true;
+        await barrier;
+        // Delivery of newer steering here would make the durable old approval stale.
+        expect(fake.steered).toEqual([]);
+        return enqueue(...args);
+      });
+    const implementation = conductor.dispatchTurn(
+      's1',
+      'Implement',
+      {},
+      {
+        planningRevision: revision!,
+        queueBehindActiveTurn: true,
+        planningConsent: {
+          turnId: running.turnId!,
+          promptSeq: running.promptSeq,
+          runningPromptSeq: running.promptSeq,
+        },
+      },
+    );
+    await waitFor(() => accepting);
+    const cancellation = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fake.steered).toEqual([]);
+      unblock();
+      expect(await implementation).toEqual({ queued: true });
+      // Acceptance linearizes first; the later prompt gets its own normal turn.
+      expect(await cancellation).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      unblock();
+      await Promise.allSettled([implementation, cancellation]);
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
   it('keeps the live planning turn restricted after a planning decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.setSessionPlanning('s1', 'active');
@@ -6624,10 +7010,24 @@ describe('Conductor mid-turn steering (#101)', () => {
 
   it('durably accepts and dispatches a plan when the session is idle', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.tasks.upsert({
+      id: 'existing-task',
+      ownerUserId: '00000000-0000-4000-8000-000000000001',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing work',
+    });
     await ctx.store.startSessionPlanning('s1');
-    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const revision = await ctx.store.presentSessionPlan(
+      's1',
+      '# Approved work\n\n## Goal\nFix gestures.\n\n## Steps\n1. **Gestures** — separate swipe and drag.',
+    );
     const fake = steerableBackend();
+    const bus = new InMemoryEventBus();
+    const published: AgentEvent[] = [];
+    bus.subscribe('s1', ({ event }) => published.push(event));
     const conductor = new Conductor({
+      bus,
       store: ctx.store,
       backend: fake.backend,
       worktreeExists: async () => true,
@@ -6644,6 +7044,19 @@ describe('Conductor mid-turn steering (#101)', () => {
       ).toEqual({ queued: true });
       await waitFor(fake.ready);
       expect(enqueue).toHaveBeenCalledOnce();
+      // Task creation must reach live devices as well as the recovery log.
+      const taskEvents = published.filter((event) => event.t === 'tasks_updated');
+      expect(taskEvents).toHaveLength(1);
+      expect(taskEvents[0]).toMatchObject({
+        origin: 'agent',
+        change: 'added',
+        taskIds: [expect.any(String)],
+      });
+      expect(
+        (await ctx.store.getEventsAfter('s1', 0))
+          .filter(({ event }) => event.t === 'tasks_updated')
+          .map(({ event }) => event),
+      ).toEqual(taskEvents);
       expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
       expect(fake.last().planning).not.toBe(true);
       expect(
@@ -6915,6 +7328,127 @@ describe('Conductor — backend session state', () => {
       backendSessionId: 's1',
     });
   });
+
+  // A Codex thread whose first turn died before its prompt has no rollout, and
+  // neither does the Verity id the second rung tries. codex-acp reports both only
+  // through `staleResume`; the ladder has to reach the cold start, or the session
+  // stays bound to a thread no turn can ever load.
+  it('cold-starts Codex when the Verity id is just as unknown as the bound thread', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'codex/default' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: 'codex',
+      backendSessionId: 'unmaterialized_thread',
+      contextSeq: 5,
+    });
+    const seenResumeIds: Array<string | undefined> = [];
+    const codex: Backend = {
+      run: async (opts) => {
+        seenResumeIds.push(opts.resumeSessionId);
+        if (opts.resumeSessionId !== undefined) {
+          return {
+            sessionId: undefined,
+            exitCode: 1,
+            stderr: 'Internal error',
+            aborted: false,
+            staleResume: true,
+          };
+        }
+        await opts.onSession?.('thread_fresh');
+        return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      codexBackend: codex,
+      worktreeExists: async () => true,
+    });
+
+    const result = await conductor.sendTurn('s1', 'resume');
+
+    expect(result.exitCode).toBe(0);
+    expect(seenResumeIds).toEqual(['unmaterialized_thread', 's1', undefined]);
+    expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+      backendSessionId: 'thread_fresh',
+    });
+  });
+
+  // codex-acp can accept the load of a thread it never materialized and only fail
+  // when the prompt starts the turn. That rejection names the bound thread, so no
+  // turn ran in it; the same message about another thread is a different failure.
+  it.each(
+    (['adapter log', 'ACP error'] as const).flatMap((shape) => [
+      [shape, 'the bound thread', 'dead_thread', ['dead_thread', 's1', undefined], 'thread_fresh'],
+      [shape, 'another thread', 'other_thread', ['dead_thread'], 'dead_thread'],
+      // A longer id that merely starts with the bound one is still another thread.
+      [shape, 'a thread named after it', 'dead_thread_2', ['dead_thread'], 'dead_thread'],
+    ]) as Array<['adapter log' | 'ACP error', string, string, Array<string | undefined>, string]>,
+  )(
+    'treats a Codex prompt rejected (%s) for %s accordingly',
+    async (shape, _label, missing, expectedResumeIds, expectedBinding) => {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'codex/default',
+      });
+      await ctx.store.upsertSessionBackendState({
+        sessionId: 's1',
+        backend: 'codex',
+        backendSessionId: 'dead_thread',
+        contextSeq: 5,
+      });
+      const seenResumeIds: Array<string | undefined> = [];
+      const codex: Backend = {
+        run: async (opts) => {
+          seenResumeIds.push(opts.resumeSessionId);
+          if (opts.resumeSessionId === 'dead_thread') {
+            await opts.onSession?.('dead_thread');
+            return {
+              sessionId: 'dead_thread',
+              exitCode: 1,
+              stderr:
+                shape === 'adapter log'
+                  ? [
+                      `[SYSTEM_ERROR] Prompt for session dead_thread failed: Error: thread not found: ${missing}`,
+                      `Error: thread not found: ${missing}`,
+                      '    at handleResponse (file:///codex-acp/dist/index.js:2409:40)',
+                      '',
+                      'Internal error',
+                    ].join('\n')
+                  : // The adapter answered the prompt, and the backend appended the
+                    // ACP error with its details, as it does since codex-acp put the
+                    // reason in `data.details` only.
+                    `\nInternal error: thread not found: ${missing}`,
+              aborted: false,
+            };
+          }
+          if (opts.resumeSessionId === 's1') {
+            return {
+              sessionId: undefined,
+              exitCode: 1,
+              stderr: 'Internal error',
+              aborted: false,
+              staleResume: true,
+            };
+          }
+          await opts.onSession?.('thread_fresh');
+          return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        codexBackend: codex,
+        worktreeExists: async () => true,
+      });
+
+      await conductor.sendTurn('s1', 'resume');
+
+      expect(seenResumeIds).toEqual(expectedResumeIds);
+      expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+        backendSessionId: expectedBinding,
+      });
+    },
+  );
 
   it('clears a stale Claude backend id and cold-starts with DB handoff context', async () => {
     await ctx.store.createSession({
@@ -7521,6 +8055,175 @@ describe('Conductor — backend session state', () => {
 });
 
 describe('Conductor — cross-backend context handoff via context_seq', () => {
+  const models = {
+    claude: 'claude-opus-4-8',
+    codex: 'codex/default',
+    opencode: 'deepinfra/zai-org/GLM-5',
+  };
+  const directions = [
+    ['claude', 'codex'],
+    ['claude', 'opencode'],
+    ['codex', 'claude'],
+    ['codex', 'opencode'],
+    ['opencode', 'claude'],
+    ['opencode', 'codex'],
+  ] as const;
+
+  it.each(directions)('preserves stored results from %s to %s and on return', async (from, to) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: models[from] });
+    await ctx.store.appendEvent('s1', {
+      t: 'session',
+      id: `${from}-thread`,
+      model: models[from],
+      worktree: '/wt/s1',
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'ORIGINAL_INSTRUCTION' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'ORIGINAL_OUTCOME' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: from,
+      backendSessionId: `${from}-thread`,
+      contextSeq: await ctx.store.latestEventSeq('s1'),
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'check',
+      name: 'Check',
+      input: { command: 'VERIFY_COMMAND' },
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'check',
+      output: 'x'.repeat(5000) + ' STORED_FAILURE',
+      isError: true,
+    });
+    const saved = (await ctx.store.getEvents('s1')).at(-1);
+    expect(saved?.t === 'tool_result' && saved.outputRef).toBeTruthy();
+    const captured: { backend: string; prompt: string; resumeId: string | undefined }[] = [];
+    const backend = (key: string): Backend => ({
+      run: async (opts) => {
+        captured.push({ backend: key, prompt: opts.prompt ?? '', resumeId: opts.resumeSessionId });
+        return { sessionId: `${key}-thread`, exitCode: 0, stderr: '', aborted: false };
+      },
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: backend('claude'),
+      codexBackend: backend('codex'),
+      openCodeBackend: backend('opencode'),
+      worktreeExists: async () => true,
+    });
+    await ctx.store.setSessionModel('s1', models[to]);
+    await conductor.sendTurn('s1', 'continue');
+    expect(captured[0]?.backend).toBe(to);
+    expect(captured[0]?.resumeId).toBeUndefined();
+    expect(captured[0]?.prompt).toContain('ORIGINAL_INSTRUCTION');
+    expect(captured[0]?.prompt).toContain('STORED_FAILURE');
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'RETURN_INSTRUCTION' });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'return-check',
+      name: 'Check',
+      input: 'RETURN_COMMAND',
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'return-check',
+      output: 'y'.repeat(5000) + ' RETURN_FAILURE',
+      isError: true,
+    });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'RETURN_OUTCOME' });
+    await ctx.store.setSessionModel('s1', models[from]);
+    await conductor.sendTurn('s1', 'continue again');
+    expect(captured[1]?.backend).toBe(from);
+    expect(captured[1]?.resumeId).toBeUndefined();
+    expect(captured[1]?.prompt).toContain('RETURN_INSTRUCTION');
+    expect(captured[1]?.prompt).toContain('RETURN_COMMAND');
+    expect(captured[1]?.prompt).toContain('RETURN_FAILURE');
+    expect(captured[1]?.prompt).toContain('RETURN_OUTCOME');
+    expect(captured[1]?.prompt).toContain('ORIGINAL_INSTRUCTION');
+  });
+
+  it.each(directions)('supplies only the unseen %s history when resuming %s', async (from, to) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: models[from] });
+    const seen = await ctx.store.appendEvent('s1', { t: 'text', delta: 'TARGET_ALREADY_SEEN' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: to,
+      backendSessionId: `${to}-thread`,
+      contextSeq: seen.seq,
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: `UNSEEN_${from}_INSTRUCTION` });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'check',
+      name: 'Check',
+      input: 'UNSEEN_COMMAND',
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'check',
+      output: 'x'.repeat(5000) + ' UNSEEN_STORED_RESULT',
+      isError: false,
+    });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'UNSEEN_OUTCOME' });
+    await ctx.store.setSessionModel('s1', models[to]);
+    let captured = '';
+    let resumeId: string | undefined;
+    const run: Backend['run'] = async (opts) => {
+      captured = opts.prompt ?? '';
+      resumeId = opts.resumeSessionId;
+      return { sessionId: `${to}-thread`, exitCode: 0, stderr: '', aborted: false };
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: { run },
+      codexBackend: { run },
+      openCodeBackend: { run },
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'continue');
+    expect(resumeId).toBe(`${to}-thread`);
+    expect(captured).not.toContain('TARGET_ALREADY_SEEN');
+    expect(captured).toContain(`UNSEEN_${from}_INSTRUCTION`);
+    expect(captured).toContain('UNSEEN_COMMAND');
+    expect(captured).toContain('UNSEEN_STORED_RESULT');
+    expect(captured).toContain('UNSEEN_OUTCOME');
+  });
+
+  it.each(['missing', 'invalid'] as const)(
+    'continues with a marked preview when a stored result is %s',
+    async (kind) => {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'codex/default',
+      });
+      const id = kind === 'missing' ? 'a'.repeat(64) : await ctx.store.putTextBlob('not JSON');
+      await ctx.store.appendEvent('s1', {
+        t: 'tool_result',
+        id: 'check',
+        output: 'AVAILABLE_PREVIEW',
+        isError: false,
+        outputRef: { id, bytes: 8 },
+      });
+      let captured = '';
+      const conductor = new Conductor({
+        store: ctx.store,
+        worktreeExists: async () => true,
+        codexBackend: {
+          run: async (opts) => {
+            captured = opts.prompt ?? '';
+            return { sessionId: 'codex-thread', exitCode: 0, stderr: '', aborted: false };
+          },
+        },
+      });
+      await conductor.sendTurn('s1', 'continue');
+      expect(captured).toContain('AVAILABLE_PREVIEW');
+      expect(captured).toContain('preview only');
+    },
+  );
+
   it('cold-starts a switched-to backend with the full prior history as a handoff preamble', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'codex/default' });
     // Prior Claude-era history lives in the backend-neutral event log.
@@ -9930,3 +10633,47 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(conductor.pendingPermissions('ghost')).toEqual([]);
   });
 });
+
+it.each(['existing', 'fresh'] as const)(
+  'preserves a successful %s turn when image cleanup fails',
+  async (mode) => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-image-cleanup-error-'));
+    try {
+      await mkdir(join(worktree, '.verity-sessions'));
+      await symlink(worktree, join(worktree, '.verity-sessions', 'attachments'));
+      const sessionId = 'cleanup-success';
+      if (mode === 'existing') await ctx.store.createSession({ sessionId, worktree, model: 'm' });
+      const fake = scriptedBackend({ sessionId, model: 'm', text: 'done' });
+      const onTurnError = vi.fn();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+        onTurnError,
+      });
+      if (mode === 'existing') {
+        await expect(conductor.sendTurn(sessionId, 'go')).resolves.toMatchObject({ exitCode: 0 });
+        expect(await ctx.store.getSessionBackendState(sessionId, 'claude')).toMatchObject({
+          backendSessionId: sessionId,
+        });
+      } else {
+        await expect(conductor.startSession({ worktree, prompt: 'go' })).resolves.toMatchObject({
+          sessionId,
+        });
+      }
+      await vi.waitFor(() =>
+        expect(onTurnError).toHaveBeenCalledWith(
+          sessionId,
+          expect.objectContaining({ message: 'attachment directory is a symlink' }),
+        ),
+      );
+      await vi.waitFor(async () => expect(await ctx.store.listRunningTurns()).toHaveLength(0));
+      expect((await ctx.store.getEvents(sessionId)).filter((event) => event.t === 'error')).toEqual(
+        [],
+      );
+      await conductor.drainOnShutdown();
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  },
+);

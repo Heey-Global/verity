@@ -1,7 +1,7 @@
 import { VerityApiError, type IntegrationAccount, type VerityClient } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import {
   SecretPasteField,
   SettingsField,
@@ -13,6 +13,7 @@ import {
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { StatusPill } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
+import { Button } from '../../../../components/ui';
 
 export default function MatrixScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -218,17 +219,13 @@ function MatrixView({ client }: { client: VerityClient }) {
               accessibilityLabel="Matrix password"
               masked
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !canSave }}
-              disabled={!canSave}
+            <Button
+              label={configured ? 'Update password' : 'Save Matrix account'}
+              loading={busy}
+              disabled={!canSave && !busy}
               onPress={() => void save()}
-              style={[styles.primaryButton, !canSave ? styles.buttonDisabled : null]}
-            >
-              <Text style={styles.primaryButtonLabel}>
-                {busy ? 'Saving…' : configured ? 'Update password' : 'Save Matrix account'}
-              </Text>
-            </Pressable>
+              fullWidth
+            />
             {saveError ? <Text style={styles.fieldError}>{saveError}</Text> : null}
             <Text style={styles.settingsSaveState} accessibilityLiveRegion="polite">
               {busy

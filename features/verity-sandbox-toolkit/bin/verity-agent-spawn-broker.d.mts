@@ -11,6 +11,7 @@ export type ScriptSandboxProbe = { available: true } | { available: false; reaso
 export function probeScriptSandbox(
   helperPath?: string,
   timeoutMs?: number,
+  launchOptions?: AgentSpawnBrokerOptions,
 ): Promise<ScriptSandboxProbe>;
 export const SHARED_SESSION_ROOT: string;
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
@@ -65,22 +66,52 @@ export interface AgentSpawnBrokerOptions {
   dockerGid?: string;
   env?: NodeJS.ProcessEnv;
   connectorUrl?: string;
+  /** Internal launch option populated only from a validated root-owned lease. */
+  signalTraceSeconds?: number;
   connectorConfigPath?: string;
   shutdownGraceMs?: number;
   maxFrameBytes?: number;
   spawnChild?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
 
+type AgentSignalTraceRequest = {
+  command: string;
+  knowledgeIsolation?: boolean;
+  sessionEnv?: Record<string, string>;
+};
+export function agentSignalTraceSeconds(
+  controlDir: string,
+  request: AgentSignalTraceRequest,
+  now?: number,
+): Promise<number | undefined>;
+export function validateAgentSignalTraceLease(
+  text: string,
+  request: AgentSignalTraceRequest,
+  now?: number,
+): number | undefined;
+
 export function agentLaunchSpec(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     knowledgeIsolation?: boolean;
+    planning?: boolean;
     knowledgeHome?: string;
+    managedHome?: string;
     args: string[];
     cwd: string;
   },
   options: AgentSpawnBrokerOptions,
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
+
+export function materializeManagedAgentHome(
+  request: {
+    command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
+    planning?: boolean;
+    sessionEnv?: Record<string, string>;
+  },
+  options: AgentSpawnBrokerOptions,
+  connectorUrl: string,
+): Promise<{ home: string; cleanup(): Promise<void> }>;
 
 export function materializeKnowledgeIsolation(
   request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp' },
@@ -125,6 +156,10 @@ export function validateTrustedCliArguments(
     worktreeRoot?: string;
   },
   options?: {
+    enforceRoot?: boolean;
+    agentUid?: number;
+    agentGid?: number;
+    setprivPath?: string;
     /** Test seam. Production always uses the immutable adjacent sidecar loader. */
     loadArgvPolicy?: (resolvedCommand: string) => Promise<unknown | undefined>;
   },
@@ -151,7 +186,15 @@ export function materializeTrustedCliEntryScript(
       worktreeRoot: string;
     };
   },
-  options: Pick<AgentSpawnBrokerOptions, 'secretDir' | 'trustedCliEntryScriptDir'>,
+  options: Pick<
+    AgentSpawnBrokerOptions,
+    | 'secretDir'
+    | 'trustedCliEntryScriptDir'
+    | 'agentUid'
+    | 'agentGid'
+    | 'setprivPath'
+    | 'enforceRoot'
+  >,
 ): Promise<{
   args: string[];
   entrySandbox?: {
@@ -199,3 +242,9 @@ export function runAgentSpawnBroker(options: AgentSpawnBrokerOptions): Promise<{
 }>;
 
 export function probeAgentSpawnBroker(controlDir?: string, timeoutMs?: number): Promise<boolean>;
+
+export function sessionHomePath(runtimeDir: string, sessionId: string): string;
+export function prepareSessionHome(
+  sessionId: string,
+  options: AgentSpawnBrokerOptions,
+): Promise<string>;

@@ -20,6 +20,7 @@ export class ResourceObserver {
   private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   private sweeping = false;
+  private activeReads = 0;
   constructor() {
     this.timer = setInterval(() => void this.sweep(), 500);
     this.timer.unref();
@@ -54,11 +55,14 @@ export class ResourceObserver {
     for (const entry of this.entries.values()) {
       const watched = entry.resource.path.split('?')[0]!.split('/');
       let affected = false;
-      if (parts[1] === 'sessions') affected = watched[1] === 'sessions' && watched[2] === parts[2];
+      if (parts[1] === 'sessions')
+        affected =
+          watched[1] === 'sessions' && (watched[2] === undefined || watched[2] === parts[2]);
       else if (parts[1] === 'projects')
         affected =
           watched[1] === 'projects' &&
           (watched[2] === undefined || parts[2] === undefined || watched[2] === parts[2]);
+      else if (parts[1] === 'tasks') affected = watched[1] === 'tasks';
       else if (parts[1] === 'server') affected = watched[1] === 'server';
       else if (['settings', 'secret', 'github', 'onboarding'].includes(parts[1] ?? ''))
         affected = ['settings', 'onboarding'].includes(watched[1] ?? '');
@@ -69,13 +73,22 @@ export class ResourceObserver {
     void this.sweep();
   }
 
-  private async sweep(): Promise<void> {
+  private sweep(): void {
     if (this.sweeping || this.closed) return;
     this.sweeping = true;
     try {
-      for (const entry of this.entries.values()) {
-        if (this.closed) break;
-        if (entry.next <= Date.now()) await this.sample(entry);
+      for (const [key, entry] of [...this.entries]) {
+        if (this.closed || this.activeReads >= 2) break;
+        if (entry.running || entry.next > Date.now()) continue;
+        // Rotate dispatched entries so repeated invalidations cannot starve
+        // other resources while one slow backend read occupies a slot.
+        this.entries.delete(key);
+        this.entries.set(key, entry);
+        this.activeReads += 1;
+        void this.sample(entry).finally(() => {
+          this.activeReads -= 1;
+          this.sweep();
+        });
       }
     } finally {
       this.sweeping = false;

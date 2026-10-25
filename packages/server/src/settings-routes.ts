@@ -30,6 +30,9 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** Apply the premium feature switches after either of them changed. */
+  onPremiumFeatureSwitchesChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   onOpenCodeSettingsChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
 }
@@ -94,7 +97,7 @@ export function registerSettingsRoutes(
   });
   app.get('/settings', async (request) => {
     const settings = (await readSettingsForDisplay()) ?? null;
-    return { settings: settings ? deps.publicSettings(settings, request) : null };
+    return { settings: settings ? await deps.publicSettings(settings, request) : null };
   });
 
   // The public projection strips every secret, but a few labels it shows are
@@ -211,6 +214,12 @@ export function registerSettingsRoutes(
       }
       if (settings === undefined) throw new Error('Verity settings disappeared after update');
       if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
+      if (
+        patch.premiumSharingEnabled !== undefined ||
+        patch.premiumRemoteAccessEnabled !== undefined
+      ) {
+        await deps.onPremiumFeatureSwitchesChanged?.(settings);
+      }
       if (changesOpenCode) {
         try {
           await deps.onOpenCodeSettingsChanged?.(settings);
@@ -233,7 +242,7 @@ export function registerSettingsRoutes(
           throw error;
         }
       }
-      return { settings: deps.publicSettings(settings, request) };
+      return { settings: await deps.publicSettings(settings, request) };
     }),
   );
 
@@ -266,7 +275,7 @@ export function registerSettingsRoutes(
     await deps.storeAgentCredentials(patch);
     const settings = await deps.store().getVeritySettings();
     if (settings === undefined) throw new Error('Verity settings disappeared after agent logout');
-    return { settings: deps.publicSettings(settings, request) };
+    return { settings: await deps.publicSettings(settings, request) };
   });
 
   app.get('/settings/agent-logins/:sessionId', async (request) => {

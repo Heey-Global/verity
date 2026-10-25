@@ -1,4 +1,5 @@
 import type { Kysely } from 'kysely';
+import { MatrixOutboundStore } from './matrix-outbound.js';
 import type { Database } from './schema.js';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 
@@ -41,6 +42,7 @@ export interface IntegrationAccount {
 }
 
 export interface IntegrationSource {
+  bindingVersion: number;
   importDiagnostics: IntegrationImportDiagnostic[];
   importDiagnosticsTruncated: boolean;
   importDiagnosticsReportedAt: Date | null;
@@ -70,7 +72,11 @@ export class IntegrationStore {
   constructor(
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
-  ) {}
+  ) {
+    this.outbound = new MatrixOutboundStore(db, cipher);
+  }
+
+  readonly outbound: MatrixOutboundStore;
 
   async projectExists(id: string): Promise<boolean> {
     return (
@@ -278,6 +284,7 @@ export class IntegrationStore {
     if (projectId) query = query.where('project_id', '=', projectId);
     const rows = await query.orderBy('display_name').execute();
     return rows.map((row) => ({
+      bindingVersion: row.binding_version,
       accountId: row.account_id,
       sourceId: row.source_id,
       displayName: row.display_name,
@@ -342,6 +349,7 @@ export class IntegrationStore {
     });
     return row
       ? {
+          bindingVersion: row.binding_version,
           accountId: row.account_id,
           sourceId: row.source_id,
           displayName: row.display_name,

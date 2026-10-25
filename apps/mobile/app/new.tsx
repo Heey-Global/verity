@@ -1,3 +1,4 @@
+import { SPLIT_SCREEN_MIN_WIDTH } from '../lib/sessionLayout';
 // New-session entry: open the chat for a brand-new session immediately and create
 // it in the background. Plain plus-clicks stay LLM-idle; prepared prompts from
 // explicit flows (issues, tasks) are sent as the first turn.
@@ -10,7 +11,7 @@
 // message typed during those seconds is echoed instantly and dispatched the moment
 // the session exists.
 import { isServerSecretSealedError, type VerityClient } from '@verity/mobile';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useIsFocused, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -22,10 +23,6 @@ import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { isProjectSessionModel } from '../lib/projectSessionModels';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { SessionChat } from './session/[id]';
-
-// Matches session/[id].tsx: at/above this width the app uses the unified split home,
-// so a new session there redirects into that split rather than taking over the screen.
-const SPLIT_SCREEN_MIN_WIDTH = 900;
 
 function param(value: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -82,12 +79,13 @@ function NewSessionLauncher({
   restoredSessionId?: string;
 }) {
   const { width } = useWindowDimensions();
-  // Keep the launch destination stable for this route. A rotation while the
-  // worktree is being created must not switch an in-place phone launch into a
-  // wide-layout redirect (or vice versa).
+  // Capture the initial launch layout so a resize cannot rerun launch navigation.
+  // Later expansion transfers the already-minted session separately below.
   const wide = useRef(width >= SPLIT_SCREEN_MIN_WIDTH).current;
   const baseUrl = getVerityBaseUrl();
   const launched = useRef(false);
+  const focused = useIsFocused();
+  const promotedToSplit = useRef(false);
   // Minted here, before anything is asked of the server: it is what lets the chat
   // open in this same frame. It goes into the URL immediately, so a restore reopens
   // THIS session instead of spawning a second one — which is what used to happen
@@ -193,6 +191,15 @@ function NewSessionLauncher({
     wide,
   ]);
 
+  // A phone-style launch stays mounted while its create runs. If the window
+  // later grows, transfer that same pending session into the split exactly once;
+  // never restart the create or change its prepared first prompt.
+  useEffect(() => {
+    if (wide || width < SPLIT_SCREEN_MIN_WIDTH || !focused || promotedToSplit.current) return;
+    promotedToSplit.current = true;
+    router.replace({ pathname: '/session/[id]', params: { id: sessionId } });
+  }, [wide, width, focused, sessionId]);
+
   // Wide redirects into the split home (above); rendering the chat here too would
   // mount a second copy of it for the same session, so that layout only ever sees
   // the placeholder for the frame it takes to leave this route.
@@ -266,13 +273,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
   },
@@ -301,7 +309,7 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
     marginHorizontal: theme.spacing.xs,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
 }));

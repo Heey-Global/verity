@@ -22,10 +22,12 @@ export function redactTrustedCliText(
 export function runTrustedCliViaBroker(
   request: {
     turnId: string;
+    streamOutput?: boolean;
     secrets: {
       secretAlias: string;
       env: string;
       injection?: 'env' | 'file';
+      encoding?: 'base64';
       secret: string;
     }[];
     command: string[];
@@ -36,9 +38,17 @@ export function runTrustedCliViaBroker(
     timeoutMs?: number;
     killGraceMs?: number;
     onSpawned?: () => void;
+    onOutput?: (stream: 'stdout' | 'stderr', bytes: Buffer) => Promise<void>;
+    signal?: AbortSignal;
     authorize?: (request: { turnId: string }) => boolean | Promise<boolean>;
   },
 ): Promise<{
+  outputMode?: 'stream-v1';
+  terminationReason?: string;
+  terminationRequested?: true;
+  exitCodeKnown?: false;
+  stdoutBytes?: number;
+  stderrBytes?: number;
   exitCode: number;
   stdout: string;
   stderr: string;

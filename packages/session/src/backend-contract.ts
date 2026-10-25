@@ -33,6 +33,8 @@ export interface SpawnOptions {
    * stdin is closed right after the initial write.
    */
   keepStdinOpen?: boolean;
+  /** Require the broker's filesystem boundary before starting a planning agent. */
+  planning?: boolean;
 }
 
 export interface SpawnedProcess {
@@ -45,6 +47,8 @@ export interface SpawnedProcess {
    * crashed agent is never reported as a clean `0`.
    */
   exited: Promise<number>;
+  /** Native process termination details, available after exit. */
+  exitDetails?: () => { code: number | null; signal: NodeJS.Signals | null } | undefined;
   /** The retained tail of stderr (diagnostics). */
   stderr: () => string;
   kill: (signal?: NodeJS.Signals) => void;
@@ -211,7 +215,7 @@ export interface RunTurnOptions {
   timeoutMs?: number;
   /**
    * Operator-cancel signal (issue #79). When it aborts, the spawned agent is
-   * killed with SIGTERM; the run then settles normally (partial output already
+   * killed immediately with SIGKILL; the run then settles normally (partial output already
    * persisted), so the caller distinguishes a cancel from a crash by checking
    * `signal.aborted`, not the exit code. The transcript-tail abort is separate.
    */
@@ -256,7 +260,7 @@ export interface RunResult {
   stderr: string;
   /**
    * True iff THIS run was terminated by its operator-cancel {@link
-   * RunTurnOptions.signal} (issue #79) — the abort handler fired and SIGTERMed
+   * RunTurnOptions.signal} (issue #79) — the abort handler fired and killed
    * the process. Captured at kill time, so a signal that aborts AFTER the run has
    * already settled (a cancel racing a natural finish) does NOT set it. Callers
    * key the `interrupted` marker off this, never off the live `signal.aborted`.
@@ -270,6 +274,8 @@ export interface RunResult {
    * missing persisted transcript events.
    */
   failedBeforeExecution?: true;
+  /** Agent output or tool execution was observed; automatic prompt replay is unsafe. */
+  executionObserved?: true;
   /**
    * True only when the backend was asked to resume a conversation and the AGENT
    * ANSWERED that request with an error — the session this turn is bound to is not

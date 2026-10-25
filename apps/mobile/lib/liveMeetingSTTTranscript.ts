@@ -24,8 +24,13 @@ export function applySTTEvent(state: STTTranscriptState, event: STTEvent): STTTr
 
 export function transcriptText(state: STTTranscriptState): string {
   if (state.snapshot !== null) return state.snapshot;
+  // Apple can open a result with the punctuation that ends the previous one; joined
+  // with a space it showed up as a stray ". " at the start of the next line.
   return state.segments
-    .map((segment) => segment.text)
-    .join(' ')
-    .trim();
+    .map((segment) => segment.text.trim())
+    .filter(Boolean)
+    .reduce(
+      (text, part) => (!text ? part : /^[.,!?;:…]/u.test(part) ? text + part : `${text} ${part}`),
+      '',
+    );
 }

@@ -134,6 +134,11 @@ describe('a managed deployment refuses project networks', () => {
       'GET /v1/update-channel',
       'POST /v1/update-channel',
       'POST /v1/update',
+      // Why the current operation's last attempt failed, as a closed code, and a
+      // request to resume that same journalled operation now. The resume runs
+      // the steps the journal already names; it adds no Docker verb of its own.
+      'GET /v1/update/attempt',
+      'POST /v1/update/retry',
       // Activation only records that Matrix credentials exist; the Updater still
       // owns the worker and this route never grants network attachment verbs.
       'POST /v1/matrix-connector/configured',

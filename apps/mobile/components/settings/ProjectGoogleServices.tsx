@@ -1,3 +1,4 @@
+import { useGoogleAccountPicker, googleAccountSupports } from './GoogleAccountPicker';
 import { type VerityClient } from '@verity/mobile';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -22,6 +23,7 @@ export function ProjectGoogleServices({
   client: VerityClient;
   projectId: string;
 }) {
+  const [chooseAccount, accountSheet] = useGoogleAccountPicker();
   const [connections, setConnections] = useState<Partial<Record<Service, Connection>>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -51,8 +53,18 @@ export function ProjectGoogleServices({
     if (busy) return;
     setBusy(true);
     try {
-      if (enabled) await client.enableProjectGoogleConnection(projectId, service);
-      else await client.disableProjectGoogleConnection(projectId, service);
+      if (enabled) {
+        const accounts = (await client.listGoogleAccounts()).filter((account) =>
+          googleAccountSupports(account, service),
+        );
+        if (accounts.length === 0) {
+          router.push('/settings/google');
+          return;
+        }
+        const accountId = await chooseAccount({ accounts, title: `${labels[service]} account` });
+        if (!accountId) return;
+        await client.enableProjectGoogleConnection(projectId, service, accountId);
+      } else await client.disableProjectGoogleConnection(projectId, service);
       await reload();
     } catch {
       setError('Could not change Google access. Try again.');
@@ -65,6 +77,7 @@ export function ProjectGoogleServices({
       title="Google services"
       description="Access applies to every session in this project. Enable only the services this project needs."
     >
+      {accountSheet}
       {loading ? <ActivityIndicator /> : null}
       {error ? (
         <SettingsNavRow icon="refresh-cw" title={error} onPress={() => void reload()} />
@@ -80,18 +93,13 @@ export function ProjectGoogleServices({
               disabled={busy}
               onValueChange={(enabled) => void toggle(service, enabled)}
             />
-            {(connection.legacySessionCount ?? 0) > 0 ? (
-              <>
-                <Text style={styles.reproSubtitle}>
-                  {connection.legacySessionCount} existing chats have separate access.
-                </Text>
-                <SettingsNavRow
-                  icon="x"
-                  title={`Revoke all ${labels[service]} access`}
-                  subtitle="Remove access from this project and its existing chats"
-                  onPress={() => void toggle(service, false)}
-                />
-              </>
+            {connection.enabled ? (
+              <SettingsNavRow
+                icon="user"
+                title={connection.accountEmail ?? 'Choose account'}
+                subtitle="Change project default"
+                onPress={() => void toggle(service, true)}
+              />
             ) : null}
           </SettingsPanel>
         ) : (

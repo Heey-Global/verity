@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, open, realpath, stat } from 'node:fs/promises';
+import { lstat, open, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
@@ -75,6 +75,18 @@ async function serve(
     pathname = decodeURIComponent(new URL(requestUrl, 'http://preview.invalid').pathname);
   } catch {
     response.writeHead(400).end();
+    return;
+  }
+  // Error-page branding must remain available when the published file is missing.
+  if (pathname === '/__verity/logo.png') {
+    const logo = await readFile(new URL('../assets/verity-mark.png', import.meta.url));
+    response.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Content-Length': String(logo.length),
+      'Cache-Control': 'public, max-age=86400',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    response.end(method === 'HEAD' ? undefined : logo);
     return;
   }
   if (pathname.includes('\0') || pathname.split('/').includes('..')) {

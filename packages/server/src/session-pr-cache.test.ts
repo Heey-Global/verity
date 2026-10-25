@@ -44,6 +44,44 @@ describe('shared session PR cache', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('publishes changed status from any reader before resolving, without notifying cached reads', async () => {
+    let now = 0;
+    let status: PullRequestStatus | null = pr;
+    const changed = vi.fn();
+    const cache = createSessionPrCache({
+      load: async () => status,
+      now: () => now,
+      onChange: changed,
+    });
+    await cache.get(session, { background: true });
+    expect(changed).toHaveBeenLastCalledWith(session, pr);
+    await cache.get(session);
+    now += 30_000;
+    await cache.get(session);
+    expect(changed).toHaveBeenCalledTimes(1);
+    status = { ...pr, checks: { ...pr.checks, completed: 1, pending: 0 } };
+    now += 15_000;
+    await cache.get(session);
+    expect(changed).toHaveBeenLastCalledWith(session, status);
+    status = null;
+    now += 15_000;
+    await cache.get(session);
+    expect(changed).toHaveBeenLastCalledWith(session, null);
+    expect(changed).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not publish a disowned read after invalidation', async () => {
+    const read = deferred<PullRequestStatus>();
+    const changed = vi.fn();
+    const cache = createSessionPrCache({ load: () => read.promise, onChange: changed });
+    const pending = cache.get(session);
+    await Promise.resolve();
+    cache.invalidate(session.worktree);
+    read.resolve(pr);
+    await pending;
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it('limits expensive discovery to one session at a time', async () => {
     const read = deferred<PullRequestStatus>();
     const load = vi

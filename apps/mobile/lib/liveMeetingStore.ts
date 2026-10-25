@@ -5,6 +5,7 @@ import type { LiveMeeting, LiveMeetingNote } from '@verity/mobile';
 import { getActiveMeetingServerId } from './client';
 
 export interface MeetingRecord {
+  title?: string | null | undefined;
   id: string;
   sessionId: string;
   serverId?: string | null;
@@ -23,10 +24,22 @@ export interface MeetingRecord {
   speakerStatus?: 'loading' | 'ready' | 'unavailable';
   activeSpeaker?: number;
   lastSpeakerAt?: number;
+  /** In memory only: open diarizer turns that may still change. */
+  tentativeSpeakerTurns?: SpeakerTurn[];
+  /** In memory only: audio seconds the diarizer has processed through. */
+  speakerHorizon?: number;
+  /** In memory only: names speakers introduced themselves with, awaiting confirmation. */
+  speakerNameSuggestions?: SpeakerNameSuggestion[];
   error: string | null;
   ownerToken?: string | null;
   revision?: number;
   syncedRevision?: number;
+}
+
+interface SpeakerNameSuggestion {
+  speaker: number;
+  name: string;
+  quote: string;
 }
 
 export interface SpeakerTurn {
@@ -89,6 +102,7 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       ['capture_status', "TEXT NOT NULL DEFAULT 'preparing'"],
       ['is_remote', 'INTEGER NOT NULL DEFAULT 0'],
       ['server_id', 'TEXT'],
+      ['title', 'TEXT'],
       ['expected_participants', 'INTEGER'],
       ['speaker_turns', "TEXT NOT NULL DEFAULT '[]'"],
       ['timed_words', "TEXT NOT NULL DEFAULT '[]'"],
@@ -151,6 +165,7 @@ export async function createMeeting(
   sessionId: string,
   engine: STTEngineId,
   expectedParticipants: number | null = null,
+  title?: string,
 ): Promise<MeetingRecord> {
   const meeting: MeetingRecord = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -163,6 +178,7 @@ export async function createMeeting(
     captureStatus: 'preparing',
     transcript: '',
     expectedParticipants,
+    title: title?.trim() || null,
     speakerTurns: [],
     timedWords: [],
     error: null,
@@ -174,7 +190,7 @@ export async function createMeeting(
   };
   const connection = await db();
   await connection.runAsync(
-    'INSERT INTO meetings (id, session_id, server_id, engine, started_at, last_active_at, state, transcript, owner_token, revision, expected_participants) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO meetings (id, session_id, server_id, engine, started_at, last_active_at, state, transcript, owner_token, revision, expected_participants, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     meeting.id,
     meeting.sessionId,
     meeting.serverId ?? null,
@@ -186,6 +202,7 @@ export async function createMeeting(
     meeting.ownerToken!,
     meeting.revision!,
     expectedParticipants,
+    meeting.title ?? null,
   );
   return meeting;
 }
@@ -287,6 +304,7 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     ended_at: number | null;
     state: MeetingRecord['state'];
     transcript: string;
+    title: string | null;
     expected_participants: number | null;
     speaker_turns: string;
     timed_words: string;
@@ -299,7 +317,7 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     synced_revision: number;
     capture_status: MeetingRecord['captureStatus'];
   }>(
-    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
+    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, title, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
     sessionId,
     serverId,
   );
@@ -312,6 +330,7 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     endedAt: row.ended_at,
     state: row.state,
     transcript: row.transcript,
+    title: row.title,
     expectedParticipants: row.expected_participants,
     speakerTurns: JSON.parse(row.speaker_turns) as SpeakerTurn[],
     timedWords: JSON.parse(row.timed_words) as TimedWord[],
@@ -412,6 +431,7 @@ export async function pendingMeetings(
     ended_at: number | null;
     state: MeetingRecord['state'];
     transcript: string;
+    title: string | null;
     expected_participants: number | null;
     speaker_turns: string;
     timed_words: string;
@@ -433,6 +453,7 @@ export async function pendingMeetings(
     endedAt: row.ended_at,
     state: row.state,
     transcript: row.transcript,
+    title: row.title,
     expectedParticipants: row.expected_participants,
     speakerTurns: JSON.parse(row.speaker_turns) as SpeakerTurn[],
     timedWords: JSON.parse(row.timed_words) as TimedWord[],
@@ -546,10 +567,10 @@ export async function importChanges(
     for (const meeting of meetings) {
       await connection.runAsync(
         `INSERT INTO meetings
-        (id, session_id, server_id, engine, started_at, last_active_at, ended_at, state, transcript, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges, revision, synced_revision, is_remote)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        (id, session_id, server_id, engine, started_at, last_active_at, ended_at, state, transcript, title, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges, revision, synced_revision, is_remote)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at, state=excluded.state,
-          transcript=excluded.transcript, capture_status=excluded.capture_status,
+          transcript=excluded.transcript, title=excluded.title, capture_status=excluded.capture_status,
           expected_participants=excluded.expected_participants, speaker_turns=excluded.speaker_turns,
           timed_words=excluded.timed_words,
           speaker_names=excluded.speaker_names, speaker_corrections=excluded.speaker_corrections,
@@ -565,6 +586,7 @@ export async function importChanges(
         meeting.endedAt,
         meeting.state,
         meeting.transcript,
+        meeting.title ?? null,
         meeting.captureStatus,
         meeting.expectedParticipants ?? null,
         JSON.stringify(meeting.speakerTurns ?? []),

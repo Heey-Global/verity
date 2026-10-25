@@ -124,7 +124,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: theme.colors.scrim,
   },
   card: {
     width: '100%',
@@ -138,27 +138,30 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   input: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     borderWidth: 1,
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
   },
-  inputInvalid: { borderColor: theme.colors.tone.danger },
+  inputInvalid: { borderColor: theme.colors.attention },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   actions: {
     flexDirection: 'row',

@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { captureJson } from './capture-json.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 export const otaVersionPath = 'apps/mobile/ota/version.txt';
 export const otaManifestPath = '.release-please-manifest.mobile-ota.json';
@@ -26,11 +27,16 @@ export function otaReleasePlan(runtime, releases) {
     throw new Error('OTA runtime must be a native X.Y.0 version');
   const line = runtime.slice(0, -1);
   const versions = releases
-    .filter((release) => !release.draft && release.tag_name.startsWith(`mobile-v${line}`))
+    .filter(
+      (release) =>
+        (!release.draft || release.tag_name === `mobile-v${runtime}`) &&
+        release.tag_name.startsWith(`mobile-v${line}`),
+    )
     .map((release) => release.tag_name.slice('mobile-v'.length))
     .filter((version) => versionPattern.test(version))
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
-  if (!versions.includes(runtime)) throw new Error('The native Staging runtime is not published');
+  if (!versions.includes(runtime))
+    throw new Error('The native Staging runtime has no release candidate');
   const baseline = versions.at(-1);
   if (!baseline) throw new Error('No staged native baseline');
   return {
@@ -48,8 +54,29 @@ const repository = () => {
 };
 /** @template T @param {string[]} args @returns {T} */
 const api = (...args) => /** @type {T} */ (captureJson('gh', ['api', ...args]));
-/** @typedef {{tag_name: string, draft: boolean, prerelease: boolean}} Release */
-/** @typedef {{number: number, merged_at: string | null, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+/** @typedef {{tag_name: string, draft: boolean, prerelease: boolean, target_commitish?: string}} Release */
+/** @typedef {{number: number, merged_at: string | null, merge_commit_sha?: string, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+
+/**
+ * @param {string} runtime
+ * @param {string} baseline
+ * @param {Release[]} releases
+ * @param {(command: string, args: string[]) => string} execute
+ */
+export function otaPlanningBaseline(runtime, baseline, releases, execute = run) {
+  const draft = releases.find((release) => release.tag_name === baseline && release.draft);
+  const source = draft
+    ? (draft.target_commitish ?? '')
+    : execute('git', ['rev-list', '-n', '1', baseline]);
+  if (!shaPattern.test(source)) throw new Error('Invalid OTA release baseline');
+  execute('git', ['merge-base', '--is-ancestor', source, 'HEAD']);
+  if (draft) {
+    if (execute('git', ['show', `${source}:apps/mobile/version.txt`]).trim() !== runtime)
+      throw new Error('Native draft source does not match the planned runtime');
+  }
+  if (execute('node', ['scripts/mobile-native-compatibility.mjs', source, 'HEAD'])) return null;
+  return source;
+}
 
 /** @param {string} runtime */
 async function plan(runtime) {
@@ -64,8 +91,11 @@ async function plan(runtime) {
     api('--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)
   ).flat();
   const next = otaReleasePlan(runtime, releases);
-  const baselineSha = run('git', ['rev-list', '-n', '1', next.baseline]);
-  if (!shaPattern.test(baselineSha)) throw new Error('Invalid OTA release baseline');
+  const baselineSha = otaPlanningBaseline(runtime, next.baseline, releases);
+  if (!baselineSha) {
+    console.log('OTA planning waits for a native candidate containing the pending native changes.');
+    return;
+  }
   const marker = readFileSync(otaVersionPath, 'utf8').trim();
   if (
     marker.startsWith(runtime.slice(0, -1)) &&
@@ -85,20 +115,11 @@ async function plan(runtime) {
   if (!token) throw new Error('GH_TOKEN is required for OTA release planning');
   const github = await GitHub.create({ owner, repo: name, token });
   const manifest = await createOtaManifest(github, baselineSha, next.version);
+  // The app token behind GH_TOKEN authors the PR, so its pull_request events
+  // run CI and Gitleaks on the generated branch without an explicit dispatch.
   const prs = await manifest.createPullRequests();
   for (const pr of prs) {
     if (!pr) continue;
-    run('gh', [
-      'workflow',
-      'run',
-      'ci.yml',
-      '--ref',
-      pr.headBranchName,
-      '-f',
-      'release-train=mobile-ota',
-      '-f',
-      `release-pr=${pr.number}`,
-    ]);
     console.log(`Staging OTA ${next.version}: release PR #${pr.number}`);
   }
 }
@@ -212,12 +233,24 @@ function mergedVersion(runtime) {
     throw new Error('OTA manifest and version marker differ');
   const commit = run('git', ['log', '-1', '--format=%H', '--', otaVersionPath]);
   const prs = /** @type {Pull[]} */ (api(`repos/${repository()}/commits/${commit}/pulls`));
+  // GitHub can omit commit associations even for a merged release PR.
+  if (prs.length === 0) {
+    const owner = repository().split('/')[0];
+    const pages = /** @type {Pull[][]} */ (
+      api(
+        '--paginate',
+        '--slurp',
+        `repos/${repository()}/pulls?state=closed&base=main&head=${owner}:release-please--branches--main--components--mobile-ota&per_page=100`,
+      )
+    );
+    prs.push(...pages.flat().filter((candidate) => candidate.merge_commit_sha === commit));
+  }
   const pr = prs.find(
     (pr) =>
       pr.merged_at &&
       pr.base.ref === 'main' &&
       pr.head.ref === 'release-please--branches--main--components--mobile-ota' &&
-      ['github-actions[bot]', 'app/github-actions'].includes(pr.user?.login ?? ''),
+      isReleaseBotLogin(pr.user?.login),
   );
   if (!pr) throw new Error('OTA publication requires a merged Release Please Staging PR');
   const checked = /** @type {{content: string}} */ (
@@ -229,6 +262,8 @@ function mergedVersion(runtime) {
     version,
     commit,
     pr: pr.number,
+    deferred:
+      pr.labels?.some((label) => label.name === 'autorelease: deferred-mobile-ota') ?? false,
     complete: pr.labels?.some((label) => label.name === 'autorelease: tagged-mobile-ota') ?? false,
   };
 }
@@ -257,7 +292,10 @@ function detect() {
     if (run('git', ['rev-list', '-n', '1', `mobile-v${version}`]) !== merged.commit)
       throw new Error('Published OTA tag differs from its merged release source');
   }
-  if (release && (merged.complete || !release.prerelease)) {
+  // New merges must keep planning Staging while delivery's dispatch resumes
+  // the latest completed release whose Production proposal was deferred.
+  const resume = merged.deferred && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+  if (release && ((merged.complete && !resume) || !release.prerelease)) {
     if (!merged.complete) complete(String(merged.pr));
     appendFileSync(output, 'mode=plan\n');
   } else {
@@ -268,10 +306,18 @@ function detect() {
   }
 }
 
-/** @param {string} number */
-function complete(number) {
+/** @param {string} number @param {boolean} deferred */
+function complete(number, deferred = false) {
   if (!/^[1-9]\d*$/u.test(number)) throw new Error('Invalid OTA release PR number');
   run('gh', ['label', 'create', 'autorelease: tagged-mobile-ota', '--color', '0E8A16', '--force']);
+  run('gh', [
+    'label',
+    'create',
+    'autorelease: deferred-mobile-ota',
+    '--color',
+    '0E8A16',
+    '--force',
+  ]);
   run('gh', [
     'pr',
     'edit',
@@ -280,12 +326,15 @@ function complete(number) {
     'autorelease: pending-mobile-ota',
     '--add-label',
     'autorelease: tagged-mobile-ota',
+    deferred ? '--add-label' : '--remove-label',
+    'autorelease: deferred-mobile-ota',
   ]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv[2] === 'plan') await plan(process.argv[3] ?? '');
   else if (process.argv[2] === 'detect') detect();
-  else if (process.argv[2] === 'complete') complete(process.argv[3] ?? '');
+  else if (process.argv[2] === 'complete')
+    complete(process.argv[3] ?? '', process.argv[4] === 'true');
   else throw new Error('Usage: mobile-ota-proposal.mjs plan <runtime> | detect | complete <pr>');
 }

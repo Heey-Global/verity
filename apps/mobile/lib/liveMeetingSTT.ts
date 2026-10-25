@@ -16,9 +16,23 @@ export type STTEvent =
       engine?: string;
       message?: string;
     }
-  | { kind: 'segment'; text: string; final: boolean; start: number; end: number }
+  | {
+      kind: 'segment';
+      text: string;
+      final: boolean;
+      start: number;
+      end: number;
+      /** Apple attributed-string runs of a final result, timed where the run has audio. */
+      runs?: Array<{ text: string; start?: number; end?: number }>;
+    }
   | { kind: 'snapshot'; text: string; final: boolean }
   | { kind: 'speaker'; speaker: number; start: number; end: number }
+  /** The diarizer's still-open turns, replaced on every update, and how far it has heard. */
+  | {
+      kind: 'speaker-tentative';
+      turns: Array<{ speaker: number; start: number; end: number }>;
+      through: number;
+    }
   | { kind: 'words'; words: Array<{ text: string; start: number; end: number }> }
   | { kind: 'speaker-status'; state: 'loading' | 'ready' | 'unavailable'; message?: string };
 

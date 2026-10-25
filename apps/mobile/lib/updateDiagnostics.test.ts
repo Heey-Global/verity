@@ -1,6 +1,16 @@
+import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from './runtimeDiagnostics';
+import { beginRowTouch, markFirstSessionRender, rowPress, rowPressIn } from './sessionSwitchTiming';
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
+} from '@verity/mobile';
 import * as Updates from 'expo-updates';
-import { Share } from 'react-native';
+import { AppState, Share } from 'react-native';
 import { shareUpdateDiagnostics } from './updateDiagnostics';
+import { recordGesture, setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 
 jest.mock('expo-updates', () => ({
   isEnabled: true,
@@ -17,6 +27,7 @@ const readLogs = jest.mocked(Updates.readLogEntriesAsync);
 const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
 
 beforeEach(() => jest.clearAllMocks());
+afterEach(() => setGestureDiagnosticsEnabled(false));
 
 it('exports retained launch failures with the running update identity', async () => {
   readLogs.mockResolvedValue([
@@ -35,6 +46,18 @@ it('exports retained launch failures with the running update identity', async ()
     channel: 'staging',
     isEmbeddedLaunch: true,
     logs: [{ message: 'Fatal launch error' }],
+  });
+});
+
+it('includes recorded overview gestures', async () => {
+  readLogs.mockResolvedValue([]);
+  setGestureDiagnosticsEnabled(true);
+  recordGesture({ source: 'swipe', event: 'open-start-drag', projectKind: 'local' });
+  await shareUpdateDiagnostics();
+  const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics).toMatchObject({
+    enabled: true,
+    events: [{ source: 'swipe', event: 'open-start-drag', projectKind: 'local' }],
   });
 });
 
@@ -144,4 +167,130 @@ it('compacts Android map contexts without losing errors after a large manifest',
     downloadError: '{message=Asset missing}',
   });
   expect(JSON.stringify(report)).not.toContain('assetasset');
+});
+
+it('exports bounded content-free switch phases with the loaded update identity', async () => {
+  readLogs.mockResolvedValue([]);
+  beginRowTouch('private-session', 1234);
+  rowPress('private-session');
+  markSessionSwitch(sessionSwitchTiming('private-session'), 'transcript-ready-react-commit');
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.updateId).toBe('embedded-id');
+  expect(report.sessionSwitchTimings.at(-1).phases.map((p: { phase: string }) => p.phase)).toEqual([
+    'js-touch-start',
+    'js-press-handler',
+    'transcript-ready-react-commit',
+  ]);
+  expect(JSON.stringify(report)).not.toContain('private-session');
+});
+
+it('starts separate traces for repeated keyboard activation without touch callbacks', () => {
+  rowPress('keyboard-session');
+  const first = sessionSwitchTiming('keyboard-session')!;
+  rowPress('keyboard-session');
+  const second = sessionSwitchTiming('keyboard-session')!;
+  expect(second.id).not.toBe(first.id);
+  expect(first.status).toBe('superseded');
+  expect(first.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+  expect(second.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+});
+
+it('bounds render entry diagnostics and keeps them attached to the active gesture', () => {
+  rowPress('first');
+  const first = sessionSwitchTiming('first')!;
+  for (let i = 0; i < 100; i++) markFirstSessionRender('first', 'selection-home-render-entry');
+  expect(first.phases.filter((p) => p.phase === 'selection-home-render-entry')).toHaveLength(1);
+  rowPress('second');
+  markFirstSessionRender('first', 'session-screen-render-entry');
+  expect(first.phases.some((p) => p.phase === 'session-screen-render-entry')).toBe(false);
+  markFirstSessionRender('second', 'session-screen-render-entry');
+  expect(sessionSwitchTiming('second')!.phases.at(-1)?.phase).toBe('session-screen-render-entry');
+});
+
+// Full transport traces must not bypass the export byte ceiling before logs are added.
+it('bounds transport metadata while retaining the latest gesture', async () => {
+  readLogs.mockResolvedValue([]);
+  for (let i = 0; i < 8; i++) {
+    const trace = beginSessionSwitch(`private-overflow-${i}`);
+    for (let phase = 0; phase < 64; phase++) {
+      markSessionSwitch(trace, 'render-bounded-metric', 12345678);
+      markSessionSwitch(trace, 'bounded-lifecycle-marker', 12345678);
+    }
+    for (let request = 0; request < 16; request++) {
+      const id = beginSwitchTransportRequest(trace, 'events');
+      for (let phase = 0; phase < 24; phase++)
+        markSwitchTransportRequest(id, 'native-return', 1791549632165);
+    }
+  }
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.captureSummary.omittedSwitches).toBeGreaterThan(0);
+  expect(report.sessionSwitchTimings.at(-1).transportRequests).toHaveLength(16);
+  expect(Buffer.byteLength(JSON.stringify(report, null, 2))).toBeLessThanOrEqual(
+    report.logSummary.maxBytes,
+  );
+  expect(JSON.stringify(report)).not.toContain('private-overflow');
+});
+
+// Responder grant precedes touch-start on Fabric; a previous tap must not receive it.
+it.each([true, false])('keeps touch callbacks together with press-first=%s', (pressFirst) => {
+  beginRowTouch('repeat-row', 100);
+  const previous = sessionSwitchTiming('repeat-row')!;
+  if (pressFirst) {
+    rowPressIn('repeat-row', 200);
+    beginRowTouch('repeat-row', 200);
+  } else {
+    beginRowTouch('repeat-row', 200);
+    rowPressIn('repeat-row', 200);
+  }
+  rowPress('repeat-row');
+  const current = sessionSwitchTiming('repeat-row')!;
+  expect(current.id).not.toBe(previous.id);
+  expect(previous.phases.map((p) => p.phase)).toEqual(['js-touch-start']);
+  expect(current.phases.map((p) => p.phase)).toEqual(
+    pressFirst
+      ? ['js-press-in', 'js-touch-start', 'js-press-handler']
+      : ['js-touch-start', 'js-press-in', 'js-press-handler'],
+  );
+});
+
+it('does not join matching timestamps from different rows', () => {
+  rowPressIn('row-a', 300);
+  const previous = sessionSwitchTiming('row-a')!;
+  beginRowTouch('row-b', 300);
+  expect(sessionSwitchTiming('row-b')!.id).not.toBe(previous.id);
+});
+
+it('shares bounded runtime history and preserves the first sample for comparison', async () => {
+  jest.useFakeTimers();
+  const previous = AppState.currentState;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const stop = startRuntimeDiagnostics();
+  try {
+    readLogs.mockResolvedValue([]);
+    setRuntimeDiagnosticsScreen('/settings/private-name');
+    setGestureDiagnosticsEnabled(true);
+    jest.advanceTimersByTime(5_000 * 150);
+    await shareUpdateDiagnostics();
+    const message = (share.mock.calls[0]![0] as { message: string }).message;
+    const report = JSON.parse(message);
+    expect(report.schema).toBe(6);
+    expect(report.runtimeDiagnostics.baseline).toMatchObject({
+      recordingAgeMs: 0,
+      screen: 'settings',
+    });
+    expect(report.runtimeDiagnostics.samples.length).toBeGreaterThan(0);
+    expect(report.runtimeDiagnostics.samples.length).toBeLessThanOrEqual(
+      report.runtimeDiagnostics.maxSamples,
+    );
+    expect(report.runtimeDiagnostics.dropped).toBeGreaterThan(0);
+    expect(message).not.toContain('private-name');
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(256 * 1024);
+  } finally {
+    setGestureDiagnosticsEnabled(false);
+    stop();
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: previous });
+    jest.useRealTimers();
+  }
 });

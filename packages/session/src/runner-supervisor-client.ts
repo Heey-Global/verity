@@ -11,6 +11,7 @@ import {
   type BrokeredGrantChannel,
   type RunnerSupervisorBackend,
 } from './backend.js';
+import { stageImageAttachments } from './file-attachments.js';
 import type { RunTurnOptions } from './backend-contract.js';
 import type { EventBus } from './bus.js';
 import { FileTailRunnerClient, type RunnerFrameStore } from './file-tail-runner-client.js';
@@ -127,6 +128,9 @@ export type SupervisorStartTelemetry = {
 };
 
 export interface SupervisorRunnerClientOptions {
+  /** Test seam for legacy wire fixtures; production keeps the capability check enabled. */
+  securityPreflight?: boolean;
+  persistentSessionHomes?: boolean;
   runtimeDir: string;
   store: RunnerFrameStore;
   bus: EventBus;
@@ -155,6 +159,8 @@ export interface SupervisorRunnerClientOptions {
    * runtime dir MUST be this client's `runtimeDir` (the Server-readable host path).
    */
   transcript?: RunnerTranscriptSink | undefined;
+  /** Translate server attachment paths to the shared sandbox mount. */
+  mapAttachmentPath?: ((path: string) => string) | undefined;
   /** Translate server-side turn paths into the Sandbox namespace before launch. */
   mapTurnOptions?: ((opts: RunTurnOptions) => RunTurnOptions) | undefined;
   /** Decide a permission prompt from a standing grant before it becomes a card or a
@@ -205,7 +211,24 @@ export interface TrustedCliExecutionInput {
   entryScript?: TrustedCliEntryScript;
 }
 
+export type TrustedCliOutputSink = (
+  stream: 'stdout' | 'stderr',
+  bytes: Uint8Array,
+) => Promise<void>;
+
 export interface TrustedCliExecutionResult {
+  outputMode?: 'stream-v1';
+  exitCodeKnown?: false;
+  terminationReason?:
+    | 'process_exit'
+    | 'timeout'
+    | 'output_limit'
+    | 'redaction_failure'
+    | 'storage_failure'
+    | 'transport_failure';
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  terminationRequested?: true;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -295,7 +318,7 @@ class SupervisorTrustedCliRequestError extends Error {
 async function requestSupervisorTrustedCli(
   socketPath: string,
   request: Record<string, unknown>,
-  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number },
+  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number; onOutput?: TrustedCliOutputSink },
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request })}\n`;
   return await new Promise((resolve, reject) => {
@@ -303,6 +326,8 @@ async function requestSupervisorTrustedCli(
     let buffer = Buffer.alloc(0);
     let settled = false;
     let started = false;
+    let outputPending = false;
+    let outputSequence = 0;
     let timeout = setTimeout(
       () => finish(new Error('trusted CLI start acknowledgement timed out')),
       timeouts.startAckTimeoutMs,
@@ -360,6 +385,55 @@ async function requestSupervisorTrustedCli(
           finish(rejection);
           return;
         }
+        if (parsed.kind === 'trusted-cli-output') {
+          if (
+            !started ||
+            timeouts.onOutput === undefined ||
+            outputPending ||
+            parsed.sequence !== outputSequence ||
+            (parsed.stream !== 'stdout' && parsed.stream !== 'stderr') ||
+            typeof parsed.data !== 'string' ||
+            parsed.data.length > 21848 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(parsed.data)
+          ) {
+            finish(new Error('invalid trusted CLI output frame'));
+            return;
+          }
+          const bytes = Buffer.from(parsed.data, 'base64');
+          if (bytes.toString('base64') !== parsed.data) {
+            finish(new Error('invalid trusted CLI output encoding'));
+            return;
+          }
+          outputPending = true;
+          socket.pause();
+          const sequence = outputSequence++;
+          void Promise.resolve()
+            .then(() => timeouts.onOutput!(parsed.stream as 'stdout' | 'stderr', bytes))
+            .then(
+              () => {
+                if (!settled) socket.write(`${JSON.stringify({ kind: 'output-ack', sequence })}\n`);
+              },
+              (error: unknown) => {
+                const reason =
+                  isObject(error) &&
+                  ['redaction_failure', 'output_limit'].includes(String(error.outputFailure))
+                    ? error.outputFailure
+                    : 'storage_failure';
+                if (!settled)
+                  socket.write(
+                    `${JSON.stringify({ kind: 'output-ack', sequence, failure: reason })}\n`,
+                  );
+              },
+            )
+            .finally(() => {
+              bytes.fill(0);
+              outputPending = false;
+              if (!settled) socket.resume();
+            });
+          // Stop-and-wait forbids a terminal frame before persistence acknowledgment.
+          if (buffer.length > 0) finish(new Error('pipelined trusted CLI output'));
+          return;
+        }
         if (parsed.kind === 'trusted-cli-started') {
           if (started) {
             finish(
@@ -390,6 +464,9 @@ export type TrustedCliDispatchStage =
 export type TrustedCliBrokerFailurePhase =
   'validation' | 'materialization' | 'launch-spec' | 'spawn';
 export type TrustedCliBrokerFailureCode =
+  | 'validation_path_missing'
+  | 'validation_path_permissions'
+  | 'validation_path_symlink_loop'
   | 'validation_failed'
   | 'validation_invalid_request'
   | 'validation_argv_too_large'
@@ -480,6 +557,7 @@ export async function runSupervisorTrustedCli(
   timeouts: {
     startAckTimeoutMs?: number;
     resultTimeoutMs?: number;
+    onOutput?: TrustedCliOutputSink;
   } = {},
 ): Promise<TrustedCliExecutionResult> {
   let response: Record<string, unknown>;
@@ -488,6 +566,7 @@ export async function runSupervisorTrustedCli(
       join(runtimeDir, 'supervisor.sock'),
       {
         kind: 'run-trusted-cli',
+        ...(timeouts.onOutput === undefined ? {} : { streamOutput: true }),
         turnId: input.turnId,
         ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
         secrets: input.secrets.map((secret) => ({
@@ -503,6 +582,7 @@ export async function runSupervisorTrustedCli(
       {
         startAckTimeoutMs: timeouts.startAckTimeoutMs ?? TRUSTED_CLI_START_ACK_TIMEOUT_MS,
         resultTimeoutMs: timeouts.resultTimeoutMs ?? TRUSTED_CLI_RESULT_TIMEOUT_MS,
+        ...(timeouts.onOutput === undefined ? {} : { onOutput: timeouts.onOutput }),
       },
     );
   } catch (error) {
@@ -524,6 +604,9 @@ export async function runSupervisorTrustedCli(
         'spawn',
       ];
       const codes: TrustedCliBrokerFailureCode[] = [
+        'validation_path_missing',
+        'validation_path_permissions',
+        'validation_path_symlink_loop',
         'validation_failed',
         'validation_invalid_request',
         'validation_argv_too_large',
@@ -608,7 +691,43 @@ export async function runSupervisorTrustedCli(
   ) {
     throw new Error('runner supervisor returned an invalid trusted CLI result');
   }
+  const reasons = [
+    'process_exit',
+    'timeout',
+    'output_limit',
+    'redaction_failure',
+    'storage_failure',
+    'transport_failure',
+  ] as const;
+  if (
+    response.outputMode !== undefined &&
+    (response.outputMode !== 'stream-v1' ||
+      timeouts.onOutput === undefined ||
+      !reasons.includes(response.terminationReason as (typeof reasons)[number]) ||
+      !Number.isSafeInteger(response.stdoutBytes) ||
+      Number(response.stdoutBytes) < 0 ||
+      !Number.isSafeInteger(response.stderrBytes) ||
+      Number(response.stderrBytes) < 0 ||
+      (response.terminationRequested !== undefined && response.terminationRequested !== true) ||
+      (response.exitCodeKnown !== undefined && response.exitCodeKnown !== false) ||
+      response.stdout !== '' ||
+      response.stderr !== '')
+  ) {
+    throw new Error('invalid trusted CLI streaming result');
+  }
   return {
+    ...(response.outputMode === 'stream-v1'
+      ? {
+          outputMode: 'stream-v1' as const,
+          ...(response.exitCodeKnown === false ? { exitCodeKnown: false as const } : {}),
+          terminationReason: response.terminationReason as (typeof reasons)[number],
+          stdoutBytes: Number(response.stdoutBytes),
+          stderrBytes: Number(response.stderrBytes),
+          ...(response.terminationRequested === true
+            ? { terminationRequested: true as const }
+            : {}),
+        }
+      : {}),
     exitCode: Number(response.exitCode),
     stdout: response.stdout,
     stderr: response.stderr,
@@ -840,6 +959,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       allocateEventFile: (turnId) => artifact(turnId, 'events.jsonl'),
       allocateControlSocket: (turnId) => artifact(turnId, 'control.sock'),
       launchTurn: async (opts) => await this.launch(opts),
+      mapAttachmentPath: options.mapAttachmentPath,
       ...(options.autoApprovePermission === undefined
         ? {}
         : { autoApprovePermission: options.autoApprovePermission }),
@@ -855,7 +975,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     // retires whatever it finds there, so a second attempt for the same turn id
     // cannot cut off a bearer that is still in use.
     const bearer: GatewayBearerBox = {};
-    const launchOpts: RunTurnOptions = Object.assign({}, mappedOpts, {
+    const launchOpts: RunTurnOptions = Object.assign({}, opts, {
       [GATEWAY_BEARER]: bearer,
     });
     if (sink === undefined) {
@@ -1005,12 +1125,30 @@ export class SupervisorRunnerClient implements RunnerClient {
   }
 
   private async launch(opts: RunTurnOptions & { turnId: string }): Promise<void> {
+    const attachmentCwd = opts.cwd;
+    opts = { ...opts, ...this.options.mapTurnOptions?.(opts) };
     if (opts.signal?.aborted === true) throw new Error('runner turn was cancelled before launch');
     if (opts.startCommandId === undefined || !SAFE_ID.test(opts.startCommandId)) {
       throw new Error('supervisor runner requires startCommandId');
     }
     if (opts.storeSessionId === undefined || !SAFE_ID.test(opts.storeSessionId)) {
       throw new Error('supervisor runner requires storeSessionId');
+    }
+    if (this.options.securityPreflight !== false) {
+      const capabilities = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        { kind: 'status' },
+        this.options.timeoutMs,
+      );
+      if (
+        capabilities['managedAgentConfig'] !== true ||
+        (this.options.persistentSessionHomes === true &&
+          capabilities['persistentSessionHomes'] !== true) ||
+        (opts.planning === true && capabilities['planningIsolation'] !== true)
+      )
+        throw new Error(
+          'Required agent security boundaries are unavailable; recreate the Sandbox with the updated toolkit',
+        );
     }
     const mcpServers = validatedMcpServers(opts.mcpServers);
     // `command`, `extraArgs`, `spawner`, `claudeHome` and `env` describe how the SERVER
@@ -1025,7 +1163,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     // `onSteer` and `onPermissionRequest` DO carry behavior the worker cannot perform
     // yet: both need a mid-turn Server↔worker round trip over the control socket. Keep
     // failing closed on them so routing can never silently drop steering or a
-    // permission prompt. `attachments` is carried (inline image blocks over start-turn).
+    // permission prompt. `attachments` is carried as turn-scoped image file references.
     if (opts.onSteer !== undefined || opts.onPermissionRequest !== undefined) {
       throw new Error('turn options are not yet supported by the supervisor worker');
     }
@@ -1056,6 +1194,19 @@ export class SupervisorRunnerClient implements RunnerClient {
       this.options.transcript === undefined
     ) {
       throw new Error('supervisor worker cannot persist opts.transcript without a server sink');
+    }
+    if (this.options.persistentSessionHomes === true) {
+      const prepared = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        {
+          kind: 'prepare-session-home',
+          sessionId: opts.storeSessionId,
+          legacyBackend: this.workerBackend,
+          legacySessionId: opts.resumeSessionId,
+        },
+        this.options.timeoutMs,
+      );
+      if (prepared.ok !== true) throw new Error('Could not prepare persistent session storage');
     }
     // Restore-before-launch (Stage 5b Slice 2): for a `--resume` turn, materialize the
     // durable transcript back onto the shared mount BEFORE the supervisor starts the
@@ -1102,7 +1253,16 @@ export class SupervisorRunnerClient implements RunnerClient {
       worktree: opts.worktree,
       cwd: opts.cwd,
       prompt: opts.prompt ?? '',
-      ...(opts.attachments?.length ? { attachments: [...opts.attachments] } : {}),
+      ...(opts.attachments?.length
+        ? {
+            attachments: (
+              await stageImageAttachments(attachmentCwd, opts.turnId, opts.attachments)
+            )?.map((reference) => ({
+              ...reference,
+              filePath: this.options.mapAttachmentPath?.(reference.filePath) ?? reference.filePath,
+            })),
+          }
+        : {}),
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       steerable: opts.steerable === true,
       permissionControl: opts.permissionControl === true,
@@ -1893,22 +2053,13 @@ async function inspectSettledStream(
   }
 }
 
-/**
- * Refuse over-cap frames here rather than discovering the bound mid-write. The
- * supervisor rejects the whole serialized request — inline image base64 included —
- * so name the size and the attachment count: those are the two facts that turn "the
- * turn failed" into "this photo is too big to send".
- */
-function oversizeRequestError(frame: string, request: Record<string, unknown>): Error | undefined {
+/** Refuse oversized text and request metadata before writing to the supervisor. */
+function oversizeRequestError(frame: string): Error | undefined {
   const frameBytes = Buffer.byteLength(frame) - 1;
   if (frameBytes <= MAX_SUPERVISOR_REQUEST_BYTES) return undefined;
-  const attachments = Array.isArray(request.attachments) ? request.attachments.length : 0;
   return new Error(
     `runner supervisor request too large: ${describeBytes(frameBytes)} exceeds the ` +
-      `${describeBytes(MAX_SUPERVISOR_REQUEST_BYTES)} limit` +
-      (attachments > 0
-        ? ` — send fewer or smaller image attachments (${String(attachments)} attached)`
-        : ''),
+      `${describeBytes(MAX_SUPERVISOR_REQUEST_BYTES)} limit — shorten the prompt or request configuration`,
   );
 }
 
@@ -1934,7 +2085,7 @@ export async function requestRunnerSupervisor(
   timeoutMs = DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request })}\n`;
-  const oversize = oversizeRequestError(frame, request);
+  const oversize = oversizeRequestError(frame);
   if (oversize !== undefined) throw oversize;
   return await new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
@@ -2076,7 +2227,7 @@ export async function requestRunnerSupervisorStart(
   onAccepted?: () => void,
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request, startAck: true })}\n`;
-  const oversize = oversizeRequestError(frame, request);
+  const oversize = oversizeRequestError(frame);
   if (oversize !== undefined) throw new SupervisorStartRequestError(oversize, false, true);
   return await new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);

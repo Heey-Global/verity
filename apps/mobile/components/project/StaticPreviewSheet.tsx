@@ -1,3 +1,7 @@
+import { APP_HELP_TOPICS } from '@verity/events';
+import { useFeatureHint } from '../FeatureHint';
+import { PremiumBadge } from '../premium/PremiumBadge';
+import { premiumFeatures } from '../premium/premiumFeatures';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -36,6 +40,7 @@ import { StatusPill } from '../StatusPill';
 import { FileBreadcrumb } from '../files/FileBreadcrumb';
 import { SessionFolderRow } from '../SessionFolderRow';
 import { generatePreviewPin, PUBLIC_PREVIEW_DURATIONS } from './publicPreviewShare';
+import { tint } from '../ui/tint';
 
 // The sheet asks two questions, one per step. Step one: what to preview, picked
 // on one of two tabs because the two kinds behave differently — a dev server
@@ -147,7 +152,9 @@ function previewError(caught: unknown): string {
   return message;
 }
 
-type PublicSharing = 'available' | 'premium-required' | 'unavailable';
+const ONLINE_SHARING = premiumFeatures[0].name;
+
+type PublicSharing = 'available' | 'premium-required' | 'unavailable' | 'disabled';
 
 type PreviewTab = 'server' | 'folder';
 
@@ -160,6 +167,7 @@ export function StaticPreviewSheet({
   initialServer,
   onOpenSettings,
   onAskAgent,
+  onAskHelp,
   settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
@@ -171,11 +179,22 @@ export function StaticPreviewSheet({
   onOpenSettings?: (() => void) | undefined;
   /** Sends a request to the session's agent, for "Save as entry" and crashes. */
   onAskAgent?: ((prompt: string) => void) | undefined;
+  /** Prefill a help question without starting a turn. */
+  onAskHelp?: ((question: string) => void) | undefined;
   /** How long the default tab waits for slow lists before deciding. */
   settleTimeoutMs?: number;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
+  const hint = useFeatureHint(
+    onAskHelp
+      ? (question) => {
+          onAskHelp(question);
+          onClose();
+        }
+      : undefined,
+    sessionId,
+  );
   const [publicSharing, setPublicSharing] = useState<PublicSharing>('unavailable');
   const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
@@ -297,7 +316,7 @@ export function StaticPreviewSheet({
         mode === 'local' ? `Allow ${server.name} locally?` : `Share ${server.name} online?`,
         `The agent set this server up. It runs:\n\n${server.command}${
           server.workdir !== '.' ? `\n\nin ${server.workdir}` : ''
-        }\n\n${
+        }${server.secretBindings?.length ? `\n\nSecrets: ${server.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\n${
           mode === 'local'
             ? 'Anyone on your network can open it without a PIN while it runs.'
             : 'Anyone with the public link and its PIN can open it while it runs.'
@@ -349,7 +368,11 @@ export function StaticPreviewSheet({
     await client.approveManagedDevServer(
       sessionId,
       server.id,
-      { command: server.command, workdir: server.workdir },
+      {
+        command: server.command,
+        workdir: server.workdir,
+        ...(server.secretBindings?.length ? { secretBindings: server.secretBindings } : {}),
+      },
       // Approved for a public link only: the server must not also open locally.
       mode === 'online' && server.accessSwitches && !managedLocalOn(server) ? { local: false } : {},
     );
@@ -434,71 +457,76 @@ export function StaticPreviewSheet({
       if (link) stopPublic(link, () => void loadManaged());
       return;
     }
-    void managedAction(server, 'online', async () => {
-      if (publicSharing !== 'available') return;
-      const ttlSeconds = await askLinkLifetime();
-      if (ttlSeconds === undefined) return;
-      if (!server.accessSwitches) {
-        const confirmed = await new Promise<boolean>((resolve) =>
-          Alert.alert(
-            'Share online and on your network?',
-            'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
-            [
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Share', onPress: () => resolve(true) },
-            ],
-            { cancelable: true, onDismiss: () => resolve(false) },
-          ),
-        );
-        if (!confirmed) return;
-      }
-      const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
-      let share: PublicPreviewShare;
-      try {
-        if (!(await approveManaged(server, 'Share', 'online'))) return;
-        if (!running || server.instance?.restartToApply)
-          await client.controlManagedDevServer(
-            sessionId,
-            server.id,
-            'start',
-            // An older Core ignores Local and opens the server on the network too;
-            // its Local switch then shows that honestly.
-            server.accessSwitches ? { local: managedLocalOn(server) } : {},
+    void (async () => {
+      if (!(await hint.confirm('preview-and-sharing'))) return;
+      if (!sheetOpen.current) return;
+      await managedAction(server, 'online', async () => {
+        if (publicSharing !== 'available') return;
+        const ttlSeconds = await askLinkLifetime();
+        if (ttlSeconds === undefined) return;
+        if (!server.accessSwitches) {
+          const confirmed = await new Promise<boolean>((resolve) =>
+            Alert.alert(
+              'Share online and on your network?',
+              'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Share', onPress: () => resolve(true) },
+              ],
+              { cancelable: true, onDismiss: () => resolve(false) },
+            ),
           );
-        const instance = await waitUntilRunning(server.id);
-        share = await client.createSessionPortPreviewShare(sessionId, {
-          targetPort: instance.sandboxPort,
-          managedInstanceId: instance.id,
-          pin: generatePreviewPin(),
-          ttlSeconds,
-        });
-      } catch (caught) {
-        // Started only for this link: with no access on, nothing may keep running.
-        if ((server.accessSwitches || !running) && !managedLocalOn(server))
-          await client
-            .controlManagedDevServer(
+          if (!confirmed) return;
+        }
+        const running =
+          server.instance?.state === 'running' || server.instance?.state === 'starting';
+        let share: PublicPreviewShare;
+        try {
+          if (!(await approveManaged(server, 'Share', 'online'))) return;
+          if (!running || server.instance?.restartToApply)
+            await client.controlManagedDevServer(
+              sessionId,
+              server.id,
+              'start',
+              // An older Core ignores Local and opens the server on the network too;
+              // its Local switch then shows that honestly.
+              server.accessSwitches ? { local: managedLocalOn(server) } : {},
+            );
+          const instance = await waitUntilRunning(server.id);
+          share = await client.createSessionPortPreviewShare(sessionId, {
+            targetPort: instance.sandboxPort,
+            managedInstanceId: instance.id,
+            pin: generatePreviewPin(),
+            ttlSeconds,
+          });
+        } catch (caught) {
+          // Started only for this link: with no access on, nothing may keep running.
+          if ((server.accessSwitches || !running) && !managedLocalOn(server))
+            await client
+              .controlManagedDevServer(
+                sessionId,
+                server.id,
+                'stop',
+                server.accessSwitches ? { onlyIfUnshared: true } : {},
+              )
+              .catch(() => undefined);
+          throw caught;
+        }
+        if (!sheetOpen.current) {
+          await client.stopPublicPreviewShare(share.id);
+          if ((server.accessSwitches || !running) && !managedLocalOn(server))
+            await client.controlManagedDevServer(
               sessionId,
               server.id,
               'stop',
               server.accessSwitches ? { onlyIfUnshared: true } : {},
-            )
-            .catch(() => undefined);
-        throw caught;
-      }
-      if (!sheetOpen.current) {
-        await client.stopPublicPreviewShare(share.id);
-        if ((server.accessSwitches || !running) && !managedLocalOn(server))
-          await client.controlManagedDevServer(
-            sessionId,
-            server.id,
-            'stop',
-            server.accessSwitches ? { onlyIfUnshared: true } : {},
-          );
-        return;
-      }
-      createdShareIds.current.add(share.id);
-      setShares((current) => [share, ...current]);
-    });
+            );
+          return;
+        }
+        createdShareIds.current.add(share.id);
+        setShares((current) => [share, ...current]);
+      });
+    })();
   };
 
   /** Start and Start again keep the switches; with both off they turn Local on. */
@@ -760,6 +788,7 @@ export function StaticPreviewSheet({
   };
 
   const createPublic = async (selection: PreviewTarget, ttlSeconds = duration) => {
+    if (!(await hint.confirm('preview-and-sharing')) || !sheetOpen.current) return;
     if (busy || publicSharing !== 'available') return;
     if (conflictingFolderShare(selection)) {
       setError('Stop the existing public folder link before sharing another folder.');
@@ -981,13 +1010,13 @@ export function StaticPreviewSheet({
       <View style={styles.badges}>
         {local ? (
           <View style={[styles.badge, styles.badgeLocal]}>
-            <Icon name="wifi" size={11} color={theme.colors.tone.done} />
+            <Icon name="wifi" size={11} color={theme.colors.success} />
             <Text style={styles.badgeText}>On network</Text>
           </View>
         ) : null}
         {pub ? (
           <View style={[styles.badge, styles.badgePublic]}>
-            <Icon name="globe" size={11} color={theme.colors.tone.done} />
+            <Icon name="globe" size={11} color={theme.colors.success} />
             <Text style={styles.badgeText}>{`Online ${expiryLabel(pub.expiresAt)}`}</Text>
           </View>
         ) : null}
@@ -1173,9 +1202,7 @@ export function StaticPreviewSheet({
             {managed === null ? 'No dev server running' : 'No servers yet'}
           </Text>
           <Text style={[styles.caption, styles.centered]}>
-            {managed === null
-              ? 'Ask the agent to start your app. It appears here as soon as it is reachable.'
-              : 'Ask the agent to set up your app as a server. You can then switch it on and off here.'}
+            {APP_HELP_TOPICS.find((topic) => topic.id === 'preview-and-sharing')?.emptyState}
           </Text>
         </View>
       ) : null}
@@ -1203,7 +1230,7 @@ export function StaticPreviewSheet({
               accessibilityLabel={`Save ${server.name} as an entry`}
               style={styles.saveEntry}
             >
-              <Icon name="bookmark" size={14} color={theme.colors.primary} />
+              <Icon name="bookmark" size={14} color={theme.colors.action} />
               <Text style={styles.saveEntryText}>Save as entry</Text>
             </Pressable>
           ) : null}
@@ -1311,7 +1338,7 @@ export function StaticPreviewSheet({
               <Icon
                 name={name === 'index.html' ? 'globe' : 'file'}
                 size={18}
-                color={name === 'index.html' ? theme.colors.primary : theme.colors.textFaint}
+                color={name === 'index.html' ? theme.colors.action : theme.colors.textFaint}
               />
               <Text
                 style={[styles.fileName, name === 'index.html' ? styles.fileNameEntry : null]}
@@ -1399,9 +1426,9 @@ export function StaticPreviewSheet({
             style={[styles.primaryButton, styles.actionButton]}
           >
             {working ? (
-              <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+              <ActivityIndicator size="small" color={theme.colors.onAction} />
             ) : (
-              <Icon name="external-link" size={16} color={theme.colors.onPrimary} />
+              <Icon name="external-link" size={16} color={theme.colors.onAction} />
             )}
             <Text style={styles.actionPrimaryText}>{working ? 'Opening…' : 'Open in browser'}</Text>
           </Pressable>
@@ -1434,7 +1461,7 @@ export function StaticPreviewSheet({
               accessibilityLabel="Turn off local access"
               style={styles.dangerButton}
             >
-              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+              <Icon name="slash" size={16} color={theme.colors.attention} />
               <Text style={styles.dangerText}>
                 {busy === 'stop-local' ? 'Turning off…' : 'Turn off'}
               </Text>
@@ -1462,11 +1489,11 @@ export function StaticPreviewSheet({
       return (
         <View
           style={[styles.card, styles.cardPublicActive, stopping ? styles.cardDimmed : null]}
-          accessibilityLabel="Over the internet"
+          accessibilityLabel={ONLINE_SHARING}
         >
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: share.pinLocked
               ? 'Visitors need the link and the PIN.'
               : 'Send link and PIN to whoever should see it.',
@@ -1519,7 +1546,7 @@ export function StaticPreviewSheet({
                   <Icon
                     name={copied === 'public-link' ? 'check' : 'copy'}
                     size={18}
-                    color={theme.colors.primary}
+                    color={theme.colors.action}
                   />
                 </Pressable>
               </View>
@@ -1549,7 +1576,7 @@ export function StaticPreviewSheet({
                     <Icon
                       name={copied === 'pin' ? 'check' : 'copy'}
                       size={18}
-                      color={theme.colors.primary}
+                      color={theme.colors.action}
                     />
                   </Pressable>
                 </View>
@@ -1569,7 +1596,7 @@ export function StaticPreviewSheet({
                 accessibilityRole="button"
                 accessibilityLabel="Share link and PIN"
               >
-                <Icon name="share" size={16} color={theme.colors.onPrimary} />
+                <Icon name="share" size={16} color={theme.colors.onAction} />
                 <Text style={styles.actionPrimaryText}>Send link and PIN</Text>
               </Pressable>
             </View>
@@ -1583,9 +1610,9 @@ export function StaticPreviewSheet({
             style={styles.dangerButton}
           >
             {stopping ? (
-              <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+              <ActivityIndicator size="small" color={theme.colors.attention} />
             ) : (
-              <Icon name="slash" size={16} color={theme.colors.tone.danger} />
+              <Icon name="slash" size={16} color={theme.colors.attention} />
             )}
             <Text style={styles.dangerText}>{stopping ? 'Stopping…' : 'Stop sharing'}</Text>
           </Pressable>
@@ -1595,10 +1622,10 @@ export function StaticPreviewSheet({
     if (publicSharing !== 'available') {
       const premium = publicSharing === 'premium-required';
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: publicDescription,
             status: (
               <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
@@ -1606,7 +1633,11 @@ export function StaticPreviewSheet({
                   style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
                 />
                 <Text style={styles.badgeText}>
-                  {premium ? 'Premium' : 'Temporarily unavailable'}
+                  {premium
+                    ? 'Premium'
+                    : publicSharing === 'disabled'
+                      ? 'Off'
+                      : 'Temporarily unavailable'}
                 </Text>
               </View>
             ),
@@ -1614,9 +1645,11 @@ export function StaticPreviewSheet({
           <Text style={styles.body}>
             {premium
               ? 'Public sharing is part of Verity Premium.'
-              : 'Uplink is not reachable right now. Public links return once it is.'}
+              : publicSharing === 'disabled'
+                ? 'Online sharing is switched off in Verity Premium settings.'
+                : 'Uplink is not reachable right now. Public links return once it is.'}
           </Text>
-          {premium && onOpenSettings ? (
+          {(premium || publicSharing === 'disabled') && onOpenSettings ? (
             <Pressable
               onPress={onOpenSettings}
               accessibilityRole="button"
@@ -1632,10 +1665,10 @@ export function StaticPreviewSheet({
     const otherFolder = conflictingFolderShare(selection);
     if (otherFolder) {
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description:
               'Only one folder per session can be online. Stop the existing link before sharing another folder.',
           })}
@@ -1653,10 +1686,10 @@ export function StaticPreviewSheet({
       );
     }
     return (
-      <View style={styles.card} accessibilityLabel="Over the internet">
+      <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
         {renderCardHeading({
           icon: 'globe',
-          title: 'Over the internet',
+          title: ONLINE_SHARING,
           description: publicDescription,
           status: justStopped ? (
             <Text style={styles.caption} accessibilityLiveRegion="polite">
@@ -1818,7 +1851,7 @@ export function StaticPreviewSheet({
           <Icon
             name="wifi"
             size={20}
-            color={local ? theme.colors.tone.done : theme.colors.textMuted}
+            color={local ? theme.colors.success : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
             <Text style={styles.cardTitle}>Local</Text>
@@ -1849,7 +1882,7 @@ export function StaticPreviewSheet({
               <Icon
                 name={copied === 'local-link' ? 'check' : 'copy'}
                 size={20}
-                color={theme.colors.primary}
+                color={theme.colors.action}
               />
             </Pressable>
           ) : null}
@@ -1872,10 +1905,10 @@ export function StaticPreviewSheet({
           <Icon
             name="globe"
             size={20}
-            color={online ? theme.colors.tone.done : theme.colors.textMuted}
+            color={online ? theme.colors.success : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
-            <Text style={styles.cardTitle}>Shared online</Text>
+            <Text style={styles.cardTitle}>{ONLINE_SHARING}</Text>
             {online?.publicOrigin ? (
               <Pressable
                 onPress={() => {
@@ -1926,7 +1959,7 @@ export function StaticPreviewSheet({
                       <Icon
                         name={copied === 'pin' ? 'check' : 'copy'}
                         size={14}
-                        color={theme.colors.primary}
+                        color={theme.colors.action}
                       />
                     </Text>
                   </Pressable>
@@ -1944,17 +1977,21 @@ export function StaticPreviewSheet({
               accessibilityLabel="Share link and PIN"
               hitSlop={12}
             >
-              <Icon name="share" size={20} color={theme.colors.primary} />
+              <Icon name="share" size={20} color={theme.colors.action} />
             </Pressable>
           ) : null}
-          {publicSharing === 'premium-required' && !online ? (
+          {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !online ? (
             <Pressable
               onPress={onOpenSettings}
               disabled={!onOpenSettings}
               accessibilityRole="button"
               accessibilityLabel="Open Premium settings"
             >
-              <Text style={styles.accessLink}>Premium</Text>
+              {publicSharing === 'disabled' ? (
+                <Text style={styles.accessLink}>Off · Settings</Text>
+              ) : (
+                <PremiumBadge />
+              )}
             </Pressable>
           ) : (
             <Pressable
@@ -1963,8 +2000,8 @@ export function StaticPreviewSheet({
               accessibilityRole="switch"
               accessibilityLabel={
                 overview
-                  ? `Shared online for ${selection.server.name} on port ${String(selection.server.port)}`
-                  : 'Shared online'
+                  ? `${ONLINE_SHARING} for ${selection.server.name} on port ${String(selection.server.port)}`
+                  : ONLINE_SHARING
               }
               accessibilityState={{
                 checked: !!online,
@@ -2075,6 +2112,7 @@ export function StaticPreviewSheet({
           </View>
         </View>
       </KeyboardAvoidingView>
+      {hint.sheet}
     </Modal>
   );
 }
@@ -2084,7 +2122,7 @@ const SHEET_CONTENT_MAX_WIDTH = 640;
 
 const styles = StyleSheet.create((theme) => ({
   overlay: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.scrim },
   sheet: {
     height: '86%',
     minHeight: 0,
@@ -2121,7 +2159,11 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+  title: {
+    color: theme.colors.text,
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
   content: {
     flex: 1,
     minHeight: 0,
@@ -2133,9 +2175,17 @@ const styles = StyleSheet.create((theme) => ({
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
   footer: { gap: theme.spacing.md },
-  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  label: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  sectionHint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  sectionHint: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   unmanaged: { gap: 4 },
   saveEntry: {
     flexDirection: 'row',
@@ -2144,13 +2194,34 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: 'flex-end',
     paddingVertical: theme.spacing.xs,
   },
-  saveEntryText: { color: theme.colors.primary, fontSize: theme.text.xs, fontWeight: '600' },
-  caption: { color: theme.colors.textMuted, fontSize: theme.text.sm },
-  body: { color: theme.colors.text, fontSize: theme.text.sm },
+  saveEntryText: {
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  caption: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  body: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   centered: { textAlign: 'center' },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
+  error: {
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   loading: { padding: theme.spacing.md },
-  empty: { color: theme.colors.textMuted, padding: theme.spacing.sm, fontSize: theme.text.sm },
+  empty: {
+    color: theme.colors.textMuted,
+    padding: theme.spacing.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   sectionLabel: { marginTop: theme.spacing.md },
   emptyCard: {
     alignItems: 'center',
@@ -2162,7 +2233,11 @@ const styles = StyleSheet.create((theme) => ({
     borderStyle: 'dashed',
     borderColor: theme.colors.border,
   },
-  emptyTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  emptyTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   tabs: {
     flexDirection: 'row',
     gap: 4,
@@ -2182,9 +2257,17 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.sm,
   },
   tabActive: { backgroundColor: theme.colors.surface },
-  tabText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  tabTextActive: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
-  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.tone.done },
+  tabText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  tabTextActive: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  tabDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.success },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2197,12 +2280,20 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  rowPressed: { borderColor: theme.colors.primary },
+  rowPressed: { borderColor: theme.colors.action },
   rowIcon: { width: 22, alignItems: 'center' },
   rowText: { flex: 1, minWidth: 0, gap: 2 },
-  rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  rowPort: { color: theme.colors.textMuted, fontWeight: '500' },
-  rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  rowTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  rowPort: { color: theme.colors.textMuted, fontFamily: theme.fonts.regular },
+  rowDetail: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   serverDot: {
     position: 'absolute',
     right: -2,
@@ -2210,9 +2301,9 @@ const styles = StyleSheet.create((theme) => ({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
   },
-  serverDotLoopback: { backgroundColor: theme.colors.tone.attention },
+  serverDotLoopback: { backgroundColor: theme.colors.attention },
   badges: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.xs, marginTop: 4 },
   badge: {
     flexDirection: 'row',
@@ -2224,25 +2315,36 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   badgeLocal: {
-    borderColor: theme.colors.tone.done,
-    backgroundColor: `${theme.colors.tone.done}22`,
+    borderColor: theme.colors.success,
+    backgroundColor: tint(theme.colors.success, 'fill'),
   },
   // Shared is green whether on the network or online; the icon and text tell them apart.
   badgePublic: {
-    borderColor: theme.colors.tone.done,
-    backgroundColor: `${theme.colors.tone.done}22`,
+    borderColor: theme.colors.success,
+    backgroundColor: tint(theme.colors.success, 'fill'),
   },
-  badgePremium: { borderColor: theme.colors.accent, backgroundColor: `${theme.colors.accent}22` },
+  badgePremium: {
+    borderColor: theme.colors.signature,
+    backgroundColor: tint(theme.colors.signature, 'fill'),
+  },
   badgeMuted: { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
   badgeDot: { width: 7, height: 7, borderRadius: 4 },
-  badgeDotLocal: { backgroundColor: theme.colors.tone.done },
-  badgeDotPublic: { backgroundColor: theme.colors.tone.done },
-  badgeDotPending: { backgroundColor: theme.colors.tone.attention },
-  badgeDotPremium: { backgroundColor: theme.colors.accent },
+  badgeDotLocal: { backgroundColor: theme.colors.success },
+  badgeDotPublic: { backgroundColor: theme.colors.success },
+  badgeDotPending: { backgroundColor: theme.colors.attention },
+  badgeDotPremium: { backgroundColor: theme.colors.signature },
   badgeDotMuted: { backgroundColor: theme.colors.textFaint },
-  badgeText: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
+  badgeText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   inlineAction: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
-  inlineActionText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  inlineActionText: {
+    color: theme.colors.action,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   browserList: { paddingBottom: theme.spacing.md },
   fileRow: {
     flexDirection: 'row',
@@ -2251,7 +2353,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.xs,
   },
-  fileName: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.md },
+  fileName: {
+    flex: 1,
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
   fileNameEntry: { color: theme.colors.text },
   card: {
     gap: theme.spacing.md,
@@ -2269,7 +2376,11 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 64,
   },
   accessSwitch: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
-  accessLink: { color: theme.colors.primary, fontSize: theme.text.sm },
+  accessLink: {
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   cardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
   cardIcon: {
     width: 36,
@@ -2288,15 +2399,23 @@ const styles = StyleSheet.create((theme) => ({
     flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
-  cardTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  cardLocalActive: { borderColor: theme.colors.tone.done },
-  cardPublicActive: { borderColor: theme.colors.tone.done },
+  cardTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  cardLocalActive: { borderColor: theme.colors.success },
+  cardPublicActive: { borderColor: theme.colors.success },
   cardDimmed: { opacity: 0.7 },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
   // Buttons in a card row share the width evenly and use one text size, so the
   // filled one stands out by colour rather than by being larger.
   actionButton: { flex: 1, gap: theme.spacing.xs, paddingHorizontal: theme.spacing.sm },
-  actionPrimaryText: { color: theme.colors.onPrimary, fontWeight: '600', fontSize: theme.text.sm },
+  actionPrimaryText: {
+    color: theme.colors.onAction,
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   dangerButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2306,7 +2425,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surface,
   },
   primaryButton: {
@@ -2317,10 +2436,14 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   primaryButtonDisabled: { opacity: 0.45 },
-  primaryText: { color: theme.colors.onPrimary, fontWeight: '700', fontSize: theme.text.md },
+  primaryText: {
+    color: theme.colors.onAction,
+    fontFamily: theme.fonts.bold,
+    fontSize: theme.typography.row.fontSize,
+  },
   secondaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2333,9 +2456,21 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
-  linkMuted: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+  secondaryText: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  dangerText: {
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.bold,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
+  linkMuted: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   linkBox: {
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
@@ -2346,8 +2481,8 @@ const styles = StyleSheet.create((theme) => ({
   linkLabel: {
     width: 36,
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Link and PIN share one row layout: label column, value, copy icon. The
   // value text has the same size in both rows so neither looks like an add-on.
@@ -2360,11 +2495,15 @@ const styles = StyleSheet.create((theme) => ({
   credentialDivider: { borderTopWidth: 1, borderTopColor: theme.colors.border },
   credentialValue: { flex: 1, minWidth: 0 },
   lockedNote: { paddingVertical: theme.spacing.md },
-  linkValue: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  linkValue: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   pinValue: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
     letterSpacing: 2,
     fontVariant: ['tabular-nums'],
   },
@@ -2384,7 +2523,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.sm,
   },
-  durationActive: { backgroundColor: theme.colors.primary },
-  durationText: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
-  durationTextActive: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  durationActive: { backgroundColor: theme.colors.action },
+  durationText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  durationTextActive: {
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
 }));

@@ -89,3 +89,20 @@ The iOS simulator runner preserves the app's ATS configuration. Neither this
 fixture nor Linux tests reproduce hosted admission or establish physical-device
 success. The native helper assertions also check nested TLS error codes,
 redaction of arbitrary strings, and bounded error traversal.
+
+### Deterministic stall characterizations
+
+The macOS HTTP/1.1 harness also runs `verify-writer-stall.sh`. It compiles the
+Writer actor extracted from `RemoteAppTunnel.swift` against a controlled socket
+that suspends its first send. The sibling must remain queued until that send is
+released. Removing the predecessor wait must make the characterization fail;
+a compilation failure or process timeout does not count as mutation detection.
+This demonstrates shared-send blocking, not the cause of a production incident.
+
+The native HTTP/1.1 and HTTP/2 probes request `/partial`, which sends headers and
+one body byte but never completes. After the ten-second first-byte watchdog
+window, a fresh sibling URLSession must still complete a request through the
+same tunnel. The held response must end with its own request timeout. This
+separates a post-first-byte stream stall from a failed attachment. Node fixture
+tests verify the partial response and sibling behavior independently; they do
+not execute the Swift tunnel. These fixtures need no production credentials.

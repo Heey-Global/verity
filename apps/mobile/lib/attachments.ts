@@ -111,13 +111,13 @@ export function releaseDroppedFile(uri: string): void {
   new FsFile(uri).delete();
 }
 
-async function droppedFileBase64(uri: string): Promise<string> {
+async function attachmentFileBase64(uri: string): Promise<string> {
   if (Platform.OS !== 'web') return new FsFile(uri).base64();
   const blob = await droppedFileData(uri);
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read the dropped file.'));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the selected file.'));
     reader.readAsDataURL(blob);
   });
   return dataUrl.slice(dataUrl.indexOf(',') + 1);
@@ -133,7 +133,7 @@ export async function readDroppedAttachments(
   try {
     for (const [index, dropped] of files.entries()) {
       if (index >= remaining) continue;
-      const data = await droppedFileBase64(dropped.uri);
+      const data = await attachmentFileBase64(dropped.uri);
       if (data.length === 0) {
         empty.push(dropped.fileName);
         continue;
@@ -334,9 +334,8 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
   const uploads: AttachmentUpload[] = [];
   const empty: string[] = [];
   for (const asset of result.assets.slice(0, remaining)) {
-    const file = new FsFile(asset.uri);
     try {
-      const data = await file.base64();
+      const data = await attachmentFileBase64(asset.uri);
       if (data.length === 0) {
         empty.push(asset.name);
         continue;
@@ -352,7 +351,7 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
       });
     } finally {
       try {
-        file.delete();
+        releaseDroppedFile(asset.uri);
       } catch {
         // Best-effort cleanup of the document picker's private cache copy.
       }

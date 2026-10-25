@@ -1,7 +1,48 @@
+import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
+import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
+import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
+import {
+  VulnerabilityFixSheet,
+  VulnerabilityStarterCard,
+} from '../../components/vulnerability/VulnerabilityStarterCard';
+import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
+import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import type { GoogleMenuAccess } from '../../lib/attachMenu';
+import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
+import type { FindingGroup, ProjectDriveFolder, VulnerabilityFinding } from '@verity/mobile';
+import {
+  useGoogleAccountPicker,
+  googleAccountSupports,
+} from '../../components/settings/GoogleAccountPicker';
+import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
+import { Button } from '../../components/ui/Button';
+import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
+import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
+import { isLinkableSession } from '../../lib/sessionLinks';
+import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { CodeHostIcon } from '../../components/CodeHostIcon';
+import { useFeatureHint } from '../../components/FeatureHint';
+import { appendHelpQuestion } from '../../lib/featureHints';
+import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import {
+  KnowledgeSaveContext,
+  KnowledgeSaveProvider,
+} from '../../components/KnowledgeSaveProvider';
+import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
+import {
+  beginRenderWork,
+  markFirstSessionRender,
+  markInitialListLoad,
+} from '../../lib/sessionSwitchTiming';
+import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
+import { PinnedPlan } from '../../components/PinnedPlan';
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { ActionMenu } from '../../components/ActionMenu';
+import { SlowSpinner } from '../../components/SlowSpinner';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -9,7 +50,7 @@ import { FileContentPreview } from '../../components/files/FileContentPreview';
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
 // with our own components — user bubbles, agent text with fenced-code blocks, tool
 // cards, and lifecycle event rows. The input bar (text + mic/attach placeholders)
-// sits inside a KeyboardAvoidingView so it rises above the keyboard. All
+// sits inside an animated frame so it rises above the keyboard. All
 // StyleSheet.create-using components live in this file so the Unistyles Babel
 // plugin (root: 'app') processes them.
 import {
@@ -33,6 +74,7 @@ import {
   type SessionFileEntry,
   type SessionFileContent,
   type SessionFileRoot,
+  type AppLinkTarget,
   type SessionGoogleWorkspaceFile,
   type SessionPlanning,
   type ToolCallMessage,
@@ -45,29 +87,36 @@ import {
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  isPlanImplementationPermission,
+  planProposalHeadline,
+  planProposalContent,
   planningToolName,
   END_PLANNING_TOOL,
   START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
+  matrixSendSummary,
   calendarChangeSummary,
-  githubRefUrl,
-  isPullRequestCheckingMergeability,
-  isPullRequestConflicted,
+  forgeRefUrl,
+  providerName,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
   withPlanningSnapshot,
+  pullRequestMergeButton,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
   modelDisplayName,
+  excludedAgentsNote,
   orderModels,
   partitionModels,
   publishSessionAutomationMutation,
   parseBranchIssue,
+  parseAppLink,
   parseInline,
   parseMarkdownBlocks,
   rateLimitNotice,
@@ -84,6 +133,8 @@ import {
   listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
+  packageInstallSummary,
+  packageInstallDecision,
   KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
@@ -102,6 +153,7 @@ import {
   toolCallView,
   planHeadline,
   type PlanView,
+  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
@@ -113,13 +165,14 @@ import {
   type ToolCallTone,
   type ToolImage,
   type LocalPreviewShare,
-  type ManagedDevServer,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
+import { TranscriptScrollView } from '../../components/TranscriptScrollView';
 import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   createContext,
+  memo,
   type ComponentProps,
   type ReactNode,
   type RefObject,
@@ -177,7 +230,7 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // across reopens — the backlog of images never loads up front.
 import { Image as ExpoImage, type ImageSource } from 'expo-image';
 import { UITextView } from 'react-native-uitextview';
-import { KeyboardAvoidingView, KeyboardStickyView } from 'react-native-keyboard-controller';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -202,6 +255,7 @@ import {
   shouldSubmitOnReturn,
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
+import { useSessionPreviewReads } from '../../hooks/useSessionPreviewReads';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
@@ -236,9 +290,10 @@ import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   hasConnectedGoogleAccount,
-  getProjectGoogleAccess,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
+  chatAccountPickAction,
+  GOOGLE_SERVICE_NAMES,
   type GoogleService,
 } from '../../lib/sessionGoogleAccess';
 import {
@@ -281,7 +336,6 @@ import {
   isOldestRowViewable,
   isScrollTowardHistory,
   migratedAnchorOffset,
-  shouldContinueOlderHistory,
   shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
@@ -310,8 +364,9 @@ import {
 } from '../../lib/transcriptAnchor';
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
-
-const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
+import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
+import { toneColor } from '../../theme/tokens';
+import { tint } from '../../components/ui/tint';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -462,7 +517,6 @@ const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequ
 // translateY the stack onto the true vertical centre of the visible transcript. Keep
 // in sync with styles.msgNav(Btn).
 const NAV_STACK_HALF = 65;
-const SPLIT_SCREEN_MIN_WIDTH = 900;
 const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
   'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
@@ -514,42 +568,6 @@ export default function SessionScreen() {
       retrySecret={retrySecret}
     />
   );
-}
-
-// Send the wide-screen viewer to the split home with this session preselected.
-// Uses `dismissTo` (not `<Redirect>`/`replace`): when a home screen is already
-// below in the stack — the usual case, since sessions are reached via `/new`,
-// an issue, or a list tap that all sit on top of `/` — this pops
-// back to that existing home instead of stacking a *second* `/`. A duplicate
-// home was what surfaced the phantom "‹ Verity" back button on the home header.
-// If no home exists below (e.g. a cold deep-link straight to /session/[id]),
-// `dismissTo` falls back to replacing this route with `/`, exactly like the old
-// redirect did. Mirrors expo-router's own <Redirect>, which fires on focus.
-function SplitScreenRedirect({
-  id,
-  targetMessageId,
-  targetSearchQuery,
-  retrySecret,
-}: {
-  id: string;
-  targetMessageId?: string;
-  targetSearchQuery?: string;
-  retrySecret?: string;
-}) {
-  useFocusEffect(
-    useCallback(() => {
-      router.dismissTo({
-        pathname: '/',
-        params: {
-          selected: id,
-          ...(targetMessageId ? { targetMessageId } : {}),
-          ...(targetSearchQuery ? { targetSearchQuery } : {}),
-          ...(retrySecret ? { retrySecret } : {}),
-        },
-      });
-    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
-  );
-  return null;
 }
 
 /**
@@ -608,27 +626,32 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   shared: KNOWLEDGE_ICON,
 };
 
-const KnowledgeSaveContext = createContext<{
-  save(messageId: string, text: string): Promise<void>;
-} | null>(null);
-
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
+// An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
+// navigation and the sheets, so it answers with the handler for a target, or null
+// when the target cannot be opened here; the renderer then shows the same
+// non-tappable reference styling as an unknown target instead of a link that
+// would do nothing.
+type OpenAppLink = (target: AppLinkTarget) => (() => void) | null;
+const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
 const SearchHighlightContext = createContext<string | null>(null);
 
-function useTranscriptRows(messages: readonly Message[]): Row[] {
+function useTranscriptRows(messages: readonly Message[], sessionId: string): Row[] {
   const previous = useRef<Row[]>([]);
   return useMemo(() => {
+    const finishReconcile = beginRenderWork('transcript-reconcile', sessionId);
     const rows = groupRows(messages, previous.current);
+    finishReconcile();
     previous.current = rows;
     return rows;
-  }, [messages]);
+  }, [messages, sessionId]);
 }
 
-export function SessionChat({
+export const SessionChat = memo(function SessionChat({
   client,
   sessionId,
   baseUrl,
@@ -645,12 +668,26 @@ export function SessionChat({
   initialTargetSearchQuery?: string;
   retrySecret?: string;
 }) {
+  markFirstSessionRender(sessionId, 'session-screen-render-entry');
+  const finishChatWork = beginRenderWork('chat-body', sessionId);
+  const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
+  const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
+  const initialListLoaded = loadedListSessionId === sessionId;
+  useSwitchFrameTiming(switchTiming, initialListLoaded);
+  useEffect(() => {
+    markSessionSwitch(switchTiming, 'session-screen-react-commit');
+    return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
+  }, [switchTiming]);
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
   const {
     session,
+    refreshMetadata,
     streamError,
+    historyError,
+    loadingHistory,
+    retryHistory,
     sending,
     sendError,
     cancelError,
@@ -688,11 +725,14 @@ export function SessionChat({
     oldestHistorySeq,
     loadingOlder,
     olderLoadStalled,
-    olderLoadNeedsContinuation,
     olderLoadGeneration,
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  const optionalWorkReady = useDeferredSessionWork(
+    sessionId,
+    initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
+  );
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
@@ -709,18 +749,19 @@ export function SessionChat({
       let active = true;
       setLinkedSessions([]);
       const refresh = () => {
-        void client
+        return client
           .listSessionLinks(sessionId)
           .then((links) => {
             if (active) setLinkedSessions(links);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/links` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -734,18 +775,19 @@ export function SessionChat({
       let active = true;
       setPendingLinkedMessages([]);
       const refresh = () => {
-        void client
+        return client
           .listPendingLinkedMessages(sessionId)
           .then((items) => {
             if (active) setPendingLinkedMessages(items);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -811,8 +853,14 @@ export function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
-  const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client, loaded);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
+  const {
+    models,
+    modelOrder,
+    moreModels,
+    allowedAgents,
+    refresh: refreshModels,
+  } = useModels(client, optionalWorkReady, projectId);
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
   const [automationReady, setAutomationReady] = useState(false);
@@ -863,8 +911,8 @@ export function SessionChat({
   }, [client, sessionId]);
   useEffect(() => {
     setAutomationReady(false);
-    if (loaded) void loadAutomation();
-  }, [loadAutomation, loaded]);
+    if (optionalWorkReady) void loadAutomation();
+  }, [loadAutomation, optionalWorkReady]);
   const applyAutomation = useCallback(
     (next: SessionAutomation | null) => {
       automationGeneration.current += 1;
@@ -935,36 +983,29 @@ export function SessionChat({
   }, [applyAutomation, automation, client, sessionId]);
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  const [mainFixGroups, setMainFixGroups] = useState<FindingGroup<VulnerabilityFinding>[] | null>(
+    null,
+  );
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
-  const completedServerTools = session.messages.filter(
-    (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
-  ).length;
-  // Names and addresses of managed servers, for their chat cards.
-  const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
-    () => new Map(),
+  const completedServerTools = useMemo(
+    () =>
+      session.messages.filter(
+        (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
+      ).length,
+    [session.messages],
   );
-  useEffect(() => {
-    if (typeof client.listManagedDevServers !== 'function') return;
-    let active = true;
-    void client
-      .listManagedDevServers(sessionId)
-      .then((servers) => {
-        if (!active || !servers) return;
-        setManagedByInstance(
-          new Map(
-            servers.flatMap((server) =>
-              server.instance ? [[server.instance.id, server] as const] : [],
-            ),
-          ),
-        );
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, completedServerTools, session.devServers, sessionId]);
+  const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
+    useSessionPreviewReads({
+      client,
+      sessionId,
+      projectId,
+      loaded,
+      completedServerTools,
+      enabled: optionalWorkReady || staticPreviewOpen,
+      devServers: session.devServers,
+    });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
     if (previewOpening !== null) return;
     setPreviewOpening(server.port);
@@ -982,7 +1023,7 @@ export function SessionChat({
           setPreviewServer(server);
           setStaticPreviewOpen(true);
         },
-        () => router.push('/settings/services'),
+        () => router.push('/settings/premium'),
       );
     } catch (caught) {
       const alert = openFailureAlert(server.name, caught instanceof Error ? caught.message : '');
@@ -991,66 +1032,6 @@ export function SessionChat({
       setPreviewOpening(null);
     }
   };
-  const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
-  const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
-  // Set once a Core without port detection says so, so the header stops asking.
-  const devServersUnsupported = useRef(false);
-  const refreshStaticPreview = useCallback(() => {
-    if (!projectId) return;
-    if (typeof client.listSessionDevServers === 'function' && !devServersUnsupported.current) {
-      void client
-        .listSessionDevServers(sessionId)
-        .then((servers) => {
-          if (servers === null) devServersUnsupported.current = true;
-          setHasRunningDevServer((servers ?? []).length > 0);
-        })
-        .catch(() => undefined);
-    }
-    // Shared means shared on the local network or online alike: either lights the
-    // preview button. A failed read counts as "not shared" for that source only.
-    const now = Date.now();
-    const publicShared = client
-      .listPublicPreviewShares(projectId)
-      .then((shares) =>
-        shares.some(
-          (share) =>
-            (share.targetKind === 'static-folder' ||
-              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-            share.sessionId === sessionId &&
-            share.state === 'active' &&
-            new Date(share.expiresAt).getTime() > now,
-        ),
-      )
-      .catch(() => false);
-    const localShared =
-      typeof client.listSessionLocalPreviewShares === 'function'
-        ? client
-            .listSessionLocalPreviewShares(sessionId)
-            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
-            .catch(() => false)
-        : Promise.resolve(false);
-    void Promise.all([publicShared, localShared]).then(([online, local]) =>
-      setHasActiveStaticPreview(online || local),
-    );
-  }, [client, projectId, sessionId]);
-  useEffect(() => {
-    if (!loaded) return;
-    refreshStaticPreview();
-    const detach = subscribeLiveRefresh(
-      client,
-      refreshStaticPreview,
-      (path) =>
-        (projectId != null &&
-          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
-        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
-          /preview|share|dev-server/u.test(path)),
-    );
-    return () => detach();
-  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
-
-  useEffect(() => {
-    if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
-  }, [session.devServers]);
 
   const confirmAutomation = useCallback(
     async (proposal: AutomationProposalMessage['proposal']): Promise<void> => {
@@ -1102,7 +1083,16 @@ export function SessionChat({
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
   const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
-  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
+  const [voiceVisible, setVoiceVisible] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setVoiceVisible(true);
+      return () => setVoiceVisible(false);
+    }, []),
+  );
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text), {
+    visible: voiceVisible,
+  });
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
   const branches = useBranches(client, sessionId, loaded || !locallyCreated);
@@ -1122,11 +1112,13 @@ export function SessionChat({
   // Issue # comes from the branch name (#125, works before any PR). The PR chip has
   // moved out of the header — the bottom PR status bar surfaces the PR now.
   const issueNumber = parseBranchIssue(effectiveBranch);
-  // Tappable Issue chip (#161): build the GitHub URL from the server-surfaced owner/
-  // repo. `githubRefUrl` returns null when owner/repo is unknown (no GitHub remote /
-  // older server) — the chip then renders non-tappable, never linking to a broken URL.
-  const repoIdentity = { owner: branches.owner, repo: branches.repo };
-  const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
+  // Tappable Issue chip (#161): build the code-host URL from the server-surfaced owner/
+  // repo and, for Forgejo, its host. `forgeRefUrl` returns null when owner/repo is
+  // unknown (no remote / older server) — the chip then renders non-tappable, never
+  // linking to a broken URL.
+  const repoIdentity = { owner: branches.owner, repo: branches.repo, host: branches.codeHost };
+  const issueUrl = forgeRefUrl('issue', repoIdentity, issueNumber);
+  const codeHostName = providerName(branches.codeHost?.provider ?? 'github');
   // Open PRs cannot be dismissed, so they can render immediately. Wait for the
   // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
@@ -1214,13 +1206,13 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const loadedTranscriptData = useTranscriptRows(session.messages);
+  const loadedTranscriptData = useTranscriptRows(session.messages, sessionId);
   const transcriptData = useMemo(
     () => withPlanningSnapshot(loadedTranscriptData, { planning, planningPlan, planningRevision }),
     [loadedTranscriptData, planning, planningPlan, planningRevision],
   );
-  const localMeetingData = useTranscriptRows(localMeetingMessages);
-  const pendingEchoData = useTranscriptRows(pendingEchoMessages);
+  const localMeetingData = useTranscriptRows(localMeetingMessages, sessionId);
+  const pendingEchoData = useTranscriptRows(pendingEchoMessages, sessionId);
   const liveChronologicalData = useMemo(
     () => [...transcriptData, ...localMeetingData, ...pendingEchoData],
     [transcriptData, localMeetingData, pendingEchoData],
@@ -1423,9 +1415,9 @@ export function SessionChat({
   }, [messages.length]);
   const reportScrollDebug = useCallback(
     (event: string, data: Record<string, unknown> = {}) => {
-      const seq = (scrollDebugSeqRef.current += 1);
-      void client
-        .reportScrollDiagnostic(sessionId, {
+      reportRecordedScrollDiagnostic(() => {
+        const seq = (scrollDebugSeqRef.current += 1);
+        return client.reportScrollDiagnostic(sessionId, {
           event,
           seq,
           at: Date.now(),
@@ -1440,8 +1432,8 @@ export function SessionChat({
             userScrollActive: userScrollActiveRef.current,
             ...data,
           },
-        })
-        .catch(() => undefined);
+        });
+      });
     },
     [client, sessionId],
   );
@@ -1939,6 +1931,24 @@ export function SessionChat({
   // pass lands after layout/measurement.
   const [restoreTarget, setRestoreTarget] = useState<ScrollAnchor | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const timingReadinessRef = useRef<string | null>(null);
+  const timingLoadedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || !switchTiming || timingLoadedRef.current === switchTiming.id) return;
+    timingLoadedRef.current = switchTiming.id;
+    markSessionSwitch(switchTiming, 'history-loaded-react-commit');
+  }, [loaded, switchTiming]);
+  useEffect(() => {
+    if (
+      !loaded ||
+      restoring ||
+      data.length === 0 ||
+      timingReadinessRef.current === switchTiming?.id
+    )
+      return;
+    timingReadinessRef.current = switchTiming?.id ?? null;
+    markSessionSwitch(switchTiming, 'transcript-ready-react-commit');
+  }, [loaded, restoring, data.length, switchTiming]);
   // Opening at the newest edge is offset ZERO in the inverted list — an exact constant
   // that no row measurement can invalidate. The former converging scroll-to-end (three
   // passes against progressively-measured estimates, each one visible) has no
@@ -1979,7 +1989,9 @@ export function SessionChat({
     // below) so an interrupt raised while older history is still paging in is preserved
     // into the convergence rather than discarded when the row finally loads.
     restoreInterruptedRef.current = false;
+    markSessionSwitch(switchTiming, 'anchor-read-start');
     void loadScrollAnchor(requestedSessionId).then((anchor) => {
+      markSessionSwitch(switchTiming, 'anchor-read-end');
       if (!active || sessionIdRef.current !== requestedSessionId) return;
       if (restoreInterruptedRef.current) {
         reportScrollDebug('restore-skipped-after-user-action');
@@ -2018,7 +2030,7 @@ export function SessionChat({
     return () => {
       active = false;
     };
-  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId]);
+  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId, switchTiming]);
   // Positioning loop. Restore only targets rows already present in the initial loaded
   // tail; it never fetches older history on open.
   useEffect(() => {
@@ -2227,14 +2239,17 @@ export function SessionChat({
           olderLoadStalled,
           allowStalledRetry,
           historyAppendSettlingRef.current,
+          initialListLoaded,
         )
       ) {
         reportScrollDebug('start-reached-blocked', {
-          blockedBy: !hasOlder
-            ? 'no-older-history'
-            : historyAppendSettlingRef.current && !loadingOlder
-              ? 'append-settling'
-              : 'loading-older',
+          blockedBy: !initialListLoaded
+            ? 'initial-list-loading'
+            : !hasOlder
+              ? 'no-older-history'
+              : historyAppendSettlingRef.current && !loadingOlder
+                ? 'append-settling'
+                : 'loading-older',
         });
         return;
       }
@@ -2261,22 +2276,46 @@ export function SessionChat({
       });
       void loadOlder();
     },
-    [hasOlder, loadingOlder, loadOlder, olderLoadStalled, pendingUserJump, reportScrollDebug],
+    [
+      hasOlder,
+      loadingOlder,
+      loadOlder,
+      olderLoadStalled,
+      pendingUserJump,
+      reportScrollDebug,
+      initialListLoaded,
+    ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
+  // With nothing visible there is no list to scroll, so older pages are fetched
+  // until a message appears, the history ends, or a page fails (which shows its
+  // own retry). A fetch that did not move the history cursor ends the walk, so a
+  // page that adds nothing cannot repeat for good; a bookmark jump in progress
+  // owns paging and is left alone.
+  const showsNoMessages = loaded && messages.length === 0;
+  const emptyPagingCursorRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    // A reload starts a fresh walk.
+    if (!loaded) emptyPagingCursorRef.current = undefined;
+  }, [loaded]);
+  useEffect(() => {
+    if (!showsNoMessages || !hasOlder || loadingOlder || olderLoadStalled) return;
+    if (pendingUserJump !== null) return;
+    if (emptyPagingCursorRef.current === (oldestHistorySeq ?? null)) return;
+    emptyPagingCursorRef.current = oldestHistorySeq ?? null;
+    void loadOlder();
+  }, [
+    showsNoMessages,
+    hasOlder,
+    loadingOlder,
+    olderLoadStalled,
+    pendingUserJump,
+    oldestHistorySeq,
+    loadOlder,
+  ]);
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
-  const initialHistoryPrefetchRef = useRef(false);
-  useEffect(() => {
-    if (initialHistoryPrefetchRef.current || !loaded || restoring || !hasOlder || loadingOlder)
-      return;
-    initialHistoryPrefetchRef.current = true;
-    // A single extra page starts behind the initial render. Subsequent pages are
-    // governed by the measured four-viewport buffer, so opening a long session
-    // cannot pull its whole transcript into memory.
-    loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2317,36 +2356,6 @@ export function SessionChat({
       if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
-  const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
-  useEffect(() => {
-    const completed = observedOlderLoadGenerationRef.current !== olderLoadGeneration;
-    observedOlderLoadGenerationRef.current = olderLoadGeneration;
-    if (
-      !shouldContinueOlderHistory(
-        completed,
-        hasOlder,
-        olderLoadStalled,
-        olderLoadNeedsContinuation,
-        isHistoryEdgeVisible(
-          lastScrollYRef.current,
-          lastContentHeightRef.current,
-          lastViewportHeightRef.current,
-          oldestVisibleIndexRef.current,
-          dataRef.current.length,
-        ),
-        userScrollActiveRef.current,
-        historyAppendSettlingRef.current,
-      )
-    )
-      return;
-
-    // A bounded scan may advance across metadata-only pages without changing any
-    // visible rows. Continue after React has committed the new cursor while the
-    // history edge remains visible. Failures/non-progress are deliberately excluded
-    // above, so this cannot become an automatic retry loop.
-    const raf = requestAnimationFrame(() => loadOlderNearStartRef.current());
-    return () => cancelAnimationFrame(raf);
-  }, [hasOlder, olderLoadGeneration, olderLoadNeedsContinuation, olderLoadStalled]);
   useEffect(() => {
     reportScrollDebug('loading-older-state', { loadingOlder });
   }, [loadingOlder, reportScrollDebug]);
@@ -2355,6 +2364,33 @@ export function SessionChat({
   // tap-revealed action row under a message (next to Copy); recalled from the header
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [settingsProjects, setSettingsProjects] = useState<
+    Awaited<ReturnType<VerityClient['listProjects']>>
+  >([]);
+  const [settingsSessions, setSettingsSessions] = useState<
+    Awaited<ReturnType<VerityClient['listSessions']>>
+  >([]);
+  useEffect(() => {
+    if (!sessionSettingsOpen) return;
+    let active = true;
+    void Promise.all([client.listProjects(), client.listSessions()])
+      .then(([projects, sessions]) => {
+        if (active) {
+          setSettingsProjects(projects);
+          setSettingsSessions(sessions);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, sessionSettingsOpen]);
+  const askHelp = (question: string) => {
+    voice.abort();
+    setDraft((current) => appendHelpQuestion(current, question));
+  };
+  const featureHint = useFeatureHint(askHelp, sessionId);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
@@ -2363,6 +2399,43 @@ export function SessionChat({
     setFilesInitialRoot(root);
     setFilesOpen(true);
   }, []);
+  // Project settings, the Preview sheet and the knowledge root need the session's
+  // project, like the header's Preview button; without one (not loaded yet, or a
+  // session outside a project) those targets are not openable.
+  const openAppLink = useCallback<OpenAppLink>(
+    (target) => {
+      switch (target.kind) {
+        case 'session-settings':
+          return () => setSessionSettingsOpen(true);
+        case 'route':
+          return () => router.push(target.path);
+        case 'project-settings': {
+          if (!projectId) return null;
+          const pathname =
+            target.page === null
+              ? '/project/[id]/settings'
+              : (`/project/[id]/settings/${target.page}` as const);
+          return () => router.push({ pathname, params: { id: projectId } });
+        }
+        case 'new-project':
+          return () => router.push('/new-project');
+        case 'preview':
+          if (!projectId) return null;
+          return () => {
+            refreshStaticPreview();
+            setStaticPreviewOpen(true);
+          };
+        case 'files':
+          if (target.root === 'knowledge' && !projectId) return null;
+          return () => {
+            setFilesInitialPath(null);
+            setFilesInitialRoot(target.root);
+            setFilesOpen(true);
+          };
+      }
+    },
+    [projectId, refreshStaticPreview],
+  );
   // Index of a bookmarked message id in the current rows, or -1 if not loaded yet.
   const rowIndexOfMessage = useCallback(
     (messageId: string) =>
@@ -2387,18 +2460,15 @@ export function SessionChat({
   // When a jump target isn't in the loaded window yet, page older history toward it
   // until it appears — driven entirely by the effect below (ONE control path, so the
   // async prepends settle across re-renders and the initial call can't race the retry).
-  // `jumpRowsRef` records the row count at the last page request: if a load settles
-  // without adding rows we've made no progress — a flaky fetch, an empty page, or a
-  // target whose id re-keyed away across a coalescing boundary (older text deltas
-  // merging onto an earlier seq when a page prepends) — so we stop instead of
-  // refetching in a tight, unthrottled loop.
+  // Metadata-only pages and coalesced text can advance history without adding rows.
+  // Stop only when the event cursor stalls or a request fails.
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
   const pendingJumpQueryRef = useRef<string | null>(null);
   const highlightMessage = useCallback((messageId: string, searchQuery: string | null = null) => {
     setHighlightedMessageId(messageId);
     setHighlightedSearchQuery(searchQuery);
   }, []);
-  const jumpRowsRef = useRef(-1);
+  const bookmarkCursorRef = useRef<number | undefined>(undefined);
   const jumpToBookmark = useCallback(
     (messageId: string, searchQuery: string | null = null): boolean => {
       const index = rowIndexOfMessage(messageId);
@@ -2420,14 +2490,14 @@ export function SessionChat({
       // that effect falls through to paging exactly as it would have.
       if (frozenTailRef.current !== null) {
         snapshotLiveTail();
-        jumpRowsRef.current = -1;
+        bookmarkCursorRef.current = undefined;
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
       }
       // Not loaded — let the effect page toward it. Nothing older → the message is gone.
       if (hasOlder) {
-        jumpRowsRef.current = -1; // fresh jump: no page requested yet
+        bookmarkCursorRef.current = undefined; // fresh jump: no page requested yet
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
@@ -2491,14 +2561,19 @@ export function SessionChat({
       return;
     }
     if (loadingOlder) return; // a page is in flight — wait for it to settle
-    // Give up (don't spin) when there's nothing older left, or the last page added no
-    // rows (no progress toward the target).
-    if (!hasOlder || data.length === jumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        bookmarkCursorRef.current,
+      )
+    ) {
       setPendingJumpId(null);
       pendingJumpQueryRef.current = null;
       return;
     }
-    jumpRowsRef.current = data.length;
+    bookmarkCursorRef.current = oldestHistorySeq;
     pageTowardMessage(pendingJumpId);
   }, [
     cancelPendingUserScrollSettle,
@@ -2508,6 +2583,8 @@ export function SessionChat({
     hasOlder,
     loadingOlder,
     pageTowardMessage,
+    oldestHistorySeq,
+    olderLoadStalled,
     highlightMessage,
     syncTailFreeze,
   ]);
@@ -2519,16 +2596,12 @@ export function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [chooseGoogleAccount, googleAccountSheet] = useGoogleAccountPicker();
   const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
-  const [projectGoogleAccess, setProjectGoogleAccess] = useState<Record<GoogleService, boolean>>({
-    gmail: false,
-    calendar: false,
-    contacts: false,
-  });
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2560,11 +2633,6 @@ export function SessionChat({
         .getSessionContactsConnection(sessionId)
         .then((connection) => {
           if (active) setContactsConnection(connection);
-        })
-        .catch(() => undefined);
-      void getProjectGoogleAccess(client, projectId)
-        .then((access) => {
-          if (active) setProjectGoogleAccess(access);
         })
         .catch(() => undefined);
       return () => {
@@ -3158,28 +3226,68 @@ export function SessionChat({
   }, [uploadMeetingAudio]);
   const onLiveMeeting = useCallback(() => {
     setAttachMenuOpen(false);
-    voice.abort();
-    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
-  }, [sessionId, voice]);
+    void featureHint.confirm('live-meeting').then((proceed) => {
+      if (!proceed) return;
+      voice.abort();
+      router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+    });
+  }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
-      void connectSessionGoogleService(client, sessionId, service)
-        .then((result) => {
-          if (result.kind === 'session') {
-            setGmailConnection(result.connections.gmail);
-            setCalendarConnection(result.connections.calendar);
-            setContactsConnection(result.connections.contacts);
-          }
-        })
-        .catch((error: unknown) =>
-          Alert.alert(
-            'Could not connect Google service',
-            error instanceof Error ? error.message : String(error),
-          ),
+      void (async () => {
+        const accounts = (await client.listGoogleAccounts()).filter((account) =>
+          googleAccountSupports(account, service),
         );
+        const [status, project] = await Promise.all([
+          client.getSessionGoogleAccess(sessionId, service),
+          // The project grant only decides inherit versus pin, so an unreadable
+          // one must not block choosing an account for this chat.
+          projectId
+            ? client.getProjectGoogleConnection(projectId, service).catch(() => null)
+            : null,
+        ]);
+        const currentId = status.enabled ? status.accountId : null;
+        const projectAccountId = project?.enabled ? (project.accountId ?? null) : null;
+        const accountId = await chooseGoogleAccount({
+          accounts,
+          title: `${GOOGLE_SERVICE_NAMES[service]} account`,
+          selectedId: currentId,
+        });
+        const action = chatAccountPickAction({
+          accountId,
+          supportingAccounts: accounts.length,
+          currentId,
+          projectAccountId,
+          inheriting: status.mode === 'inherit' && status.enabled,
+        });
+        if (action === 'none') return;
+        if (action === 'inherit') {
+          await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
+          const [gmail, calendar, contacts] = await Promise.all([
+            client.getSessionGmailConnection(sessionId),
+            client.getSessionCalendarConnection(sessionId),
+            client.getSessionContactsConnection(sessionId),
+          ]);
+          setGmailConnection(gmail);
+          setCalendarConnection(calendar);
+          setContactsConnection(contacts);
+          return;
+        }
+        const result = await connectSessionGoogleService(client, sessionId, service, accountId);
+        if (result.kind === 'session') {
+          setGmailConnection(result.connections.gmail);
+          setCalendarConnection(result.connections.calendar);
+          setContactsConnection(result.connections.contacts);
+        }
+      })().catch((error: unknown) =>
+        Alert.alert(
+          'Could not connect Google service',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
     },
-    [client, sessionId],
+    [client, projectId, sessionId, chooseGoogleAccount],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),
@@ -3197,18 +3305,41 @@ export function SessionChat({
     (service: GoogleService) => {
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
-          setProjectGoogleAccess((current) => ({ ...current, [service]: false }));
           if (service === 'gmail')
             setGmailConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else if (service === 'calendar')
             setCalendarConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else
             setContactsConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
         })
         .catch((error: unknown) =>
@@ -3377,51 +3508,48 @@ export function SessionChat({
     }
     return null;
   }, [session.messages]);
-  // Only a plan of the current round counts: one an earlier round already decided
-  // must not be offered for implementation again.
-  const hasPresentedPlan = useMemo(() => {
+  const planUpdated = useMemo(() => {
+    let count = 0;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-      const m = session.messages[i];
-      if (m?.kind !== 'tool-call') continue;
-      if (planProposal(m.tool) !== null) return true;
-      if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
-        return false;
+      const message = session.messages[i];
+      if (message?.kind !== 'tool-call') continue;
+      if (
+        message.tool.state === 'completed' &&
+        planningToolName(message.tool.name) === START_PLANNING_TOOL
+      )
+        break;
+      if (planProposal(message.tool) !== null) count += 1;
     }
-    return false;
+    return count > 1;
   }, [session.messages]);
   const implementPlan = useCallback(
     (revision?: number) => {
-      decidePlanning('implement', revision);
+      const pending = session.pendingPermission;
+      if (pending && isPlanImplementationPermission(pending)) {
+        decidePermission(pending.toolUseId, { behavior: 'allow' });
+      } else {
+        decidePlanning('implement', revision);
+      }
       scrollToLatest(true);
     },
-    [decidePlanning, scrollToLatest],
+    [decidePermission, decidePlanning, scrollToLatest, session.pendingPermission],
   );
-  // "End" always asks: ending planning gives the agent its file access back, and
-  // with a plan on the table the operator also has to say what becomes of it.
-  const endPlanning = useCallback(() => {
-    if (planningPlan == null) {
-      Alert.alert(
-        'End planning mode?',
-        'The agent can change files again from your next message.',
-        [
-          { text: 'Keep planning', style: 'cancel' },
-          { text: 'End', onPress: () => decidePlanning('discard') },
-        ],
-      );
-      return;
-    }
-    Alert.alert(
-      'End planning mode?',
-      hasPresentedPlan
-        ? 'What should happen to the latest plan? It stays in the chat either way.'
-        : `What should happen to this plan?\n\n${planningPlan}`,
-      [
-        { text: 'Implement plan', onPress: () => implementPlan(planningRevision) },
-        { text: 'Discard plan', style: 'destructive', onPress: () => decidePlanning('discard') },
-        { text: 'Keep planning', style: 'cancel' },
-      ],
-    );
-  }, [decidePlanning, hasPresentedPlan, implementPlan, planningRevision, planningPlan]);
+  const dismissPlan = useCallback(() => {
+    Alert.alert('Cancel this plan?', 'The plan stays in the chat. Nothing is implemented.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Cancel plan',
+        style: 'destructive',
+        onPress: () => {
+          const pending = session.pendingPermission;
+          if (pending && isPlanImplementationPermission(pending)) {
+            decidePermission(pending.toolUseId, { behavior: 'deny' });
+          }
+          decidePlanning('discard', planningRevision);
+        },
+      },
+    ]);
+  }, [decidePermission, decidePlanning, planningRevision, session.pendingPermission]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -3472,14 +3600,21 @@ export function SessionChat({
   );
   const renderItem = useCallback(
     ({ item, index }: { item: Row; index: number }) => {
+      const finishItemWork = beginRenderWork('list-item-elements', sessionId);
       const isSearchTarget = index === highlightedRowIndex;
       const key = rowKey(item);
       const isLatestTranscriptRow =
         latestTranscriptRowKey !== null && key === latestTranscriptRowKey;
       const rendered = (
-        <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
+        <TranscriptRow
+          sessionId={sessionId}
+          item={item}
+          isLatest={isLatestTranscriptRow}
+          renderContent={renderRow}
+        />
       );
       // Counter-flip each row so the inverted list reads the right way up.
+      finishItemWork();
       return rendered ? (
         <View style={styles.invertedItem}>
           <SearchHighlightContext.Provider value={isSearchTarget ? highlightedSearchQuery : null}>
@@ -3488,7 +3623,7 @@ export function SessionChat({
         </View>
       ) : null;
     },
-    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey],
+    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey, sessionId],
   );
   // Keep recycling pools shape-compatible. Agent prose gets bounded height buckets:
   // reusing a many-screen cell for a short progress update can leave the old native
@@ -3722,7 +3857,9 @@ export function SessionChat({
               >
                 <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
+              {issueNumber !== null ? (
+                <IssueRef number={issueNumber} url={issueUrl} hostName={codeHostName} />
+              ) : null}
             </View>
           )}
         </View>
@@ -3737,7 +3874,7 @@ export function SessionChat({
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
               active={hasActiveStaticPreview}
-              activeColor={theme.colors.tone.done}
+              activeColor={theme.colors.success}
               dot={hasRunningDevServer}
               dotTestID="preview-server-dot"
               onHint={showHeaderHint}
@@ -3778,7 +3915,7 @@ export function SessionChat({
         >
           {linkedSessions.map((link) => (
             <View key={link.sessionId} style={styles.headerLinkChip}>
-              <Icon name="link" size={13} color={theme.colors.primary} />
+              <Icon name="link" size={13} color={theme.colors.action} />
               <Text style={styles.headerLinkText} numberOfLines={1}>
                 {link.projectName} · {link.name ?? link.sessionId}
               </Text>
@@ -3797,21 +3934,107 @@ export function SessionChat({
     </View>
   );
 
+  // Unrelated composer and auxiliary state must not invalidate FlashList's
+  // measured cells through fresh style, footer and callback identities.
+  const transcriptList = useMemo(
+    () => (
+      <FlashList
+        renderScrollComponent={Platform.OS === 'web' ? TranscriptScrollView : undefined}
+        onLoad={() => {
+          markInitialListLoad(switchTiming);
+          setLoadedListSessionId(sessionId);
+        }}
+        ref={listRef}
+        data={data}
+        keyExtractor={rowKey}
+        renderItem={renderItem}
+        getItemType={getItemType}
+        // Render further beyond the viewport (default ~250px) so rows above are
+        // MEASURED before a scroll-up reveals them — their height correction then
+        // happens off-screen instead of jumping the visible offset (cause-2 fix).
+        drawDistance={500}
+        // Visual inversion: newest-first data flipped back the right way up.
+        // Each row is counter-flipped in renderItem (styles.invertedItem).
+        // FlashList consumes plain styles; Unistyles metadata loses the web flip.
+        style={{
+          transform: [{ scaleY: -1 }],
+          marginLeft: embedded ? 0 : insets.left,
+          marginRight: embedded ? 0 : insets.right,
+        }}
+        contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+        onScroll={onListScroll}
+        onContentSizeChange={onListContentSizeChange}
+        onTouchEnd={clearSearchHighlightAfterTouch}
+        scrollEventThrottle={64}
+        // Only a real finger drag/fling summons the message-nav stack (see
+        // revealNav) — programmatic/content-driven scrolls (session open, agent
+        // streaming) fire none of these, so the stack never pops up on its own. The
+        // hold-then-fade starts on motion END (drag lift / fling settle), so the
+        // 1.8s is measured from the list coming to REST.
+        onScrollBeginDrag={onListScrollBeginDrag}
+        onMomentumScrollBegin={onListMomentumScrollBegin}
+        onScrollEndDrag={onListScrollEndDrag}
+        onMomentumScrollEnd={onListMomentumScrollEnd}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        // Paging is driven by our scroll/viewability callbacks (see
+        // requestOlderHistory), which also own the settle window between
+        // pages that the native edge callbacks have no notion of.
+        //
+        // The spinner belongs to the OLDEST end, which in the newest-first
+        // list is the footer. It sits behind the viewport, so unlike the
+        // former header spinner it cannot shift a single visible row.
+        ListFooterComponent={
+          <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <ActivityIndicator
+              color={theme.colors.textMuted}
+              animating={loadingOlder}
+              hidesWhenStopped={false}
+              style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+              accessibilityLabel="Loading older messages"
+              accessibilityElementsHidden={!loadingOlder}
+              importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+            />
+          </View>
+        }
+        maintainVisibleContentPosition={maintainVisibleContentPosition}
+        // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+      />
+    ),
+    [
+      switchTiming,
+      sessionId,
+      data,
+      renderItem,
+      getItemType,
+      embedded,
+      insets.left,
+      insets.right,
+      theme.spacing.lg,
+      theme.colors.textMuted,
+      onListScroll,
+      onListContentSizeChange,
+      clearSearchHighlightAfterTouch,
+      onListScrollBeginDrag,
+      onListMomentumScrollBegin,
+      onListScrollEndDrag,
+      onListMomentumScrollEnd,
+      onViewableItemsChanged,
+      viewabilityConfig,
+      loadingOlder,
+      maintainVisibleContentPosition,
+    ],
+  );
+
+  finishChatWork();
   return (
-    <AnimatedKeyboardAvoidingView
-      style={[styles.flex, keyboardAvoidance.resetStyle]}
-      enabled={keyboardAvoidance.enabled}
-      // The composer is pinned to the bottom of this frame, so the frame is what
-      // shrinks. `padding` on both platforms now that the keyboard controller
-      // drives it — it tracks the keyboard frame-by-frame instead of jumping on
-      // the show event, which is what the transcript's scroll position is
-      // measured against.
-      behavior="padding"
-      // The custom nav header is drawn by the navigator ABOVE this screen body, so
-      // the KAV frame already starts below it (screen-absolute coords) — no extra
-      // offset needed. A non-zero offset here over-lifts the input by ~the header
-      // height, leaving a dead gap between the field and the keyboard top.
-      keyboardVerticalOffset={0}
+    <Reanimated.View
+      ref={keyboardAvoidance.frameRef}
+      onLayout={keyboardAvoidance.onLayout}
+      collapsable={false}
+      style={[styles.flex, keyboardAvoidance.frameStyle]}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
       {workspaceFile !== null ? (
@@ -3837,10 +4060,11 @@ export function SessionChat({
                     : 'file-text'
               }
               size={16}
-              color={theme.colors.primary}
+              color={theme.colors.action}
             />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              {workspaceFile.name} ↗
+              {workspaceFile.name}
+              {workspaceFile.accountEmail ? ` · ${workspaceFile.accountEmail}` : ''} ↗
             </Text>
           </Pressable>
           <Pressable
@@ -3853,6 +4077,7 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {googleAccountSheet}
       {automation ? (
         <AutomationBar
           automation={automation}
@@ -3862,22 +4087,23 @@ export function SessionChat({
       ) : null}
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="mail" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('gmail')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Gmail account"
+          >
+            <Icon name="mail" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
+              Gmail{gmailConnection.source === 'project' ? ' · Project access' : ''}
               {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.gmail
-                ? 'Disable Gmail for this project'
-                : 'Disconnect Gmail from this session'
-            }
+            accessibilityLabel={'Disable Gmail for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3885,22 +4111,23 @@ export function SessionChat({
       ) : null}
       {calendarConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="calendar" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('calendar')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Calendar account"
+          >
+            <Icon name="calendar" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
+              Google Calendar{calendarConnection.source === 'project' ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.calendar
-                ? 'Disable Google Calendar for this project'
-                : 'Disconnect Google Calendar from this session'
-            }
+            accessibilityLabel={'Disable Google Calendar for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3908,22 +4135,23 @@ export function SessionChat({
       ) : null}
       {contactsConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
-            <Icon name="users" size={16} color={theme.colors.primary} />
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('contacts')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Contacts account"
+          >
+            <Icon name="users" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
+              Google Contacts{contactsConnection.source === 'project' ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.contacts
-                ? 'Disable Google Contacts for this project'
-                : 'Disconnect Google Contacts from this session'
-            }
+            accessibilityLabel={'Disable Google Contacts for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3960,7 +4188,7 @@ export function SessionChat({
                     const allowed = await new Promise<boolean>((resolve) =>
                       Alert.alert(
                         `Allow ${current.name} on your network?`,
-                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}\n\nAnyone on your network can open it while it runs.`,
+                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}${current.secretBindings?.length ? `\n\nSecrets: ${current.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\nAnyone on your network can open it while it runs.`,
                         [
                           { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
                           { text: 'Allow', onPress: () => resolve(true) },
@@ -3972,6 +4200,9 @@ export function SessionChat({
                     const approved = await client.approveManagedDevServer(sessionId, current.id, {
                       command: current.command,
                       workdir: current.workdir,
+                      ...(current.secretBindings?.length
+                        ? { secretBindings: current.secretBindings }
+                        : {}),
                     });
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
@@ -3994,7 +4225,7 @@ export function SessionChat({
                     { id: localShareId, url } as LocalPreviewShare,
                     capabilities.publicSharing,
                     openEntry,
-                    () => router.push('/settings/services'),
+                    () => router.push('/settings/premium'),
                   );
                 })()
                   .catch((caught: unknown) =>
@@ -4026,8 +4257,17 @@ export function SessionChat({
           onClose={() => setBookmarksOpen(false)}
         />
       ) : null}
+      <VulnerabilityFixSheet
+        groups={mainFixGroups}
+        onClose={() => setMainFixGroups(null)}
+        onFix={(prompt) => {
+          setMainFixGroups(null);
+          sendQuickReply(prompt);
+        }}
+      />
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          onAskHelp={askHelp}
           detectedServers={session.devServers}
           initialServer={previewServer}
           onAskAgent={(prompt) => {
@@ -4036,7 +4276,7 @@ export function SessionChat({
           }}
           onOpenSettings={() => {
             setStaticPreviewOpen(false);
-            router.push('/settings/services');
+            router.push('/settings/premium');
           }}
           client={client}
           projectId={projectId}
@@ -4046,6 +4286,74 @@ export function SessionChat({
             setPreviewServer(undefined);
             refreshStaticPreview();
           }}
+        />
+      ) : null}
+      {featureHint.sheet}
+      {sessionSettingsOpen ? (
+        <SessionSettingsDialog
+          key={sessionId}
+          sessionId={sessionId}
+          sessionName={name ?? null}
+          displayName={sessionFallback}
+          projectId={projectId ?? null}
+          projectName={
+            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+          }
+          canMove={
+            !busy &&
+            settingsProjects.some((project) => project.id === projectId && project.kind === 'local')
+          }
+          moveDisabledReason={
+            busy
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
+          projects={settingsProjects
+            .filter((project) => project.kind === 'local')
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          linkableSessions={settingsSessions
+            .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: candidate.name ?? candidate.sessionId,
+              projectId: candidate.projectId!,
+              projectName:
+                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+            }))}
+          client={client}
+          onClose={() => setSessionSettingsOpen(false)}
+          onChanged={() => {
+            refreshMetadata();
+            branchesRefresh();
+          }}
+          onDelete={() =>
+            Alert.alert(
+              'Delete session?',
+              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: () => {
+                    void client
+                      .deleteSession(sessionId)
+                      .then(() => {
+                        setSessionSettingsOpen(false);
+                        router.replace('/');
+                      })
+                      .catch((error: unknown) =>
+                        Alert.alert(
+                          'Could not delete session',
+                          error instanceof Error ? error.message : 'Please try again.',
+                        ),
+                      );
+                  },
+                },
+              ],
+            )
+          }
         />
       ) : null}
       {filesOpen ? (
@@ -4067,6 +4375,7 @@ export function SessionChat({
           selected={effectiveModel}
           busy={switchingModel}
           rateLimitNotice={rateNotice}
+          excludedNote={excludedAgentsNote(allowedAgents)}
           onPick={(m) => {
             // No-op if it's already the current engine/model; otherwise switch and
             // close (the chip + subsequent turns reflect it via the persisted choice).
@@ -4139,6 +4448,18 @@ export function SessionChat({
           )}
         />
       ) : null}
+      {historyError ? (
+        <>
+          <Banner tone="attention" text={historyError} />
+          <Button
+            label="Retry history"
+            variant="secondary"
+            size="compact"
+            loading={loadingHistory || loadingOlder}
+            onPress={loaded ? loadOlder : retryHistory}
+          />
+        </>
+      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4165,8 +4486,18 @@ export function SessionChat({
       {permissionError ? (
         <Banner tone="danger" text={`Decision failed: ${permissionError}`} />
       ) : null}
+      {voice.preparation ? (
+        <Banner
+          tone="attention"
+          text={
+            voice.preparation === 'downloading'
+              ? 'Downloading speech recognition model…'
+              : 'Preparing voice input…'
+          }
+        />
+      ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
-      {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
+      {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
         // already rendered) rather than a blank pane. Locally-created sessions
@@ -4185,7 +4516,9 @@ export function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {loadingOlder ? 'Loading earlier history…' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"
@@ -4203,6 +4536,13 @@ export function SessionChat({
               badge="New"
               text="Say what should happen and when, for example every Monday at 9:00. You confirm it before it starts."
             />
+            {client && projectId ? (
+              <VulnerabilityStarterCard
+                client={client}
+                projectId={projectId}
+                onOpen={setMainFixGroups}
+              />
+            ) : null}
           </View>
         </ScrollView>
       ) : (
@@ -4211,102 +4551,40 @@ export function SessionChat({
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
           <SessionFileOpenContext.Provider value={openSessionFile}>
-            <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-              <BookmarksContext.Provider value={bookmarks}>
-                <KnowledgeSaveContext.Provider
-                  value={
-                    projectId
-                      ? {
-                          save: async (messageId, text) => {
-                            await client.saveSessionKnowledge(sessionId, { messageId, text });
-                          },
-                        }
-                      : null
-                  }
-                >
-                  <FlashList
-                    ref={listRef}
-                    data={data}
-                    keyExtractor={rowKey}
-                    renderItem={renderItem}
-                    getItemType={getItemType}
-                    // Render further beyond the viewport (default ~250px) so rows above are
-                    // MEASURED before a scroll-up reveals them — their height correction then
-                    // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                    drawDistance={500}
-                    // Visual inversion: newest-first data flipped back the right way up.
-                    // Each row is counter-flipped in renderItem (styles.invertedItem).
-                    // FlashList consumes plain styles; Unistyles metadata loses the web flip.
-                    style={{
-                      transform: [{ scaleY: -1 }],
-                      marginLeft: embedded ? 0 : insets.left,
-                      marginRight: embedded ? 0 : insets.right,
-                    }}
-                    contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
-                    onScroll={onListScroll}
-                    onContentSizeChange={onListContentSizeChange}
-                    onTouchEnd={clearSearchHighlightAfterTouch}
-                    scrollEventThrottle={64}
-                    // Only a real finger drag/fling summons the message-nav stack (see
-                    // revealNav) — programmatic/content-driven scrolls (session open, agent
-                    // streaming) fire none of these, so the stack never pops up on its own. The
-                    // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                    // 1.8s is measured from the list coming to REST.
-                    onScrollBeginDrag={onListScrollBeginDrag}
-                    onMomentumScrollBegin={onListMomentumScrollBegin}
-                    onScrollEndDrag={onListScrollEndDrag}
-                    onMomentumScrollEnd={onListMomentumScrollEnd}
-                    onViewableItemsChanged={onViewableItemsChanged}
-                    viewabilityConfig={viewabilityConfig}
-                    // Paging is driven by our scroll/viewability callbacks (see
-                    // requestOlderHistory), which also own the settle window between
-                    // pages that the native edge callbacks have no notion of.
-                    //
-                    // The spinner belongs to the OLDEST end, which in the newest-first
-                    // list is the footer. It sits behind the viewport, so unlike the
-                    // former header spinner it cannot shift a single visible row.
-                    ListFooterComponent={
-                      <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <AppLinkOpenContext.Provider value={openAppLink}>
+              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                <BookmarksContext.Provider value={bookmarks}>
+                  <KnowledgeSaveProvider
+                    client={client}
+                    sessionId={sessionId}
+                    projectId={projectId}
+                  >
+                    {transcriptList}
+                    {/* Keep intermediate history pages hidden while resolving a jump, and
+                cover measurement correction while restoring a saved position. */}
+                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
+                      <View style={styles.restoreCover}>
                         <ActivityIndicator
                           color={theme.colors.textMuted}
-                          animating={loadingOlder}
-                          hidesWhenStopped={false}
-                          style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                          accessibilityLabel="Loading older messages"
-                          accessibilityElementsHidden={!loadingOlder}
-                          importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+                          accessibilityLabel={
+                            pendingUserJump !== null || jumpTarget !== null
+                              ? 'Jumping to message or bookmark'
+                              : 'Restoring chat position'
+                          }
                         />
+                        {pendingUserJump !== null || jumpTarget !== null ? (
+                          <Text style={styles.emptySubtitle}>
+                            {pendingUserJump !== null
+                              ? 'Finding previous message or bookmark…'
+                              : 'Jumping to message or bookmark…'}
+                          </Text>
+                        ) : null}
                       </View>
-                    }
-                    maintainVisibleContentPosition={maintainVisibleContentPosition}
-                    // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                    keyboardDismissMode="interactive"
-                    keyboardShouldPersistTaps="handled"
-                  />
-                  {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                  {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                    <View style={styles.restoreCover}>
-                      <ActivityIndicator
-                        color={theme.colors.textMuted}
-                        accessibilityLabel={
-                          pendingUserJump !== null || jumpTarget !== null
-                            ? 'Jumping to message or bookmark'
-                            : 'Restoring chat position'
-                        }
-                      />
-                      {pendingUserJump !== null || jumpTarget !== null ? (
-                        <Text style={styles.emptySubtitle}>
-                          {pendingUserJump !== null
-                            ? 'Finding previous message or bookmark…'
-                            : 'Jumping to message or bookmark…'}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </KnowledgeSaveContext.Provider>
-              </BookmarksContext.Provider>
-            </SessionFileImageSourceContext.Provider>
+                    ) : null}
+                  </KnowledgeSaveProvider>
+                </BookmarksContext.Provider>
+              </SessionFileImageSourceContext.Provider>
+            </AppLinkOpenContext.Provider>
           </SessionFileOpenContext.Provider>
         </SessionActionsContext.Provider>
       )}
@@ -4397,8 +4675,14 @@ export function SessionChat({
           tool, render an approve/deny prompt above the input. Sits below the
           transcript so it reads as "the agent is waiting on YOU", and POSTs the
           decision back. Hidden once answered (the stream clears `pendingPermission`). */}
-      {session.pendingPermission ? (
+      {session.pendingPermission &&
+      !(
+        planning === 'active' &&
+        planningPlan != null &&
+        isPlanImplementationPermission(session.pendingPermission)
+      ) ? (
         <PermissionPrompt
+          sessionId={sessionId}
           pending={session.pendingPermission}
           deciding={decidingPermission === session.pendingPermission.toolUseId}
           dead={
@@ -4416,6 +4700,7 @@ export function SessionChat({
         .slice(0, 1)
         .map((item) => (
           <PermissionPrompt
+            sessionId={sessionId}
             key={item.id}
             pending={{
               toolUseId: item.id,
@@ -4437,9 +4722,12 @@ export function SessionChat({
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
+          onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
+          codeHost={branches.codeHost}
         />
       ) : null}
       {!visiblePullRequest &&
@@ -4449,16 +4737,44 @@ export function SessionChat({
       branches.current !== branches.localMergeBase &&
       !branches.workspaceMissing ? (
         <LocalMergeBar
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           branch={branches.current}
           base={branches.localMergeBase}
           busy={working}
           onSave={onSaveToProject}
         />
       ) : null}
-      {planning === 'active' ? (
-        <PlanningBar deciding={decidingPlanning} error={planningError} onEnd={endPlanning} />
+      {planning === 'active' && planningPlan != null ? (
+        <PinnedPlan
+          revision={planningRevision}
+          sendNonce={sendNonce}
+          renderMarkdown={(content) => (
+            <MarkdownText
+              content={content}
+              onOpenLocalFile={null}
+              onOpenAppLink={null}
+              sessionFileImageSource={null}
+              onOpenImage={() => undefined}
+            />
+          )}
+          markdown={planningPlan}
+          updated={planUpdated}
+          deciding={
+            decidingPlanning ||
+            (isPlanImplementationPermission(session.pendingPermission) &&
+              decidingPermission === session.pendingPermission?.toolUseId)
+          }
+          disabled={dead || planningRevision === undefined}
+          error={planningError}
+          onDismiss={dismissPlan}
+          onImplement={() => implementPlan(planningRevision)}
+        />
       ) : null}
+      {/* Last above the composer: below the plan and the PR bar, never above them. */}
+      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
+        hasPlan={planning === 'active' && planningPlan != null}
+        planning={planning === 'active'}
         inputRef={inputRef}
         value={draft}
         sendNonce={sendNonce}
@@ -4477,6 +4793,7 @@ export function SessionChat({
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voicePreparation={voice.preparation}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
         onMic={voice.toggle}
@@ -4520,15 +4837,20 @@ export function SessionChat({
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
         googleConnected={googleConnected}
+        googleAccess={{
+          gmail: gmailConnection,
+          calendar: calendarConnection,
+          contacts: contactsConnection,
+        }}
         onConnectGmail={onConnectGmail}
         onConnectCalendar={onConnectCalendar}
         onConnectContacts={onConnectContacts}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
-    </AnimatedKeyboardAvoidingView>
+    </Reanimated.View>
   );
-}
+});
 
 // A round header action (Preview / Files / Bookmarks): an icon large enough to hit
 // and recognise, with an optional status dot (e.g. a running dev server) or count
@@ -4570,7 +4892,7 @@ function HeaderActionButton({
       <Icon
         name={icon}
         size={20}
-        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+        color={active ? (activeColor ?? theme.colors.action) : theme.colors.textMuted}
       />
       {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
       {badge !== undefined ? (
@@ -4583,11 +4905,19 @@ function HeaderActionButton({
 }
 
 // The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
-// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// string (opens the issue on its code host via `Linking.openURL`, announced as a link) and
 // then tinted like the app's other tappable meta; when `url` is null — owner/repo
 // unknown (no GitHub remote / older server) — it stays plain, faint text and never
 // links to a broken URL (#161).
-function IssueRef({ number, url }: { number: number; url: string | null }) {
+function IssueRef({
+  number,
+  url,
+  hostName,
+}: {
+  number: number;
+  url: string | null;
+  hostName: string;
+}) {
   const label = `#${String(number)}`;
   if (url === null) {
     return (
@@ -4603,7 +4933,7 @@ function IssueRef({ number, url }: { number: number; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on ${hostName}.`}
     >
       <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
@@ -4791,6 +5121,7 @@ function SessionFilesSheet({
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
   const [driveCanWrite, setDriveCanWrite] = useState(false);
+  const [driveLinks, setDriveLinks] = useState<ProjectDriveFolder[]>([]);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
@@ -4895,35 +5226,49 @@ function SessionFilesSheet({
     if (!driveActive || !projectId) return;
     let active = true;
     const loadDrive = async (): Promise<void> => {
+      setDriveCanWrite(false);
       setLoading(true);
       setError(null);
       setDriveUnconfigured(false);
       try {
-        let folderId = driveFolderId;
-        let nextPath = drivePath;
-        const detail = await client.getProject(projectId);
-        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
-        const folderName = detail.settings?.googleDriveFolderName ?? null;
-        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
-        if (!configuredFolderId || !folderName) {
-          if (active) {
-            setDriveEntries([]);
-            setDriveFolderId(null);
-            setDriveCanWrite(false);
-            setDriveUnconfigured(true);
-          }
+        const links = await client.listProjectDriveFolders(projectId);
+        if (!active) return;
+        setDriveLinks(links);
+        if (links.length === 0) {
+          if (drivePath.length) setDrivePath([]);
+          setDriveEntries([]);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          setDriveUnconfigured(true);
           return;
         }
-        if (!folderId || folderId !== configuredFolderId) {
-          folderId = configuredFolderId;
-          nextPath = [{ id: folderId, name: folderName }];
-          if (active) {
-            setDriveFolderId(folderId);
-            setDrivePath(nextPath);
-          }
+        let nextPath = drivePath;
+        if (links.length === 1 && !nextPath.some((part) => part.id.startsWith('link:'))) {
+          nextPath = singleDriveFolderPath(links);
+          setDrivePath(nextPath);
         }
-        const parentId = nextPath.at(-1)?.id ?? folderId;
-        const page = await client.listProjectGoogleDriveFiles(projectId, folderId, { parentId });
+        const selectedId = nextPath.find((part) => part.id.startsWith('link:'))?.id.slice(5);
+        const link = links.find((candidate) => candidate.id === selectedId);
+        if (!link) {
+          if (selectedId) {
+            setDrivePath([]);
+            return;
+          }
+          const accountId = nextPath.find((part) => part.id.startsWith('account:'))?.id.slice(8);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          if (accountId && !links.some((candidate) => candidate.accountId === accountId)) {
+            setDrivePath([]);
+            return;
+          }
+          setDriveEntries(driveOverview(links, accountId));
+          return;
+        }
+        setDriveFolderId(link.id);
+        setDriveCanWrite(link.accessMode === 'read-write');
+        const last = nextPath.at(-1)?.id;
+        const parentId = !last || last.startsWith('link:') ? link.folderId : last;
+        const page = await client.listProjectGoogleDriveFiles(projectId, link.id, { parentId });
         if (active) setDriveEntries(page.files);
       } catch (caught) {
         if (active) {
@@ -5005,7 +5350,9 @@ function SessionFilesSheet({
         setUploading(true);
         for (const file of picked) {
           await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
-            parentId: drivePath.at(-1)?.id,
+            parentId: drivePath.at(-1)?.id.startsWith('link:')
+              ? driveLinks.find((link) => link.id === driveFolderId)?.folderId
+              : drivePath.at(-1)?.id,
             fileName: file.fileName,
             mimeType: 'application/octet-stream',
             data: new FsFile(file.uri),
@@ -5028,7 +5375,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
+  }, [client, driveFolderId, drivePath, driveLinks, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -5060,8 +5407,20 @@ function SessionFilesSheet({
                   onPress: () => {
                     setMutating(true);
                     void (async () => {
-                      if (!(await ensureGoogleWorkspaceAccess(client, file.mimeType))) return;
-                      await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
+                      if (
+                        !(await ensureGoogleWorkspaceAccess(
+                          client,
+                          file.mimeType,
+                          driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        ))
+                      )
+                        return;
+                      await client.assignSessionGoogleWorkspaceFile(
+                        sessionId,
+                        file.id,
+                        driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        driveFolderId,
+                      );
                       onClose();
                     })()
                       .catch((caught: unknown) =>
@@ -5095,7 +5454,7 @@ function SessionFilesSheet({
         { cancelable: true },
       );
     },
-    [client, driveFolderId, onClose, projectId, sessionId],
+    [client, driveFolderId, driveLinks, onClose, projectId, sessionId],
   );
 
   const uploadDroppedFiles = useCallback(
@@ -5793,13 +6152,19 @@ function SessionFilesSheet({
           </View>
         ) : null}
         {preview ? null : driveActive ? (
-          drivePath.length > 1 ? (
+          (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
             <FileBreadcrumb
               rootIcon="hard-drive"
-              rootLabel={drivePath[0]?.name ?? 'Google Drive'}
-              segments={drivePath.slice(1).map(({ id, name }) => ({ key: id, name }))}
+              rootLabel={
+                driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
+              }
+              segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
+                ({ id, name }) => ({ key: id, name }),
+              )}
               disabled={mutating}
-              onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
+              onNavigate={(index) =>
+                setDrivePath((current) => current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)))
+              }
             />
           ) : null
         ) : path ? (
@@ -5947,6 +6312,7 @@ function SessionFilesSheet({
                   <MarkdownLine
                     line={item.content}
                     onOpenLocalFile={null}
+                    onOpenAppLink={null}
                     sessionFileImageSource={null}
                     onOpenImage={() => {}}
                   />
@@ -6066,7 +6432,7 @@ function SessionFilesSheet({
                                   <Icon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                    color={picked ? theme.colors.action : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -6100,7 +6466,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.primary} />
+                    <Icon name="download" size={18} color={theme.colors.action} />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -6218,6 +6584,17 @@ function SessionFilesSheet({
 // transcript rows (which live in `data`, so the header sheet can scroll back to
 // them), false for messages rendered inside a collapsed sub-agent subtree — those
 // aren't rows we can jump to, so offering a bookmark there would be a dead anchor.
+function SavedMeetingNotice({ card }: { card: NonNullable<ReturnType<typeof meetingSavedCard>> }) {
+  const openFile = useContext(SessionFileOpenContext);
+  const target = sessionFileTargetFromLocalLink(card.link);
+  return (
+    <SavedMeetingCard
+      card={card}
+      onOpenLegacy={target && openFile ? () => openFile(target.path, target.root) : undefined}
+    />
+  );
+}
+
 function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   // Collapsible rows keep local `expanded` state and expand to many screens of detail.
   // FlashList recycles a cell renderer instance across items of the same type, so that
@@ -6261,12 +6638,15 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
-    case 'agent-text':
+    case 'agent-text': {
+      const saved = meetingSavedCard(item.message.text);
+      if (saved) return <SavedMeetingNotice card={saved} />;
       return <AgentBlock message={item.message} bookmarkable={bookmarkable} />;
+    }
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
-      return <EventRow message={item.message} />;
+      return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;
     case 'choices':
@@ -6471,7 +6851,7 @@ function CopyButton({
       setTimeout(() => setCopied(false), 1500);
     });
   }, [value]);
-  const tint = copied ? theme.colors.primary : theme.colors.textMuted;
+  const tint = copied ? theme.colors.action : theme.colors.textMuted;
   return (
     <Pressable
       onPress={onCopy}
@@ -6512,6 +6892,7 @@ function AgentMarkdown({
   const searchHighlightQuery = useContext(SearchHighlightContext);
   const blocks = useMemo(() => splitRichText(text), [text]);
   const openSessionFile = useContext(SessionFileOpenContext);
+  const openAppLink = useContext(AppLinkOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
   const [viewer, setViewer] = useState<{ source: ImageSource; label: string } | null>(null);
   const [imagePathViewer, setImagePathViewer] = useState<string | null>(null);
@@ -6617,6 +6998,7 @@ function AgentMarkdown({
                 key={i}
                 content={block.content}
                 onOpenLocalFile={openLocalFile}
+                onOpenAppLink={openAppLink}
                 sessionFileImageSource={sessionFileImageSource}
                 onOpenImage={(source, label) => setViewer({ source, label })}
               />
@@ -6646,7 +7028,7 @@ function AgentMarkdown({
             gestures; toggling off happens via the "…" sheet or the header sheet. */}
           {bookmarked && !showCopy && !actionsOpen ? (
             <View style={styles.msgBookmarkFlag} pointerEvents="none">
-              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+              <Icon name="bookmark" size={13} color={theme.colors.action} />
             </View>
           ) : null}
           {showCopy || actionsOpen ? (
@@ -6792,16 +7174,22 @@ function MessageActionsMenu({
 function MarkdownText({
   content,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   content: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
+  const finishMarkdownWork = beginRenderWork(
+    'markdown-body',
+    useContext(TranscriptTimingContext) ?? '',
+  );
   const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  return (
+  const rendered = (
     <View>
       {blocks.map((block, i) =>
         block.type === 'table' ? (
@@ -6812,6 +7200,7 @@ function MarkdownText({
               key={`${i}-${j}`}
               line={line}
               onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
               sessionFileImageSource={sessionFileImageSource}
               onOpenImage={onOpenImage}
             />
@@ -6820,6 +7209,8 @@ function MarkdownText({
       )}
     </View>
   );
+  finishMarkdownWork();
+  return rendered;
 }
 
 // A markdown table (GitHub-flavored: a header row, a `|---|` separator, body
@@ -6833,7 +7224,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
         {header.map((cell, i) => (
           <View key={i} style={styles.tableCell}>
             <SelectableMarkdownText textStyle={[styles.agentText, styles.tableHeaderText]}>
-              <Inline text={cell} onOpenLocalFile={null} />
+              <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
             </SelectableMarkdownText>
           </View>
         ))}
@@ -6846,7 +7237,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
           {row.map((cell, ci) => (
             <View key={ci} style={styles.tableCell}>
               <SelectableMarkdownText textStyle={styles.agentText}>
-                <Inline text={cell} onOpenLocalFile={null} />
+                <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
               </SelectableMarkdownText>
             </View>
           ))}
@@ -6881,11 +7272,13 @@ function SelectableMarkdownText({
 function MarkdownLine({
   line,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   line: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -6894,7 +7287,11 @@ function MarkdownLine({
   if (heading) {
     return (
       <SelectableMarkdownText textStyle={[styles.agentText, styles.mdHeading]}>
-        <Inline text={heading[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+        <Inline
+          text={heading[2] ?? ''}
+          onOpenLocalFile={onOpenLocalFile}
+          onOpenAppLink={onOpenAppLink}
+        />
       </SelectableMarkdownText>
     );
   }
@@ -6905,7 +7302,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>•</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={bullet[1] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={bullet[1] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -6923,7 +7324,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>{ordered[1]}.</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={ordered[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={ordered[2] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -6946,7 +7351,7 @@ function MarkdownLine({
   return (
     <View>
       <SelectableMarkdownText textStyle={styles.agentText}>
-        <Inline text={line} onOpenLocalFile={onOpenLocalFile} />
+        <Inline text={line} onOpenLocalFile={onOpenLocalFile} onOpenAppLink={onOpenAppLink} />
       </SelectableMarkdownText>
       <LocalImageLinks
         links={imageLinks}
@@ -7058,14 +7463,17 @@ function SessionFileImageViewer({
 }
 
 // Render inline **bold** / `code` / link spans (nested Text lays them out inline).
-// A link tap opens the URL in the system browser; selection still works via a
-// long-press on the surrounding selectable Text.
+// A link tap opens the URL in the system browser, a `verity://` link opens the
+// whitelisted screen or sheet in the app; selection still works via a long-press
+// on the surrounding selectable Text.
 function Inline({
   text,
   onOpenLocalFile,
+  onOpenAppLink,
 }: {
   text: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -7080,31 +7488,38 @@ function Inline({
         }
         if (span.t === 'code') {
           return (
-            <Text key={i} style={[styles.mdCode, { color: theme.colors.accent }]}>
+            <Text key={i} style={[styles.mdCode, { color: theme.colors.signature }]}>
               <HighlightedSearchText text={span.text} />
             </Text>
           );
         }
         if (span.t === 'link') {
-          const local = span.external ? null : sessionFileTargetFromLocalLink(span.url);
+          const appLink = span.external ? null : parseAppLink(span.url);
+          const openApp =
+            appLink !== null && onOpenAppLink !== null ? onOpenAppLink(appLink) : null;
+          const local =
+            span.external || appLink !== null ? null : sessionFileTargetFromLocalLink(span.url);
           const canOpenLocal = local !== null && onOpenLocalFile !== null;
+          const asLink = span.external || openApp !== null;
           return (
             <Text
               key={i}
               style={[
-                span.external ? styles.mdLink : styles.mdReference,
-                { color: span.external ? theme.colors.primary : theme.colors.accent },
+                asLink ? styles.mdLink : styles.mdReference,
+                { color: asLink ? theme.colors.action : theme.colors.signature },
               ]}
               // openURL rejects only if no handler can open it (no browser); swallow
               // so it never surfaces as an unhandled rejection (only http(s) reach here).
               onPress={
                 span.external
                   ? () => void Linking.openURL(span.url).catch(() => undefined)
-                  : canOpenLocal
-                    ? () => onOpenLocalFile(local.path, local.root)
-                    : undefined
+                  : openApp !== null
+                    ? openApp
+                    : canOpenLocal
+                      ? () => onOpenLocalFile(local.path, local.root)
+                      : undefined
               }
-              accessibilityRole={span.external || canOpenLocal ? 'link' : undefined}
+              accessibilityRole={asLink || canOpenLocal ? 'link' : undefined}
             >
               <HighlightedSearchText text={span.text} />
             </Text>
@@ -7195,7 +7610,7 @@ function ToolImageItem({
 function ToolCard({ message }: { message: ToolCallMessage }) {
   const { theme } = useUnistyles();
   const view = toolCallView(message.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const [expanded, setExpanded] = useState(false);
   // A `Skill` call (e.g. /code-review) carries the injected SKILL.md
   // body; show it as this card's collapsed detail instead of leaking it as prose,
@@ -7203,6 +7618,18 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  if (
+    planningToolName(message.tool.name) === START_PLANNING_TOOL &&
+    message.tool.state === 'completed'
+  )
+    return (
+      <View style={styles.eventRow}>
+        <Icon name="map" size={14} color={theme.colors.textMuted} />
+        <Text style={styles.eventDetail}>
+          Planning started · nothing changes until you approve a plan
+        </Text>
+      </View>
+    );
   return (
     <Pressable
       style={styles.toolCard}
@@ -7272,7 +7699,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   if (!last) return null;
   if (tools.length === 1) return <ToolCard message={last} />;
   const view = toolCallView(last.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   return (
     <View>
       <Pressable
@@ -7314,7 +7741,7 @@ function DelegatedAgent({ row }: { row: Extract<Row, { kind: 'delegated-agent' }
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
   const view = toolCallView(row.parent.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const state = row.parent.tool.state;
   const verb = state === 'running' ? 'Running' : state === 'error' ? 'Failed' : 'Done';
   const summary = `⎿ ${verb} · ${String(row.toolCount)} ${row.toolCount === 1 ? 'tool' : 'tools'}`;
@@ -7370,9 +7797,9 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
   const last = tools[tools.length - 1];
   if (!last) return null;
   const view = toolCallView(last.tool);
-  // Always the "active" tone: a todo list reads as one live, in-progress widget
+  // Always the action colour: a todo list reads as one live, in-progress widget
   // rather than per-op success/error states.
-  const color = theme.colors.tone.active;
+  const color = theme.colors.action;
   return (
     <View>
       <Pressable
@@ -7417,7 +7844,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(latest);
   const done = plan.completed === plan.entries.length;
-  const color = done ? theme.colors.tone.done : theme.colors.tone.active;
+  const color = done ? theme.colors.success : theme.colors.action;
   return (
     <Pressable
       style={styles.toolCard}
@@ -7445,7 +7872,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
               <Text
                 style={[
                   styles.planMark,
-                  entry.status === 'in_progress' ? { color: theme.colors.tone.active } : null,
+                  entry.status === 'in_progress' ? { color: theme.colors.action } : null,
                 ]}
               >
                 {PLAN_MARK[entry.status]}
@@ -7480,51 +7907,55 @@ function PlanProposalCard({
 }) {
   const { theme } = useUnistyles();
   const actions = useContext(SessionActionsContext);
-  const [expanded, setExpanded] = useState(latest);
+  const [expanded, setExpanded] = useState(false);
   const planning = actions?.planning;
-  const { markdown, revision } = planProposalDisplay(
+  const { markdown } = planProposalDisplay(
     { markdown: presentedMarkdown, revision: presentedRevision },
     latest,
     actions,
   );
   const decidable = latest && planning === 'active' && actions?.planningPlan !== null;
-  const enabled =
-    decidable &&
-    revision !== undefined &&
-    actions !== null &&
-    !actions.dead &&
-    !actions.decidingPlanning;
+  if (decidable) return null;
+  const title = planProposalHeadline(markdown);
+  const stepCount = planProposalContent(markdown).steps.length;
   const status = !latest
     ? 'Earlier version'
     : planning === 'implemented'
-      ? 'Implemented'
+      ? 'Approved'
       : planning === 'discarded'
-        ? 'Discarded'
+        ? 'Cancelled'
         : null;
   return (
-    <View style={styles.toolCard}>
+    <View
+      style={[
+        styles.planHistory,
+        latest && planning === 'implemented' ? styles.planHistoryDone : null,
+      ]}
+    >
       <Pressable
         style={styles.toolHeader}
         onPress={() => setExpanded((e) => !e)}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
-        accessibilityLabel={status === null ? 'Plan' : `Plan, ${status}`}
+        accessibilityLabel={status === null ? title : `${title}, ${status}`}
       >
         <View
           style={[
             styles.toolDot,
             {
               backgroundColor: decidable
-                ? theme.colors.tone.attention
+                ? theme.colors.attention
                 : planning === 'implemented' && latest
-                  ? theme.colors.tone.done
-                  : theme.colors.tone.idle,
+                  ? theme.colors.success
+                  : theme.colors.textFaint,
             },
           ]}
         />
-        <Text style={styles.toolHeadline} numberOfLines={1}>
-          {status === null ? 'Plan' : `Plan · ${status}`}
+        <Text style={styles.permissionTitle} numberOfLines={1}>
+          Plan
         </Text>
+        {status !== null ? <Text style={styles.planHistoryStatus}>{status}</Text> : null}
+        <Text style={styles.planCount}>{stepCount} steps</Text>
         <Icon
           name={expanded ? 'chevron-down' : 'chevron-right'}
           size={16}
@@ -7536,85 +7967,26 @@ function PlanProposalCard({
           <MarkdownText
             content={markdown}
             onOpenLocalFile={null}
+            onOpenAppLink={null}
             sessionFileImageSource={null}
             onOpenImage={() => undefined}
           />
         </View>
       ) : null}
-      {decidable ? (
-        <View style={styles.choicesChips}>
-          <Pressable
-            onPress={() => enabled && actions?.implementPlan(revision)}
-            disabled={!enabled}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !enabled }}
-            accessibilityLabel="Implement plan"
-            style={({ pressed }) => [
-              styles.chip,
-              styles.chipRecommended,
-              enabled ? null : styles.chipDisabled,
-              pressed && enabled ? styles.chipPressed : null,
-            ]}
-          >
-            <Text style={styles.chipStar}>★</Text>
-            <Text style={[styles.chipLabel, styles.chipLabelRecommended]}>Implement plan</Text>
-          </Pressable>
-        </View>
-      ) : null}
     </View>
   );
 }
 
-/** Shown above the composer while the session is in planning mode. */
-function PlanningBar({
-  deciding,
-  error,
-  onEnd,
-}: {
-  deciding: boolean;
-  error: string | undefined;
-  onEnd: () => void;
-}) {
-  return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <View style={styles.prLocalMain}>
-          <Text style={styles.prTitle} numberOfLines={1}>
-            Planning mode
-          </Text>
-          <Text style={styles.prSub} numberOfLines={1}>
-            The agent makes no file changes.
-          </Text>
-          {error !== undefined ? (
-            <Text style={styles.prError} numberOfLines={2}>
-              {error}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          onPress={onEnd}
-          disabled={deciding}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: deciding, busy: deciding }}
-          accessibilityLabel="End planning mode"
-          style={({ pressed }) => [
-            styles.chip,
-            styles.planningBarEnd,
-            deciding ? styles.chipDisabled : null,
-            pressed && !deciding ? styles.chipPressed : null,
-          ]}
-        >
-          <Text style={styles.chipLabel}>End</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
+// Failures carry stderr tails, request ids and loader logs. The row leads with
+// what happened and what to do; the raw text stays one tap away for diagnosis.
+const RETRY_PROMPT = 'Try again';
 
-function EventRow({ message }: { message: ModeSwitchMessage }) {
+function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest: boolean }) {
   const { theme } = useUnistyles();
+  const actions = useContext(SessionActionsContext);
+  const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
   // A task change is bookkeeping, not conversation: one muted line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
@@ -7630,19 +8002,67 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
       </Pressable>
     );
   }
+  const repeats = message.repeatCount ?? 1;
+  // Only the newest failure offers a resend: an older one was already followed
+  // by something, and resending from it would answer a stale state.
+  const canRetry =
+    descriptor.action === 'retry' &&
+    isLatest &&
+    actions !== null &&
+    !actions.sending &&
+    !actions.dead;
+  const expandable = descriptor.technical !== undefined;
   return (
-    <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
-      <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
+    <View
+      style={[styles.eventRow, descriptor.action || expandable ? styles.eventRowActionable : null]}
+    >
+      <Text style={[styles.eventLabel, { color }]}>
+        {repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
+      </Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
+      {canRetry || expandable ? (
+        <View style={styles.eventFailureActions}>
+          {canRetry ? (
+            <Button
+              label="Try again"
+              icon="rotate-cw"
+              variant="secondary"
+              size="compact"
+              onPress={() => actions.sendTurn(RETRY_PROMPT)}
+              accessibilityHint="Sends a new turn asking the agent to continue"
+            />
+          ) : null}
+          {expandable ? (
+            <Pressable
+              onPress={() => setShowTechnical((open) => !open)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showTechnical }}
+              accessibilityLabel={showTechnical ? 'Hide details' : 'Show details'}
+              hitSlop={8}
+              style={({ pressed }) => (pressed ? styles.eventActionPressed : null)}
+            >
+              <Text style={styles.eventTasksLink}>
+                {showTechnical ? 'Hide details' : 'Details'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {expandable && showTechnical ? (
+        <View style={styles.eventTechnical}>
+          <Text selectable style={styles.toolPreview}>
+            {descriptor.technical}
+          </Text>
+        </View>
+      ) : null}
       {descriptor.action === 'claude-login' ? (
-        <Pressable
-          style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
-          accessibilityRole="button"
-          accessibilityLabel="Sign in to Claude"
-        >
-          <Text style={styles.eventActionLabel}>Sign in to Claude</Text>
-        </Pressable>
+        <View style={styles.eventActionRow}>
+          <Button
+            label="Sign in to Claude"
+            size="compact"
+            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -7864,7 +8284,7 @@ function BookmarksSheet({
                   accessibilityRole="button"
                   accessibilityLabel={`Jump to bookmark: ${preview}`}
                 >
-                  <Icon name="bookmark" size={15} color={theme.colors.primary} />
+                  <Icon name="bookmark" size={15} color={theme.colors.action} />
                   <Text style={styles.bookmarkPreview} numberOfLines={2}>
                     {preview}
                   </Text>
@@ -7975,12 +8395,12 @@ function BranchSwitcherSheet({
             {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
             {loading && current === undefined ? (
               <View style={styles.sheetLoading}>
-                <ActivityIndicator color={theme.colors.accent} />
+                <ActivityIndicator color={theme.colors.signature} />
               </View>
             ) : null}
             {current !== undefined ? (
               <View style={styles.sheetRow}>
-                <View style={[styles.sheetDot, { backgroundColor: theme.colors.tone.active }]} />
+                <View style={[styles.sheetDot, { backgroundColor: theme.colors.action }]} />
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {current}
                 </Text>
@@ -8003,7 +8423,7 @@ function BranchSwitcherSheet({
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {branch}
                 </Text>
-                {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                {pending === branch ? <ActivityIndicator color={theme.colors.signature} /> : null}
               </Pressable>
             ))}
             {/* Preview a PR / pushed branch (#122): check out origin/<branch> DETACHED
@@ -8024,13 +8444,15 @@ function BranchSwitcherSheet({
                     accessibilityRole="button"
                     accessibilityLabel={`Preview pushed branch ${branch}`}
                   >
-                    {/* Accent dot marks a preview (detached) row vs a local switch. */}
-                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.accent }]} />
+                    {/* Signature dot marks a preview (detached) row vs a local switch. */}
+                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.signature }]} />
                     <Text style={styles.sheetRowLabel} numberOfLines={1}>
                       {branch}
                     </Text>
                     <Text style={styles.sheetCurrent}>preview</Text>
-                    {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                    {pending === branch ? (
+                      <ActivityIndicator color={theme.colors.signature} />
+                    ) : null}
                   </Pressable>
                 ))}
               </>
@@ -8054,7 +8476,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Commit changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Commit &amp; switch
                   </Text>
                 </Pressable>
@@ -8068,7 +8490,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Stash changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Stash &amp; switch
                   </Text>
                 </Pressable>
@@ -8113,9 +8535,9 @@ function BranchSwitcherSheet({
                 accessibilityLabel="Create and switch to new branch"
               >
                 {pending === newBranch.trim() && newBranch.trim().length > 0 ? (
-                  <ActivityIndicator color={theme.colors.accent} />
+                  <ActivityIndicator color={theme.colors.signature} />
                 ) : (
-                  <Text style={[styles.newBranchButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.newBranchButtonText, { color: theme.colors.signature }]}>
                     Create
                   </Text>
                 )}
@@ -8140,6 +8562,7 @@ function EngineSwitcherSheet({
   selected,
   busy,
   rateLimitNotice,
+  excludedNote,
   onPick,
   onClose,
 }: {
@@ -8149,6 +8572,8 @@ function EngineSwitcherSheet({
   selected: string | undefined;
   busy: boolean;
   rateLimitNotice: RateLimitNotice | null;
+  /** Why some agents are missing: the project turned them off. */
+  excludedNote?: string | undefined;
   onPick: (model: string) => void;
   onClose: () => void;
 }) {
@@ -8189,7 +8614,7 @@ function EngineSwitcherSheet({
         <View
           style={[
             styles.sheetDot,
-            { backgroundColor: isSelected ? theme.colors.tone.active : theme.colors.border },
+            { backgroundColor: isSelected ? theme.colors.action : theme.colors.border },
           ]}
         />
         <Text style={styles.sheetRowLabel} numberOfLines={1}>
@@ -8248,6 +8673,9 @@ function EngineSwitcherSheet({
             </Pressable>
           ) : null}
           {moreOpen ? renderGroups(partitionedModels.more) : null}
+          {excludedNote !== undefined ? (
+            <Text style={styles.sheetExcludedNote}>{excludedNote}</Text>
+          ) : null}
         </ScrollView>
       </Animated.View>
     </Modal>
@@ -8267,12 +8695,14 @@ function EngineSwitcherSheet({
 // a readable request summary instead of raw JSON and offers scoped allows
 // for both HTTP and CLI: once, this session, or 30 days in the project.
 function PermissionPrompt({
+  sessionId,
   pending,
   deciding,
   dead,
   approvedForDelivery = false,
   onDecide,
 }: {
+  sessionId: string;
   pending: PendingPermission;
   /** A decision POST for THIS prompt is in flight — disable the buttons + spin. */
   deciding: boolean;
@@ -8294,7 +8724,15 @@ function PermissionPrompt({
     completedAt: null,
     description: null,
   });
+  const allowTiming = useRef<SwitchTiming | undefined>(undefined);
+  useEffect(() => {
+    if (deciding) markSessionSwitch(allowTiming.current, 'allow-spinner-react-commit');
+  }, [deciding]);
   const active = !deciding && !dead;
+  const allowTouch = (timestamp: number): void => {
+    allowTiming.current = beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-touch-start', timestamp);
+  };
   const isBrokeredHttp = pending.tool === 'verity_http_request';
   const isTrustedCli = pending.tool === 'verity_secret_run';
   const isSessionHandoff = pending.tool === 'verity_session_handoff';
@@ -8302,9 +8740,12 @@ function PermissionPrompt({
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
+  const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
+  const packageInstall =
+    pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
   const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
@@ -8327,12 +8768,21 @@ function PermissionPrompt({
   const recentSummary = isRecentSessionMessages
     ? recentSessionMessagesSummary(pending.input)
     : null;
+  const matrixSummary = isMatrix ? matrixSendSummary(pending.input) : null;
   const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
       ? (pending.input as Record<string, unknown>)
       : undefined;
+  const googleAccount = grantInput?.googleAccount;
+  const googleAccountEmail =
+    typeof googleAccount === 'object' &&
+    googleAccount !== null &&
+    'email' in googleAccount &&
+    typeof googleAccount.email === 'string'
+      ? googleAccount.email
+      : null;
   const reusableScopes = secretGrantScopes(pending.tool, grantInput);
   const isScopedSecretTool = reusableScopes.length > 0;
   // A brokered request whose input the summariser could not read still has to be
@@ -8350,6 +8800,7 @@ function PermissionPrompt({
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
+    (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
@@ -8380,6 +8831,7 @@ function PermissionPrompt({
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      packageInstall?.title ?? null,
       !isKnowledge
         ? null
         : knowledgeSummary?.replacesExisting
@@ -8399,8 +8851,15 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      matrixSummary === null
+        ? null
+        : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
-      isEndPlanning ? 'Implement the plan?' : null,
+      isEndPlanning
+        ? grantInput?.action === 'discard'
+          ? 'Leave planning and change files?'
+          : 'Implement the plan?'
+        : null,
       isPresentPlan ? 'Show the proposed plan?' : null,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
@@ -8409,9 +8868,20 @@ function PermissionPrompt({
     `Allow ${spellOutBidiControls(view.title)}?`;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
+    if (
+      allowTiming.current !== sessionSwitchTiming(sessionId, 'permission') ||
+      allowTiming.current?.phases.some((p) => p.phase === 'allow-js-press-handler')
+    )
+      allowTiming.current = undefined;
+    allowTiming.current ??= beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
-      scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
+      packageInstall !== null
+        ? packageInstallDecision(packageInstall.supported, 'primary')
+        : scope === undefined
+          ? { behavior: 'allow' }
+          : { behavior: 'allow', scope },
     );
   };
   return (
@@ -8421,14 +8891,19 @@ function PermissionPrompt({
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
       accessibilityLabel={
-        isKnowledge
-          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
-          : `${cardTitle} Allow or deny.`
+        packageInstall !== null
+          ? `${cardTitle}. ${spellOutBidiControls(packageInstall.command)}. ${spellOutBidiControls(packageInstall.explanation)} ${packageInstall.denyLabel} or ${packageInstall.allowLabel}.`
+          : isKnowledge
+            ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+            : `${cardTitle} Allow or deny.`
       }
     >
       <View style={styles.permissionHeader}>
-        <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
-        <Text style={styles.permissionTitle} numberOfLines={1}>
+        <View style={[styles.permissionDot, { backgroundColor: theme.colors.attention }]} />
+        <Text
+          style={styles.permissionTitle}
+          numberOfLines={packageInstall === null ? 1 : undefined}
+        >
           {cardTitle}
         </Text>
         {/* Surface the backend's risk class (#149): `ask` is the escalated case that
@@ -8436,13 +8911,20 @@ function PermissionPrompt({
             transported. (`auto` is normally pre-approved upstream, so it's rare here —
             labelled plainly if it ever arrives.) */}
         <Text style={styles.permissionRisk}>
-          {approvedForDelivery
-            ? 'delivery pending'
-            : pending.riskClass === 'ask'
-              ? 'needs approval'
-              : pending.riskClass}
+          {packageInstall !== null
+            ? 'Safety'
+            : approvedForDelivery
+              ? 'delivery pending'
+              : pending.riskClass === 'ask'
+                ? 'needs approval'
+                : pending.riskClass}
         </Text>
       </View>
+      {googleAccountEmail ? (
+        <Text style={styles.permissionSubtitle} selectable>
+          Google account: {spellOutBidiControls(googleAccountEmail)}
+        </Text>
+      ) : null}
       {isPresentPlan ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>
@@ -8450,10 +8932,13 @@ function PermissionPrompt({
           </Text>
         </View>
       ) : null}
-      {isEndPlanning ? (
+      {packageInstall !== null ? (
         <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta}>
-            Planning mode ends and the agent may change files again to implement the latest plan.
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(packageInstall.command)}
+          </Text>
+          <Text style={styles.permissionInstallExplanation}>
+            {spellOutBidiControls(packageInstall.explanation)}
           </Text>
         </View>
       ) : knowledgeSummary !== null ? (
@@ -8592,6 +9077,8 @@ function PermissionPrompt({
             </Text>
           ))}
         </View>
+      ) : matrixSummary !== null ? (
+        <MatrixSendPreview summary={matrixSummary} />
       ) : gmailSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           {gmailSummary.from === null ? null : (
@@ -8643,6 +9130,19 @@ function PermissionPrompt({
               {spellOutBidiControls(gmailSummary.body)}
             </Text>
           </ScrollView>
+          {gmailSummary.attachments.length > 0 ? (
+            <View>
+              <Text style={styles.permissionHttpMeta}>
+                Attachments ({gmailSummary.attachments.length}):
+              </Text>
+              {gmailSummary.attachments.map((attachment, index) => (
+                <Text key={index} style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(attachment.filename)} ·{' '}
+                  {formatAttachmentSize(attachment.size)} · {attachment.mimeType}
+                </Text>
+              ))}
+            </View>
+          ) : null}
           {gmailSummary.externalUrls.length > 0 ? (
             <View>
               <Text style={styles.permissionHttpMeta}>
@@ -8656,9 +9156,9 @@ function PermissionPrompt({
             </View>
           ) : null}
           <Text style={styles.permissionHttpMeta}>
-            Gmail sends exactly this text and HTML snapshot once. After sending, Verity deletes the
-            original draft if the final check still matches this preview. A change during cleanup
-            may be lost.
+            Gmail sends exactly this text, HTML, and attachment snapshot once. After sending, Verity
+            deletes the original draft if the final check still matches this preview. A change
+            during cleanup may be lost.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (
@@ -8685,37 +9185,62 @@ function PermissionPrompt({
       ) : null}
       <View style={styles.permissionButtons}>
         <Pressable
-          onPress={() => active && onDecide(pending.toolUseId, { behavior: 'deny' })}
+          onPress={() =>
+            active &&
+            onDecide(
+              pending.toolUseId,
+              packageInstall !== null
+                ? packageInstallDecision(packageInstall.supported, 'secondary')
+                : { behavior: 'deny' },
+            )
+          }
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
+          accessibilityLabel={
+            packageInstall?.denyLabel ?? `${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
-            styles.permissionDeny,
+            packageInstall?.supported ? styles.permissionNeutral : styles.permissionDeny,
             active ? null : styles.permissionButtonDisabled,
             pressed && active ? styles.permissionButtonPressed : null,
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.tone.danger} />
+            <ActivityIndicator
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.attention}
+            />
           ) : (
-            <Text style={[styles.permissionButtonLabel, { color: theme.colors.tone.danger }]}>
-              {approvedForDelivery ? 'Cancel' : 'Deny'}
+            <Text
+              style={[
+                styles.permissionButtonLabel,
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.attention },
+              ]}
+            >
+              {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
             </Text>
           )}
         </Pressable>
         <Pressable
+          onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+          onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+          onTouchCancel={() => {
+            markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+            if (allowTiming.current) allowTiming.current.status = 'cancelled';
+          }}
           onPress={() => allow()}
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
           accessibilityLabel={
-            isKnowledge
-              ? knowledgeSummary?.replacesExisting
-                ? 'Save changes to Global Knowledge'
-                : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+            packageInstall !== null
+              ? packageInstall.allowLabel
+              : isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes to Global Knowledge'
+                  : 'Publish to Global Knowledge'
+                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8725,18 +9250,20 @@ function PermissionPrompt({
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
+            <ActivityIndicator color={theme.colors.onAction} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {isKnowledge
-                ? knowledgeSummary?.replacesExisting
-                  ? 'Save changes'
-                  : 'Publish to Global'
-                : approvedForDelivery
-                  ? 'Retry delivery'
-                  : isScopedSecretTool
-                    ? 'Allow once'
-                    : 'Allow'}
+              {packageInstall !== null
+                ? packageInstall.allowLabel
+                : isKnowledge
+                  ? knowledgeSummary?.replacesExisting
+                    ? 'Save changes'
+                    : 'Publish to Global'
+                  : approvedForDelivery
+                    ? 'Retry delivery'
+                    : isScopedSecretTool
+                      ? 'Allow once'
+                      : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -8748,6 +9275,12 @@ function PermissionPrompt({
         <View style={styles.permissionScopeRow}>
           {reusableScopes.includes('session') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('session')}
               disabled={!active}
               accessibilityRole="button"
@@ -8764,6 +9297,12 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('project') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('project')}
               disabled={!active}
               accessibilityRole="button"
@@ -8780,6 +9319,12 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('forever') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('forever')}
               disabled={!active}
               accessibilityRole="button"
@@ -8866,17 +9411,26 @@ function QueuedMessages({
 }
 
 function PullRequestBar({
+  confirmHint,
   pullRequest,
   onMerge,
+  onRefresh,
   onDismiss,
+  codeHost,
 }: {
+  confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
+  /** Absent for GitHub; the bar names and marks the host it opens. */
+  codeHost: UseBranches['codeHost'];
   onMerge: UseBranches['mergePullRequest'];
+  onRefresh: () => void;
   onDismiss?: () => void;
 }) {
   const { theme } = useUnistyles();
   const [merging, setMerging] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   const { checks } = pullRequest;
@@ -8895,75 +9449,53 @@ function PullRequestBar({
         ? 'blocked'
         : 'unknown',
     pullRequest.mergeState ?? 'no-state',
+    String(pullRequest.viewerCanMerge),
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
-  const failed = pullRequest.pipeline === 'failure';
-  // A conflicting PR gets no merge ref from GitHub, so its `pull_request` workflows
-  // never start and the pipeline reads `unknown` with zero checks — which used to
-  // render as the dead-end "status unavailable". `mergeable_state: 'dirty'` is the
-  // authoritative signal, independent of the pipeline, so name the conflict instead.
-  const conflicted = isPullRequestConflicted(pullRequest);
-  const unavailable = pullRequest.pipeline === 'unknown' && !conflicted;
-  // Green checks but GitHub hasn't finished its merge test yet: the button stays off,
-  // and the (still green) dot pulses so the wait reads as progress, not a dead button.
-  const checkingMergeability = isPullRequestCheckingMergeability(pullRequest);
-  // Only a CONFIRMED conflict (mergeable === false) blocks. `null` means GitHub is
-  // still computing mergeability just after a push — treat that as "checks green,
-  // resolving", not blocked, so a just-fixed PR doesn't flash red before it settles.
-  const mergeabilityBlocked =
-    conflicted ||
-    (pullRequest.phase === 'open' &&
-      pullRequest.pipeline === 'success' &&
-      pullRequest.mergeable === false);
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const mergeBlocked = failed || mergeabilityBlocked || mergeRejected;
   const visibleError = mergeRejected ? error : undefined;
   const merged = pullRequest.phase === 'merged';
   const checksText = pullRequestStatusText(pullRequest);
-  const statusColor = mergeBlocked
-    ? theme.colors.tone.danger
-    : pending || checks.total === 0
-      ? theme.colors.tone.attention
-      : theme.colors.tone.done;
-  const canMerge =
-    pullRequest.phase === 'open' &&
-    pullRequest.mergeable === true &&
-    !conflicted &&
-    !pending &&
-    !merging &&
-    !mergeRejected;
-  const mergeButtonEnabled = canMerge;
-  // A conflicted PR has zero checks but is NOT "waiting" for anything — nothing will
-  // run until the conflict is resolved, so it must not pulse like a starting pipeline.
-  const active =
-    !failed &&
-    !unavailable &&
-    !conflicted &&
-    (pending ||
-      (pullRequest.phase === 'open' && checks.total === 0) ||
-      checkingMergeability ||
-      merging);
-  const pulse = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    if (!active) {
-      pulse.stopAnimation();
-      pulse.setValue(1);
-      return;
-    }
-
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.68, duration: 850, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 850, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      pulse.setValue(1);
-    };
-  }, [active, pulse]);
+  // One verdict drives the dot and the button, so they cannot disagree. A conflicting
+  // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
+  // `mergeable: null` right after a push means "still computing", not blocked — both
+  // are resolved inside `pullRequestMergeButton`.
+  const button = pullRequestMergeButton(
+    mergeRejected && mergePermissionDenied
+      ? { ...pullRequest, viewerCanMerge: false }
+      : pullRequest,
+    { merging, mergeRejected },
+  );
+  const mergeButtonEnabled = button.kind === 'merge';
+  // Static on purpose: the waiting states show their spinner on the button, and a
+  // second animation beside it only competed with it.
+  const statusColor =
+    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
+      ? theme.colors.attention
+      : button.kind === 'waiting'
+        ? theme.colors.textFaint
+        : button.kind === 'refresh'
+          ? theme.colors.attention
+          : theme.colors.success;
+  const conflictTarget = pullRequest.baseRef ?? 'the base branch';
+  const prNumber = String(pullRequest.number);
+  const blockedLabels: Record<PullRequestBlockReason, string> = {
+    permission: `A maintainer must merge pull request ${prNumber}`,
+    rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
+    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
+    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
+    blocked: `Merge blocked for pull request ${prNumber}`,
+  };
+  const buttonLabel =
+    button.kind === 'blocked'
+      ? blockedLabels[button.reason]
+      : button.kind === 'refresh'
+        ? `Refresh status of pull request ${prNumber}`
+        : button.kind === 'waiting'
+          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
+          : button.kind === 'closed'
+            ? `Pull request ${prNumber} is ${pullRequest.phase}`
+            : `Merge pull request ${prNumber}`;
 
   useEffect(() => {
     return () => {
@@ -8984,11 +9516,17 @@ function PullRequestBar({
       setMerging(true);
       setError(undefined);
       setMergeRejectedFor(undefined);
+      if (!(await confirmHint())) {
+        if (mounted.current) setMerging(false);
+        return;
+      }
+      if (!mounted.current) return;
       const result = await onMerge(pullRequest.number);
       if (!mounted.current) return;
       setMerging(false);
       if (!result.ok) {
         setError(result.message);
+        setMergePermissionDenied(result.permissionDenied === true);
         setMergeRejectedFor(pullRequestStateKey);
         return;
       }
@@ -8999,99 +9537,111 @@ function PullRequestBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <Pressable
-          style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
-          onPress={() => void Linking.openURL(pullRequest.url).catch(() => undefined)}
-          accessibilityRole="link"
-          accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
+    <SessionBar pressed={opening}>
+      <SessionBarTarget
+        onPressIn={() => setOpening(true)}
+        onPressOut={() => setOpening(false)}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current)
+              void Linking.openURL(pullRequest.url).catch(() => undefined);
+          })
+        }
+        accessibilityRole="link"
+        accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
+      >
+        <SessionBarContent
+          color={statusColor}
+          title={`PR #${pullRequest.number} · ${pullRequest.title}`}
+          subtitle={`${merged ? 'merged' : pullRequest.phase} · ${checksText}`}
         >
-          <Animated.View
-            style={[
-              styles.prStatusDot,
-              { backgroundColor: statusColor },
-              active ? { opacity: pulse, transform: [{ scale: pulse }] } : null,
-            ]}
-          />
-          <View style={styles.prMain}>
-            <Text style={styles.prTitle} numberOfLines={1}>
-              PR #{pullRequest.number} · {pullRequest.title}
+          {visibleError ? (
+            <Text style={styles.prError} numberOfLines={1}>
+              {visibleError}
             </Text>
-            <Text style={styles.prSub} numberOfLines={1}>
-              {merged ? 'merged' : pullRequest.phase} · {checksText}
-            </Text>
-            {visibleError ? (
-              <Text style={styles.prError} numberOfLines={1}>
-                {visibleError}
-              </Text>
-            ) : null}
-          </View>
+          ) : null}
+        </SessionBarContent>
+        <CodeHostIcon
+          provider={codeHost?.provider ?? 'github'}
+          size={16}
+          color={theme.colors.textMuted}
+        />
+      </SessionBarTarget>
+      {onDismiss ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.prDismissButton,
+            pressed ? styles.prDismissButtonPressed : null,
+          ]}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current) onDismiss();
+            })
+          }
+          accessibilityRole="button"
+          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
+        >
+          <Text style={styles.prDismissText}>×</Text>
         </Pressable>
-        {onDismiss ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prDismissButton,
-              pressed ? styles.prDismissButtonPressed : null,
-            ]}
-            onPress={onDismiss}
-            accessibilityRole="button"
-            accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
-          >
-            <Text style={styles.prDismissText}>×</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={({ pressed }) => [
-              styles.prMergeButton,
-              // "Merge" reads as green for the go action. Hard blockers, including a
-              // rejected merge attempt, turn the disabled button danger instead of leaving
-              // a green action next to a red error.
-              { backgroundColor: mergeBlocked ? theme.colors.tone.danger : theme.colors.tone.done },
-              !mergeButtonEnabled && !mergeBlocked ? styles.prMergeButtonDisabled : null,
-              pressed && mergeButtonEnabled ? styles.prMergeButtonPressed : null,
-            ]}
-            onPress={merge}
-            disabled={!mergeButtonEnabled}
-            accessibilityRole="button"
-            accessibilityState={{
-              disabled: !mergeButtonEnabled,
-              busy: merging || checkingMergeability,
-            }}
-            accessibilityLabel={
-              mergeRejected
-                ? `Merge blocked because GitHub rejected pull request ${String(pullRequest.number)}`
-                : conflicted
-                  ? `Merge blocked because pull request ${String(pullRequest.number)} conflicts with ${pullRequest.baseRef ?? 'the base branch'}`
-                  : failed
-                    ? `Merge blocked because CI failed for pull request ${String(pullRequest.number)}`
-                    : mergeabilityBlocked
-                      ? `Merge blocked for pull request ${String(pullRequest.number)}`
-                      : checkingMergeability
-                        ? `Merge unavailable while GitHub checks whether pull request ${String(pullRequest.number)} can merge`
-                        : `Merge pull request ${String(pullRequest.number)}`
-            }
-          >
-            {merging ? (
-              <ActivityIndicator color={theme.colors.onPrimary} />
-            ) : (
-              <Text style={styles.prMergeText}>{mergeBlocked ? 'Blocked' : 'Merge'}</Text>
-            )}
-          </Pressable>
-        )}
-      </View>
-    </View>
+      ) : (
+        <Pressable
+          style={({ pressed }) => [
+            styles.prMergeButton,
+            button.kind === 'merge' || button.kind === 'merging'
+              ? { backgroundColor: theme.colors.success }
+              : button.kind === 'blocked'
+                ? { backgroundColor: theme.colors.attention }
+                : button.kind === 'waiting'
+                  ? styles.prMergeButtonWaiting
+                  : styles.prMergeButtonOutline,
+            pressed && (mergeButtonEnabled || button.kind === 'refresh')
+              ? styles.prMergeButtonPressed
+              : null,
+          ]}
+          onPress={
+            button.kind === 'refresh'
+              ? () =>
+                  void confirmHint().then((proceed) => {
+                    if (proceed && mounted.current) onRefresh();
+                  })
+              : merge
+          }
+          disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
+          accessibilityRole="button"
+          accessibilityState={{
+            disabled: !mergeButtonEnabled && button.kind !== 'refresh',
+            busy: button.kind === 'merging' || button.kind === 'waiting',
+          }}
+          accessibilityLabel={buttonLabel}
+        >
+          {button.kind === 'merging' ? (
+            <ActivityIndicator color={theme.colors.onAction} />
+          ) : button.kind === 'waiting' ? (
+            <View style={styles.prMergeWaiting}>
+              <SlowSpinner color={theme.colors.textMuted} />
+              <Text style={styles.prMergeWaitingText}>{button.label}</Text>
+            </View>
+          ) : button.kind === 'closed' ? null : (
+            <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
+              {button.label}
+            </Text>
+          )}
+        </Pressable>
+      )}
+    </SessionBar>
   );
 }
 
 /** Save a local session's work through the agent and then into the project base.
  *  The server checks the commit and merge preconditions. */
 function LocalMergeBar({
+  confirmHint,
   branch,
   base,
   busy,
   onSave,
 }: {
+  confirmHint: () => Promise<boolean>;
   branch: string;
   base: string;
   busy: boolean;
@@ -9126,47 +9676,51 @@ function LocalMergeBar({
   };
 
   return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <View style={styles.prLocalMain}>
-          <Text style={styles.prTitle} numberOfLines={1}>
-            Changes from this session
+    <SessionBar>
+      <View style={styles.prLocalMain}>
+        <Text style={styles.prTitle} numberOfLines={1}>
+          Changes from this session
+        </Text>
+        <Text style={styles.prSub} numberOfLines={1}>
+          Save them as a version in your project.
+        </Text>
+        {error !== undefined ? (
+          <Text style={styles.prError} numberOfLines={2}>
+            {error}
           </Text>
-          <Text style={styles.prSub} numberOfLines={1}>
-            Save them as a version in your project.
-          </Text>
-          {error !== undefined ? (
-            <Text style={styles.prError} numberOfLines={2}>
-              {error}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          style={({ pressed }) => [
-            styles.prMergeButton,
-            styles.prLocalMergeButton,
-            { backgroundColor: theme.colors.tone.done },
-            saving || busy ? styles.prMergeButtonDisabled : null,
-            pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
-          ]}
-          onPress={save}
-          disabled={saving || busy}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: saving || busy, busy: saving }}
-          accessibilityLabel="Save this session's changes as a version in your project"
-        >
-          {saving ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
-          ) : (
-            <Text style={styles.prMergeText}>Save to project</Text>
-          )}
-        </Pressable>
+        ) : null}
       </View>
-    </View>
+      <Pressable
+        style={({ pressed }) => [
+          styles.prMergeButton,
+          styles.prLocalMergeButton,
+          { backgroundColor: theme.colors.success },
+          saving || busy ? styles.prMergeButtonDisabled : null,
+          pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
+        ]}
+        onPress={() =>
+          void confirmHint().then((proceed) => {
+            if (proceed && mounted.current) save();
+          })
+        }
+        disabled={saving || busy}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: saving || busy, busy: saving }}
+        accessibilityLabel="Save this session's changes as a version in your project"
+      >
+        {saving ? (
+          <ActivityIndicator color={theme.colors.onAction} />
+        ) : (
+          <Text style={styles.prMergeText}>Save to project</Text>
+        )}
+      </Pressable>
+    </SessionBar>
   );
 }
 
 function InputBar({
+  hasPlan,
+  planning,
   inputRef,
   value,
   sendNonce,
@@ -9178,6 +9732,7 @@ function InputBar({
   activityAnimating,
   onStop,
   dead,
+  voicePreparation,
   voiceState,
   voiceAutoMode,
   voiceCountdown,
@@ -9203,6 +9758,8 @@ function InputBar({
   onFocus,
   onBlur,
 }: {
+  hasPlan: boolean;
+  planning: boolean;
   /** Ref to the text field so a "Custom answer" chip can focus it (issue #97). */
   inputRef: RefObject<TextInput | null>;
   value: string;
@@ -9221,6 +9778,7 @@ function InputBar({
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
+  voicePreparation?: string | null;
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
@@ -9259,6 +9817,17 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  // The browser's own focus ring is removed (WEB_NO_FOCUS_RING); the card
+  // shows focus in the action color instead, so keyboard users keep a cue.
+  const [focused, setFocused] = useState(false);
+  const onComposerFocus = useCallback(() => {
+    setFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const onComposerBlur = useCallback(() => {
+    setFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9298,7 +9867,7 @@ function InputBar({
         <InputActivityLine running={activityAnimating && !dead} />
         {dropActive ? (
           <View pointerEvents="none" style={styles.inputDropHint}>
-            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Icon name="paperclip" size={18} color={theme.colors.action} />
             <Text style={styles.inputDropHintText}>Drop files to attach</Text>
           </View>
         ) : null}
@@ -9315,7 +9884,7 @@ function InputBar({
                 <Icon
                   name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
                   size={16}
-                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                  color={saveAttachmentsToKnowledge ? theme.colors.action : theme.colors.textMuted}
                 />
                 <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
               </Pressable>
@@ -9331,30 +9900,33 @@ function InputBar({
             styles.inputCard,
             compact && styles.inputCardCompact,
             dropActive ? styles.inputCardDropActive : null,
+            Platform.OS === 'web' && focused && !dropActive ? styles.inputCardFocused : null,
           ]}
         >
           <PromptComposerInput
             key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
-            style={[
-              styles.input,
-              compact && styles.inputCompact,
-              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
-            ]}
+            style={[styles.input, compact && styles.inputCompact, WEB_NO_FOCUS_RING]}
             value={value}
             onChangeText={onChangeText}
             containerStyle={compact ? styles.inputContainerCompact : undefined}
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={onFocus}
-            onBlur={onBlur}
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
             placeholder={
               dead
                 ? 'This session can’t be resumed'
-                : voiceState === 'recording'
-                  ? 'Listening…'
-                  : 'Message this agent…'
+                : voicePreparation
+                  ? 'Preparing microphone…'
+                  : voiceState === 'recording'
+                    ? 'Listening…'
+                    : hasPlan
+                      ? 'Reply to change the plan…'
+                      : planning
+                        ? 'Answer, or add what matters to you…'
+                        : 'Message this agent…'
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}
@@ -9422,7 +9994,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                   <Icon
                     name="arrow-up"
                     size={22}
-                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                    color={canSend ? theme.colors.onAction : theme.colors.textMuted}
                   />
                 </Pressable>
               )}
@@ -9439,6 +10011,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
   googleConnected,
+  googleAccess,
   visible,
   anchor,
   onCapturePhoto,
@@ -9453,6 +10026,7 @@ function AttachMenu({
   onDismiss,
 }: {
   googleConnected: boolean;
+  googleAccess: GoogleMenuAccess;
   visible: boolean;
   anchor: AttachAnchor | null;
   onCapturePhoto: () => void;
@@ -9479,7 +10053,7 @@ function AttachMenu({
       onConnectCalendar,
       onConnectContacts,
     },
-    { googleConnected },
+    { googleConnected, googleAccess },
   );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
@@ -9766,7 +10340,7 @@ function InputActivityLine({ running }: { running: boolean }) {
               ? {
                   height: 2,
                   borderRadius: theme.radius.pill,
-                  backgroundColor: theme.colors.accent,
+                  backgroundColor: theme.colors.signature,
                   opacity: 0.8,
                 }
               : styles.inputActivitySegment,
@@ -9869,7 +10443,9 @@ function MicButton({
           ]}
         >
           {countdown !== null ? (
-            <Text style={{ color: theme.colors.background, fontWeight: '700' }}>{countdown}</Text>
+            <Text style={{ color: theme.colors.background, fontFamily: theme.fonts.bold }}>
+              {countdown}
+            </Text>
           ) : autoMode ? (
             <Icon name="mic" size={20} color={theme.colors.background} />
           ) : (
@@ -9900,7 +10476,7 @@ function Banner({
   action?: { label: string; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const color = theme.colors.tone[tone];
+  const color = toneColor(theme.colors, tone);
   return (
     <View style={[styles.banner, { borderLeftColor: color }]}>
       <View style={styles.bannerRow}>
@@ -9968,8 +10544,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   starterScreen: {
     flexGrow: 1,
@@ -9989,7 +10565,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 320,
     lineHeight: 20 * theme.fontScale,
@@ -10056,7 +10633,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.text,
   },
   voiceAutoActionFill: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   voiceAutoDot: {
     position: 'absolute',
@@ -10065,7 +10642,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     borderWidth: 1,
     borderColor: theme.colors.background,
   },
@@ -10085,8 +10662,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   headerSubtitle: {
@@ -10096,8 +10673,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   headerHintText: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   // Fits the 28px back chevron + its padding.
@@ -10118,14 +10695,14 @@ const styles = StyleSheet.create((theme) => ({
   headerBranch: {
     flexShrink: 1,
     color: theme.colors.textFaint,
-    fontSize: 12 * theme.fontScale,
-    fontWeight: '400',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.regular,
   },
-  headerIssueLink: { color: theme.colors.primary },
+  headerIssueLink: { color: theme.colors.action },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '600',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   headerActions: {
     flexDirection: 'row',
@@ -10151,7 +10728,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
     borderWidth: 1.5,
     borderColor: theme.colors.surfaceAlt,
   },
@@ -10165,12 +10742,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
   },
   headerActionBadgeText: {
     color: '#ffffff',
-    fontSize: 11 * theme.fontScale,
-    fontWeight: '700',
+    fontSize: theme.typography.caption.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -10193,11 +10770,16 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  headerLinkText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
+  headerLinkText: {
+    flexShrink: 1,
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   headerMetaChip: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -10208,7 +10790,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.colors.scrim,
   },
   sheet: {
     backgroundColor: theme.colors.surface,
@@ -10236,16 +10818,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetTitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginBottom: theme.spacing.sm,
   },
   // Section header within the switcher list (e.g. the #122 preview section).
   sheetSectionLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginTop: theme.spacing.md,
     marginBottom: theme.spacing.xs,
@@ -10254,13 +10836,15 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
   },
   sheetError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.sm,
   },
   sheetEmpty: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.md,
   },
   driveSetupNotice: {
@@ -10275,15 +10859,15 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   driveSetupButtonPressed: {
     opacity: 0.78,
   },
   driveSetupButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
@@ -10291,7 +10875,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPath: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Pinned under the list while selecting: the one action that applies to the
   // whole selection, labelled and away from the header's Done.
@@ -10324,16 +10909,17 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: -StyleSheet.hairlineWidth,
   },
   filesRootButtonActive: {
-    borderBottomColor: theme.colors.primary,
+    borderBottomColor: theme.colors.action,
   },
   filesRootLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   filesRootLabelActive: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.
@@ -10354,13 +10940,13 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderTopColor: theme.colors.action,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   filesDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   fileRow: {
     minHeight: 46,
@@ -10380,7 +10966,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 1,
   },
   fileDownload: {
@@ -10402,7 +10989,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPreviewText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
@@ -10438,16 +11025,28 @@ const styles = StyleSheet.create((theme) => ({
   sheetRowLabel: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
+  sheetExcludedNote: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+    marginTop: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
   },
   sheetCurrent: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   sheetLimited: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   // A bookmark jump-row: the tappable preview (dog-ear + up-to-2 lines of the passage)
@@ -10468,7 +11067,8 @@ const styles = StyleSheet.create((theme) => ({
   bookmarkPreview: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   bookmarkRemove: {
@@ -10488,7 +11088,8 @@ const styles = StyleSheet.create((theme) => ({
   newBranchInput: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
@@ -10506,8 +11107,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.4,
   },
   newBranchButtonText: {
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   // The inline dirty-worktree prompt: a message + commit/stash/cancel buttons,
   // shown in place of the new-branch row after a 409 "uncommitted changes".
@@ -10520,7 +11121,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   dirtyButtons: {
@@ -10536,58 +11138,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyButtonText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   queuedWrap: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  prBarWrap: {
-    paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
-  },
-  prBar: {
-    minHeight: 54,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  prOpenTarget: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.sm,
-  },
-  prBarPressed: {
-    backgroundColor: theme.colors.border,
-  },
-  prStatusDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 5,
-  },
-  prMain: {
-    flex: 1,
-    minWidth: 0,
-    gap: 1,
-  },
   /** The local merge bar has no status dot and nothing to open, so it carries the
-   *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
+   *  padding the shared session target gives the PR row — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
-  planningBarEnd: {
-    marginRight: theme.spacing.sm,
-  },
+
   prLocalMain: {
     flex: 1,
     minWidth: 0,
@@ -10599,27 +11161,28 @@ const styles = StyleSheet.create((theme) => ({
   },
   prTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   prSub: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prMergeButton: {
-    width: 78,
+    minWidth: 78,
     height: 36,
+    paddingHorizontal: theme.spacing.sm,
     marginRight: theme.spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   prLocalMergeButton: {
     width: 124,
@@ -10630,10 +11193,37 @@ const styles = StyleSheet.create((theme) => ({
   prMergeButtonPressed: {
     opacity: 0.8,
   },
+  prMergeButtonWaiting: {
+    // Same surface as the bar behind it would read as bare text, so the waiting button
+    // gets the stronger border tone as fill plus a visible edge to stay a button.
+    backgroundColor: theme.colors.border,
+    borderWidth: 1,
+    borderColor: theme.colors.textFaint,
+  },
+  prMergeButtonOutline: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: theme.colors.textMuted,
+  },
   prMergeText: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
+  prMergeWaiting: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  prMergeWaitingText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
+  prRefreshText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prDismissButton: {
     width: 36,
@@ -10647,9 +11237,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   prDismissText: {
     color: theme.colors.textFaint,
-    fontSize: 22 * theme.fontScale,
+    fontSize: theme.typography.title.fontSize,
     lineHeight: 24 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   queuedBubbleRow: {
     alignItems: 'flex-end',
@@ -10672,13 +11262,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   queuedText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   queuedTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
   },
   banner: {
@@ -10688,7 +11279,8 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftWidth: 3,
   },
   bannerText: {
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     // Takes the row's slack so long copy wraps to its two lines instead of pushing
     // the action off the edge.
     flex: 1,
@@ -10699,8 +11291,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   bannerAction: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textDecorationLine: 'underline',
   },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
@@ -10712,7 +11304,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   searchTermHighlight: {
     color: theme.colors.text,
-    backgroundColor: `${theme.colors.accent}66`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
     borderRadius: 3,
   },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
@@ -10728,7 +11320,8 @@ const styles = StyleSheet.create((theme) => ({
     // right-aligned to sit with the user turn it dates. Reads as orientation, not
     // content, so it uses the faintest text token at the xs scale.
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'right',
     marginBottom: theme.spacing.xs,
     marginHorizontal: theme.spacing.sm,
@@ -10751,11 +11344,11 @@ const styles = StyleSheet.create((theme) => ({
     marginVertical: theme.spacing.sm,
   },
   peerRow: { justifyContent: 'flex-start' },
-  peerBubble: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surface },
+  peerBubble: { borderColor: theme.colors.action, backgroundColor: theme.colors.surface },
   peerSource: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     marginBottom: 6,
   },
   userBubble: {
@@ -10797,16 +11390,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   userPendingTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     alignSelf: 'flex-end',
     marginTop: 2,
   },
   userText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   // Attached images in a sent user turn: a wrapping row of rounded thumbnails,
   // sized to sit comfortably in the bubble. A trailing margin separates them from
@@ -10874,9 +11467,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   agentText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadStatus: {
     flexDirection: 'row',
@@ -10896,22 +11489,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   localMeetingUploadTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
-    fontWeight: '500',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   mdHeading: {
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.xs,
   },
   mdSectionHeading: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.sm,
   },
   mdListRow: {
@@ -10921,7 +11515,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   mdBullet: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   // Native selectable Text wraps reliably in normal column flow. Inside list
@@ -10939,18 +11534,18 @@ const styles = StyleSheet.create((theme) => ({
     height: theme.spacing.sm,
   },
   mdBold: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   mdCode: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   mdLink: {
     textDecorationLine: 'underline',
   },
   mdReference: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   table: {
     marginVertical: theme.spacing.xs,
@@ -10978,7 +11573,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRightColor: theme.colors.border,
   },
   tableHeaderText: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     color: theme.colors.text,
   },
   thinkingRow: {
@@ -10989,8 +11584,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   thinkingLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   thinkingText: {
@@ -11007,13 +11602,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   codeLang: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   codeText: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   // Copy affordance (shared by code cards and the tap-revealed message action).
@@ -11029,8 +11624,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.6,
   },
   copyLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Pinned to the code card's top-right corner, on a solid chip so it reads over
   // the monospace text it overlaps.
@@ -11063,13 +11658,15 @@ const styles = StyleSheet.create((theme) => ({
   toolHeadline: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
   // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
@@ -11079,7 +11676,8 @@ const styles = StyleSheet.create((theme) => ({
   // The "⎿ Done · N tools" summary line under a delegated-agent card.
   delegatedSummary: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 2,
     marginLeft: theme.spacing.md,
   },
@@ -11132,35 +11730,38 @@ const styles = StyleSheet.create((theme) => ({
   planMark: {
     width: 14 * theme.fontScale,
     color: theme.colors.textFaint,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryText: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryDone: {
     color: theme.colors.textFaint,
     textDecorationLine: 'line-through',
   },
   planEntryCurrent: {
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   toolCommand: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolPreview: {
     color: theme.colors.textFaint,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolSkillBody: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   eventRow: {
@@ -11178,38 +11779,44 @@ const styles = StyleSheet.create((theme) => ({
   dependencyStatusText: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   eventRowActionable: {
     flexDirection: 'column',
     alignItems: 'flex-start',
   },
+  eventFailureActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
+  },
+  eventTechnical: {
+    alignSelf: 'stretch',
+    marginTop: theme.spacing.xs,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
   eventLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   eventDetail: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   eventTasksLink: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
-  eventAction: {
-    alignSelf: 'flex-start',
-    marginTop: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.accent,
-  },
-  eventActionLabel: {
-    color: theme.colors.background,
-    fontWeight: '700',
-  },
+  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
   eventActionPressed: {
     opacity: 0.72,
   },
@@ -11244,8 +11851,8 @@ const styles = StyleSheet.create((theme) => ({
   slideDeckName: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputDropHint: {
     // Just a centered "Drop files to attach" label — no tinted bar or blue
@@ -11259,8 +11866,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   inputDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputActivityTrack: {
     position: 'absolute',
@@ -11273,7 +11880,7 @@ const styles = StyleSheet.create((theme) => ({
   inputActivitySegment: {
     height: 2,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
     opacity: 0.8,
   },
   // Quick-Action chips (issue #97).
@@ -11283,8 +11890,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   choicesQuestion: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   choicesChips: {
     flexDirection: 'row',
@@ -11302,14 +11909,14 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  // The agent's default pick: outlined in the primary accent so it stands out.
+  // The agent's default pick: outlined in the action colour so it stands out.
   chipRecommended: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
   },
   // A toggled multi-select option: filled to read as "on".
   chipSelected: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   chipDisabled: {
     opacity: 0.5,
@@ -11319,19 +11926,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipLabel: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '500',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.regular,
   },
   chipLabelRecommended: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
   },
   chipLabelSelected: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   chipStar: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // "Custom answer": a dashed-outline chip that opens the keyboard, visually set
   // apart from the agent's concrete options.
@@ -11341,25 +11949,47 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipCustomLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   choicesSend: {
     alignSelf: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   choicesSendDisabled: {
     opacity: 0.5,
   },
   choicesSendLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The live per-tool permission prompt (#149): a bordered card just above the input,
   // attention-toned so it reads as "the agent is paused, waiting on your decision".
+  planHistory: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  planHistoryDone: { borderColor: theme.colors.success },
+  planCount: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
+  planHistoryStatus: {
+    color: theme.colors.textFaint,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+    textTransform: 'uppercase',
+  },
   permissionPrompt: {
     marginHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.sm,
@@ -11367,7 +11997,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.attention,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surfaceAlt,
     gap: theme.spacing.sm,
   },
@@ -11384,19 +12014,19 @@ const styles = StyleSheet.create((theme) => ({
   permissionTitle: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The risk-class tag (#149): a quiet attention-toned chip next to the title.
   permissionRisk: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   permissionSubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
   permissionDetails: {
@@ -11427,14 +12057,23 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   // Deny: an outlined (danger-toned) button — destructive, so not filled.
+  permissionNeutral: {
+    borderColor: theme.colors.border,
+    backgroundColor: 'transparent',
+  },
+  permissionInstallExplanation: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   permissionDeny: {
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: 'transparent',
   },
   // Allow: the filled primary action.
   permissionAllow: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   permissionButtonDisabled: {
     opacity: 0.5,
@@ -11443,11 +12082,11 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.7,
   },
   permissionButtonLabel: {
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   permissionAllowLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   // Brokered-HTTP card (ADR 0011): readable request summary + plain-language
   // explanation instead of a raw JSON dump.
@@ -11456,7 +12095,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionHttpMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Scoped allows (ADR 0011 D2): a quiet outlined secondary row under Deny/Allow.
   permissionScopeRow: {
@@ -11475,8 +12115,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionScopeLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The rounded input card holding the full-width text field stacked above the
   // action row (two-tier, like the Claude app). Padding lives here, not on the
@@ -11504,9 +12144,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: 3,
     gap: theme.spacing.sm,
   },
+  inputCardFocused: {
+    borderColor: theme.colors.action,
+  },
   inputCardDropActive: {
-    borderColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderColor: theme.colors.action,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   // The button row under the text field: attach + engine chip on the left,
   // mic + Send/Stop right.
@@ -11568,7 +12211,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   knowledgeAttachmentToggleText: {
     color: theme.colors.textMuted,
-    fontSize: 13,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.subtitle.fontSize,
   },
   previewItem: {
     width: 64,
@@ -11597,11 +12241,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
+  // A light dim in both themes; a popover does not take the full scrim.
+  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
   menuCard: {
     position: 'absolute',
     backgroundColor: theme.colors.surface,
@@ -11609,7 +12255,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: theme.spacing.xs,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -11624,12 +12270,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   menuRowPressed: { backgroundColor: theme.colors.surfaceAlt },
   menuRowText: { flex: 1 },
-  menuRowLabel: { color: theme.colors.text, fontSize: theme.text.md },
-  menuRowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs, marginTop: 1 },
+  menuRowLabel: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
+  menuRowDetail: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+    marginTop: 1,
+  },
   menuSectionLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
     paddingTop: theme.spacing.xs,
@@ -11658,9 +12313,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewRemoveGlyph: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 16 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   // Right-edge message-nav stack (prev/next my message + to-bottom). `top: '50%'` +
   // an inline translateY (NAV_STACK_HALF + inputBarHeight/2) centre it in the VISIBLE
@@ -11677,10 +12332,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 6,
     paddingHorizontal: 4,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.scrim,
+    // A frosted surface, not the modal `scrim` dimmer: the stack has to stay
+    // readable over the transcript without darkening it.
+    backgroundColor: `${theme.colors.surface}d1`,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.3,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
@@ -11691,7 +12348,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   input: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
     // One comfortable line tall when empty; native multiline grows up to maxHeight
     // (~8 lines) then scrolls. No explicit height (RN#35234) and full width (stretches
@@ -11727,7 +12385,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   sendButtonDisabled: {
     backgroundColor: theme.colors.surface,

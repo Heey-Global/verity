@@ -4,6 +4,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { UnistylesRuntime } from 'react-native-unistyles';
 
+import { baseTypography } from '../theme/tokens';
 import {
   DEFAULT_FONT_SCALE,
   MAX_FONT_SCALE,
@@ -13,6 +14,7 @@ import {
   getFontScale,
   hydrateFontScale,
   scaledTypeRamp,
+  scaledTypography,
   setFontScale,
   stepFontScale,
 } from './fontZoom';
@@ -70,6 +72,25 @@ describe('font zoom', () => {
     });
   });
 
+  describe('scaledTypography', () => {
+    it('leaves the named styles unchanged at the default scale', () => {
+      expect(scaledTypography(1)).toEqual(baseTypography);
+    });
+    // A style that only grew its size would clip descenders against its old
+    // line height, and an uppercase label would lose its tracking.
+    it('grows size, leading and tracking together and keeps the font family', () => {
+      const scaled = scaledTypography(1.5);
+      for (const [name, base] of Object.entries(baseTypography)) {
+        const style = scaled[name as keyof typeof baseTypography];
+        expect(style.fontFamily).toBe(base.fontFamily);
+        expect(style.fontSize).toBe(Math.round(base.fontSize * 1.5));
+        expect(style.lineHeight).toBe(Math.round(base.lineHeight * 1.5));
+        expect(style.lineHeight).toBeGreaterThanOrEqual(style.fontSize);
+      }
+      expect(scaled.label.letterSpacing).toBeCloseTo(baseTypography.label.letterSpacing * 1.5, 2);
+    });
+  });
+
   describe('setFontScale', () => {
     it('updates every registered theme with the scaled ramp and factor, and persists', async () => {
       setFontScale(1.2);
@@ -77,7 +98,11 @@ describe('font zoom', () => {
       const themes = updateThemeSpy.mock.calls.map(([name]) => name);
       expect(themes).toEqual(['dark', 'light']);
       const next = updateThemeSpy.mock.calls[0][1]({ fontScale: 1, text: {}, colors: {} });
-      expect(next).toMatchObject({ fontScale: 1.2, text: scaledTypeRamp(1.2) });
+      expect(next).toMatchObject({
+        fontScale: 1.2,
+        text: scaledTypeRamp(1.2),
+        typography: scaledTypography(1.2),
+      });
       // Other theme fields (colors, …) are preserved.
       expect(next).toHaveProperty('colors');
       await Promise.resolve();

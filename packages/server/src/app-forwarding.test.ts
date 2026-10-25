@@ -1,3 +1,4 @@
+import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { EventBus } from '@verity/session';
 import type { EventStore, ProjectRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -42,6 +43,14 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('forwards temporary diagnostic consent and live connector assignment to the API', () => {
+    const activation = new ReturnPathActivation(() => ({ enabled: false }));
+    const count = () => 2;
+    const deps = forward({ returnPathActivation: activation, returnPathConnectorCount: count });
+    expect(deps.returnPathActivation).toBe(activation);
+    expect(deps.returnPathConnectorCount).toBe(count);
+    activation.dispose();
+  });
   it('keeps runtime evidence available through the production composition seam', () => {
     const runtimeDiagnostics = createRuntimeDiagnostics({});
     expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);
@@ -94,10 +103,21 @@ describe('buildControlPlane dependency forwarding', () => {
   });
 
   it('passes the project-fleet dependencies through', () => {
+    const listProjectGitHubIssues = vi.fn(async () => ({
+      connected: true,
+      viewerLogin: null,
+      issues: [],
+    }));
     const listAvailableRepositories = vi.fn(async () => [project]);
     const reconcileProjectState = vi.fn(async () => project);
     const refreshProjectToken = vi.fn(async () => undefined);
-    const got = forward({ listAvailableRepositories, reconcileProjectState, refreshProjectToken });
+    const got = forward({
+      listProjectGitHubIssues,
+      listAvailableRepositories,
+      reconcileProjectState,
+      refreshProjectToken,
+    });
+    expect(got.listProjectGitHubIssues).toBe(listProjectGitHubIssues);
     expect(got.listAvailableRepositories).toBe(listAvailableRepositories);
     expect(got.reconcileProjectState).toBe(reconcileProjectState);
     expect(got.refreshProjectToken).toBe(refreshProjectToken);
@@ -108,9 +128,15 @@ describe('buildControlPlane dependency forwarding', () => {
       isAvailable: vi.fn(() => true),
     } as unknown as NonNullable<ServerDeps['previewShareManager']>;
     const onUplinkCredentialsChanged = vi.fn();
-    const got = forward({ previewShareManager, onUplinkCredentialsChanged });
+    const onPremiumFeatureSwitchesChanged = vi.fn();
+    const got = forward({
+      previewShareManager,
+      onUplinkCredentialsChanged,
+      onPremiumFeatureSwitchesChanged,
+    });
     expect(got.previewShareManager).toBe(previewShareManager);
     expect(got.onUplinkCredentialsChanged).toBe(onUplinkCredentialsChanged);
+    expect(got.onPremiumFeatureSwitchesChanged).toBe(onPremiumFeatureSwitchesChanged);
   });
 
   it('omits an absent dep instead of forwarding an explicit undefined', () => {
@@ -120,5 +146,6 @@ describe('buildControlPlane dependency forwarding', () => {
     expect('reconcileProjectState' in got).toBe(false);
     expect('previewShareManager' in got).toBe(false);
     expect('onUplinkCredentialsChanged' in got).toBe(false);
+    expect('onPremiumFeatureSwitchesChanged' in got).toBe(false);
   });
 });

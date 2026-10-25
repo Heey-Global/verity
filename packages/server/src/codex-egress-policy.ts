@@ -7,6 +7,7 @@ const CODEX_ACTOR_PLACEHOLDER = 'verity-codex-gateway-placeholder-v1';
 const ROUTES = new Map<string, { method: string; upstreamPath: string }>([
   ['/codex/models', { method: 'GET', upstreamPath: '/backend-api/codex/models' }],
   ['/codex/responses', { method: 'POST', upstreamPath: '/backend-api/codex/responses' }],
+  ['/codex/alpha/search', { method: 'POST', upstreamPath: '/backend-api/codex/alpha/search' }],
   [
     '/codex/images/generations',
     { method: 'POST', upstreamPath: '/backend-api/codex/images/generations' },

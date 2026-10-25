@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 
-it.each(['project-a', 'project-b'])(
+it.each(['project-a', 'project-b', 'control'])(
   'links two distinct sessions with target project %s and removes the link from either side',
   async (targetProjectId) => {
     const sessions = new Map([
@@ -20,6 +20,13 @@ it.each(['project-a', 'project-b'])(
         { id: 'project-b', repo: 'beta', kind: 'github', state: 'active', hiddenAt: null },
       ],
     ]);
+    projects.set('control', {
+      id: 'control',
+      repo: 'Verity Control',
+      kind: 'control_plane',
+      state: 'active',
+      hiddenAt: null,
+    });
     const createSessionLink = vi.fn(async () => true);
     const deleteSessionLink = vi.fn(async () => true);
     const app = Fastify();
@@ -42,6 +49,16 @@ it.each(['project-a', 'project-b'])(
     expect(created.statusCode).toBe(201);
     expect(createSessionLink).toHaveBeenCalledWith('a', 'b');
 
+    if (targetProjectId === 'control') {
+      const reverse = await app.inject({
+        method: 'POST',
+        url: '/sessions/b/links',
+        payload: { targetSessionId: 'a' },
+      });
+      expect(reverse.statusCode).toBe(201);
+      expect(createSessionLink).toHaveBeenLastCalledWith('b', 'a');
+    }
+
     const listed = await app.inject({ method: 'GET', url: '/sessions/a/links' });
     expect(listed.json().links).toEqual([
       {
@@ -61,7 +78,7 @@ it.each(['project-a', 'project-b'])(
       payload: { targetSessionId: 'a' },
     });
     expect(selfLink.statusCode).toBe(400);
-    expect(createSessionLink).toHaveBeenCalledTimes(1);
+    expect(createSessionLink).toHaveBeenCalledTimes(targetProjectId === 'control' ? 2 : 1);
     await app.close();
   },
 );

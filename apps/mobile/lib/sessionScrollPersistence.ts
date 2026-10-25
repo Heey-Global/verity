@@ -1,3 +1,4 @@
+import { beginClientActivity } from './sessionSwitchTiming';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { ScrollAnchor } from './transcriptAnchor';
@@ -10,25 +11,35 @@ export const SCROLL_STALE_DELTA_VIEWPORTS = 1.5;
 export const SCROLL_STALE_DELTA_MIN = 900;
 
 export function loadScrollAnchor(sessionId: string): Promise<ScrollAnchor | null> {
+  const finishRead = beginClientActivity('anchor-read');
   return AsyncStorage.getItem(SCROLL_ANCHOR_PREFIX + sessionId)
     .then((raw) => {
-      if (!raw) return null;
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== 'object' || parsed === null) return null;
-      const record = parsed as Record<string, unknown>;
-      return {
-        rowKey: typeof record.rowKey === 'string' ? record.rowKey : null,
-        messageId: typeof record.messageId === 'string' ? record.messageId : null,
-        atBottom: record.atBottom !== false,
-        offsetY:
-          typeof record.offsetY === 'number' && Number.isFinite(record.offsetY)
-            ? Math.max(0, record.offsetY)
-            : null,
-        coordinateSystem:
-          typeof record.coordinateSystem === 'string' ? record.coordinateSystem : undefined,
-      };
+      finishRead();
+      const finishParse = beginClientActivity('anchor-parse');
+      try {
+        if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null) return null;
+        const record = parsed as Record<string, unknown>;
+        return {
+          rowKey: typeof record.rowKey === 'string' ? record.rowKey : null,
+          messageId: typeof record.messageId === 'string' ? record.messageId : null,
+          atBottom: record.atBottom !== false,
+          offsetY:
+            typeof record.offsetY === 'number' && Number.isFinite(record.offsetY)
+              ? Math.max(0, record.offsetY)
+              : null,
+          coordinateSystem:
+            typeof record.coordinateSystem === 'string' ? record.coordinateSystem : undefined,
+        };
+      } finally {
+        finishParse();
+      }
     })
-    .catch(() => null);
+    .catch(() => {
+      finishRead();
+      return null;
+    });
 }
 
 export function saveScrollAnchor(sessionId: string, anchor: ScrollAnchor): void {

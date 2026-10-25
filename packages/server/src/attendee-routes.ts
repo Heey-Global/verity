@@ -46,7 +46,11 @@ export function registerAttendeeRoutes(
   app.post('/sessions/:id/live-meetings/online', async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const body = z
-      .object({ meetingUrl: z.url().max(2048), listenForVerity: z.boolean().default(false) })
+      .object({
+        title: z.string().max(200).optional(),
+        meetingUrl: z.url().max(2048),
+        listenForVerity: z.boolean().default(false),
+      })
       .parse(request.body);
     const url = new URL(body.meetingUrl);
     if (
@@ -59,7 +63,7 @@ export function registerAttendeeRoutes(
       )
     )
       throw new Error('Enter a Google Meet, Teams or Zoom HTTPS meeting link.');
-    return service.start(id, body.meetingUrl, body.listenForVerity);
+    return service.start(id, body.meetingUrl, body.listenForVerity, body.title);
   });
   app.post('/sessions/:id/live-meetings/:meetingId/online/stop', async (request) => {
     const { id, meetingId } = params.parse(request.params);

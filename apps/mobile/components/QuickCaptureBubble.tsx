@@ -1,10 +1,6 @@
+import { refreshTaskContext, startTaskContext, useTaskContext } from '../lib/sharedTaskContext';
 import { Icon } from './Icon';
-import {
-  bubbleRestingPlace,
-  taskContext,
-  type ProjectRecord,
-  type SessionSummary,
-} from '@verity/mobile';
+import { bubbleRestingPlace, projectsByRecentCapture, taskContext } from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
 import { useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -23,14 +19,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
-import { createVerityClient, subscribeVerityBaseUrl } from '../lib/client';
+import { subscribeVerityBaseUrl } from '../lib/client';
 import { subscribeAuthToken } from '../lib/authToken';
 import { subscribeBrowserSession } from '../lib/browserSession';
 import { subscribeMeeting } from '../lib/liveMeetingSession';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
 import {
-  loadTaskContextData,
-  saveTaskContextData,
   taskAccountScope,
   refreshTasks,
   removeTask,
@@ -38,13 +32,13 @@ import {
   useTasks,
 } from '../lib/tasksStore';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
+import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 import { subscribeTasksPanel } from '../lib/taskPanelEvents';
-import { useLiveHints } from '../lib/liveConnection';
-import { getVerityBaseUrl } from '../lib/client';
-import { useCallback } from 'react';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { QuickCaptureIntro } from './QuickCaptureIntro';
+import { startWatchInbox, syncWatchProjects } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
+import { tint } from './ui/tint';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
 const BUBBLE = 50;
@@ -52,21 +46,6 @@ const BUBBLE = 50;
 const EXTEND = 19;
 
 export function QuickCaptureBubble() {
-  const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshFromHint = useCallback(() => {
-    if (hintRefresh.current) return;
-    hintRefresh.current = setTimeout(() => {
-      hintRefresh.current = null;
-      void refreshTasks().catch(() => undefined);
-    }, 2000);
-  }, []);
-  useEffect(
-    () => () => {
-      if (hintRefresh.current) clearTimeout(hintRefresh.current);
-    },
-    [],
-  );
-  useLiveHints(getVerityBaseUrl(), refreshFromHint);
   useEffect(
     () =>
       subscribeTasksPanel(() => {
@@ -82,8 +61,7 @@ export function QuickCaptureBubble() {
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
   const { tasks } = useTasks();
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const { projects, sessions, projectsScope } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
@@ -106,16 +84,8 @@ export function QuickCaptureBubble() {
   const position = useRef(new Animated.ValueXY()).current;
   const squash = useRef(new Animated.Value(1)).current;
   const origin = useRef({ x: 0, y: 0 });
-  const loadGeneration = useRef(0);
   const context = taskContext(pathname, params, sessions);
-  const recentProjects = [...projects].sort((a, b) => {
-    const recent = (id: string) =>
-      Math.max(
-        0,
-        ...tasks.filter((task) => task.projectId === id).map((task) => Date.parse(task.updatedAt)),
-      );
-    return recent(b.id) - recent(a.id);
-  });
+  const recentProjects = projectsByRecentCapture(projects, tasks);
   // Only what the operator captured counts: the agent's own steps live in
   // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
@@ -221,69 +191,34 @@ export function QuickCaptureBubble() {
     [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
   );
   useEffect(() => startTasksStore(), []);
+  // Apple Watch captures land in the same queue once the store is running.
+  useEffect(() => startWatchInbox(), []);
+  // The watch picker offers the same projects, in the same order, as quick capture.
+  const accountScope = taskAccountScope();
+  useEffect(
+    () =>
+      syncWatchProjects(
+        accountScope,
+        projectsScope === accountScope ? projects : null,
+        tasks,
+        preferences.projectId,
+      ),
+    [accountScope, projectsScope, projects, tasks, preferences.projectId],
+  );
+  useEffect(() => startTaskContext(), []);
   useEffect(() => {
-    const load = async () => {
-      const generation = ++loadGeneration.current;
-      const expectedScope = taskAccountScope();
-      const client = createVerityClient();
-      if (!client || !expectedScope) {
-        setProjects([]);
-        setSessions([]);
-        return;
-      }
-      try {
-        const [nextProjects, nextSessions] = await Promise.all([
-          client.listProjects(),
-          client.listSessions(),
-        ]);
-        if (generation !== loadGeneration.current) return;
-        setProjects(nextProjects);
-        setSessions(nextSessions);
-        await saveTaskContextData(
-          { projects: nextProjects, sessions: nextSessions },
-          expectedScope,
-        );
-      } catch {
-        /* Capture remains available with cached project context. */
-      }
-    };
+    if (capture || panel) void refreshTaskContext().catch(() => undefined);
+  }, [capture, panel]);
+  useEffect(() => {
     const reset = () => {
-      ++loadGeneration.current;
-      setProjects([]);
-      setSessions([]);
       setCapture(false);
       setPanel(false);
       setSaved(null);
-      const generation = loadGeneration.current;
-      void loadTaskContextData()
-        .then((data) => {
-          if (data && loadGeneration.current === generation) {
-            setProjects(data.projects);
-            setSessions(data.sessions);
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          void load();
-        });
     };
-    const refresh = () => {
-      void load();
-      void refreshTasks().catch(() => undefined);
-    };
-    void loadTaskContextData()
-      .then((data) => {
-        if (data && loadGeneration.current === 0) {
-          setProjects(data.projects);
-          setSessions(data.sessions);
-        }
-      })
-      .catch(() => undefined)
-      .finally(refresh);
-    const timer = setInterval(refresh, 15000);
+
     const app = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
-        refresh();
+        void refreshTaskContext().catch(() => undefined);
         void refreshTasks(true).catch(() => undefined);
       }
     });
@@ -295,8 +230,6 @@ export function QuickCaptureBubble() {
       subscribeFollowedRemoteMeeting((value) => setRemoteMeeting(value !== null)),
     ];
     return () => {
-      ++loadGeneration.current;
-      clearInterval(timer);
       app.remove();
       for (const stop of unsubscribe) stop();
     };
@@ -320,6 +253,24 @@ export function QuickCaptureBubble() {
     const timer = setTimeout(() => setSaved(null), 4000);
     return () => clearTimeout(timer);
   }, [saved]);
+  useEffect(
+    () =>
+      subscribeTaskVoiceShortcut(() => {
+        if (
+          capture ||
+          taskAccountScope() === null ||
+          meeting ||
+          remoteMeeting ||
+          pathname.startsWith('/onboarding') ||
+          pathname.includes('unlock-device')
+        )
+          return;
+        setPanel(false);
+        setIntro(false);
+        setCapture(true);
+      }),
+    [capture, meeting, remoteMeeting, pathname],
+  );
   const visible =
     preferences.enabled &&
     taskAccountScope() !== null &&
@@ -385,9 +336,9 @@ export function QuickCaptureBubble() {
                 borderRadius: BUBBLE / 2,
                 // A primary tint reads as a control without shouting like a
                 // filled button; full strength only while it is in the hand.
-                backgroundColor: dragging ? 'rgba(42,176,255,0.26)' : 'rgba(42,176,255,0.16)',
+                backgroundColor: tint(theme.colors.action, dragging ? 'ring' : 'fill'),
                 borderWidth: 1,
-                borderColor: dragging ? theme.colors.primary : 'rgba(42,176,255,0.55)',
+                borderColor: dragging ? theme.colors.action : tint(theme.colors.action, 'border'),
                 justifyContent: 'center',
                 alignItems: 'center',
               }}
@@ -407,7 +358,7 @@ export function QuickCaptureBubble() {
                   ],
                 }}
               >
-                <Icon name="mic" size={20} color={theme.colors.primary} />
+                <Icon name="mic" size={20} color={theme.colors.action} />
               </Animated.View>
             </View>
           </Pressable>
@@ -425,16 +376,16 @@ export function QuickCaptureBubble() {
                 height: 18,
                 paddingHorizontal: 5,
                 borderRadius: 9,
-                backgroundColor: theme.colors.primary,
+                backgroundColor: theme.colors.action,
                 justifyContent: 'center',
               }}
             >
               <Text
                 style={{
-                  color: theme.colors.onPrimary,
+                  color: theme.colors.onAction,
                   textAlign: 'center',
-                  fontSize: 11,
-                  fontWeight: '700',
+                  fontSize: theme.typography.caption.fontSize,
+                  fontFamily: theme.fonts.bold,
                 }}
               >
                 {count}
@@ -468,6 +419,7 @@ export function QuickCaptureBubble() {
         <TasksPanel
           context={context}
           projects={projects}
+          sessions={sessions}
           side={preferences.side}
           y={origin.current.y}
           onClose={() => setPanel(false)}
@@ -503,7 +455,7 @@ export function QuickCaptureBubble() {
                 );
             }}
           >
-            <Text style={{ color: theme.colors.accent }}>Undo</Text>
+            <Text style={{ color: theme.colors.action }}>Undo</Text>
           </Pressable>
         </View>
       ) : null}

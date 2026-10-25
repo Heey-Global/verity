@@ -115,6 +115,40 @@ describe('buildControlPlane', () => {
     }
   });
 
+  it('runs explicit Uplink rights checks only through an authenticated local route', async () => {
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const device = await registry.mint('iPhone');
+    const status = {
+      control: 'idle' as const,
+      entitlement: 'checked' as const,
+      sharing: 'unavailable' as const,
+      remoteControl: 'unavailable' as const,
+    };
+    const recheckUplink = vi.fn(async () => status);
+    const app = buildControlPlane({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      authRegistry: registry,
+      recheckUplink,
+    });
+    try {
+      expect((await app.inject({ method: 'POST', url: '/api/uplink/check' })).statusCode).not.toBe(
+        200,
+      );
+      expect(recheckUplink).not.toHaveBeenCalled();
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/uplink/check',
+        headers: { authorization: `Bearer ${device.token}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(status);
+      expect(recheckUplink).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('serves live Uplink diagnostics through the composed control plane', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const device = await registry.mint('iPhone');

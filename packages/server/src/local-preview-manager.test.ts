@@ -30,8 +30,26 @@ function fixture() {
     containerLogs: vi.fn(async () => 'preview connector established'),
     removeContainer: vi.fn(async () => {}),
   };
+  const records = new Map<string, import('@verity/store').LocalPreviewShareRecord>();
   const options = {
-    store: { getProject: async () => project, getSession: async () => ({ projectId: 'p1' }) },
+    store: {
+      getProject: async () => project,
+      getSession: async () => ({ projectId: 'p1' }),
+      createLocalPreviewShare: async (input: import('@verity/store').LocalPreviewShareRecord) => {
+        records.set(input.id, { ...input, state: 'active' });
+      },
+      listLocalPreviewShares: async () => [...records.values()],
+      updateLocalPreviewShareTarget: async (id: string, targetPort: number) => {
+        records.get(id)!.targetPort = targetPort;
+      },
+      revokeLocalPreviewShare: async (id: string) => {
+        const record = records.get(id);
+        if (record) record.state = 'revoking';
+      },
+      deleteLocalPreviewShare: async (id: string) => {
+        records.delete(id);
+      },
+    },
     docker,
     resolveConnectorImage: async () => `example@sha256:${'a'.repeat(64)}`,
     publicHost: 'localhost',
@@ -69,7 +87,9 @@ it('fences mutation while preserving shares when a move is refused', async () =>
   expect(manager.list('s1').map((value) => value.id)).toEqual([share.id]);
   release();
   await manager.withProjectMutation('p1', async () => {});
-  expect(manager.list('s1')).toEqual([]);
+  expect(manager.list('s1')).toEqual([share]);
+  await manager.reconcile();
+  expect(manager.list('s1')).toEqual([share]);
 });
 
 it('lists ready shares by project, not only by session', async () => {
@@ -146,14 +166,16 @@ it('revokes immediately when another process takes over the target', async () =>
   expect(manager.list('s1')).not.toContainEqual(share);
 });
 
-it('revokes a link when the prepared connector port changes', async () => {
+it('preserves a link when the prepared connector port changes', async () => {
   const { manager, options } = fixture();
   const prepare = vi.fn(async () => 3000);
   options.prepareTargetPort = prepare;
-  await manager.create('s1', { targetPort: 3000 });
+  const share = await manager.create('s1', { targetPort: 3000 });
   prepare.mockResolvedValueOnce(43000);
   await manager.reconcile();
-  expect(manager.list('s1')).toEqual([]);
+  expect(manager.list('s1')).toEqual([share]);
+  await manager.reconcile();
+  expect(manager.list('s1')).toHaveLength(1);
 });
 
 it('does not reconcile or collect a connector that is still being provisioned', async () => {
@@ -202,4 +224,298 @@ it('retries cleanup after both provisioning and Docker removal fail', async () =
   await manager.reconcile();
   expect(docker.removeContainer).toHaveBeenCalledTimes(2);
   expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
+});
+
+it.each([{ targetPort: 3000 }, { staticPath: 'public' }])(
+  'restores durable identity and credentials after shutdown: %o',
+  async (target) => {
+    const { manager, docker, options } = fixture();
+    const share = await manager.create('s1', target);
+    const original = docker.createContainer.mock.calls[0];
+    await manager.close();
+    const restored = new LocalPreviewManager(options);
+    managers.push(restored);
+    await restored.reconcile();
+    expect(restored.list('s1')).toEqual([share]);
+    expect(docker.createContainer.mock.calls.at(-1)).toEqual(original);
+    await restored.stop(share.id);
+    await restored.close();
+    const stopped = new LocalPreviewManager(options);
+    managers.push(stopped);
+    await stopped.reconcile();
+    expect(stopped.list('s1')).toEqual([]);
+  },
+);
+
+it('keeps a failed recovery reserved and retries without rotating credentials', async () => {
+  const { manager, docker, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  docker.createContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+  await restored.reconcile();
+  expect(restored.ownsConnector('orphan', share.id)).toBe(true);
+  const other = await restored.create('s2', { targetPort: 4000 });
+  expect(new URL(other.url).port).toBe('18101');
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([share]);
+});
+it('does not revive an expired durable share after shutdown', async () => {
+  const { manager, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const records = await options.store.listLocalPreviewShares();
+  records[0]!.expiresAt = new Date(Date.now() - 1);
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([]);
+  expect(restored.ownsConnector('old', share.id)).toBe(false);
+});
+
+it('keeps identical targets isolated by session', async () => {
+  const { manager } = fixture();
+  const first = await manager.create('s1', { targetPort: 3000 });
+  const second = await manager.create('s2', { targetPort: 3000 });
+  expect(first.id).not.toBe(second.id);
+  expect(manager.list('s1')).toEqual([first]);
+  expect(manager.list('s2')).toEqual([second]);
+});
+
+it('shows durable shares and holds their port while restoration is unavailable', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  const port = manager.portOf(share.id)!;
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  docker.createContainer.mockRejectedValueOnce(new Error('unavailable'));
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([share]);
+  expect(restored.portOf(share.id)).toBe(port);
+  expect(restored.heldPorts().get(port)).toEqual(share);
+  await expect(restored.create('s2', { targetPort: 4000, networkPort: port })).rejects.toThrow(
+    'in use',
+  );
+});
+
+it('waits for restoration before removing an explicitly stopped connector', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  let finish!: (value: { id: string }) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  docker.createContainer.mockImplementationOnce(() => {
+    entered();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  const recovery = restored.restore();
+  await started;
+  const stop = restored.stop(share.id);
+  finish({ id: 'restored-connector' });
+  await Promise.all([recovery, stop]);
+  expect(docker.removeContainer).toHaveBeenCalledWith('restored-connector');
+  expect(restored.list('s1')).toEqual([]);
+  expect(await options.store.listLocalPreviewShares()).toEqual([]);
+  await restored.reconcile();
+  expect(restored.heldPorts().size).toBe(0);
+});
+
+it('follows a managed instance new target port while keeping local URL and credentials', async () => {
+  const { manager, options, docker } = fixture();
+  const instance = {
+    id: 'managed',
+    serverId: 'definition',
+    localAccess: true,
+    lastRunCommand: 'npm start',
+    lastRunWorkdir: '.',
+    sessionId: 's1',
+    projectId: 'p1',
+    sandboxPort: 3000,
+    networkPort: 18100,
+    desired: 'running',
+  };
+  Object.assign(options.store, {
+    managedDevServers: {
+      getInstance: async () => instance,
+      isApproved: async () => true,
+      listInstances: async () => [instance],
+    },
+  });
+  const share = await manager.create('s1', {
+    targetPort: 3000,
+    networkPort: 18100,
+    managedInstanceId: instance.id,
+  });
+  const credentials = (
+    docker.createContainer.mock.calls[0] as unknown as [{ env: string[] }]
+  )[0].env.find((entry) => entry.startsWith('VERITY_PREVIEW_CONNECTOR_TOKEN='));
+  await manager.close();
+  instance.sandboxPort = 4000;
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([{ ...share, targetPort: 4000 }]);
+  expect(docker.createContainer).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      env: expect.arrayContaining([
+        credentials,
+        'VERITY_PREVIEW_TARGET_ORIGIN=http://sandbox:4000',
+      ]),
+    }),
+  );
+});
+
+it.each(['access', 'approval'] as const)(
+  'does not restore managed sharing when %s is revoked',
+  async (reason) => {
+    const { manager, options, docker } = fixture();
+    const instance = {
+      id: 'managed',
+      serverId: 'definition',
+      sessionId: 's1',
+      projectId: 'p1',
+      sandboxPort: 3000,
+      networkPort: 18100,
+      desired: 'running',
+      localAccess: true,
+      lastRunCommand: 'npm start',
+      lastRunWorkdir: '.',
+    };
+    let approved = true;
+    Object.assign(options.store, {
+      managedDevServers: {
+        getInstance: async () => instance,
+        listInstances: async () => [instance],
+        isApproved: async () => approved,
+      },
+    });
+    const share = await manager.create('s1', {
+      targetPort: 3000,
+      networkPort: 18100,
+      managedInstanceId: instance.id,
+    });
+    await manager.close();
+    if (reason === 'access') instance.localAccess = false;
+    else approved = false;
+    docker.createContainer.mockClear();
+    const restored = new LocalPreviewManager(options);
+    managers.push(restored);
+    await restored.reconcile();
+    expect(docker.createContainer).not.toHaveBeenCalled();
+    expect(await options.store.listLocalPreviewShares()).toHaveLength(reason === 'access' ? 0 : 1);
+    if (reason === 'approval') {
+      approved = true;
+      await restored.reconcile();
+      expect(restored.list('s1')).toEqual([share]);
+    }
+  },
+);
+
+it('releases an active managed connector when command approval is removed', async () => {
+  const { manager, options, docker } = fixture();
+  const instance = {
+    id: 'managed',
+    serverId: 'definition',
+    sessionId: 's1',
+    projectId: 'p1',
+    sandboxPort: 3000,
+    networkPort: 18100,
+    desired: 'running',
+    localAccess: true,
+    lastRunCommand: 'npm start',
+    lastRunWorkdir: '.',
+  };
+  let approved = true;
+  Object.assign(options.store, {
+    managedDevServers: {
+      getInstance: async () => instance,
+      listInstances: async () => [instance],
+      isApproved: async () => approved,
+    },
+  });
+  const share = await manager.create('s1', {
+    targetPort: 3000,
+    networkPort: 18100,
+    managedInstanceId: instance.id,
+  });
+  approved = false;
+  await manager.reconcile();
+  expect(docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(await options.store.listLocalPreviewShares()).toHaveLength(1);
+  expect(manager.portOf(share.id)).toBe(18100);
+});
+
+it('does not resurrect a stopped durable snapshot while ownership lookup is pending', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  let resume!: (value: Awaited<ReturnType<typeof options.store.getSession>>) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const original = options.store.getSession.bind(options.store);
+  options.store.getSession = () => {
+    entered();
+    return new Promise((resolve) => {
+      resume = resolve;
+    });
+  };
+  docker.createContainer.mockClear();
+  const recovery = restored.restore();
+  await started;
+  await restored.stop(share.id);
+  options.store.getSession = original;
+  resume(await original('s1'));
+  await recovery;
+  expect(docker.createContainer).not.toHaveBeenCalled();
+  expect(restored.list('s1')).toEqual([]);
+  expect(restored.heldPorts().size).toBe(0);
+  expect(await options.store.listLocalPreviewShares()).toEqual([]);
+});
+
+it('does not recover a stale snapshot of a failed creation', async () => {
+  const { manager, options, docker } = fixture();
+  let rejectCreation!: (reason: Error) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  docker.createContainer.mockImplementationOnce(() => {
+    entered();
+    return new Promise((_resolve, reject) => {
+      rejectCreation = reject;
+    });
+  });
+  const creation = manager.create('s1', { targetPort: 3000 });
+  const failed = expect(creation).rejects.toThrow('failed creation');
+  await started;
+  const read = options.store.listLocalPreviewShares.bind(options.store);
+  const snapshot = (await read()).map((record) => ({ ...record }));
+  let resume!: () => void;
+  vi.spyOn(options.store, 'listLocalPreviewShares').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resume = () => resolve(snapshot);
+      }),
+  );
+  const recovery = manager.restore();
+  rejectCreation(new Error('failed creation'));
+  await failed;
+  resume();
+  await recovery;
+  expect(docker.createContainer).toHaveBeenCalledTimes(1);
+  expect(manager.list('s1')).toEqual([]);
+  expect(manager.heldPorts().size).toBe(0);
 });

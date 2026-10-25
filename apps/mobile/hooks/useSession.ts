@@ -1,3 +1,4 @@
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
@@ -9,20 +10,21 @@ import {
   publishSettledPermission,
   publishSessionStatusMutation,
 } from '@verity/mobile';
-import type { LiveHint } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
+import { liveConnectionFor } from '../lib/liveConnection';
 import { pendingSession } from '../lib/pendingSessions';
 
 export interface UseSession extends SessionModelState {
+  refreshMetadata: () => void;
   /** Fire-and-forget an operator turn; the agent's reply streams back over WS.
    * Optional turn options (e.g. image `attachments`) are forwarded to the model. */
   sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => Promise<boolean>;
   /** Load the previous page of older history (scroll-up); no-op when none/loading. */
   loadOlder: () => void;
+  retryHistory: () => void;
   /** Load older history in one fetch down to `targetSeq` (a bookmark jump to an
    * unloaded message); no-op when already loaded / nothing older / loading. */
   loadOlderUntil: (targetSeq: number) => void;
@@ -62,18 +64,32 @@ export interface UseSession extends SessionModelState {
  */
 export function useSession(client: VerityClient, sessionId: string, baseUrl: string): UseSession {
   const binding = useMemo(() => {
+    const timing = sessionSwitchTiming(sessionId);
+    let timingPublished = false;
     let active = false;
     let frame: number | undefined;
     let latest: SessionModelState | undefined;
     const flush = (): void => {
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = undefined;
-      if (active && latest !== undefined) setState(latest);
+      if (active && latest !== undefined) {
+        if (!timingPublished && latest.loaded) {
+          markSessionSwitch(timing, 'loaded-model-state-react-dispatch');
+          timingPublished = true;
+        }
+        setState(latest);
+      }
       latest = undefined;
     };
     const publish = (snapshot: SessionModelState): void => {
       if (!active) return;
       latest = snapshot;
+      if (!timingPublished && snapshot.loaded) {
+        // The initial history must not wait for a native animation frame.
+        markSessionSwitch(timing, 'loaded-model-state-publish');
+        flush();
+        return;
+      }
       // Socket bursts can contain many deltas in one display frame. Publish the
       // newest snapshot once while still reducing every event in the model.
       if (frame === undefined) frame = requestAnimationFrame(flush);
@@ -145,21 +161,6 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   // The activity snapshot (working indicator, queue, pending requests) is not
   // streamed; refresh it the moment the server says it changed.
-  const onHints = useCallback(
-    (hints: LiveHint[]) => {
-      if (
-        hints.some((hint) =>
-          hint.topics.some(
-            (topic) => topic === 'activity' || topic === 'status' || topic === 'permission',
-          ),
-        )
-      ) {
-        model.refreshActivity();
-      }
-    },
-    [model],
-  );
-  useLiveHints(baseUrl, onHints, sessionId);
   useEffect(
     () =>
       subscribeLiveRefresh(
@@ -182,6 +183,10 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     },
     [model, sessionId],
   );
+
+  const retryHistory = useCallback(() => {
+    void model.retryHistory();
+  }, [model]);
 
   const loadOlder = useCallback(() => {
     void model.loadOlder();
@@ -217,8 +222,10 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   return {
     ...state,
+    refreshMetadata: () => model.refreshMetadata(),
     sendTurn,
     loadOlder,
+    retryHistory,
     loadOlderUntil,
     cancel,
     cancelWaiting,

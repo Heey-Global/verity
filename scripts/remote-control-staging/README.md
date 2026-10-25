@@ -14,12 +14,23 @@ the Staging `/remote-control` and `/data` routes are enabled, with:
 The workflow does not take a subscription key. The existing Core Control
 connection must already have `remote-control-v1` negotiated and the
 `remote-control` feature. The probe opens App admission, waits for a matching
-short-lived ticket, keeps admission open through the request, and
+short-lived ticket, accepts normal admission completion after a validated ready response, and
 uses the Swift smoke tunnel and the production app tunnel to make separate
-HTTPS GET requests. Both must receive HTTP 200 through pinned inner TLS.
+HTTPS GET requests to `/healthz` on the paired Core host and port. This public
+liveness route needs no device bearer token; the paired TLS identity and pin
+remain unchanged. Both must receive HTTP 200 through pinned inner TLS.
 A third app-mode run sets `VERITY_REMOTE_PROBE_IDLE_SECONDS=40` and pauses
 before its last request, longer than the 15-second data heartbeat: an app
 attachment that ends while idle fails that run with the tunnel's stop reason.
+A fourth app-mode run is the soak: `VERITY_REMOTE_PROBE_SOAK_SECONDS`
+(workflow input `soak_seconds`, default 180, 30 to 600, 0 skips it) keeps
+`VERITY_REMOTE_PROBE_SOAK_STREAMS` (default 4, max 8) pinned requests going at
+once, each on a fresh URLSession as the app's transport does, with half a second
+to two seconds between requests. This is the device's pattern, which the
+three-request probes never matched; an attachment that goes silent mid-session
+fails the soak with the failing worker, its own and the total request count, the native
+transport failure and the tunnel summary. A passing soak prints the request
+count and the slowest request.
 The ticket is passed only in the child process environment and is not logged.
 
 These are macOS command-line probes of the native transports, not an iOS App UI
@@ -32,7 +43,63 @@ Run the local admission checks with
 `node --test scripts/remote-control-staging/probe.test.mjs`. The full Staging
 probe requires macOS 14+, Xcode, and the four workflow inputs above.
 
+## Fast live soak
+
+For repeated live transport checks, dispatch `verity-remote-control-soak`
+(`remote-control-soak.yml`) with the same four public inputs above and the
+source `ref` to test. It runs admission regression tests, compiles the macOS
+probe, and runs the production app tunnel with six parallel streams for
+`soak_seconds` (default 180, required range 30 to 600). A zero duration is
+rejected, so a successful run cannot silently skip the soak.
+
+This workflow avoids the iOS app build and Simulator tests. It does not replace
+`verity-mobile-native-verify` or establish that an iPhone's lifecycle and UI
+work. Runner availability, dependency installation, and Swift compilation still
+add time before the soak. An active live test is not cancelled by a new dispatch.
+GitHub retains only one pending run in this concurrency group; a further dispatch
+replaces that pending run. No live test runs automatically on pull requests.
+
 ## Diagnosing a device connection
+
+### Selecting an isolated Uplink endpoint
+
+The server entrypoint accepts two optional deployment environment settings:
+`VERITY_DIAGNOSTIC_UPLINK_ORIGIN` (an HTTPS origin without credentials, query,
+fragment or path) and `VERITY_DIAGNOSTIC_UPLINK_INSTALLATION_ID` (the existing
+installation ID). Both are required together. A stored ID mismatch prevents
+dialling; a different ID in the Uplink welcome closes the diagnostic connection
+before persisting the replacement. Other servers with neither setting retain
+the standard endpoint.
+
+Set these only on the selected Core deployment after approving the isolated
+endpoint and its access controls. This redirects that Core's entire Uplink
+control connection, including public previews. The selected hostname must route
+control, admission and DATA WebSocket upgrades to the same Uplink process. A
+shared database alone cannot preserve in-memory admission ownership. Verify
+DNS, certificate trust, protocol compatibility and connection mapping before a
+device capture. Deployment tooling must explicitly preserve these settings
+across a recreation; the application does not modify deployment specifications.
+
+For an already adopted managed deployment, these settings are not currently a
+supported activation procedure. Its sealed environment references are preserved
+across image updates, so adding host environment values does not add new sources.
+Image rollback also does not restore previous external source values. Activation
+requires a reviewed configuration operation that updates both settings together,
+preserves them across recreation, and explicitly restores the previous pair.
+Do not patch container environments or sealed deployment files manually, or
+discard the managed volume to introduce these settings.
+
+The connector DATA URL and advertised mobile origin derive from the selected
+control URL. Refresh the mobile descriptor after switching, and start fresh
+admission and tickets; existing sessions are not migrated. The paired Core URL
+and inner TLS pin remain unchanged. Roll back by removing both settings,
+restarting the selected Core, checking its renewed standard-endpoint lease,
+refreshing the mobile descriptor and discarding diagnostic sessions.
+
+An isolated path does not reproduce the production Gateway automatically. A
+successful isolated run cannot establish why a production connection failed.
+Keep endpoint metadata private and enforce the diagnostic capture's time,
+storage and retention bounds in the collector.
 
 The displayed paired Core URL remains the TLS identity for both direct and
 Uplink routes. Its presence does not establish which route was attempted.
@@ -169,13 +236,14 @@ an explicit failure record. Run from a trusted copy of this script:
 
 ```sh
 python3 scripts/remote-control-staging/sample-core-tcp.py \
-  --container verity-core --output core-tcp.jsonl --seconds 120
+  --container verity-core --output core-tcp.jsonl --seconds 120 --interval 5
 ```
 
 Replace `verity-core` with the actual Core container name. Start the sampler
 before the device test and verify a timestamped `sample` record exists first.
 It samples established outbound TCP port 443 sockets in that exact container
-network namespace at most once per second for up to 120 seconds. Each command
+network namespace for up to 120 seconds. `--interval` accepts 1, 2, 5 or 10
+seconds (default 1); use 5 seconds for coordinated low-overhead captures. Each command
 has a two-second timeout; startup and the final in-progress iteration can add
 bounded overhead. A changed container identity, start time, or PID incarnation
 aborts collection. A restart while a command is running is also checked after
@@ -238,3 +306,43 @@ Endpoint tuples are host/network metadata and belong in private diagnostic logs.
 Kernel ACK/retransmit evidence requires the host sampler and matching
 cluster-side collection; instrumentation must be deployed on both sides before
 requesting the next synchronized device reproduction.
+
+### Stall evidence in probe builds
+
+The staging runner enables `VERITY_STALL_DIAGNOSTICS` only for its probe binary.
+The application build does not include these hooks. The probe observes response
+headers, the first nonempty body callback and completion using monotonic elapsed
+milliseconds; it keeps the existing certificate pin delegate for authentication.
+It discards body data instead of retaining it for diagnostics.
+
+A bounded recorder distinguishes Writer entries waiting for their predecessor
+from an active WebSocket send. It includes later frames, not just the first send.
+The first failure freezes its HTTP and Writer snapshot before the request's
+application cleanup. The parser accepts a strict, size-limited schema and rejects
+unknown fields. Later worker failures cannot overwrite that receipt.
+
+Request attribution uses URLSession's loopback proxy local-port metrics and the
+accepted stream's peer port within the request lifetime. Ports and wire stream
+IDs stay internal. Missing metrics, multiple candidate connections and lost
+coverage are reported as `unknown`, `ambiguous` or `overflow`, with `-1` for
+unattributed per-stream counters. Never interpret those values as zero activity.
+A completed send records local API completion, not delivery to the remote Core.
+
+The recorder retains at most 64 stream mappings and 128 pending send entries.
+Evicting a mapping invalidates requests whose time window overlaps that mapping;
+a pending-send overflow invalidates coverage for the remainder of that tunnel.
+The observer retains at most eight distinct candidate ports and no response
+payloads. Diagnostic lines are capped at 4096 characters and contain no URLs,
+headers, tickets, addresses or raw stream identifiers.
+
+The existing Apple fixture checks request attribution and callback delivery for
+healthy, absent and partial responses on HTTP/1.1 and HTTP/2. The Writer harness
+also requires disabling its send-start observation to break the diagnostic
+assertions. These are synthetic checks; no live failure cause follows from them.
+
+The three pre-soak HTTPS warmup requests use the same bounded snapshot. A
+`warmup_failed` receipt reports `warmup.requestNumber` (1–3) and `failureKind`,
+with `soak: null`; subsequent cleanup cannot replace it. Each warmup request has
+its own task delegate while the URLSession and connection reuse remain intact.
+This includes transport failures before the first authentication challenge and
+non-200 HTTP responses. A missing request/stream mapping remains unknown.

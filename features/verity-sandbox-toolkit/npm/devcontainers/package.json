@@ -1,0 +1,8 @@
+{
+  "name": "verity-cli-devcontainers",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@devcontainers/cli": "0.89.0"
+  }
+}

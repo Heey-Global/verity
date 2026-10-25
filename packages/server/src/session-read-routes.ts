@@ -8,14 +8,20 @@ const sessionParams = z.object({
     .regex(/^[A-Za-z0-9_-]+$/),
 });
 
+const modelsQuery = z.object({ projectId: z.string().min(1).optional() });
+
 export interface SessionReadRouteDeps {
-  listModels: () => Promise<unknown>;
+  /** Every usable model, narrowed to a project's allowed agents when one is named. */
+  listModels: (projectId?: string) => Promise<unknown>;
   getSession: (sessionId: string) => Promise<unknown>;
 }
 
 /** Registers model discovery and the lightweight session-detail read. */
 export function registerSessionReadRoutes(app: FastifyInstance, deps: SessionReadRouteDeps): void {
-  app.get('/models', async (): Promise<unknown> => deps.listModels());
+  app.get('/models', async (request): Promise<unknown> => {
+    const { projectId } = modelsQuery.parse(request.query);
+    return deps.listModels(projectId);
+  });
 
   app.get('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);

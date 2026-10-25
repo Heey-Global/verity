@@ -4,13 +4,14 @@
 // navigation controls.
 import { type Href, router } from 'expo-router';
 import type { ReactNode } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 import { type StepId, stepProgress } from '@verity/mobile';
 
 import { OnboardingProgress } from './OnboardingProgress';
+import { Button } from './ui';
 
 export function OnboardingStepScaffold({
   stepId,
@@ -54,36 +55,16 @@ export function OnboardingStepScaffold({
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.footerInner}>
           {back ? (
-            <Pressable
-              style={({ pressed }) => [styles.backButton, pressed ? styles.pressed : null]}
-              onPress={() => {
-                router.replace(back);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-            >
-              <Text style={styles.backLabel}>Back</Text>
-            </Pressable>
+            <Button label="Back" variant="secondary" onPress={() => router.replace(back)} />
           ) : (
             <View style={styles.footerSpacer} />
           )}
           {next ? (
-            <Pressable
-              style={({ pressed }) => [
-                styles.nextButton,
-                next.disabled ? styles.nextButtonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={() => {
-                if (!next.disabled) router.push(next.href);
-              }}
-              disabled={next.disabled}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: next.disabled === true }}
-              accessibilityLabel={next.label ?? 'Next'}
-            >
-              <Text style={styles.nextLabel}>{next.label ?? 'Next'}</Text>
-            </Pressable>
+            <Button
+              label={next.label ?? 'Next'}
+              disabled={next.disabled === true}
+              onPress={() => router.push(next.href)}
+            />
           ) : (
             <View style={styles.footerSpacer} />
           )}
@@ -127,9 +108,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing.xl,
   },
   title: {
+    ...theme.typography.display,
     color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontWeight: '600',
   },
   body: {
     flex: 1,
@@ -139,25 +119,22 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   noteText: {
+    ...theme.typography.body,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
   },
   noteTag: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    ...theme.typography.label,
+    color: theme.colors.textMuted,
   },
   footer: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surface,
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   footerInner: {
     width: '100%',
@@ -170,38 +147,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   footerSpacer: {
     minWidth: 88,
-  },
-  backButton: {
-    minHeight: 44,
-    minWidth: 88,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.sm,
-  },
-  backLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.md,
-    fontWeight: '700',
-  },
-  nextButton: {
-    minHeight: 44,
-    minWidth: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-  },
-  nextButtonDisabled: {
-    opacity: 0.45,
-  },
-  nextLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  pressed: {
-    opacity: 0.62,
   },
 }));

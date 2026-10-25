@@ -89,4 +89,14 @@ it('allows live meeting viewing with read access and remote controls only with e
       { id: 'session', meetingId: 'meeting' },
     ),
   ).toBe('forbidden');
+  // A name check spends a model call on the session, like a spoken request check.
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'POST',
+      '/sessions/:id/live-meetings/:meetingId/speaker-name',
+      { id: 'session', meetingId: 'meeting' },
+    ),
+  ).toBe('forbidden');
 });

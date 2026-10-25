@@ -246,7 +246,7 @@ describe('standby promotion cutover', () => {
         volumeMounts: [],
         capAdd: [],
         groupAdd: [],
-        securityOpt: ['no-new-privileges:true'],
+        securityOpt: ['no-new-privileges=true'],
         env: [
           'VERITY_READINESS_PROBE_URL=http://verity-managed-server-g1:8082/healthz',
           'VERITY_READINESS_PROBE_TIMEOUT_MS=5000',

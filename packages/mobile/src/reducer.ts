@@ -17,6 +17,7 @@ import type {
   UserTextMessage,
 } from './happy/message.js';
 import type { StreamEventFrame } from './wire.js';
+import { agentEventDescriptor } from './ui/agentEvent.js';
 
 const MAX_TRACKED_RATE_LIMITS = 32;
 
@@ -280,7 +281,7 @@ export class SessionReducer {
       case 'text':
         this.appendText(seq, ts, event.delta, event.parentToolId);
         break;
-      case 'notice':
+      case 'notice': {
         this.active = null;
         if (event.role === 'operator') {
           this.appendMessage({
@@ -291,6 +292,26 @@ export class SessionReducer {
             text: event.text,
           });
         } else {
+          // Refiling publishes fresh metrics without adding another saved-meeting card.
+          const savedLink =
+            /^Meeting saved to the knowledge base: \[.*\]\(([^\n]+)\)(?:\n<!-- verity-meeting: .+ -->)?$/.exec(
+              event.text,
+            )?.[1];
+          const previous =
+            savedLink &&
+            this._messages.find(
+              (message) =>
+                message.kind === 'agent-text' &&
+                message.id.startsWith('notice-') &&
+                /^Meeting saved to the knowledge base: \[.*\]\(([^\n]+)\)(?:\n<!-- verity-meeting: .+ -->)?$/.exec(
+                  message.text,
+                )?.[1] === savedLink,
+            );
+          if (previous && previous.kind === 'agent-text') {
+            previous.text = event.text;
+            this.messageChanged(previous);
+            break;
+          }
           this.appendMessage({
             kind: 'agent-text',
             id: `notice-${String(seq)}`,
@@ -300,6 +321,7 @@ export class SessionReducer {
           });
         }
         break;
+      }
       case 'prompt': {
         // The operator's steering prompt → a user-text message. A new turn
         // closes any open agent streaming block and marks the session running (#79).
@@ -495,7 +517,9 @@ export class SessionReducer {
         // drift), not a turn terminator; the stream and the turn continue. A real
         // run failure surfaces via the conductor's `onTurnError` log, not a
         // canonical `error` event. So none of these clear the running flag.
-        if (shouldRenderAgentEvent(event)) this.emitAgentEvent(seq, ts, event);
+        if (!shouldRenderAgentEvent(event)) break;
+        if (event.t === 'error' && this.foldRepeatedError(ts, event)) break;
+        this.emitAgentEvent(seq, ts, event);
         break;
       case 'diagnostic':
         // Technical metadata belongs in session diagnostics, not the chat transcript.
@@ -715,6 +739,31 @@ export class SessionReducer {
       createdAt: ts,
       event,
     });
+  }
+
+  /** One outage reaches the transcript through several layers — the adapter's
+   * error, the backend's transport failure, the conductor's crash row — and a
+   * resend during the outage adds more. Rows that read the same collapse into
+   * the first with a count, so the chat shows the failure once. Anything in
+   * between (a reply, the operator's resend) keeps them apart. */
+  private foldRepeatedError(ts: number, event: AgentEvent & { t: 'error' }): boolean {
+    const index = this._messages.length - 1;
+    const last = this._messages[index];
+    if (last?.kind !== 'agent-event' || last.event.t !== 'error') return false;
+    const previous = agentEventDescriptor(last.event);
+    const next = agentEventDescriptor(event);
+    if (previous.kind !== next.kind || previous.label !== next.label) return false;
+    if (previous.detail !== next.detail) return false;
+    this.active = null;
+    // Replace rather than mutate: the published snapshot of `last` is cached.
+    this._messages[index] = {
+      ...last,
+      createdAt: ts,
+      event,
+      repeatCount: (last.repeatCount ?? 1) + 1,
+    };
+    this.publishedMessages = undefined;
+    return true;
   }
 
   get sessionId(): string | undefined {

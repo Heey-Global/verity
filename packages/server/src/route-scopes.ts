@@ -143,6 +143,24 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'Matrix connector bearer token',
   ),
   declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/claim',
+    'container-capability',
+    'Matrix connector bearer token; approved jobs only',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/check',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/result',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
     'GET',
     '/internal/integrations/matrix/config',
     'container-capability',
@@ -192,9 +210,21 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/project/repo',
+    'container-capability',
+    'per-container capability, presented by the sandbox `verity-repo` command',
+  ),
+  declare(
+    'POST',
     '/internal/dev-servers',
     'container-capability',
     'per-container capability, presented by the sandbox `verity-dev-server` command',
+  ),
+  declare(
+    'POST',
+    '/internal/package-install',
+    'container-capability',
+    'per-container capability, presented by the sandbox package-manager shims',
   ),
   // Both methods: the MCP endpoint answers POST for calls and GET for the
   // server-sent event stream, and the same per-turn bearer covers both.
@@ -227,6 +257,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     '/internal/mcp-proxy',
     'gateway-turn',
     'per-turn gateway bearer plus a project-bound MCP connection binding',
+  ),
+  declare(
+    'POST',
+    '/internal/control-plane/memory',
+    'gateway-turn',
+    'per-turn Control gateway bearer on the shared internal listener, bound to Control memory',
   ),
   declare(
     'POST',

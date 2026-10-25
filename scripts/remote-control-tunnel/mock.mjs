@@ -2,13 +2,14 @@
 import { Buffer } from 'node:buffer';
 import { setTimeout, clearTimeout } from 'node:timers';
 import https from 'node:https';
+import http2 from 'node:http2';
 import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, createWebSocketStream } from 'ws';
 
-/** @param {{ key: Buffer, cert: Buffer }} options */
-export async function startFixture({ key, cert }) {
+/** @param {{ key: Buffer, cert: Buffer, protocol?: "h1" | "h2" }} options */
+export async function startFixture({ key, cert, protocol = 'h1' }) {
   /** @type {Set<net.Socket>} */
   const sockets = new Set();
   const stats = { tunnels: 0, bytes: 0, captured: Buffer.alloc(0) };
@@ -18,8 +19,22 @@ export async function startFixture({ key, cert }) {
     socket.once('close', () => sockets.delete(socket));
     return socket;
   };
-  const core = https.createServer({ key, cert }, (req, res) => {
+  /** @param {import('node:http').IncomingMessage | http2.Http2ServerRequest} req
+   * @param {import('node:http').ServerResponse | http2.Http2ServerResponse} res */
+  const handleCore = (req, res) => {
     if (req.url === '/slow') return;
+    // Leave the response incomplete after real application bytes have arrived.
+    if (req.url === '/partial') {
+      // An unspecified media type lets native clients buffer the unfinished
+      // body for content sniffing instead of delivering the first data callback.
+      res.writeHead(200, {
+        'content-length': '2',
+        'content-type': 'application/octet-stream',
+        'x-content-type-options': 'nosniff',
+      });
+      res.write('x');
+      return;
+    }
     if (req.method === 'POST' && req.url === '/echo') {
       /** @type {Buffer[]} */
       const chunks = [];
@@ -34,15 +49,27 @@ export async function startFixture({ key, cert }) {
       return;
     }
     res.end('core-ok');
-  });
+  };
+  const core =
+    protocol === 'h2'
+      ? http2.createSecureServer({ key, cert, allowHTTP1: true }, handleCore)
+      : https.createServer({ key, cert }, handleCore);
   core.on('connection', track);
-  core.on('clientError', (_error, socket) => socket.destroy());
-  const echo = new WebSocketServer({ server: core, path: '/socket', maxPayload: 256 * 1024 });
+  /** @param {Error} _error @param {import('node:stream').Duplex} socket */
+  const closeClientError = (_error, socket) => {
+    socket.destroy();
+  };
+  core.on('clientError', closeClientError);
+  const echo = new WebSocketServer({
+    server: /** @type {https.Server} */ (core),
+    path: '/socket',
+    maxPayload: 256 * 1024,
+  });
   echo.on('connection', (ws) => {
     ws.on('error', () => {});
     ws.on('message', (data, binary) => ws.send(data, { binary }));
   });
-  /** @param {https.Server} server @returns {Promise<number>} */
+  /** @param {net.Server} server @returns {Promise<number>} */
   const listen = (server) =>
     new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -104,7 +131,7 @@ export async function startFixture({ key, cert }) {
           );
           const stream = { socket, incoming: 0, outgoing: 0 };
           streams.set(id, stream);
-          socket.on('data', (chunk) => {
+          socket.on('data', (/** @type {Buffer} */ chunk) => {
             for (let offset = 0; offset < chunk.length; offset += 64 * 1024) {
               send({
                 type: 'stream.data',
@@ -184,11 +211,13 @@ export async function startFixture({ key, cert }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [keyPath, certPath] = process.argv.slice(2);
+  const [keyPath, certPath, protocol = 'h1'] = process.argv.slice(2);
+  if (protocol !== 'h1' && protocol !== 'h2') throw new Error('Invalid fixture protocol');
   if (!keyPath || !certPath) throw new Error('Usage: mock.mjs key.pem cert.pem');
   const fixture = await startFixture({
     key: await readFile(keyPath),
     cert: await readFile(certPath),
+    protocol,
   });
   process.stdout.write(
     `${JSON.stringify({ corePort: fixture.corePort, relayPort: fixture.relayPort })}\n`,

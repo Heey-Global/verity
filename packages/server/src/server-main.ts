@@ -26,6 +26,7 @@ import { SERVER_VERSION } from './server.js';
 import { resolveGoogleOAuthClientId } from './google-drive.js';
 import { parseSandboxDnsServers } from './gvisor-project-network.js';
 import { readAgentSeedStamp, sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
+import { cleanupAgentSeedVersions } from './self-update/agent-seed-cleanup.js';
 import {
   createPostgresDb,
   migrateToLatest,
@@ -123,7 +124,7 @@ import {
   SANDBOX_IMAGE_REPO,
   TOOLKIT_FEATURE_REPO,
 } from './sandbox-artifacts.js';
-import { UPLINK_CONTROL_URL } from './uplink-control-client.js';
+import { uplinkDiagnosticEndpoint } from './uplink-diagnostic-endpoint.js';
 import { devicePairingFromEnv, serverStartupRequiresPairing } from './pairing-env.js';
 
 /** Fixed internal port for the non-published `/internal/*` (signing-broker)
@@ -440,6 +441,16 @@ function gitToplevel(): string | undefined {
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'cleanup-agent-seed') {
+    const result = await cleanupAgentSeedVersions({
+      root: '/opt/agent-seed-cleanup',
+      hostRoot: process.env.VERITY_AGENT_SEED_CLEANUP_HOST_ROOT ?? '',
+      docker: createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
+    });
+    console.log(JSON.stringify(result));
+    if (result.skipped !== undefined) process.exitCode = 2;
+    return;
+  }
   const directServerMode = process.argv[2] === 'direct-server';
   const managedDeployment = Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim());
   if (process.argv[2] === 'managed-companion-handoff') {
@@ -879,7 +890,7 @@ async function main(): Promise<void> {
               ),
             10_000,
           ).catch(() => undefined),
-        uplinkUrl: UPLINK_CONTROL_URL,
+        ...uplinkDiagnosticEndpoint(process.env),
         serverVersion: SERVER_VERSION,
         ...(remoteControlIngress === undefined ? {} : { remoteControl: remoteControlIngress }),
       },

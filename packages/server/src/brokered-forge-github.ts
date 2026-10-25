@@ -23,9 +23,11 @@ export type ForgeAction =
   | 'actions-write'
   | 'releases-write'
   | 'checks-read'
+  | 'repository-rules-read'
   | 'packages-read';
 interface ForgeBinding {
   projectId: string;
+  forgeConnectionId?: string | null;
   owner: string;
   repo: string;
   containerGeneration?: string | undefined;
@@ -37,10 +39,11 @@ export interface ForgeRequest {
   body?: Buffer;
 }
 interface ForgeAuthorization {
+  upstream?: { hostname: string; port: number; ca?: string; allowPrivateAddress?: boolean };
   registryTokenResponse?: boolean;
   verifyRelatedIssues?: boolean;
   action: ForgeAction;
-  authorization: string;
+  authorization?: string;
   credentials: readonly { value: string; alias: string }[];
 }
 
@@ -128,6 +131,10 @@ async function collectJson(response: IncomingMessage): Promise<unknown> {
 
 export function createGitHubForgeAdapter(options: {
   mint(binding: { owner: string; repo: string }): Promise<string | undefined>;
+  mintDiagnostic?(
+    binding: { owner: string; repo: string },
+    permission: 'statuses' | 'administration' | 'contents',
+  ): Promise<string | undefined>;
   transport: BrokeredHttpStreamTransport;
 }): BrokeredForgeAdapter {
   return {
@@ -163,14 +170,17 @@ export function createGitHubForgeAdapter(options: {
       if (url.hostname !== request.hostname || url.hash) rejected();
       const repoPath = `${binding.owner}/${binding.repo}`.toLowerCase();
       let action: ForgeAction;
+      let anonymousGitRead = false;
       let graph:
         { query: string; variables: Record<string, unknown>; operationName?: string } | undefined;
       if (request.hostname === 'github.com') {
         const match = /^\/([^/]+)\/([^/]+)\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(
           url.pathname,
         );
-        if (!match || `${match[1]}/${match[2]!.replace(/\.git$/, '')}`.toLowerCase() !== repoPath)
+        if (!match || !/^[A-Za-z0-9_.-]+$/.test(match[1]!) || !/^[A-Za-z0-9_.-]+$/.test(match[2]!))
           rejected();
+        const boundRepository =
+          `${match[1]}/${match[2]!.replace(/\.git$/, '')}`.toLowerCase() === repoPath;
         const operation = match[3] === 'info/refs' ? url.searchParams.get('service') : match[3];
         if (
           (match[3] === 'info/refs' ? request.method !== 'GET' : request.method !== 'POST') ||
@@ -181,6 +191,10 @@ export function createGitHubForgeAdapter(options: {
           rejected();
         if (operation !== 'git-upload-pack' && operation !== 'git-receive-pack') rejected();
         action = operation === 'git-upload-pack' ? 'git-read' : 'git-write';
+        if (!boundRepository) {
+          if (action !== 'git-read') rejected();
+          anonymousGitRead = true;
+        }
       } else if (request.hostname === 'uploads.github.com') {
         const prefix = `/repos/${repoPath}/releases/`;
         if (
@@ -229,6 +243,9 @@ export function createGitHubForgeAdapter(options: {
             ['GET', 'HEAD'].includes(request.method) ? 'pulls-read' : 'pulls-write',
           );
       }
+
+      // Anonymous upstream reads cannot access private repositories or carry project credentials.
+      if (anonymousGitRead) return { action, credentials: [] };
 
       const verifyNode = async (
         id: unknown,
@@ -734,7 +751,26 @@ export function createGitHubForgeAdapter(options: {
           },
         });
       }
-      const token = await options.mint(binding);
+      // Optional diagnostic grants must never affect ordinary project-token issuance.
+      const diagnosticPermission =
+        action === 'repository-rules-read'
+          ? /^\/branches\/[^/]+\/protection(?:\/|$)/.test(
+              url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+            )
+            ? 'administration'
+            : 'contents'
+          : action === 'checks-read' &&
+              !graph &&
+              request.hostname === 'api.github.com' &&
+              /^\/commits\/[^/]+\/status(?:es)?$/.test(
+                url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+              )
+            ? 'statuses'
+            : undefined;
+      const token =
+        diagnosticPermission === undefined
+          ? await options.mint(binding)
+          : await options.mintDiagnostic?.(binding, diagnosticPermission);
       if (!token || token.length > 4096 || /[\r\n]/.test(token)) rejected();
       for (const node of pendingNodes) {
         const type = await verifyNode(node.id, node.type, token);

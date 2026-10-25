@@ -16,6 +16,8 @@
     "eas-build-post-install": "node ../../scripts/prepare-mobile-eas-build.mjs --verify"
   },
   "dependencies": {
+    "@bacons/apple-targets": "5.0.0",
+    "@expo-google-fonts/inter": "0.4.2",
     "@expo/vector-icons": "15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/flash-list": "2.0.2",
@@ -59,7 +61,7 @@
     "react-native-screens": "~4.27.0",
     "react-native-svg": "15.15.5",
     "react-native-uitextview": "2.7.1",
-    "react-native-unistyles": "3.3.0",
+    "react-native-unistyles": "3.5.1",
     "react-native-web": "0.21.3",
     "react-native-webview": "13.16.1",
     "react-native-worklets": "0.10.4"

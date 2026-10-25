@@ -80,6 +80,7 @@ const PRIMARY_FIELD: Record<string, string> = {
   // A skill/slash-command invocation — headline reads "Skill code-review".
   Skill: 'skill',
   verity_tasks: 'action',
+  verity_vulnerabilities: 'action',
   // Without this the fallback picks whichever string field comes first in the object, which
   // for a handoff could be the briefing — 80 squashed characters of a document, where the
   // title is the one field written to be read at a glance. The full briefing has its own
@@ -104,9 +105,19 @@ const PRIMARY_FIELD: Record<string, string> = {
  *
  * Deliberately a small set rather than "every mapped tool": the mapped file and search tools
  * lose nothing by falling through, and widening this would change how existing cards read
- * for reasons that have nothing to do with these two.
+ * for reasons that have nothing to do with these.
  */
-const ONLY_PRIMARY_FIELD = new Set(['verity_session_handoff', 'verity_list_sessions']);
+const ONLY_PRIMARY_FIELD = new Set([
+  'verity_vulnerabilities',
+  'verity_session_handoff',
+  'verity_list_sessions',
+  // Codex reports an MCP call's input as `{ server, tool, arguments }`, so the first string
+  // is the raw tool name and "Verity Implement Plan verity_end_planning" read as noise.
+  // The planning tools take no argument worth a headline; a presented plan has its own card.
+  'verity_start_planning',
+  'verity_present_plan',
+  'verity_end_planning',
+]);
 
 /**
  * Display labels for Verity's gateway tools. Verity's own features keep the product name
@@ -116,6 +127,7 @@ const ONLY_PRIMARY_FIELD = new Set(['verity_session_handoff', 'verity_list_sessi
  */
 const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_gmail: 'Gmail',
+  verity_matrix: 'Matrix',
   verity_google_calendar: 'Google Calendar',
   verity_google_contacts: 'Google Contacts',
   verity_google_docs: 'Google Docs',
@@ -138,6 +150,8 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_present_plan: 'Verity Plan',
   verity_end_planning: 'Verity Implement Plan',
   verity_tasks: 'Verity Tasks',
+  verity_app_help: 'Verity Help',
+  verity_vulnerabilities: 'Verity Vulnerability Scan',
 };
 
 /** Strip only Verity's own backend qualification, including tools added by the platform. */

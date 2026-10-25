@@ -106,6 +106,7 @@ function runAgentSpawnBroker(options: Parameters<typeof runAgentSpawnBrokerRunti
   return runAgentSpawnBrokerRuntime({
     // The helper is not installed on a test host; script-isolation.test.ts owns the probe.
     scriptIsolation: { available: true },
+    worktreeRoot: options.runtimeDir ?? tmpdir(),
     ...options,
     ...testIdentity,
     env: { ...options.env, PATH: options.env?.PATH ?? IMMUTABLE_EXECUTABLE_PATH },
@@ -361,6 +362,16 @@ describe('verity-runner supervisor runtime', () => {
     }
   });
 
+  it('forwards Control memory configuration without leaking a turn bearer from the container', () => {
+    expect(
+      supervisorWorkerEnv({
+        VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory',
+        VERITY_CONTROL_MEMORY_TOKEN: 'stale-container-token',
+      }),
+    ).toEqual({ VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory' });
+    expect(supervisorWorkerEnv({ VERITY_CONTROL_MEMORY_URL: '' })).toEqual({});
+  });
+
   it('supplies every env var the worker bundle reads from its own process env', async () => {
     // The supervisor spawns the worker with an EXPLICIT env — process.env is deliberately
     // not spread across that boundary — so a variable the worker reads and the supervisor
@@ -386,6 +397,7 @@ describe('verity-runner supervisor runtime', () => {
         supervisorWorkerEnv({
           VERITY_AGENT_SPAWN_BROKER_SOCKET: '/run/broker.sock',
           VERITY_MCP_GATEWAY_URL: 'http://relay.internal/internal/mcp',
+          VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory',
         }),
       ),
       // Per-turn coordinates the supervisor computes itself for each spawn.
@@ -584,6 +596,8 @@ describe('verity-runner supervisor runtime', () => {
     (command) => {
       const forge = {
         VERITY_FORGE_MODE: 'proxy-test',
+        VERITY_FORGE_AUTHORITY: 'forge.example:3000',
+        VERITY_PROJECT_REPO_URL: 'http://verity-project-relay:8080/internal/project/repo',
         VERITY_FORGE_PROXY_URL: 'http://verity-project-relay:8080',
         VERITY_FORGE_PROXY_CA_FILE: '/run/verity/forge-proxy/ca.crt',
         GIT_TERMINAL_PROMPT: '0',
@@ -726,6 +740,32 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS');
   });
 
+  it.each([{ planning: true }, { knowledgeIsolation: true }])(
+    'requires private process metadata for confined OpenCode: %j',
+    (isolation) => {
+      const spec = agentLaunchSpec(
+        {
+          command: 'opencode-acp',
+          args: [],
+          cwd: '/work/project',
+          knowledgeHome: '/tmp/home',
+          ...isolation,
+        },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '0' },
+        },
+      );
+      expect(spec.args).toContain('--self-proc-maps');
+      expect(spec.spawnOptions.env).not.toHaveProperty(
+        'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE',
+      );
+      expect(spec.args).toContain(isolation.planning ? '--read-only-root' : '--write-isolated');
+    },
+  );
+
   it('launches OpenCode ACP through the fixed wrapper, with XDG_CONFIG_HOME and no secrets', () => {
     const spec = agentLaunchSpec(
       { command: 'opencode-acp', args: [], cwd: '/work/project' },
@@ -736,6 +776,13 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           XDG_CONFIG_HOME: '/run/verity/xdg',
           OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+          OPENCODE_DISABLE_PROJECT_CONFIG: '0',
+          OPENCODE_PURE: '0',
+          OPENCODE_CONFIG_CONTENT: '{"agent":{"plan":{"permission":{"edit":"allow"}}}}',
+          OPENCODE_CONFIG_DIR: '/work/project/.opencode',
+          OPENCODE_ENABLE_EXA: '0',
+          OPENCODE_WEBSEARCH_PROVIDER: 'parallel',
+          EXA_API_KEY: 'must-not-cross',
           OPENAI_API_KEY: 'must-not-cross',
           DOPPLER_TOKEN: 'must-not-cross',
           GITHUB_TOKEN: 'must-not-cross',
@@ -753,6 +800,27 @@ describe('verity-runner supervisor runtime', () => {
       XDG_CONFIG_HOME: '/run/verity/xdg',
       OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
     });
+    // A custom model provider otherwise hides websearch even when inference succeeds.
+    expect(spec.spawnOptions.env).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
+    });
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: ['/work/project/AGENTS.md'],
+      websearch: { provider: 'exa' },
+      permissions: [
+        { action: 'external_directory', resource: '*', effect: 'ask' },
+        { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+      ],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
+    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_DIR');
+    expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('DOPPLER_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('GITHUB_TOKEN');
@@ -761,6 +829,37 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('CODEX_PATH');
     expect(spec.spawnOptions.env).not.toHaveProperty('INITIAL_AGENT_MODE');
+  });
+
+  it('keeps project instructions out of isolated OpenCode knowledge turns', () => {
+    const spec = agentLaunchSpec(
+      {
+        command: 'opencode-acp',
+        args: [],
+        cwd: '/work/project',
+        knowledgeIsolation: true,
+        knowledgeHome: '/run/verity/isolated-home',
+      },
+      {
+        agentUid: 1000,
+        agentGid: 1000,
+        env: { OPENCODE_CONFIG_CONTENT: '{"instructions":["/work/project/AGENTS.md"]}' },
+      },
+    );
+    // A Wiki turn must not import instructions from the project it cannot access.
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: [],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
+    expect(spec.spawnOptions.env).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
+    });
   });
 
   it('leaves the home-mode image on the HOME fallback OpenCode resolves itself', () => {
@@ -1056,7 +1155,12 @@ describe('verity-runner supervisor runtime', () => {
           worktreeRoot: root,
         },
       },
-      { trustedCliEntryScriptDir: join(root, 'snapshots') },
+      {
+        trustedCliEntryScriptDir: join(root, 'snapshots'),
+        enforceRoot: false,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
+      },
     );
     await writeFile(script, 'echo attacker replacement\n', { mode: 0o644 });
     expect(materialized.args[0]).not.toBe(script);
@@ -1087,7 +1191,12 @@ describe('verity-runner supervisor runtime', () => {
           worktreeRoot: root,
         },
       },
-      { trustedCliEntryScriptDir: join(root, 'snapshots') },
+      {
+        trustedCliEntryScriptDir: join(root, 'snapshots'),
+        enforceRoot: false,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
+      },
     );
     expect(materialized.entrySandbox).toMatchObject({
       loading: 'dynamic',
@@ -2647,6 +2756,22 @@ describe('verity-runner supervisor runtime', () => {
     await expect(probeAgentSpawnBroker(runtimeDir, 50)).resolves.toBe(false);
   });
 
+  it('rejects a missing worktree root before acquiring the broker lock', async () => {
+    await expect(
+      runAgentSpawnBroker({
+        runtimeDir,
+        enforceRoot: false,
+        worktreeRoot: join(runtimeDir, 'missing-worktree'),
+        agentUid: 1000,
+        agentGid: 1000,
+      }),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    // A failed preflight must not strand a FileHandle for garbage collection.
+    await expect(readFile(join(runtimeDir, 'agent-spawn-broker.lock'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('executes trusted CLI requests through the agent broker and returns only redacted output', async () => {
     const turnId = 'trusted-cli-turn';
     const secretDir = join(runtimeDir, 'trusted-cli-secrets');
@@ -3031,6 +3156,89 @@ describe('verity-runner supervisor runtime', () => {
         truncated: true,
       });
       expect(JSON.stringify(truncated)).not.toContain('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+      // A large successful command must reach its exit without the old inline cap killing it.
+      const streamed: Buffer[] = [];
+      const large = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'head -c 100000 /dev/zero'],
+        },
+        {
+          runtimeDir,
+          onOutput: async (_stream: string, bytes: Buffer) => {
+            streamed.push(Buffer.from(bytes));
+          },
+        },
+      );
+      expect(large).toMatchObject({
+        outputMode: 'stream-v1',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        terminationReason: 'process_exit',
+        stdoutBytes: 100000,
+        stderrBytes: 0,
+      });
+      expect(Buffer.concat(streamed)).toHaveLength(100000);
+      const failedSink = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          runtimeDir,
+          onOutput: async () => {
+            throw Object.assign(new Error('private error'), { outputFailure: 'storage_failure' });
+          },
+        },
+      );
+      expect(failedSink).toMatchObject({
+        outputMode: 'stream-v1',
+        terminationReason: 'storage_failure',
+        terminationRequested: true,
+      });
+      expect(JSON.stringify(failedSink)).not.toContain('private error');
+      let acceptedBytes = 0;
+      const limited = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          runtimeDir,
+          onOutput: async (_stream: string, bytes: Buffer) => {
+            acceptedBytes += bytes.length;
+          },
+        },
+      );
+      expect(limited).toMatchObject({
+        terminationReason: 'output_limit',
+        terminationRequested: true,
+        truncated: true,
+      });
+      expect(acceptedBytes).toBeGreaterThan(24 * 1024);
+      expect(acceptedBytes).toBeLessThanOrEqual(10 * 1024 * 1024);
+      const deadline = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'sleep 5'],
+        },
+        { runtimeDir, timeoutMs: 100, onOutput: async () => {} },
+      );
+      expect(deadline).toMatchObject({
+        terminationReason: 'timeout',
+        timedOut: true,
+        terminationRequested: true,
+      });
+
       const directoryRefusal = await run({
         protocolVersion: 1,
         kind: 'run-trusted-cli',
@@ -3188,6 +3396,45 @@ describe('verity-runner supervisor runtime', () => {
         exitCode: 0,
         stdout: '[REDACTED]',
         stderr: '[REDACTED]',
+      });
+      const output: Buffer[] = [];
+      const streamed = await runSupervisorTrustedCli(
+        runtimeDir,
+        {
+          turnId,
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'head -c 100000 /dev/zero'],
+        },
+        {
+          onOutput: async (_stream, bytes) => {
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            output.push(Buffer.from(bytes));
+          },
+        },
+      );
+      expect(streamed).toMatchObject({
+        outputMode: 'stream-v1',
+        terminationReason: 'process_exit',
+        exitCode: 0,
+        stdoutBytes: 100000,
+      });
+      expect(Buffer.concat(output)).toHaveLength(100000);
+      const rejected = await runSupervisorTrustedCli(
+        runtimeDir,
+        {
+          turnId,
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          onOutput: async () => {
+            throw Object.assign(new Error('private'), { outputFailure: 'redaction_failure' });
+          },
+        },
+      );
+      expect(rejected).toMatchObject({
+        terminationReason: 'redaction_failure',
+        terminationRequested: true,
       });
       await expect(readFile(join(secretDir, 'KUBECONFIG'))).rejects.toThrow(/ENOENT/u);
       const cancellation = supervisorRequest(supervisor.socketPath, {
@@ -3593,7 +3840,7 @@ describe('verity-runner supervisor runtime', () => {
     expect((await readTurnState(runtimeDir, 'turn-1'))?.startCommandId).toBe('start-1');
   });
 
-  it('normalizes and bounds inline image attachments on the start request', () => {
+  it('validates turn-owned image references and rejects tampering', async () => {
     const base = {
       protocolVersion: 1,
       kind: 'start-turn',
@@ -3605,47 +3852,55 @@ describe('verity-runner supervisor runtime', () => {
       cwd: runtimeDir,
       prompt: 'look',
     };
-    // A valid image is carried through, reduced to exactly the fields the worker
-    // hands its backend (kind/mediaType/data), dropping anything extra.
+    const dir = join(runtimeDir, '.verity-sessions/attachments/turn-turn-1');
+    await mkdir(dir, { recursive: true });
+    const bytes = Buffer.from('original image bytes');
+    const filePath = join(dir, 'image.png');
+    await writeFile(filePath, bytes);
+    const image = {
+      kind: 'image',
+      mediaType: 'image/png',
+      filePath,
+      byteSize: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
     expect(
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=', extra: 'x' }],
-      }).attachments,
-    ).toEqual([{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }]);
-    // A turn without attachments never gains the field (byte-identical to today).
+      validateStartTurnRequest({ ...base, attachments: [{ ...image, extra: 'x' }] }).attachments,
+    ).toEqual([image]);
     expect(validateStartTurnRequest(base)).not.toHaveProperty('attachments');
-    // File-kind uploads never reach here (materialized server-side); reject them.
+    for (const override of [
+      { kind: 'file' },
+      { mediaType: 'image/tiff' },
+      { byteSize: 0 },
+      { byteSize: bytes.length + 1 },
+      { sha256: '0'.repeat(64) },
+      { filePath: join(dir, '../image.png') },
+      { filePath: join(runtimeDir, '.verity-sessions/attachments/turn-other/image.png') },
+      { filePath: join(dir, 'missing.png') },
+    ]) {
+      expect(() =>
+        validateStartTurnRequest({ ...base, attachments: [{ ...image, ...override }] }),
+      ).toThrow(/invalid attachment/u);
+    }
     expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'file', mediaType: 'application/pdf', fileName: 'a.pdf', data: 'x' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    // An unknown image media type and an empty data string are both rejected.
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/tiff', data: 'x' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: '' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    // More than the per-turn cap is rejected as a batch.
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: Array.from({ length: 9 }, () => ({
-          kind: 'image',
-          mediaType: 'image/png',
-          data: 'aGk=',
-        })),
-      }),
+      validateStartTurnRequest({ ...base, attachments: Array.from({ length: 9 }, () => image) }),
     ).toThrow(/invalid attachments/u);
+    await symlink(filePath, join(dir, 'symlink.png'));
+    expect(() =>
+      validateStartTurnRequest({
+        ...base,
+        attachments: [{ ...image, filePath: join(dir, 'symlink.png') }],
+      }),
+    ).toThrow(/invalid attachment/u);
+    await writeFile(filePath, Buffer.alloc(bytes.length, 42));
+    expect(() => validateStartTurnRequest({ ...base, attachments: [image] })).toThrow(
+      /invalid attachment/u,
+    );
+    await rename(dir, `${dir}-original`);
+    await symlink(`${dir}-original`, dir);
+    expect(() => validateStartTurnRequest({ ...base, attachments: [image] })).toThrow(
+      /invalid attachment/u,
+    );
   });
 
   it('ignores request fields it does not know', () => {
@@ -4978,7 +5233,28 @@ describe('verity-runner supervisor runtime', () => {
     }
   });
 
-  it('delivers inline image attachments to the worker over start-turn', async () => {
+  it('delivers large image references to the worker over start-turn', async () => {
+    const dir = join(runtimeDir, '.verity-sessions/attachments/turn-turn-image');
+    await mkdir(dir, { recursive: true });
+    const bytes = Buffer.alloc(3 * 1024 * 1024, 42);
+    const images: {
+      kind: 'image';
+      mediaType: 'image/png';
+      filePath: string;
+      byteSize: number;
+      sha256: string;
+    }[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const filePath = join(dir, `image-${String(index)}.png`);
+      await writeFile(filePath, bytes);
+      images.push({
+        kind: 'image',
+        mediaType: 'image/png',
+        filePath,
+        byteSize: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      });
+    }
     const supervisor = await runSupervisor({
       runtimeDir,
       // Pin runtime ownership to this process (self-owned mkdtemp) so the check passes
@@ -5003,11 +5279,10 @@ describe('verity-runner supervisor runtime', () => {
         worktree: runtimeDir,
         cwd: runtimeDir,
         prompt: 'describe this',
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+        attachments: images,
       });
       expect(imageResponse).toMatchObject({ ok: true, outcome: 'created' });
-      // The worker receives the SAME normalized image block the in-process runner
-      // hands its backend, persisted verbatim in request.json.
+      // Large image bytes must never inflate the persisted worker request.
       await vi.waitFor(async () => {
         expect(
           JSON.parse(
@@ -5016,7 +5291,7 @@ describe('verity-runner supervisor runtime', () => {
         ).toMatchObject({
           turnId: 'turn-image',
           prompt: 'describe this',
-          attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+          attachments: images,
         });
       });
     } finally {
@@ -6356,7 +6631,9 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       unresolvedRetryMs: 10,
     });
     try {
-      await rm(join(runtimeDir, 'turns/turn-gone'), { recursive: true });
+      // Recursive deletion races with recovery writes and can fail with ENOTEMPTY.
+      // Rename atomically so retries observe the missing turn directory.
+      await rename(join(runtimeDir, 'turns/turn-gone'), join(runtimeDir, 'removed-turn-gone'));
       await new Promise((resolveWait) => setTimeout(resolveWait, 200));
       await claimTurn(
         runtimeDir,
@@ -6543,3 +6820,74 @@ describe('supervisor protocol range (ADR 0006 D9)', () => {
     await expect(status(version)).rejects.toThrow(/unsupported supervisor protocol/u);
   });
 });
+
+it.each(['exit', 'interrupt'] as const)(
+  'releases an agent home after %s with inherited pipes open',
+  async (ending) => {
+    await writeFile(join(runtimeDir, 'egress-connector.url'), 'http://127.0.0.1:1', {
+      mode: 0o600,
+    });
+    const agents: ReturnType<typeof spawn>[] = [];
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      spawnChild: (_command, _args, options) => {
+        // The descendant keeps stdout and the home lock fd alive after its parent
+        // exits. A finite lifetime also bounds cleanup if the exit reaper regresses.
+        const child = spawn(
+          process.execPath,
+          [
+            '-e',
+            `
+        const {spawn} = require('node:child_process');
+        const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 8000)'],
+          {stdio: ['ignore', 1, 2, 3]});
+        descendant.once('spawn', () => ${ending === 'interrupt' ? "process.kill(process.pid, 'SIGTERM')" : 'process.exit(0)'});
+      `,
+          ],
+          options,
+        );
+        agents.push(child);
+        return child;
+      },
+    });
+    const request = {
+      protocolVersion: 1,
+      kind: 'spawn-agent',
+      command: 'codex-acp',
+      args: [],
+      cwd: runtimeDir,
+      sessionEnv: { VERITY_SESSION_ID: 'exit-home' },
+    };
+    try {
+      const started = Date.now();
+      const first = await supervisorRequestFrames(broker.socketPath, request);
+      expect(first.at(-1)).toMatchObject({
+        ok: true,
+        kind: 'exit',
+        ...(ending === 'interrupt' ? { signal: 'SIGTERM' } : { code: 0 }),
+      });
+      expect(Date.now() - started).toBeLessThan(6000);
+      const second = await supervisorRequestFrames(broker.socketPath, {
+        ...request,
+        command: 'claude-agent-acp',
+      });
+      expect(second.at(-1)).toMatchObject({
+        ok: true,
+        kind: 'exit',
+        ...(ending === 'interrupt' ? { signal: 'SIGTERM' } : { code: 0 }),
+      });
+    } finally {
+      for (const child of agents) {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          /* Already reaped. */
+        }
+      }
+      await broker.close();
+    }
+  },
+);

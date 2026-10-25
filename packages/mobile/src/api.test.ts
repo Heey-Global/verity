@@ -1,3 +1,4 @@
+import { beginSessionSwitch, exportSessionSwitchTimings } from './sessionSwitchTiming.js';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -5,6 +6,7 @@ import {
   VerityClient,
   projectRecordSchema,
   sessionSummarySchema,
+  branchListSchema,
   sessionDetailSchema,
   type TurnRequest,
 } from './api.js';
@@ -16,6 +18,51 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+// An absent codeHost means GitHub, so an unknown one must not keep owner/repo:
+// the chips would otherwise open an unrelated github.com repository.
+it('drops the repository identity for a code host this client does not know', () => {
+  const parsed = branchListSchema.parse({
+    current: 'feat/1-x',
+    switchable: [],
+    owner: 'team',
+    repo: 'site',
+    codeHost: { provider: 'gitlab', baseUrl: 'https://gitlab.example' },
+  });
+  expect(parsed).toEqual({ current: 'feat/1-x', switchable: [] });
+  expect(
+    branchListSchema.parse({
+      current: 'feat/1-x',
+      switchable: [],
+      owner: 'team',
+      repo: 'site',
+      codeHost: { provider: 'forgejo', baseUrl: 'https://git.example.org' },
+    }),
+  ).toMatchObject({ owner: 'team', codeHost: { provider: 'forgejo' } });
+});
+
+it('retains the same full PR snapshot in overview and branch responses', () => {
+  const pullRequest = {
+    number: 42,
+    title: 'Known PR',
+    url: 'https://github.com/example/repo/pull/42',
+    phase: 'open',
+    pipeline: 'running',
+    mergeable: null,
+    checks: { completed: 1, total: 2, successful: 1, failed: 0, pending: 1 },
+  };
+  const summary = sessionSummarySchema.parse({
+    sessionId: 's',
+    worktree: '/wt/s',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    pullRequest,
+  });
+  const branches = branchListSchema.parse({ current: 'fix/status', switchable: [], pullRequest });
+  expect(summary.pullRequest).toEqual(branches.pullRequest);
+});
 
 it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
   const wire = {
@@ -387,7 +434,7 @@ describe('VerityClient Google Drive browser', () => {
 });
 
 describe('VerityClient Gmail session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -396,7 +443,6 @@ describe('VerityClient Gmail session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -406,27 +452,20 @@ describe('VerityClient Gmail session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectGmail({ code: 'code', codeVerifier: 'verifier', redirectUri: 'verity:/' });
     await expect(client.enableSessionGmail('session/1')).resolves.toEqual(connection);
     await client.disableSessionGmail('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/gmail',
-      'http://host/gmail/connect',
       'http://host/sessions/session%2F1/gmail',
       'http://host/sessions/session%2F1/gmail',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
 describe('VerityClient Calendar session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -435,7 +474,6 @@ describe('VerityClient Calendar session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -445,31 +483,20 @@ describe('VerityClient Calendar session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectCalendar({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
     await expect(client.enableSessionCalendar('session/1')).resolves.toEqual(connection);
     await client.disableSessionCalendar('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/calendar',
-      'http://host/calendar/connect',
       'http://host/sessions/session%2F1/calendar',
       'http://host/sessions/session%2F1/calendar',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
 describe('VerityClient Contacts session access', () => {
-  it('connects the account and toggles access for one encoded session', async () => {
+  it('toggles access for one encoded session', async () => {
     const connection = {
       enabled: true,
       accountEmail: 'person@example.com',
@@ -478,7 +505,6 @@ describe('VerityClient Contacts session access', () => {
     };
     const { fetch, calls } = fakeFetchSequence(
       json({ ...connection, enabled: false, connected: false }),
-      json({ connected: true, accountEmail: 'person@example.com' }),
       json(connection),
       json({}),
     );
@@ -488,26 +514,15 @@ describe('VerityClient Contacts session access', () => {
       enabled: false,
       connected: false,
     });
-    await client.connectContacts({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
     await expect(client.enableSessionContacts('session/1')).resolves.toEqual(connection);
     await client.disableSessionContacts('session/1');
 
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/session%2F1/contacts',
-      'http://host/contacts/connect',
       'http://host/sessions/session%2F1/contacts',
       'http://host/sessions/session%2F1/contacts',
     ]);
-    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
-    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
-      code: 'code',
-      codeVerifier: 'verifier',
-      redirectUri: 'verity:/',
-    });
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'PUT', 'DELETE']);
   });
 });
 
@@ -1144,6 +1159,26 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(await client.listProjects()).toEqual([]);
   });
 
+  it('fetches repository issues with validated connection metadata', async () => {
+    const result = {
+      connected: true,
+      viewerLogin: null,
+      issues: [
+        {
+          number: 42,
+          title: 'Fix layout',
+          url: 'https://github.com/acme/app/issues/42',
+          labels: ['bug'],
+          assignees: ['alice'],
+        },
+      ],
+    };
+    const { fetch, calls } = fakeFetch(json(result));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectGitHubIssues('p/1')).toEqual(result);
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/github/issues');
+  });
+
   it('fetches available GitHub repositories separately from created projects', async () => {
     const { fetch, calls } = fakeFetch(json([project]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -1362,6 +1397,19 @@ describe('VerityClient.settings', () => {
     expect(await client.getVeritySettings()).toEqual(settings);
     expect(calls[0]?.url).toBe('http://host/settings');
     expect(calls[0]?.init?.method).toBe('GET');
+  });
+
+  it('parses safe Claude resolution status while accepting servers without it', async () => {
+    const claudeCredentialStatus = { state: 'relogin_required', code: 'refresh_rejected' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, claudeCredentialStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toEqual(
+      claudeCredentialStatus,
+    );
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toBeUndefined();
   });
 
   it('treats a server that predates the external-configured flag as not configured', async () => {
@@ -1631,6 +1679,39 @@ describe('VerityClient.getActivity', () => {
 });
 
 describe('VerityClient.getHistory', () => {
+  it('attributes history response phases to the request gesture, never a later return', async () => {
+    const first = beginSessionSwitch('timed-session');
+    let resolve!: (response: Response) => void;
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const request = client.getHistory('timed-session');
+    beginSessionSwitch('other');
+    const returned = beginSessionSwitch('timed-session');
+    resolve(new Response(JSON.stringify({ events: [], hasMore: false })));
+    await request;
+    expect(first.phases.map((p) => p.phase)).toEqual(['events-request-start']);
+    expect(returned.phases).toEqual([]);
+  });
+  it('separates fetch, body read, JSON parse and schema processing', async () => {
+    const timing = beginSessionSwitch('phase-session');
+    const { fetch } = fakeFetch(json({ events: [], hasMore: false }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.getHistory('phase-session');
+    expect(timing.phases.map((p) => p.phase)).toEqual([
+      'events-request-start',
+      'events-fetch-return',
+      'events-body-read-start',
+      'events-body-read-end',
+      'events-json-parse-end',
+      'events-schema-end',
+    ]);
+  });
+
   it('assembles the query string and parses the page', async () => {
     const page = {
       events: [{ seq: 7, event: { t: 'text', delta: 'hi' } }],
@@ -2255,6 +2336,7 @@ describe('VerityClient.getBranches', () => {
       pipeline: 'running',
       checks: { completed: 2, total: 3, successful: 2, failed: 0, pending: 1 },
       mergeable: false,
+      viewerCanMerge: false,
     };
     const { fetch } = fakeFetch(json({ current: 'feat/119-x', switchable: [], pullRequest }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -2835,6 +2917,16 @@ describe('VerityClient.secret store', () => {
 });
 
 describe('VerityClient.validateGithubApp (#320)', () => {
+  it('preserves the permission diagnosis and GitHub action URL', async () => {
+    const commitStatusPermission = {
+      state: 'approval_required',
+      url: 'https://github.com/settings/installations/123',
+    };
+    const { fetch } = fakeFetch(json({ ok: true, commitStatusPermission }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.validateGithubApp()).toEqual({ ok: true, commitStatusPermission });
+  });
+
   it('POSTs to /github/app/validate and parses a success result', async () => {
     const { fetch, calls } = fakeFetch(json({ ok: true, accountLogin: 'acme-org' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -3497,6 +3589,30 @@ it('labels Attendee JSON writes so the server parses configuration and meeting c
 });
 
 describe('Uplink diagnostics schema', () => {
+  it('requests an explicit bounded rights check through POST', async () => {
+    const status = {
+      control: 'idle',
+      sharing: 'unavailable',
+      remoteControl: 'unavailable',
+      entitlement: 'checked',
+    };
+    const { fetch, calls } = fakeFetchSequence(json(status));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.checkUplinkEntitlements()).toEqual(status);
+    expect(calls[0]?.url).toBe('http://host/api/uplink/check');
+    expect(calls[0]?.init?.method).toBe('POST');
+  });
+  it('preserves deliberate idle and unchecked entitlement states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const idle = {
+      control: 'idle',
+      sharing: 'unavailable',
+      remoteControl: 'unavailable',
+      entitlement: 'unchecked',
+      idleReason: 'no-demand',
+    };
+    expect(uplinkDiagnosticsSchema.parse(idle)).toEqual(idle);
+  });
   it('keeps the status fields when a Core stream record is out of shape', async () => {
     const { uplinkDiagnosticsSchema } = await import('./api.js');
     // Core's stream records evolve separately; a drifted one must not take the
@@ -3532,7 +3648,8 @@ describe('connection catalog and project Google access contracts', () => {
     const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getGoogleConnection()).toEqual(account);
-    expect(await client.getConnectionUsage()).toEqual(usage);
+    // A server predating Forgejo omits per-connection counts; the client defaults them.
+    expect(await client.getConnectionUsage()).toEqual({ ...usage, forgejo: {} });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/google/connection',
       '/connections/usage',
@@ -3764,7 +3881,10 @@ describe('managed dev server actions', () => {
       };
       const { fetch, calls } = fakeFetch(json({ server }));
       const client = new VerityClient({ baseUrl: 'http://host', fetch });
-      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual(server);
+      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual({
+        ...server,
+        secretBindings: [],
+      });
       expect(calls[0]?.url).toBe(
         `http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/${action}`,
       );
@@ -3800,7 +3920,11 @@ describe('managed dev server actions', () => {
       new Response(null, { status: 204 }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    const seen = { command: 'npm run dev', workdir: 'web' };
+    const seen = {
+      command: 'npm run dev',
+      workdir: 'web',
+      secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    };
     expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
     expect(jsonBody(calls[0])).toEqual(seen);
     expect(await client.managedDevServerLogs('s/1', 'entry/1')).toBe('ready\n');
@@ -3897,5 +4021,184 @@ describe('session reorder API', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/order');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ projectId: 'p', ids: ['b', 'a'] }));
+  });
+});
+
+it.each([true, false])(
+  'measures Allow request with explicit context=%s without payload content',
+  async (explicit) => {
+    const trace = beginSessionSwitch('secret-session', 'permission');
+    const { fetch } = fakeFetch(
+      json({ sessionId: 'secret-session', toolUseId: 'private-tool-use', decided: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.decidePermission(
+      'secret-session',
+      'private-tool-use',
+      { behavior: 'allow' },
+      ...(explicit ? ([{ trace }] as const) : []),
+    );
+    expect(trace.phases.map((p) => p.phase)).toEqual([
+      'allow-request-start',
+      'allow-fetch-return',
+      'allow-response-processed',
+    ]);
+    expect(JSON.stringify(trace.phases)).not.toContain('private-tool-use');
+  },
+);
+
+it('does not attach continued old-model pagination to a returning gesture', async () => {
+  const original = beginSessionSwitch('paginate');
+  beginSessionSwitch('other-page');
+  const returned = beginSessionSwitch('paginate');
+  const fetch = vi.fn(async () => json({ events: [], hasMore: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('paginate', { beforeSeq: 10, timing: original });
+  await client.getHistory('paginate', { beforeSeq: 5, timing: undefined });
+  expect(returned.phases).toEqual([]);
+  expect(original.phases).toEqual([]);
+});
+
+it.each([undefined, 'question-price'])(
+  'preserves optional spoken-question identity while accepting older servers: %s',
+  async (questionId) => {
+    const request = {
+      kind: 'research',
+      request: 'research its monthly price',
+      ...(questionId ? { questionId, questionTitle: 'What does the plan cost?' } : {}),
+    };
+    const { fetch } = fakeFetch(json({ requests: [request] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.checkSpokenMeetingRequest('session', 'meeting', {
+        utterance: 'Verity, research its monthly price',
+        context: '',
+      }),
+    ).toEqual([request]);
+  },
+);
+
+it('sends correlation headers only for an explicit timed session request', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ events: [], hasMore: false }),
+    json({ events: [], hasMore: false }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('untimed');
+  expect(
+    (calls[0]?.init?.headers as Record<string, string> | undefined)?.['x-verity-switch-request'],
+  ).toBeUndefined();
+  const trace = beginSessionSwitch('private-correlated-target');
+  await client.getHistory('private-correlated-target');
+  const headers = calls[1]?.init?.headers as Record<string, string>;
+  expect(headers['x-verity-switch-request']).toBe(`${trace.id}-r1`);
+  expect(headers['x-verity-switch-kind']).toBe('events');
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)
+      ?.transportRequests[0]?.phases.map((p) => p.phase),
+  ).toEqual(['fetch-dispatch', 'fetch-return']);
+  expect(headers['x-verity-switch-request']).not.toContain('private');
+});
+
+it('sends a selected title when starting an online meeting', async () => {
+  const { fetch, calls } = fakeFetch(json({ meetingId: 'meeting-1' }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.startOnlineMeeting(
+    'session-1',
+    'https://meet.google.com/abc-defg-hij',
+    true,
+    'Pricing sync',
+  );
+  expect(JSON.parse(calls[0]!.init!.body as string)).toMatchObject({
+    title: 'Pricing sync',
+    listenForVerity: true,
+  });
+});
+
+describe('premium feature contracts', () => {
+  it('retains separate entitlement, preference and effective states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const features = {
+      sharing: { granted: true, enabled: false, effective: false },
+      remoteAccess: { granted: false, enabled: true, effective: false },
+    };
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'unavailable',
+        remoteControl: 'unavailable',
+        features,
+      }).features,
+    ).toEqual(features);
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'unavailable',
+      }).features,
+    ).toBeUndefined();
+  });
+  it('accepts a locally disabled sharing capability', async () => {
+    const { fetch } = fakeFetchSequence(json({ publicSharing: 'disabled' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
+  });
+});
+
+it('sends explicit replay and retry options to the welcome endpoint', async () => {
+  const { fetch, calls } = fakeFetch(
+    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
+    state: 'preparing',
+    sessionId: null,
+    projectId: 'starter',
+  });
+  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
+});
+
+it('keeps account selection and session exceptions in account-aware requests', async () => {
+  const status = {
+    connected: true,
+    enabled: true,
+    clientId: 'client',
+    accountId: 'work',
+    accountEmail: 'work@example.test',
+    accountName: null,
+    source: 'session',
+    mode: 'account',
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(status),
+    json({ ...status, enabled: false, mode: 'disabled' }),
+    json({ ...status, mode: 'inherit', source: 'project' }),
+    json({ connected: true, accountEmail: 'work@example.test', accountId: 'work', scopes: [] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'account', accountId: 'work' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'disabled' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'inherit' });
+  expect(
+    await client.connectGoogleAccount({
+      accountId: 'work',
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'app:/oauth',
+    }),
+  ).toMatchObject({ accountId: 'work' });
+  expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/google/gmail');
+  expect(jsonBody(calls[0])).toEqual({ mode: 'account', accountId: 'work' });
+  expect(jsonBody(calls[1])).toEqual({ mode: 'disabled' });
+  expect(jsonBody(calls[2])).toEqual({ mode: 'inherit' });
+  expect(calls[3]?.url).toBe('http://host/google/connect');
+  expect(jsonBody(calls[3])).toEqual({
+    accountId: 'work',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'app:/oauth',
   });
 });

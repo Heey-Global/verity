@@ -46,6 +46,9 @@ const uploadQuery = z.object({
 });
 
 interface ProjectGoogleDriveFolder {
+  revision?: string;
+  linkId?: string;
+  accountId?: string;
   projectId: string;
   folderId: string;
   name: string;
@@ -57,8 +60,8 @@ export interface ProjectGoogleDriveRouteDeps {
     projectId: string,
     folderId: string,
   ): Promise<ProjectGoogleDriveFolder | undefined>;
-  googleAccessToken(): Promise<string | undefined>;
-  googleAccountIdentity?(): Promise<string | undefined>;
+  googleAccessToken(accountId?: string): Promise<string | undefined>;
+  googleAccountIdentity?(accountId?: string): Promise<string | undefined>;
   dataRoot?: string;
 }
 
@@ -129,17 +132,26 @@ export function registerProjectGoogleDriveRoutes(
   });
 
   const context = async (projectId: string, folderId: string) => {
-    const account = await deps.googleAccountIdentity?.();
-    const [folder, accessToken] = await Promise.all([
-      deps.getLinkedFolder(projectId, folderId),
-      deps.googleAccessToken(),
-    ]);
-    return folder && accessToken ? { folder, accessToken, account } : undefined;
+    const folder = await deps.getLinkedFolder(projectId, folderId);
+    if (!folder) return undefined;
+    const account = await deps.googleAccountIdentity?.(folder.accountId);
+    const accessToken = await deps.googleAccessToken(folder.accountId);
+    return accessToken ? { folder, accessToken, account } : undefined;
   };
 
   const recheckWrite = async (value: NonNullable<Awaited<ReturnType<typeof context>>>) => {
-    const current = await context(value.folder.projectId, value.folder.folderId);
-    if (!current || current.folder.accessMode === 'read-only' || current.account !== value.account)
+    const current = await context(
+      value.folder.projectId,
+      value.folder.linkId ?? value.folder.folderId,
+    );
+    if (
+      !current ||
+      current.folder.accessMode === 'read-only' ||
+      current.account !== value.account ||
+      current.folder.revision !== value.folder.revision ||
+      current.folder.accountId !== value.folder.accountId ||
+      current.folder.folderId !== value.folder.folderId
+    )
       throw new GoogleDriveFolderAuthorityError(
         'Google Drive access changed during this operation',
       );
@@ -150,9 +162,9 @@ export function registerProjectGoogleDriveRoutes(
     const query = listQuery.parse(request.query);
     const value = await context(id, folderId);
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
-    const parentId = query.parentId ?? folderId;
+    const parentId = query.parentId ?? value.folder.folderId;
     try {
-      await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+      await assertDriveFileInLinkedFolder(value.accessToken, value.folder.folderId, parentId);
       return listDriveFiles({
         accessToken: value.accessToken,
         parentId,
@@ -172,7 +184,7 @@ export function registerProjectGoogleDriveRoutes(
     return {
       file: await assertDriveFileInLinkedFolder(
         value.accessToken,
-        folderId,
+        value.folder.folderId,
         fileId,
         new Set(),
         getDriveFileSnapshot,
@@ -187,8 +199,8 @@ export function registerProjectGoogleDriveRoutes(
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     if (value.folder.accessMode === 'read-only')
       return reply.code(403).send({ error: 'Google Drive folder is read-only' });
-    const parentId = body.parentId ?? folderId;
-    await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+    const parentId = body.parentId ?? value.folder.folderId;
+    await assertDriveFileInLinkedFolder(value.accessToken, value.folder.folderId, parentId);
     await recheckWrite(value);
     return {
       file: await createDriveFile(value.accessToken, {
@@ -206,8 +218,8 @@ export function registerProjectGoogleDriveRoutes(
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     if (value.folder.accessMode === 'read-only')
       return reply.code(403).send({ error: 'Google Drive folder is read-only' });
-    const parentId = query.parentId ?? folderId;
-    await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+    const parentId = query.parentId ?? value.folder.folderId;
+    await assertDriveFileInLinkedFolder(value.accessToken, value.folder.folderId, parentId);
     if (query.mimeType.startsWith('application/vnd.google-apps.'))
       return reply
         .code(415)
@@ -233,13 +245,17 @@ export function registerProjectGoogleDriveRoutes(
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       if (value.folder.accessMode === 'read-only')
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
-      const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
-      if (file.id === folderId)
+      const file = await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        value.folder.folderId,
+        fileId,
+      );
+      if (file.id === value.folder.folderId)
         return reply.code(403).send({ error: 'the linked folder cannot be changed here' });
       if (body.parentId) {
         const destination = await assertDriveFileInLinkedFolder(
           value.accessToken,
-          folderId,
+          value.folder.folderId,
           body.parentId,
         );
         if (destination.mimeType !== NATIVE_MIME.folder)
@@ -289,12 +305,15 @@ export function registerProjectGoogleDriveRoutes(
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
       const file = await assertDriveFileInLinkedFolder(
         value.accessToken,
-        folderId,
+        value.folder.folderId,
         fileId,
         new Set(),
         getDriveFileSnapshot,
       );
-      if (file.id === folderId || file.mimeType.startsWith('application/vnd.google-apps.'))
+      if (
+        file.id === value.folder.folderId ||
+        file.mimeType.startsWith('application/vnd.google-apps.')
+      )
         return reply
           .code(415)
           .send({ error: 'Use Workspace tools to edit native document contents' });
@@ -326,8 +345,12 @@ export function registerProjectGoogleDriveRoutes(
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       if (value.folder.accessMode === 'read-only')
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
-      const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
-      if (file.id === folderId)
+      const file = await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        value.folder.folderId,
+        fileId,
+      );
+      if (file.id === value.folder.folderId)
         return reply.code(403).send({ error: 'the linked folder cannot be deleted here' });
       const body = z
         .object({ expectedVersion: z.string().min(1).max(1024), confirmed: z.literal(true) })
@@ -347,7 +370,11 @@ export function registerProjectGoogleDriveRoutes(
       const { id, folderId, fileId } = fileParams.parse(request.params);
       const value = await context(id, folderId);
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
-      const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
+      const file = await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        value.folder.folderId,
+        fileId,
+      );
       const plan = planDriveImport(file.mimeType, file.name);
       const bytes =
         plan.kind === 'export' && plan.exportMimeType
@@ -366,7 +393,11 @@ export function registerProjectGoogleDriveRoutes(
         return reply.code(503).send({ error: 'Knowledge storage is unavailable' });
       const value = await context(id, folderId);
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
-      const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
+      const file = await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        value.folder.folderId,
+        fileId,
+      );
       const plan = planDriveImport(file.mimeType, file.name);
       const bytes =
         plan.kind === 'export' && plan.exportMimeType

@@ -9,11 +9,19 @@ it('only changes the chosen service access for this project', async () => {
   const client = {
     getProjectGoogleConnection: jest.fn().mockResolvedValue({ connected: true, enabled: false }),
     enableProjectGoogleConnection,
+    listGoogleAccounts: jest.fn().mockResolvedValue([
+      {
+        id: 'one',
+        scopes: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].map(
+          (scope) => `https://www.googleapis.com/auth/${scope}`,
+        ),
+      },
+    ]),
   } as unknown as VerityClient;
   render(<ProjectGoogleServices client={client} projectId="project-a" />);
   fireEvent.press(await screen.findByLabelText('Gmail'));
   await waitFor(() =>
-    expect(enableProjectGoogleConnection).toHaveBeenCalledWith('project-a', 'gmail'),
+    expect(enableProjectGoogleConnection).toHaveBeenCalledWith('project-a', 'gmail', 'one'),
   );
   expect(enableProjectGoogleConnection).toHaveBeenCalledTimes(1);
 });

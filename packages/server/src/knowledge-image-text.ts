@@ -92,6 +92,8 @@ export function createImageTextExtractor(deps: ImageTextExtractorDeps): {
     const bytes = await readFile(join(job.root, job.relativePath));
     if (bytes.length > IMAGE_TEXT_MAX_BYTES || imageMediaType(bytes) !== mediaType) return;
     const model = await deps.modelFor(job.projectId);
+    // Omitting the model would let the query backend bypass the project's agent rule.
+    if (model === undefined) throw new Error('No model is available for image text extraction');
     const raw = await deps.query({
       prompt: IMAGE_TEXT_PROMPT,
       cwd: deps.cwd,

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -13,6 +14,9 @@ import {
 /** Shared broker transport: callers authorize the destination before credentials reach it. */
 export type BrokeredHttpStreamTransport = (input: {
   hostname: string;
+  port?: number;
+  ca?: string;
+  allowPrivateAddress?: boolean;
   path: string;
   method: string;
   headers: Record<string, string>;
@@ -25,8 +29,10 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
     const outgoing = httpsRequest(
       {
         hostname: input.hostname,
-        port: 443,
-        servername: input.hostname,
+        port: input.port ?? 443,
+        ca: input.ca,
+        // IP identities are verified against IP SANs without sending DNS-only SNI.
+        servername: isIP(input.hostname) === 0 ? input.hostname : '',
         method: input.method,
         path: input.path,
         headers: input.headers,
@@ -37,7 +43,8 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
             (addresses) => {
               if (
                 !addresses.length ||
-                addresses.some(({ address }) => isForbiddenAddress(address))
+                (input.allowPrivateAddress !== true &&
+                  addresses.some(({ address }) => isForbiddenAddress(address)))
               ) {
                 callback(new Error('broker destination rejected'), '', 4);
                 return;

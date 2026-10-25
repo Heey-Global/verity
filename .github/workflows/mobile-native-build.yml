@@ -24,6 +24,7 @@ jobs:
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     permissions:
       contents: write
+      id-token: write
       issues: write
       # The release PR labels below are moved through the issues endpoint, but
       # GitHub authorizes labels on a pull request against this scope; with
@@ -83,9 +84,9 @@ jobs:
 
       # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
 
       - name: Require App Store Connect credentials
         env:
@@ -250,9 +251,26 @@ jobs:
             --non-interactive \
             --output "$ipa"
 
-          info_plist="$RUNNER_TEMP/Verity-Info.plist"
-          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$info_plist"
-          next_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist")"
+          # ZIP wildcards also match nested Watch apps. Read exactly the iOS
+          # application's plist, never concatenate nested binary plists.
+          next_build="$(python3 - "$ipa" <<'PYTHON'
+          import plistlib
+          import re
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              entries = [entry for entry in archive.infolist()
+                         if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", entry.filename)]
+              if len(entries) != 1:
+                  raise SystemExit("Expected exactly one top-level iOS application plist")
+              with archive.open(entries[0]) as source:
+                  build = plistlib.load(source).get("CFBundleVersion")
+              if not isinstance(build, str) or not re.fullmatch(r"[0-9]+", build):
+                  raise SystemExit("The iOS application has an invalid CFBundleVersion")
+              print(build)
+          PYTHON
+          )"
           if [[ "$VERITY_APP_VARIANT" == staging && "$next_build" != "$VERITY_IOS_BUILD_NUMBER" ]]; then
             echo "::error::The locally built IPA has build number '$next_build', expected '$VERITY_IOS_BUILD_NUMBER'." >&2
             exit 1
@@ -337,7 +355,7 @@ jobs:
       - name: Store unuploaded production binary
         id: production-binary
         if: inputs.variant == 'production'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-production-binary-${{ env.MOBILE_TAG }}
           path: ${{ runner.temp }}/Verity.ipa
@@ -354,11 +372,35 @@ jobs:
           jq --argjson id "$ARTIFACT_ID" '.artifact.id = $id' "$RUNNER_TEMP/native-production.json" > "$RUNNER_TEMP/native-production-complete.json"
           mv "$RUNNER_TEMP/native-production-complete.json" "$RUNNER_TEMP/native-production.json"
 
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: inputs.variant == 'staging'
+        with:
+          cosign-release: v3.1.4
+      - name: Load release evidence helper from workflow revision
+        if: inputs.variant == 'staging'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .mobile-release-tools
+          sparse-checkout: scripts/lib/mobile-release-evidence.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Sign staging build evidence
+        if: inputs.variant == 'staging'
+        env:
+          SOURCE_REVISION: ${{ steps.native-source.outputs.sha }}
+        run: bash .mobile-release-tools/scripts/lib/mobile-release-evidence.sh sign "$RUNNER_TEMP"
+
       - name: Record exact native candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ inputs.variant }}-${{ env.MOBILE_TAG }}
-          path: ${{ runner.temp }}/native-${{ inputs.variant }}.json
+          path: |
+            ${{ runner.temp }}/native-${{ inputs.variant }}.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.sigstore.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.provenance.sigstore.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.intoto.jsonl
           if-no-files-found: error
 
       - name: Report native compiler cache statistics

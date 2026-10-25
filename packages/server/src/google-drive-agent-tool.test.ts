@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGoogleDriveAgentTool, type GoogleDriveAgentApi } from './google-drive-agent-tool.js';
+import { googleDriveRequestSchema, googleDriveIsMutation } from './google-drive-request.js';
 import { GoogleDriveError, type DriveFile } from './google-drive.js';
 
 const input = { projectId: 'p1', sessionId: 's1', turnId: 't1', invocationId: 'i1' };
@@ -392,3 +393,132 @@ it.each(['overwrite', 'rename', 'move', 'trash'])(
     expect(drive.mutate).not.toHaveBeenCalled();
   },
 );
+
+const documentUrl = 'https://docs.google.com/document/d/shared/edit?usp=drivesdk';
+it('reads a shared document URL without a linked folder and without selecting it for editing', async () => {
+  const { tool, eventStore, exportFile, drive } = setup({
+    shared: { id: 'shared', name: 'Shared', mimeType: 'application/vnd.google-apps.document' },
+  });
+  eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: null } as never);
+  await expect(
+    tool.invoke({
+      ...input,
+      approvedByCard: true,
+      request: { action: 'read_document_url', url: documentUrl },
+    }),
+  ).resolves.toMatchObject({ content: '# doc', encoding: 'utf8' });
+  expect(exportFile).toHaveBeenCalledWith('token', 'shared', 'text/markdown');
+  expect(vi.spyOn(drive, 'list')).not.toHaveBeenCalled();
+  expect(eventStore.setSessionWorkspaceFile).not.toHaveBeenCalled();
+  await expect(tool.invoke({ ...input, request: { action: 'list' } })).rejects.toThrow(
+    'No Google Drive folder',
+  );
+  await expect(
+    tool.invoke({
+      ...input,
+      projectId: 'other',
+      request: { action: 'read_document_url', url: documentUrl },
+    }),
+  ).rejects.toThrow('calling session');
+});
+it.each([
+  'http://docs.google.com/document/d/shared/edit',
+  'https://docs.google.com.evil.test/document/d/shared/edit',
+  'https://evil.test/document/d/shared/edit',
+  'https://docs.google.com/spreadsheets/d/shared/edit',
+  'https://user@docs.google.com/document/d/shared/edit',
+  'https://docs.google.com/document/d/',
+])('rejects unsupported document links before calling Google: %s', async (url) => {
+  const { tool, drive } = setup();
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url } }),
+  ).rejects.toThrow();
+  expect(drive.get).not.toHaveBeenCalled();
+});
+it.each([
+  ['application/vnd.google-apps.folder', false],
+  ['application/vnd.google-apps.document', true],
+])('does not export unavailable or non-document files', async (mimeType, trashed) => {
+  const { tool, exportFile } = setup({
+    shared: { id: 'shared', name: 'Shared', mimeType, trashed },
+  });
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).rejects.toThrow('available Google Docs');
+  expect(exportFile).not.toHaveBeenCalled();
+});
+it('preserves the URL across gateway and executor parsing and classifies link reads as read-only', () => {
+  const parsed = googleDriveRequestSchema.parse({ action: 'read_document_url', url: documentUrl });
+  expect(googleDriveRequestSchema.parse(parsed)).toEqual(parsed);
+  expect(googleDriveIsMutation(parsed)).toBe(false);
+});
+
+it.each([null, 'root'])(
+  'requires explicit approval for external documents with folder %s',
+  async (folderId) => {
+    const { tool, eventStore, exportFile } = setup({
+      shared: { id: 'shared', name: 'Shared', mimeType: 'application/vnd.google-apps.document' },
+    });
+    eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: folderId } as never);
+    expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(false);
+    await expect(
+      tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+    ).rejects.toThrow('explicit approval');
+    expect(exportFile).not.toHaveBeenCalled();
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: { action: 'read_document_url', url: documentUrl },
+      }),
+    ).resolves.toMatchObject({ content: '# doc' });
+  },
+);
+it('automatically reads nested project documents but rejects files moved outside before execution', async () => {
+  const shared: DriveFile = {
+    id: 'shared',
+    name: 'Shared',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: ['nested'],
+  };
+  const { tool, exportFile } = setup({
+    shared,
+    nested: {
+      id: 'nested',
+      name: 'Nested',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: ['root'],
+    },
+  });
+  expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(true);
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).resolves.toMatchObject({ content: '# doc' });
+  exportFile.mockClear();
+  shared.parents = [];
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).rejects.toThrow('explicit approval');
+  expect(exportFile).not.toHaveBeenCalled();
+});
+
+it('does not persist a Workspace assignment when its folder access disappears during lookup', async () => {
+  const { tool, drive, eventStore } = setup({
+    doc: {
+      id: 'doc',
+      name: 'Document',
+      mimeType: 'application/vnd.google-apps.document',
+      parents: ['root'],
+    },
+  });
+  const original = drive.get;
+  drive.get = async (token, id) => {
+    const file = await original(token, id);
+    eventStore.getProjectSettings.mockResolvedValue(undefined as never);
+    return file;
+  };
+  await expect(
+    tool.invoke({ ...input, request: { action: 'select_workspace_file', fileId: 'doc' } }),
+  ).rejects.toThrow('access changed');
+  expect(eventStore.setSessionWorkspaceFile).not.toHaveBeenCalled();
+});

@@ -108,7 +108,7 @@ docker run --rm --user root \
 
 docker run -d --name "$CONTAINER" --user root --group-add 1101 \
   --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
-  --cap-add KILL --cap-add SETPCAP --security-opt no-new-privileges:true \
+  --cap-add KILL --cap-add SETPCAP --security-opt no-new-privileges=true \
   -v "$RUNTIME:/run/verity-runner" -v "$IDENTITY:/run/verity-control-identity:ro" \
   -v "$WORK:/work" -v "$SESSIONS:/srv/verity/sessions" \
   -e VERITY_CLAUDE_EGRESS_URL=https://127.0.0.1:9443 \
@@ -183,7 +183,7 @@ broker_request() {
           protocolVersion: 1,
           kind: "spawn-agent",
           command: "claude-agent-acp",
-          args: ["--version"],
+          args: [],
           cwd: process.env.VERITY_SMOKE_CWD,
         }) + "\n",
       ),

@@ -191,6 +191,8 @@ export interface GitBranchServiceOptions {
   baseBranch?: string;
   /** Injected git runner (tests); defaults to the real `git`. */
   git?: GitOutput;
+  /** Runs a complete metadata read with one resolved, isolated Git context. */
+  withGit?: <T>(worktree: string, operation: (git: GitOutput) => Promise<T>) => Promise<T>;
   /** Injected merge-state probe (tests); defaults to {@link mergeInProgressOnDisk}. */
   mergeInProgress?: (basePath: string) => boolean;
 }
@@ -212,10 +214,16 @@ interface SwitchOptions {
 }
 
 export interface GitBranchService {
+  metadata?(worktreePath: string): Promise<{
+    current: string;
+    switchable: string[];
+    previewableRaw: string[];
+  }>;
   /** The branch currently checked out in the worktree. When the worktree is
    * detached at a previewed `origin/<branch>` tip, resolves to that branch name
-   * (not git's bare "HEAD"); falls back to a short SHA for any other detached HEAD. */
-  current(worktreePath: string): Promise<string>;
+   * (not git's bare "HEAD"); falls back to a short SHA for any other detached HEAD.
+   * Supply the owning session worktree when reading a project base in its sandbox. */
+  current(worktreePath: string, sessionWorktreePath?: string): Promise<string>;
   /**
    * The branches this session has worked on, worktree HEAD first, then the others
    * most-recently-active first. Sourced from the worktree's OWN HEAD reflog (each
@@ -391,7 +399,7 @@ export function isValidBranchName(name: string): boolean {
  * branch name, so it cannot reject a ref that arrived from there, and it keeps an
  * absurd argument out of argv.
  */
-function isSafeRefName(name: string): boolean {
+export function isSafeRefName(name: string): boolean {
   if (name.length === 0 || name.length > 255) return false;
   if (name.startsWith('-')) return false;
   // Control characters, space, DEL, and the characters git itself forbids in a ref.
@@ -473,7 +481,14 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       .map((l) => l.replace(/^origin\//, ''));
   }
 
-  async function current(worktreePath: string): Promise<string> {
+  async function current(worktreePath: string, sessionWorktreePath?: string): Promise<string> {
+    // The base checkout has no session record; route its read through the owning session.
+    if (opts.withGit) {
+      const { withGit, ...scopedOptions } = opts;
+      return withGit(sessionWorktreePath ?? worktreePath, (scopedGit) =>
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).current(worktreePath),
+      );
+    }
     const out = (await git(['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
     if (out !== 'HEAD') return out; // a normal (attached) branch
     // Detached HEAD (e.g. a #122 preview checkout of `origin/<branch>`): show the
@@ -518,6 +533,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   async function sessionBranches(worktreePath: string): Promise<string[]> {
+    if (opts.withGit) {
+      const { withGit, ...scopedOptions } = opts;
+      return withGit(worktreePath, (scopedGit) =>
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(worktreePath),
+      );
+    }
     const here = await current(worktreePath);
     let extra: string[] = [];
     try {
@@ -582,7 +603,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     return out.trim().length > 0;
   }
 
-  async function switchable(worktreePath: string): Promise<string[]> {
+  async function switchable(worktreePath: string, knownCurrent?: string): Promise<string[]> {
     const refs = await git([
       '-C',
       opts.repoDir ?? worktreePath,
@@ -605,7 +626,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     // This worktree's own branch is reported as checked-out by `worktree list`,
     // but also exclude it explicitly so a detached HEAD or unparsed porcelain
     // line can never leave the current branch in the candidate set.
-    const here = await current(worktreePath);
+    const here = knownCurrent ?? (await current(worktreePath));
     const result = all.filter((b) => b !== here && !inUse.has(b)).sort();
     // Surface the base branch first when it's a candidate.
     const baseIdx = result.indexOf(baseBranch);
@@ -616,13 +637,13 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     return result;
   }
 
-  async function previewable(worktreePath: string): Promise<string[]> {
+  async function previewable(worktreePath: string, knownCurrent?: string): Promise<string[]> {
     // All pushed branches, minus the base (you switch to it locally, not preview)
     // and minus whatever HEAD is already on. Crucially this does NOT exclude
     // branches checked out in another worktree — previewing those (detached) is
     // the whole point (#122).
     const remote = await remoteBranches(worktreePath);
-    const here = await current(worktreePath);
+    const here = knownCurrent ?? (await current(worktreePath));
     const result = remote.filter((b) => b !== baseBranch && b !== here).sort();
     return result;
   }
@@ -1159,7 +1180,27 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     return { base };
   }
 
+  async function metadata(worktreePath: string): Promise<{
+    current: string;
+    switchable: string[];
+    previewableRaw: string[];
+  }> {
+    const { withGit, ...scopedOptions } = opts;
+    if (withGit) {
+      return withGit(worktreePath, (scopedGit) =>
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).metadata!(worktreePath),
+      );
+    }
+    const here = await current(worktreePath);
+    const [switchableBranches, previewableBranches] = await Promise.all([
+      switchable(worktreePath, here),
+      previewable(worktreePath, here),
+    ]);
+    return { current: here, switchable: switchableBranches, previewableRaw: previewableBranches };
+  }
+
   return {
+    metadata,
     current,
     sessionBranches,
     isDirty,

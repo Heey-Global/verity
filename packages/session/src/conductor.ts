@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
@@ -16,6 +17,7 @@ import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
+  PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -25,8 +27,8 @@ import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
-import { materializeFileAttachments } from './file-attachments.js';
-import { buildHandoffPrompt } from './handoff.js';
+import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
+import { buildHandoffPromptWithStoredResults } from './handoff.js';
 import { isNoSessionInitFailure } from './ingest.js';
 import { withMeetingContext } from './meeting-context.js';
 import {
@@ -89,6 +91,10 @@ const UNCERTAIN_RECOVERY_EXHAUSTED_NOTICE =
   'session — send the message again if the work did not finish.';
 /** How often the in-flight liveness sweep runs. */
 const TURN_LIVENESS_SWEEP_MS = 30_000;
+/** Trailing stderr kept in the crash row the app shows when an agent dies silently.
+ * Matches the technical-detail tail the app renders (`TECHNICAL_LIMIT` in
+ * packages/mobile/src/ui/agentEvent.ts); more would be cut off there anyway. */
+const CRASH_STDERR_EXCERPT_CHARS = 2000;
 /** How many consecutive sweeps an in-flight turn may append NO event before its
  * Runner is probed. Startup recovery only settles turns a restart left behind; a
  * Runner that dies while the Server keeps running produced no such crash, so
@@ -213,6 +219,7 @@ import {
   turnSystemPrompt,
   withBackendSystemPrompt,
   type ExternalPermissionAnswer,
+  type TurnCodeHost,
   type PermissionDecisionSource,
 } from './turn-system-prompt.js';
 
@@ -231,6 +238,8 @@ import {
  * (as the old single-controller-per-recovery path did).
  */
 class SessionTurnHandle implements RunnerTurn {
+  /** Removes this attempt's staged images after confirmed worker termination. */
+  cleanupImages: (() => Promise<void>) | undefined;
   readonly controller = new AbortController();
   /** The live per-attempt Runner turn; undefined until the run starts. */
   delegate: RunnerTurn | undefined;
@@ -717,6 +726,7 @@ export interface DispatchTurnOptions extends PromptOrigin {
   queueBehindActiveTurn?: boolean;
   /** Atomically accept this plan revision with the durable implementation queue. */
   planningRevision?: number;
+  planningConsent?: PlanningConsent;
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -903,6 +913,9 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly dispatchTails = new Map<string, Promise<void>>();
+  private readonly failedSteeringPersistence = new Set<string>();
+  private readonly pendingUserDispatches = new Map<string, number>();
   private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
@@ -1157,7 +1170,7 @@ export class Conductor {
   /**
    * Prepend a serialized transcript of the history the target backend HASN'T SEEN to
    * `prompt`, so it continues with context across a backend boundary (see
-   * {@link buildHandoffPrompt}). `sinceSeq` is the active backend's recorded context
+   * {@link buildHandoffPromptWithStoredResults}). `sinceSeq` is the active backend's recorded context
    * cursor (`session_backend_state.context_seq`): the events it already carries in
    * its native thread are excluded. `sinceSeq = 0` (a cold backend, no thread)
    * serializes the full history. The current turn's prompt was just persisted as the
@@ -1182,9 +1195,14 @@ export class Conductor {
       }
     }
     const priorEvents = lastPrompt >= 0 ? events.slice(0, lastPrompt) : events;
-    return buildHandoffPrompt(priorEvents, prompt, {
-      workspaceChanged: (await this.deps.store.getSessionMoveNotice(sessionId)) !== undefined,
-    });
+    return buildHandoffPromptWithStoredResults(
+      priorEvents,
+      prompt,
+      (id, maxBytes) => this.deps.store.getAttachment(id, maxBytes),
+      {
+        workspaceChanged: (await this.deps.store.getSessionMoveNotice(sessionId)) !== undefined,
+      },
+    );
   }
 
   /**
@@ -1249,13 +1267,30 @@ export class Conductor {
     await this.deps.store.deleteSessionBackendState(sessionId, backend);
   }
 
-  private isStaleCodexResume(result: RunResult): boolean {
-    if (result.exitCode === 0 || result.aborted) return false;
-    return /thread\/resume failed|no rollout found for thread id/i.test(result.stderr);
+  private isStaleCodexResume(result: RunResult, resumeSessionId: string): boolean {
+    if (result.exitCode === 0 || result.aborted || result.executionObserved === true) return false;
+    if (result.staleResume === true) return true;
+    if (/thread\/resume failed|no rollout found for thread id/i.test(result.stderr)) return true;
+    // codex-acp can accept the load of a thread it never materialized, from live
+    // app-server state that is gone by the time the prompt starts the turn. Codex
+    // then rejects `turn/start` for that very thread, so no turn ran and nothing
+    // the cold retry repeats has happened yet. Any other thread id is not this.
+    // The rejection reaches stderr as codex-acp logs it, or as the ACP error the
+    // backend appends when the adapter answered the prompt instead of exiting.
+    // That second form does not name the request; it is read as the prompt's
+    // because a load refused this way is already a `staleResume` above, and
+    // setup requests after the load do not look threads up by this id.
+    const rejected = [
+      `Prompt for session ${resumeSessionId} failed: Error: thread not found: ${resumeSessionId}`,
+      `Internal error: thread not found: ${resumeSessionId}`,
+    ];
+    return result.stderr
+      .split(/\r?\n/u)
+      .some((line) => rejected.some((suffix) => line.trimEnd().endsWith(suffix)));
   }
 
   private isStaleClaudeResume(result: RunResult, resumeSessionId: string): boolean {
-    if (result.aborted) return false;
+    if (result.aborted || result.executionObserved === true) return false;
     return namesMissingConversation(result.stderr, resumeSessionId);
   }
 
@@ -1327,7 +1362,7 @@ export class Conductor {
       resumeSessionId === undefined,
       // Only a fresh context carries the runtime prompt, so a resumed turn has
       // nothing to tailor and skips the project read entirely.
-      resumeSessionId === undefined && (await this.isLocalProjectSession(session)),
+      resumeSessionId === undefined ? await this.codeHostForSession(session) : 'github',
     );
     const runOpts = {
       ...builtRunOpts,
@@ -1369,6 +1404,7 @@ export class Conductor {
     const startCommandId = randomUUID();
     await this.bindTurnIdentity(sessionId, turnId, startCommandId);
     runOpts.turnId = turnId;
+    handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
     runOpts.startCommandId = startCommandId;
     const { opts: dispatchOpts, cleanup } = await this.prepareFileAttachments(runOpts);
     // Last check before a worker exists. Everything above — backend resolution, the
@@ -1381,7 +1417,11 @@ export class Conductor {
     // whole path exists to prevent — so the losing attempt returns as an aborted turn
     // instead. Its terminal events were already written by whoever force-settled it;
     // this return only unwinds the caller.
-    if (handle.forceSettled || this.turns.get(sessionId) !== handle) {
+    if (
+      handle.controller.signal.aborted ||
+      handle.forceSettled ||
+      this.turns.get(sessionId) !== handle
+    ) {
       await cleanup();
       return {
         result: { sessionId: undefined, exitCode: 0, stderr: '', aborted: true },
@@ -1399,6 +1439,20 @@ export class Conductor {
       projectId: session.projectId,
       worktree: session.worktree,
     });
+    // Runner acquisition can rebuild a sandbox. A Stop during that await must
+    // not launch a new worker after cancellation has already been acknowledged.
+    if (
+      handle.controller.signal.aborted ||
+      handle.forceSettled ||
+      this.turns.get(sessionId) !== handle
+    ) {
+      await cleanup();
+      return {
+        result: { sessionId: undefined, exitCode: 0, stderr: '', aborted: true },
+        backendSessionId: undefined,
+        backend,
+      };
+    }
     const turn = runner.startTurn(dispatchOpts, {
       onSession: (id: string) => {
         backendSessionId = id;
@@ -1428,6 +1482,9 @@ export class Conductor {
     handle.delegate = turn;
     try {
       const result = await turn.result;
+      await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
+        this.reportTurnError(sessionId, error);
+      });
       // `onSession` is the only bind a backend vouches for: it fires when the
       // conversation is actually open. `result.sessionId` is the fallback for a
       // backend that reveals its thread no earlier than the settle — but on a
@@ -1474,6 +1531,9 @@ export class Conductor {
       backendKey === 'claude' &&
       moveNotice === undefined &&
       backendState === undefined &&
+      // Another backend's binding means Claude's canonical thread is no longer
+      // current. Resuming it without a cursor silently loses the work done away.
+      (await this.deps.store.getSessionBackendStates(sessionId)).length === 0 &&
       (await this.isClaudeOriginSession(session));
     const resumeSessionId =
       backendState?.backendSessionId ?? (canResumeCanonicalClaudeSession ? sessionId : undefined);
@@ -1571,7 +1631,7 @@ export class Conductor {
     const codexStale =
       backendKey === 'codex' &&
       resumeSessionId !== undefined &&
-      (this.isStaleCodexResume(first.result) || first.result.staleResume === true);
+      this.isStaleCodexResume(first.result, resumeSessionId);
 
     // The backend-neutral stale resume: the agent ANSWERED the resume with an error,
     // so the conversation this session is bound to is not one it can restore. Unlike
@@ -1593,7 +1653,12 @@ export class Conductor {
     // read off stderr, `staleResume` an answered `resourceNotFound` — and the
     // backend tests pin it, but the ordering makes the overlap harmless anyway:
     // this cold retry runs first and its own result is what the replay sees.
-    if (!codexStale && resumeSessionId !== undefined && first.result.staleResume === true) {
+    if (
+      !codexStale &&
+      resumeSessionId !== undefined &&
+      first.result.staleResume === true &&
+      first.result.executionObserved !== true
+    ) {
       first.backend.closeSession?.(resumeSessionId);
       await this.clearBackendSessionState(sessionId, backendKey);
       await this.markTurnRunning(sessionId, await this.deps.store.latestEventSeq(sessionId));
@@ -1629,7 +1694,8 @@ export class Conductor {
         opts,
         retryResumeId,
       );
-      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result)) continue;
+      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result, retryResumeId))
+        continue;
       await this.persistBackendSessionState(sessionId, backendKey, retry.backendSessionId);
       return retry.result;
     }
@@ -2554,6 +2620,9 @@ export class Conductor {
     if (this.turns.get(sessionId) === handle) this.turns.delete(sessionId);
     this.clearPermissions(sessionId);
     try {
+      void handle
+        .cleanupImages?.()
+        .catch((error: unknown) => this.reportTurnError(sessionId, error));
       // BOUNDED: the terminal write is ordered before the release below (SR-1), but a
       // hanging store append must not block the fence forever. This point is only
       // reached once the previous backend's termination is established, so what is at
@@ -3101,13 +3170,47 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean; accepted?: boolean }> {
+    const run = async () => {
+      // Do not wait behind steering already delivered but not yet persisted.
+      if (
+        dispatchOpts.planningConsent !== undefined &&
+        ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+          this.failedSteeringPersistence.has(sessionId))
+      ) {
+        return { queued: false, accepted: false };
+      }
+      const previous = this.dispatchTails.get(sessionId);
+      let release!: () => void;
+      const tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      this.dispatchTails.set(sessionId, tail);
+      const userDispatch = dispatchOpts.planningRevision === undefined;
+      if (userDispatch)
+        this.pendingUserDispatches.set(
+          sessionId,
+          (this.pendingUserDispatches.get(sessionId) ?? 0) + 1,
+        );
+      try {
+        // Acceptance and delivery of steering share an order, so a cancellation
+        // cannot reach the backend while an older approval commits.
+        await previous;
+        return await this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      } finally {
+        release();
+        if (this.dispatchTails.get(sessionId) === tail) this.dispatchTails.delete(sessionId);
+        if (userDispatch) {
+          const count = (this.pendingUserDispatches.get(sessionId) ?? 1) - 1;
+          if (count === 0) this.pendingUserDispatches.delete(sessionId);
+          else this.pendingUserDispatches.set(sessionId, count);
+        }
+      }
+    };
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
-      return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      return run();
     }
-    return this.dispatchIdempotent(sessionId, clientReplyId, () =>
-      this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts),
-    );
+    return this.dispatchIdempotent(sessionId, clientReplyId, () => run());
   }
 
   /** Memoize a `clientReplyId`-keyed dispatch so a replayed quick reply returns the
@@ -3187,15 +3290,8 @@ export class Conductor {
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
-        // Delivered into the live turn. Persist the operator's prompt event so it
-        // shows in the transcript (claude's stream doesn't echo it). Fire-and-forget
-        // so it doesn't block the 202: claude can't answer the injected message
-        // before a model round-trip, which in practice dwarfs this local append, so
-        // the prompt event almost always lands ahead of the agent's reply to it.
-        // The seq counter orders by append time, not logical time, so under extreme
-        // store contention the prompt could theoretically land just after the reply
-        // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
+        // Keep chat acceptance fenced until the steering prompt is durable.
+        await this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3217,7 +3313,21 @@ export class Conductor {
         const input = { id, sessionId, prompt, opts: storedOpts };
         if (dispatchOpts.planningRevision !== undefined) {
           if (
-            !(await this.deps.store.enqueuePlanImplementation(input, dispatchOpts.planningRevision))
+            dispatchOpts.planningConsent !== undefined &&
+            ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+              this.failedSteeringPersistence.has(sessionId))
+          ) {
+            accepted = false;
+            return;
+          }
+
+          if (
+            !(await this.deps.store.enqueuePlanImplementation(
+              input,
+              dispatchOpts.planningRevision,
+              (event) => this.deps.bus?.publish(sessionId, event),
+              dispatchOpts.planningConsent,
+            ))
           ) {
             accepted = false;
             return;
@@ -3659,6 +3769,18 @@ export class Conductor {
     for (const sessionId of sessions) this.drainNext(sessionId);
   }
 
+  private async cleanupRecoveredImageAttachments(marker: RunningTurnRecord): Promise<void> {
+    if (marker.turnId === null) return;
+    try {
+      const session = await this.deps.store.getSession(marker.sessionId);
+      if (session !== undefined) {
+        await cleanupTurnImageAttachments(session.worktree, marker.turnId);
+      }
+    } catch (error) {
+      this.reportTurnError(marker.sessionId, error);
+    }
+  }
+
   /**
    * Lifecycle Phase 1: settle every turn left in flight by a crash/restart. For
    * each durable `running_turns` marker, look at the events after its prompt
@@ -3677,6 +3799,12 @@ export class Conductor {
         // and only the marker cleanup was lost — drop the marker, never reattach.
         const after = await this.deps.store.getEventsAfter(marker.sessionId, marker.promptSeq);
         if (after.some((e) => isTurnTerminalEvent(e.event))) {
+          // An interrupted marker may close an uncertain turn whose worker still lives.
+          if (after.some((row) => row.event.t === 'result')) {
+            await this.cleanupRecoveredImageAttachments(marker);
+          } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+            await this.cleanupRecoveredImageAttachments(marker);
+          }
           if (this.leaveUncertainRecovery(marker.sessionId)) {
             this.releaseInFlight(marker.sessionId);
           }
@@ -3708,6 +3836,7 @@ export class Conductor {
           continue;
         }
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
+        await this.cleanupRecoveredImageAttachments(marker);
         await this.emitInterrupted(marker.sessionId);
         await this.deps.store.clearRunningTurn(marker.sessionId);
         if (this.leaveUncertainRecovery(marker.sessionId)) {
@@ -3952,6 +4081,7 @@ export class Conductor {
     // landed only while the log was still where the probe left it, so requiring it to
     // still be the NEWEST event extends that proof up to here.
     if (!(await this.deadVerdictStillApplies(marker, noticeSeq))) return;
+    void this.cleanupRecoveredImageAttachments(marker);
     // A dead Runner cannot emit again. A stalled Runner is deliberately still
     // alive, so fence its turn BEFORE releasing the session: even an acknowledged
     // cancel may race with a final frame, and that frame must never land in a
@@ -4149,6 +4279,11 @@ export class Conductor {
       }
       const after = await this.deps.store.getEventsAfter(marker.sessionId, marker.promptSeq);
       if (after.some((event) => isTurnTerminalEvent(event.event))) {
+        if (after.some((row) => row.event.t === 'result')) {
+          await this.cleanupRecoveredImageAttachments(marker);
+        } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+          await this.cleanupRecoveredImageAttachments(marker);
+        }
         await this.deps.store.clearRunningTurn(marker.sessionId);
         this.leaveUncertainRecovery(marker.sessionId);
         this.releaseInFlight(marker.sessionId);
@@ -4251,6 +4386,7 @@ export class Conductor {
       // anchor — either way the settle would be writing into someone else's turn. Come
       // back and re-read the whole state instead of pushing a stale verdict through.
       if (settled === null) return this.scheduleUncertainRecovery(marker);
+      if (outcome.status === 'dead') await this.cleanupRecoveredImageAttachments(marker);
       await this.deps.store.clearRunningTurn(marker.sessionId, marker.promptSeq);
       this.leaveUncertainRecovery(marker.sessionId);
       this.releaseInFlight(marker.sessionId);
@@ -4314,10 +4450,14 @@ export class Conductor {
       // start a SECOND turn for this session while the recovered one is still running
       // (recovery runs before the queue drains, so this cannot contend).
       const boundHandle = handle;
-      const turn = runner.attach(target, {
-        onPermissionRequest: (request) => this.trackPendingPermission(marker.sessionId, request),
-        ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
-      });
+      handle.cleanupImages = () => cleanupTurnImageAttachments(session.worktree, target.turnId);
+      const turn = runner.attach(
+        { ...target, attachmentCwd: session.worktree },
+        {
+          onPermissionRequest: (request) => this.trackPendingPermission(marker.sessionId, request),
+          ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
+        },
+      );
       boundHandle.delegate = turn;
       // Continue tailing in the background; settle when the terminal frame arrives.
       void turn.result.then(
@@ -4395,6 +4535,7 @@ export class Conductor {
       if (!ownsSettle) {
         // force-settled — nothing left to write
       } else if (result !== undefined) {
+        void this.cleanupRecoveredImageAttachments(marker);
         if (result.aborted) await this.emitInterrupted(marker.sessionId);
         else await this.ensureTerminalMarker(marker.sessionId, marker.promptSeq, result);
       } else {
@@ -4634,9 +4775,9 @@ export class Conductor {
     // This is the first await after the start lock is taken, and the lock is only
     // released from inside the promise below — so a throwing read has to release
     // it here or the worktree stays permanently unstartable for this conductor.
-    let localProject: boolean;
+    let codeHost: TurnCodeHost;
     try {
-      localProject = await this.isLocalProjectSpawn(opts.sessionId);
+      codeHost = await this.codeHostForSpawn(opts.sessionId);
     } catch (error) {
       this.starting.delete(opts.worktree);
       throw error;
@@ -4650,7 +4791,7 @@ export class Conductor {
       const turnId = randomUUID();
       const startCommandId = randomUUID();
       const runOpts = {
-        ...this.buildStartOpts(opts, localProject, (sessionId) => {
+        ...this.buildStartOpts(opts, codeHost, (sessionId) => {
           if (boundId !== undefined) return;
           const publicSessionId = opts.sessionId ?? sessionId;
           boundId = publicSessionId;
@@ -4771,8 +4912,13 @@ export class Conductor {
           ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
         });
         handle.delegate = turn;
+        handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
         try {
-          return await turn.result;
+          const result = await turn.result;
+          await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
+            this.reportTurnError(boundId ?? opts.sessionId ?? result.sessionId ?? 'unbound', error);
+          });
+          return result;
         } finally {
           await cleanup();
         }
@@ -4992,6 +5138,7 @@ export class Conductor {
             ...originFields(origin),
           };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
+    this.failedSteeringPersistence.delete(sessionId);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
   }
 
@@ -5000,8 +5147,8 @@ export class Conductor {
    * (#101) — store its attachments content-addressed, then append the `prompt`
    * event. Best-effort: a failure routes to {@link ConductorDeps.onTurnError}
    * rather than rejecting, because the message has already been delivered to claude
-   * (the caller returned its 202); a missing prompt event is a transcript blemish,
-   * not a lost turn.
+   * so the caller can still receive its 202. A failure revokes chat consent
+   * until a subsequent prompt is durable; the backend already saw the steering.
    */
   private async persistSteeredPrompt(
     sessionId: string,
@@ -5018,6 +5165,8 @@ export class Conductor {
         origin,
       );
     } catch (error) {
+      // Delivered steering must not leave an earlier durable approval actionable.
+      this.failedSteeringPersistence.add(sessionId);
       this.reportTurnError(sessionId, error);
     }
   }
@@ -5187,7 +5336,10 @@ export class Conductor {
       }
       return;
     }
-    const tail = result.stderr ? `: ${result.stderr.slice(-500)}` : '';
+    // Long enough for an adapter's error line above the stack trace it prints
+    // before exiting: Codex ACP reports a rejected app-server request as a Node
+    // stack plus "Internal error", which alone filled the former 500 characters.
+    const tail = result.stderr ? `: ${result.stderr.slice(-CRASH_STDERR_EXCERPT_CHARS)}` : '';
     const event = {
       t: 'error' as const,
       kind: 'crashed',
@@ -5440,19 +5592,21 @@ export class Conductor {
    *  very push/PR guidance this exists to remove. Failing the turn is also what
    *  the adjacent {@link projectMemoryPrompt} read already does on the same
    *  fresh-context path, so a down store fails it either way. */
-  private async isLocalProjectSession(session: SessionRecord): Promise<boolean> {
-    if (session.projectId === null) return false;
+  private async codeHostForSession(session: SessionRecord): Promise<TurnCodeHost> {
+    if (session.projectId === null) return 'github';
     const project = await this.deps.store.getProject(session.projectId);
-    return project !== undefined && isLocalProject(project);
+    if (project === undefined) return 'github';
+    if (isLocalProject(project)) return 'local';
+    return project.kind === 'forgejo' ? 'forgejo' : 'github';
   }
 
-  /** {@link isLocalProjectSession} for the spawn path, which is handed an id
+  /** {@link codeHostForSession} for the spawn path, which is handed an id
    *  rather than a record. An unknown id is not an error here: `startSession`
    *  accepts a spawn whose session the backend still has to mint. */
-  private async isLocalProjectSpawn(sessionId: string | undefined): Promise<boolean> {
-    if (sessionId === undefined) return false;
+  private async codeHostForSpawn(sessionId: string | undefined): Promise<TurnCodeHost> {
+    if (sessionId === undefined) return 'github';
     const session = await this.deps.store.getSession(sessionId);
-    return session !== undefined && (await this.isLocalProjectSession(session));
+    return session === undefined ? 'github' : await this.codeHostForSession(session);
   }
 
   private buildRunOpts(
@@ -5461,7 +5615,7 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
     includeRuntimePrompt: boolean,
-    localProject: boolean,
+    codeHost: TurnCodeHost,
   ): RunTurnOptions {
     // Planning mode is the session's, not the request's: it overrides whatever
     // posture the turn asked for, because a turn that could still change files is
@@ -5472,9 +5626,7 @@ export class Conductor {
       ? PLANNING_PERMISSION_MODE
       : (opts.permissionMode ?? this.deps.permissionMode);
     const timeoutMs = opts.timeoutMs ?? this.deps.timeoutMs;
-    const systemPrompt = includeRuntimePrompt
-      ? turnSystemPrompt(localProject)
-      : RESUME_SYSTEM_PROMPT;
+    const systemPrompt = includeRuntimePrompt ? turnSystemPrompt(codeHost) : RESUME_SYSTEM_PROMPT;
     // exactOptionalPropertyTypes: omit absent keys rather than assign undefined.
     return {
       store: this.deps.store,
@@ -5487,7 +5639,9 @@ export class Conductor {
       // sessions: user-facing terminology and visible-media output contracts.
       appendSystemPrompt: planning
         ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
-        : systemPrompt,
+        : session.planning === 'discarded'
+          ? `${systemPrompt}\n\n${DISMISSED_PLAN_SYSTEM_PROMPT}`
+          : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS
@@ -5521,7 +5675,7 @@ export class Conductor {
 
   private buildStartOpts(
     opts: StartOptions,
-    localProject: boolean,
+    codeHost: TurnCodeHost,
     onSession: (id: string) => void | Promise<void>,
   ): RunTurnOptions {
     const permissionMode = opts.permissionMode ?? this.deps.permissionMode;
@@ -5537,8 +5691,8 @@ export class Conductor {
       // Same per-turn directives (choices #97 + delegation #138) on a fresh session.
       appendSystemPrompt:
         opts.appendSystemPrompt === undefined
-          ? turnSystemPrompt(localProject)
-          : `${turnSystemPrompt(localProject)}\n\n${opts.appendSystemPrompt}`,
+          ? turnSystemPrompt(codeHost)
+          : `${turnSystemPrompt(codeHost)}\n\n${opts.appendSystemPrompt}`,
       onSession,
       // Mid-turn permission control loop (#27) for the first turn of a fresh session.
       // The runner's `onPermissionRequest` is wired by the RunnerClient; startSession's

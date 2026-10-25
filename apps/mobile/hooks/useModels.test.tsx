@@ -29,6 +29,18 @@ describe('useModels', () => {
     expect(listModels).toHaveBeenCalledTimes(1);
   });
 
+  // Without the project the session picker offers agents its project turned off,
+  // and every pick would be refused by the server.
+  it('asks for the project-narrowed list and surfaces its allowed agents', async () => {
+    const listModels = jest
+      .fn()
+      .mockResolvedValue({ models: ['codex/gpt-5.6-sol'], allowedAgents: ['codex'] });
+    const client = fakeClient(listModels);
+    const { result } = renderHook(() => useModels(client, true, 'p/1'));
+    await waitFor(() => expect(result.current.allowedAgents).toEqual(['codex']));
+    expect(listModels).toHaveBeenCalledWith('p/1');
+  });
+
   it('re-fetches /models on refresh so a later-discovered catalog surfaces', async () => {
     const listModels = jest
       .fn<Promise<ModelList>, []>()

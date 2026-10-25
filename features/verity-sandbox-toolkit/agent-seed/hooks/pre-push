@@ -136,6 +136,23 @@ if [ "${#TIPS[@]}" -eq 0 ] && [ -z "$STDIN_REFS" ]; then
   REVIEW_TIPS=("HEAD")
 fi
 
+# Recover ancestry before scanning: fetched ancestors must be covered by the
+# secret gate too. No lint or review gate runs before the secret scan.
+REVIEW_BASE_HELPER="${0%/*}/../bin/verity-review-base.sh"
+[ -f "$REVIEW_BASE_HELPER" ] || REVIEW_BASE_HELPER=/opt/agent-seed/bin/verity-review-base.sh
+if [ ! -f "$REVIEW_BASE_HELPER" ]; then
+  echo "review-base: helper missing; rebuild the container to restore the review tooling" >&2
+  exit 2
+fi
+source "$REVIEW_BASE_HELPER"
+
+REVIEW_MERGE_BASES=()
+for REVIEW_TIP in "${REVIEW_TIPS[@]}"; do
+  verity_resolve_review_base "$BASE_REF" "$REVIEW_TIP" ||
+    echo "pre-push: $VERITY_BASE_REASON — using full checks where required" >&2
+  REVIEW_MERGE_BASES+=("$VERITY_MERGE_BASE")
+done
+
 SECRET_STATUS=0
 SCANNED=""
 for i in "${!TIPS[@]}"; do
@@ -269,9 +286,8 @@ EOF
     local base=""
     # One scoped diff cannot represent a multi-ref push. Run the full check in
     # that case so a clean first ref cannot hide failures carried by a later one.
-    if has_script "$scoped" && [ "${#REVIEW_TIPS[@]}" -eq 1 ] \
-      && git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
-      base=$(git merge-base "$BASE_REF" "$PUSH_CHECK_TIP" 2>/dev/null || true)
+    if has_script "$scoped" && [ "${#REVIEW_TIPS[@]}" -eq 1 ]; then
+      base="${REVIEW_MERGE_BASES[0]}"
     fi
 
     if [ -n "$base" ]; then
@@ -363,11 +379,12 @@ fi
 
 PENDING_COMMITS=""
 REVIEW_BOUNDARY_MISSING=0
-for REVIEW_TIP in "${REVIEW_TIPS[@]}"; do
+for review_index in "${!REVIEW_TIPS[@]}"; do
+  REVIEW_TIP="${REVIEW_TIPS[$review_index]}"
   if [ -n "$REVIEWED_SHA" ] && git merge-base --is-ancestor "$REVIEWED_SHA" "$REVIEW_TIP" 2>/dev/null; then
     PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${REVIEWED_SHA}..${REVIEW_TIP}" 2>/dev/null || true)"
-  elif git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
-    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${BASE_REF}..${REVIEW_TIP}" 2>/dev/null || true)"
+  elif [ -n "${REVIEW_MERGE_BASES[$review_index]}" ]; then
+    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${REVIEW_MERGE_BASES[$review_index]}..${REVIEW_TIP}" 2>/dev/null || true)"
   else
     REVIEW_BOUNDARY_MISSING=1
     break
@@ -422,7 +439,7 @@ PUSH BLOCKED - no usable code review boundary
 Branch: $BRANCH
 Pushed tip: $REVIEW_TIP
 
-Neither $BASE_REF nor a valid marker is available.
+Neither a common ancestor with $BASE_REF nor a valid marker is available.
 
 The reviewer resolves the same boundary, so it fails the same way
 until it is given one that exists.

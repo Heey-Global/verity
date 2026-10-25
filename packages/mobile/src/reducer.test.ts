@@ -428,6 +428,41 @@ describe('SessionReducer', () => {
     expect(agentText(r.messages).map((m) => m.text)).toEqual(['before', 'after']);
   });
 
+  // One outage arrives as several error events (adapter, backend, resend). As
+  // separate rows they read as a wall of identical failures.
+  it('folds consecutive failures that read the same into one counted row', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'error', kind: 'acp', message: 'API Error: 502 request_id=req_1' });
+    r.apply(2, { t: 'status', state: 'crashed' });
+    r.apply(3, { t: 'error', kind: 'run_failed', message: 'API Error: 502 request_id=req_2' });
+    const before = r.messages[0];
+    r.apply(4, { t: 'error', kind: 'acp', message: 'Bad Gateway' });
+
+    expect(r.messages).toHaveLength(1);
+    expect(r.messages[0]).toMatchObject({
+      kind: 'agent-event',
+      id: 'event-1',
+      createdAt: 4,
+      repeatCount: 3,
+      event: { message: 'Bad Gateway' },
+    });
+    // The published row must change identity, or a memoized row keeps the old count.
+    expect(r.messages[0]).not.toBe(before);
+  });
+
+  it('keeps failures apart when something happened in between or they differ', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'error', kind: 'acp', message: 'API Error: 502' });
+    r.apply(2, { t: 'text', delta: 'still here' });
+    r.apply(3, { t: 'error', kind: 'acp', message: 'API Error: 502' });
+    r.apply(4, { t: 'error', kind: 'parse_error', message: 'bad line' });
+    r.apply(5, { t: 'error', kind: 'parse_error', message: 'other line' });
+
+    expect(
+      r.messages.map((m) => (m.kind === 'agent-event' ? (m.repeatCount ?? 1) : m.kind)),
+    ).toEqual([1, 'agent-text', 1, 1, 1]);
+  });
+
   it('renders a merged marker as an agent-event message without starting a turn', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'text', delta: 'earlier reply' });
@@ -1352,4 +1387,19 @@ it('preserves background work across steering and clears it for a fresh turn', (
   expect(reducer.hasOpenTasks).toBe(true);
   reducer.apply(5, { t: 'prompt', text: 'New turn' });
   expect(reducer.hasOpenTasks).toBe(false);
+});
+
+it('refreshes a saved meeting notice in place during live updates and history replay', () => {
+  const r = new SessionReducer();
+  const first = 'Meeting saved to the knowledge base: [Planning](docs/meeting.md)';
+  const updated = first + '\n<!-- verity-meeting: {"notes":2,"people":1} -->';
+  r.apply(1, { t: 'notice', text: first });
+  const snapshot = r.messages[0];
+  r.apply(2, { t: 'notice', text: 'Unrelated notice' });
+  r.apply(3, { t: 'notice', text: updated });
+  expect(r.messages).toHaveLength(2);
+  expect(r.messages[0]).toMatchObject({ id: 'notice-1', text: updated });
+  expect(snapshot).toMatchObject({ text: first });
+  r.apply(4, { t: 'notice', text: 'Meeting saved to the knowledge base: [Other](docs/other.md)' });
+  expect(r.messages).toHaveLength(3);
 });

@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redactSecrets } from './redact.js';
+import { REDACTED, redactSecrets, redactProcessStderr } from './redact.js';
 
 // The fixtures below are synthetic, but a credential-shaped literal trips the secret
 // scanners that run over this repository and over anything published from it. So each
@@ -44,6 +45,36 @@ describe('redactSecrets (M9)', () => {
     expect(out).not.toContain('notarealkeybody');
   });
 
+  it('handles repeated opening markers with no closing marker without rescanning the body', () => {
+    const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const text = begin.repeat(50_000);
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+      const { redactSecrets } = await import(process.argv[1]);
+      const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+      const text = begin.repeat(50_000);
+      if (redactSecrets(text) !== text) process.exit(1);
+    `,
+        new URL('./redact.ts', import.meta.url).href,
+      ],
+      { timeout: 5_000, encoding: 'utf8' },
+    );
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    expect(redactProcessStderr(text)).toBe('[truncated stderr line omitted]');
+  });
+
+  it('redacts repeated openings and consecutive complete key blocks', () => {
+    const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const end = ['-----END', 'PRIVATE KEY-----'].join(' ');
+    const text = `before${begin.repeat(1_000)}body${end}between${begin}body${end}after`;
+    expect(redactSecrets(text)).toBe(`before${REDACTED}between${REDACTED}after`);
+  });
+
   it('redacts a secret embedded in a JSON-serialized payload, keeping it valid JSON', () => {
     const payload = JSON.stringify({
       t: 'tool_result',
@@ -60,5 +91,80 @@ describe('redactSecrets (M9)', () => {
   it('leaves ordinary transcript text untouched', () => {
     const text = 'Refactored the auth gate; ran npm test — 42 passed. See PR #123.';
     expect(redactSecrets(text)).toBe(text);
+  });
+});
+
+describe('redactProcessStderr', () => {
+  it('redacts credential patterns, child environment values and environment assignments', () => {
+    const value = ['opaque', 'child', 'credential'].join('-');
+    const known = ['ghp_', ALPHANUM_RUN].join('');
+    const result = redactProcessStderr(
+      `failure ${value} ${known}\nPATH=/private/path\nAuthorization: Bearer unknown\nlast failure`,
+      { CUSTOM_VALUE: value },
+    );
+    expect(result).not.toContain(value);
+    expect(result).not.toContain(known);
+    expect(result).not.toContain('/private/path');
+    expect(result).not.toContain('unknown');
+    expect(result).toContain('last failure');
+  });
+  it('redacts credentials loaded from files, including bare and JSON JWTs', () => {
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyIn0', 'c2lnbmF0dXJl'].join('.');
+    const raw = `failure ${jwt}\n${JSON.stringify({ access_token: jwt })}`;
+    const redacted = redactProcessStderr(raw);
+    expect(redacted).not.toContain(jwt);
+    expect(redacted).toContain('[REDACTED JWT]');
+  });
+  it.each([
+    'access_token',
+    'refresh_token',
+    'password',
+    'api_key',
+    'client_secret',
+    'CUSTOM_TOKEN',
+    'authorization',
+  ])('redacts an opaque credential in the JSON field %s', (field) => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    const raw = `${JSON.stringify({ [field]: value })}\nlast failure`;
+    const redacted = redactProcessStderr(raw);
+    expect(redacted).not.toContain(value);
+    expect(redacted).toContain('[REDACTED CREDENTIAL FIELD]');
+    expect(redacted).toContain('last failure');
+  });
+  it('redacts quoted credential values even when JSON is truncated', () => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    expect(redactProcessStderr(`{"password":"${value}`)).not.toContain(value);
+  });
+  it('recognizes credentials before environment values can alter field names or token prefixes', () => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyIn0', 'c2lnbmF0dXJl'].join('.');
+    const raw = `${JSON.stringify({ access_token: value })}\n${jwt}\nMODE=unknown`;
+    const redacted = redactProcessStderr(raw, {
+      AUTH_MODE: 'token',
+      SHORT_SECRET: 'eyJ',
+      MODE_NAME: 'MODE',
+    });
+    expect(redacted).not.toContain(value);
+    expect(redacted).not.toContain('eyJzdWIiOiJ1c2VyIn0');
+    expect(redacted).not.toContain('unknown');
+  });
+  it.each(['SecretAccessKey', 'aws_secret_access_key', 'AWS_SECRET_ACCESS_KEY'])(
+    'redacts file-loaded AWS credentials in JSON and assignments for %s',
+    (field) => {
+      const value = ['opaque', 'file', 'credential'].join('-');
+      for (const raw of [JSON.stringify({ [field]: value }), `${field}=${value}`]) {
+        expect(redactProcessStderr(raw)).not.toContain(value);
+      }
+    },
+  );
+  it('omits a leading partial credential line from a full capture', () => {
+    const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
+    expect(redactProcessStderr(raw)).toBe('last failure');
+    expect(redactProcessStderr('x'.repeat(65_536))).toBe('[truncated stderr line omitted]');
+  });
+  it('suppresses partial private key armor', () => {
+    expect(redactProcessStderr('keybody\n-----END OPENSSH PRIVATE KEY-----')).toBe(
+      '[REDACTED PARTIAL PRIVATE KEY]',
+    );
   });
 });

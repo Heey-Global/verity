@@ -40,6 +40,42 @@ describe('safe session observation', () => {
       },
     ]);
   });
+  it('projects process exit details and redacts the diagnostic tail', () => {
+    const secret = ['ghp_', 'a'.repeat(24)].join('');
+    const events = [
+      {
+        seq: 1,
+        ts: 10,
+        event: {
+          t: 'diagnostic',
+          source: 'agent',
+          outcome: 'failed',
+          phase: 'prompt',
+          backend: 'codex-acp',
+          model: 'gpt-6.1-sol',
+          exitCode: null,
+          signal: 'SIGKILL',
+          turnActive: true,
+          stderrTail: `fatal ${secret}`,
+        },
+      },
+    ] as SequencedEvent[];
+    expect(recentSessionDiagnostics(events, 20)).toEqual([
+      {
+        seq: 1,
+        ts: 10,
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'prompt',
+        backend: 'codex-acp',
+        model: 'gpt-6.1-sol',
+        exitCode: null,
+        signal: 'SIGKILL',
+        turnActive: true,
+        stderrTail: 'fatal [REDACTED CREDENTIAL]',
+      },
+    ]);
+  });
   it('exposes only bounded structured error kinds in transcript-free progress', () => {
     expect(safeSessionProgressErrorKind('run_failed')).toBe('run_failed');
     expect(safeSessionProgressErrorKind('failure contained raw secret text')).toBe('unknown');

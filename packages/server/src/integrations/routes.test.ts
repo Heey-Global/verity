@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -7,6 +7,7 @@ import { strToU8, zipSync } from 'fflate';
 import { z } from 'zod';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { readMatrixDiagnosticSnapshot } from '../matrix-diagnostic-snapshot.js';
 import { registerIntegrationRoutes } from './routes.js';
 
 let ctx: TestDb;
@@ -307,7 +308,7 @@ it('stores Matrix configuration globally, redacts its settings response, and lim
   await app.close();
 });
 
-it('keeps safe failed import evidence on its room and clears it only with a new worker snapshot', async () => {
+it('imports orphan edits once and clears previous failure evidence with a new worker snapshot', async () => {
   const app = Fastify();
   const token = 'a-secret-long-enough-for-the-worker-route';
   registerIntegrationRoutes(app, {
@@ -336,26 +337,146 @@ it('keeps safe failed import evidence on its room and clears it only with a new 
     state: 'absent',
   });
   await ctx.store.integrations.setSourceBinding(id, sourceId, projectId);
-  const rejected = await app.inject({
+  const orphanEdit = {
+    accountId: id,
+    sourceId,
+    eventId: '$edit',
+    targetEventId: '$missing',
+    kind: 'edit',
+    sender: '@sender:example.test',
+    occurredAt: new Date().toISOString(),
+    body: 'private message',
+  };
+  const imported = await app.inject({
     method: 'POST',
     url: '/internal/integrations/matrix/event',
     headers,
-    payload: {
-      accountId: id,
-      sourceId,
-      eventId: '$edit',
-      targetEventId: '$missing',
-      kind: 'edit',
-      sender: '@sender:example.test',
-      occurredAt: new Date().toISOString(),
-      body: 'private message',
-    },
+    payload: orphanEdit,
   });
-  expect(rejected.statusCode).toBe(422);
-  expect(rejected.json()).toEqual({
-    error: 'Target message not found',
-    code: 'target_message_not_found',
+  expect(imported.statusCode).toBe(200);
+  expect(imported.json()).toEqual({ accepted: true });
+  expect(await ctx.store.integrations.getEvent(id, sourceId, orphanEdit.targetEventId)).toBeNull();
+  expect(await ctx.store.integrations.getEvent(id, sourceId, orphanEdit.eventId)).toMatchObject({
+    kind: 'edit',
+    targetEventId: orphanEdit.targetEventId,
   });
+  const retry = await app.inject({
+    method: 'POST',
+    url: '/internal/integrations/matrix/event',
+    headers,
+    payload: orphanEdit,
+  });
+  expect(retry.statusCode).toBe(200);
+  expect(retry.json()).toEqual({ accepted: false });
+  const snapshot = await readMatrixDiagnosticSnapshot(
+    ctx.store.integrations,
+    async () => {},
+    projectId,
+    { accountId: id, sourceId, eventId: orphanEdit.eventId },
+  );
+  expect(snapshot.event).toMatchObject({ stored: true, kind: 'edit' });
+  const matrixRoot = join(root, 'knowledge', projectId, 'sources', 'documents', 'matrix');
+  const [roomDir] = await readdir(matrixRoot);
+  const [dayFile] = await readdir(join(matrixRoot, roomDir!));
+  const chat = await readFile(join(matrixRoot, roomDir!, dayFile!), 'utf8');
+  expect(chat.split(orphanEdit.body)).toHaveLength(2);
+  const chatFile = join(matrixRoot, roomDir!, dayFile!);
+  const laterEdit = {
+    ...orphanEdit,
+    eventId: '$later-edit',
+    body: 'updated replacement',
+    occurredAt: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: laterEdit,
+      })
+    ).statusCode,
+  ).toBe(200);
+  const updatedChat = await readFile(chatFile, 'utf8');
+  expect(updatedChat).toContain(laterEdit.body);
+  expect(updatedChat).not.toContain(orphanEdit.body);
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: {
+          ...laterEdit,
+          eventId: '$delete-original',
+          kind: 'redaction',
+          body: null,
+          occurredAt: new Date(Date.now() + 172_800_000).toISOString(),
+        },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const deletedChat = await readFile(chatFile, 'utf8');
+  expect(deletedChat).not.toContain(laterEdit.body);
+  expect(deletedChat).not.toContain(orphanEdit.body);
+  for (const originalKind of ['text', 'attachment']) {
+    // Late originals must replace the inferred timestamp rather than collide with a fake receipt.
+    const lateOriginal = {
+      ...orphanEdit,
+      eventId: `$late-original-${originalKind}`,
+      targetEventId: null,
+      kind: 'message',
+      occurredAt: new Date(Date.now() + 259_200_000).toISOString(),
+      body: 'original text',
+    };
+    const earlyEdit = {
+      ...orphanEdit,
+      eventId: `$early-edit-${originalKind}`,
+      targetEventId: lateOriginal.eventId,
+      body: 'replacement before original',
+      occurredAt: new Date(Date.now() + 345_600_000).toISOString(),
+    };
+    const sendEvent = (payload: typeof orphanEdit | typeof lateOriginal) =>
+      app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload,
+      });
+    expect((await sendEvent(earlyEdit)).statusCode).toBe(200);
+    const earlyDayFile = join(matrixRoot, roomDir!, `${earlyEdit.occurredAt.slice(0, 10)}.md`);
+    expect(await readFile(earlyDayFile, 'utf8')).toContain(earlyEdit.body);
+    const originalResponse =
+      originalKind === 'text'
+        ? await sendEvent(lateOriginal)
+        : await app.inject({
+            method: 'POST',
+            url: '/internal/integrations/matrix/attachment',
+            headers,
+            payload: {
+              event: lateOriginal,
+              fileName: 'notes.txt',
+              data: Buffer.from('attachment content').toString('base64'),
+            },
+          });
+    expect(originalResponse.statusCode).toBe(200);
+    expect(await ctx.store.integrations.getEvent(id, sourceId, lateOriginal.eventId)).toMatchObject(
+      {
+        kind: 'message',
+        occurredAt: new Date(lateOriginal.occurredAt),
+      },
+    );
+    await expect(readFile(earlyDayFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    const originalDayFile = join(
+      matrixRoot,
+      roomDir!,
+      `${lateOriginal.occurredAt.slice(0, 10)}.md`,
+    );
+    const originalDay = await readFile(originalDayFile, 'utf8');
+    expect(originalDay).toContain(lateOriginal.occurredAt);
+    expect(originalDay).toContain(earlyEdit.body);
+    expect(originalDay).not.toContain(lateOriginal.body);
+  }
   const diagnostic = {
     sourceId,
     eventId: '$failed',

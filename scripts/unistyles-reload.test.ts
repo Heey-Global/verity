@@ -1,114 +1,139 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
-// @ts-expect-error -- native patch definitions are JavaScript
-import { NATIVE_PATCHES, applyNativePatch } from './patch-mobile-native-deps.mjs';
+import { describe, expect, it } from 'vitest';
+// @ts-expect-error -- executable JavaScript helper
+import { resolvePackageRoot } from './patch-mobile-native-deps.mjs';
 
-const patch = NATIVE_PATCHES.find(
-  (entry: { package: string }) => entry.package === 'react-native-unistyles',
-)!;
-const installedSource = 'node_modules/react-native-unistyles/ios/UnistylesModuleOnLoad.mm';
-const patched = applyNativePatch(patch, patch.before).source;
-
-function runLifecycle(source: string) {
-  const handoffCleanup = source.match(/}, \[\] \{([\s\S]*?)\n {4}\}\);/)?.[1] ?? '';
-  const helper = source.match(/class VerityUnistylesLifecycle \{[\s\S]*?\n};/)?.[0] ?? '';
-  const invalidate = source
-    .match(/- \(void\)invalidate \{([\s\S]*?)\n}/)![1]!
-    .replace('[super invalidate];', '')
-    .replaceAll('(__bridge const void*)self', 'self');
-  const root = mkdtempSync(join(tmpdir(), 'unistyles-reload-'));
-  try {
-    writeFileSync(
-      join(root, 'reload.cpp'),
-      `
-#include <mutex>
-#include <cassert>
-${helper}
-${helper ? 'static VerityUnistylesLifecycle verityUnistylesLifecycle;' : ''}
-bool configured = false;
-int retainedStyles = 0;
-namespace core { struct UnistylesRegistry {
-  static UnistylesRegistry& get() { static UnistylesRegistry registry; return registry; }
-  void destroy() { configured = false; retainedStyles = 0; }
-}; }
-void install(const void* self) {
-  ${helper ? `verityUnistylesLifecycle.install(self, [] { configured = true; ++retainedStyles; }, [] { ${handoffCleanup} });` : 'configured = true; ++retainedStyles;'}
+// Contract-only CI installs omit native dependencies; the mobile job requires them.
+let root: string | undefined;
+try {
+  root = resolvePackageRoot(process.cwd(), 'react-native-unistyles');
+} catch (error) {
+  if (process.env.VERITY_REQUIRE_MOBILE_NATIVE === '1') throw error;
 }
-void invalidate(const void* self) { ${invalidate} }
+describe.skipIf(root === undefined)('installed Unistyles reload protections', () => {
+  const source = (file: string) =>
+    root === undefined ? '' : readFileSync(join(root, file), 'utf8');
+  const registry = source('cxx/core/UnistylesRegistry.cpp');
+  const header = source('cxx/core/UnistylesRegistry.h');
+  const moduleSource = source('ios/UnistylesModuleOnLoad.mm');
+  const wrapper = source('cxx/core/UnistyleWrapper.h');
+
+  function runLifecycle(code: string) {
+    const methods = code.slice(
+      code.indexOf('uint64_t core::UnistylesRegistry::takeOwnership()'),
+      code.indexOf('core::UnistylesRegistry::OwnedState core::UnistylesRegistry::takeOwnedState()'),
+    );
+    const current = header.match(
+      /inline bool isCurrent\(uint64_t generation\) const noexcept \{[\s\S]*?\n {4}}/,
+    )![0];
+    const dir = mkdtempSync(join(tmpdir(), 'unistyles-reload-'));
+    try {
+      writeFileSync(
+        join(dir, 'reload.cpp'),
+        `
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
+namespace core { class UnistylesRegistry {
+public:
+ struct Sheet { std::unordered_map<int, int> unistyles; };
+ struct OwnedState { std::unordered_map<int, std::shared_ptr<Sheet>> styleSheets; };
+ std::mutex _ownershipMutex;
+ std::atomic<uint64_t> _generation{0};
+ uint64_t _lastGeneration = 0;
+ std::unordered_map<uint64_t, OwnedState> _replacedStates;
+ OwnedState active;
+ uint64_t takeOwnership();
+ void releaseOwnership(uint64_t generation);
+ ${current}
+ OwnedState takeOwnedState() { return std::exchange(active, {}); }
+}; }
+${methods}
 int main() {
-  int oldRuntime, nextRuntime;
-  install(&oldRuntime);
-  install(&nextRuntime);
-  assert(retainedStyles == 1); // New runtimes must never inherit old JSI style objects.
-  invalidate(&oldRuntime);
-  assert(configured); // Retired runtimes must not delete the new theme registry.
-  invalidate(&nextRuntime);
-  assert(!configured);
-  install(&oldRuntime);
-  invalidate(&oldRuntime);
-  assert(!configured);
-  install(&nextRuntime);
-  assert(retainedStyles == 1); // New runtimes must never inherit old JSI style objects.
-  invalidate(&oldRuntime);
-  assert(configured);
-  invalidate(&nextRuntime);
-  invalidate(&nextRuntime);
-  assert(!configured);
+ core::UnistylesRegistry r;
+ auto old = r.takeOwnership();
+ auto oldSheet = std::make_shared<core::UnistylesRegistry::Sheet>();
+ oldSheet->unistyles[1] = 1;
+ r.active.styleSheets[1] = oldSheet;
+ auto next = r.takeOwnership();
+ assert(next != old && !r.isCurrent(old) && r.isCurrent(next));
+ assert(r.active.styleSheets.empty());
+ assert(oldSheet->unistyles.size() == 1);
+ auto nextSheet = std::make_shared<core::UnistylesRegistry::Sheet>();
+ nextSheet->unistyles[1] = 2;
+ r.active.styleSheets[1] = nextSheet;
+ r.releaseOwnership(old);
+ assert(oldSheet->unistyles.empty());
+ assert(r.isCurrent(next) && nextSheet->unistyles.size() == 1);
+ r.releaseOwnership(old);
+ assert(r.isCurrent(next));
+ r.releaseOwnership(next);
+ assert(!r.isCurrent(next) && nextSheet->unistyles.empty());
+ assert(!r.isCurrent(0));
 }
 `,
-    );
-    execFileSync('g++', [
-      '-std=c++17',
-      '-pthread',
-      join(root, 'reload.cpp'),
-      '-o',
-      join(root, 'reload'),
-    ]);
-    return spawnSync(join(root, 'reload'), { cwd: root }).status;
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+      );
+      execFileSync('g++', [
+        '-std=c++17',
+        '-pthread',
+        join(dir, 'reload.cpp'),
+        '-o',
+        join(dir, 'reload'),
+      ]);
+      return spawnSync(join(dir, 'reload'), { cwd: dir }).status;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
-}
 
-it('keeps the next runtime configured when the previous runtime finishes teardown', () => {
-  expect(patched).toContain('verityUnistylesLifecycle.install((__bridge const void*)self, [&] {');
-  expect(runLifecycle(patched)).toBe(0);
+  it('isolates retiring runtime state using the installed ownership implementation', () => {
+    expect(moduleSource).toContain('_generation = core::UnistylesRegistry::get().takeOwnership();');
+    expect(moduleSource).toContain('runOnJSThread, _generation');
+    expect(moduleSource).toContain('releaseOwnership(_generation)');
+    expect(runLifecycle(registry)).toBe(0);
+  });
+
+  it('detects teardown that clears the replacement runtime', () => {
+    const broken = registry.replace('if (this->isCurrent(generation)) {', 'if (true) {');
+    expect(broken).not.toBe(registry);
+    expect(runLifecycle(broken)).not.toBe(0);
+  });
+
+  it('detects a handoff that retains styles in the active registry', () => {
+    const broken = registry.replace(
+      'this->_replacedStates[previousGeneration] = this->takeOwnedState();',
+      'this->_replacedStates[previousGeneration] = {};',
+    );
+    expect(broken).not.toBe(registry);
+    expect(runLifecycle(broken)).not.toBe(0);
+  });
+
+  function assertStyleGuard(code: string) {
+    // A stale getter can otherwise pass a null style to Parser::rebuildUnistyle.
+    expect(code).toMatch(
+      /auto unistyle = unistylesRuntime->ownsRegistry\(\)[\s\S]*?\? registry.getUnistyleById\(unistyleID\)[\s\S]*?: nullptr;/,
+    );
+    const guard = code.indexOf('if (unistyle == nullptr)');
+    expect(guard).toBeGreaterThan(-1);
+    const rebuild = code.indexOf('rebuildUnistyle', guard);
+    expect(rebuild).toBeGreaterThan(guard);
+    expect(code.slice(guard, rebuild)).toContain('throw jsi::JSError');
+  }
+
+  it('guards stale and missing styles before rebuilding', () => {
+    assertStyleGuard(wrapper);
+    expect(() =>
+      assertStyleGuard(wrapper.replace('if (unistyle == nullptr)', 'if (false)')),
+    ).toThrow();
+    expect(() =>
+      assertStyleGuard(wrapper.replace('unistylesRuntime->ownsRegistry()', 'true')),
+    ).toThrow();
+  });
 });
-
-it('rejects an ownership handoff that retains old runtime style objects', () => {
-  const missingCleanup = patched.replace(
-    'if (owner != nullptr && owner != nextOwner) destroy();',
-    '',
-  );
-  expect(runLifecycle(missingCleanup)).not.toBe(0);
-});
-
-it('detects a removed native handoff cleanup callback', () => {
-  const missingCallback = patched.replace(
-    /(}, \[\] \{\s*)core::UnistylesRegistry::get\(\)\.destroy\(\);/,
-    '$1',
-  );
-  expect(missingCallback).not.toBe(patched);
-  expect(runLifecycle(missingCallback)).not.toBe(0);
-});
-
-it('detects the original unconditional teardown clearing the new runtime', () => {
-  expect(runLifecycle(patch.before)).not.toBe(0);
-});
-
-it('applies the native ownership patch idempotently and rejects source drift', () => {
-  expect(applyNativePatch(patch, patched).status).toBe('already-patched');
-  expect(() =>
-    applyNativePatch(patch, patch.before.replace('get().destroy()', 'get().reset()')),
-  ).toThrow();
-});
-
-it.skipIf(!existsSync(installedSource))(
-  'checks the installed native source when mobile dependencies are available',
-  () => {
-    expect(applyNativePatch(patch, readFileSync(installedSource, 'utf8')).source).toBe(patched);
-  },
-);

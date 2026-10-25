@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import semver from 'semver';
 import { describe, expect, it } from 'vitest';
@@ -41,17 +42,12 @@ const CODEX_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
  */
 const dockerfilePins = (source: string): Map<string, string> =>
   new Map(
-    [
-      ...source.matchAll(
-        /# renovate: datasource=npm depName=(\S+)\nRUN npm install -g (\S+)@([^\s@]+)\n/gu,
-      ),
-    ]
-      // The annotation names the package Renovate updates; the command names the
-      // package npm installs. A pin whose two halves disagree is invisible to
-      // Renovate, so read it as a pair and let the comparison below miss it rather
-      // than silently trusting the annotation.
-      .filter((pin) => pin[1] === pin[2])
-      .map((pin) => [pin[1]!, pin[3]!]),
+    [...source.matchAll(/^RUN node \S*\/verity-cli-install\.mjs ([a-z-]+)$/gm)].map((match) => {
+      const manifest = JSON.parse(
+        readFileSync(`features/verity-sandbox-toolkit/npm/${match[1]}/package.json`, 'utf8'),
+      ) as { dependencies: Record<string, string> };
+      return Object.entries(manifest.dependencies)[0]!;
+    }),
   );
 
 const featurePins = (source: string): Map<string, string> =>
@@ -75,7 +71,7 @@ describe('agent CLI version pins', () => {
     // `RUN`, a renamed shell variable — which is exactly when the pins start to
     // drift unobserved.
     expect(shared).toEqual(
-      expect.arrayContaining(['@anthropic-ai/claude-code', '@openai/codex', 'opencode-ai']),
+      expect.arrayContaining(['@anthropic-ai/claude-code', '@openai/codex', '@opencode/cli']),
     );
     for (const name of shared) {
       expect(image.get(name), `${name} is pinned to different versions`).toBe(sandbox.get(name));
@@ -154,4 +150,16 @@ describe('agent CLI version pins', () => {
       );
     }
   });
+});
+
+it('runs the OpenCode native probes in the architecture smoke matrix', () => {
+  const workflow = readFileSync('.github/workflows/verity-sandbox.yml', 'utf8');
+  const probes = readdirSync('scripts/probes').filter(
+    (name) => name.startsWith('opencode-') && name.endsWith('.mjs'),
+  );
+  expect(probes.length).toBeGreaterThan(0);
+  for (const name of probes) expect(workflow).toContain(`/verity-source/scripts/probes/${name}`);
+  expect(workflow).toContain('scripts/fixtures/opencode-v1/**');
+  // The planning probe resolves its native helper from the mounted checkout.
+  expect(workflow).toContain('--workdir /verity-source');
 });

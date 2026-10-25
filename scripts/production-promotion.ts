@@ -1,5 +1,6 @@
 import { captureJson } from './capture-json.mjs';
 import { promotionChangelog, type PromotionRelease } from './promotion-changelog.mjs';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, createWriteStream, mkdirSync } from 'node:fs';
@@ -213,11 +214,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     ),
   ) as { number: number; headRefOid: string; author: { login: string }; baseRefName: string }[];
   for (const approval of approvals) {
-    if (
-      approval.baseRefName !== 'main' ||
-      !['app/github-actions', 'github-actions[bot]'].includes(approval.author.login)
-    )
-      continue;
+    if (approval.baseRefName !== 'main' || !isReleaseBotLogin(approval.author.login)) continue;
     const record = api<{ content: string }>(
       `repos/${repository}/contents/${manifest}?ref=${approval.headRefOid}`,
     );
@@ -248,10 +245,7 @@ export function propose(inputPath = process.argv[3] ?? '') {
     const owner = JSON.parse(
       gh('pr', 'list', '--head', branch, '--state', 'all', '--json', 'author'),
     ) as { author: { login: string } }[];
-    if (
-      owner.length &&
-      owner.some((pr) => !['app/github-actions', 'github-actions[bot]'].includes(pr.author.login))
-    )
+    if (owner.length && owner.some((pr) => !isReleaseBotLogin(pr.author.login)))
       throw new Error('Promotion branch is not workflow-owned');
   } else {
     api(
@@ -329,7 +323,17 @@ export function propose(inputPath = process.argv[3] ?? '') {
     `Promotes the verified Staging candidate ${candidate.version} to production.\n\nSource: ${candidate.source}\n\n${changelog}\n\nMerging approves the exact recorded artifacts in ${manifest}. Test Staging before merging. The release remains a prerelease until production publication finishes.\n`,
   );
   if (pulls.length)
-    gh('pr', 'edit', String(pulls[0]!.number), '--title', title, '--body-file', bodyFile);
+    gh(
+      'pr',
+      'edit',
+      String(pulls[0]!.number),
+      '--title',
+      title,
+      '--body-file',
+      bodyFile,
+      '--add-label',
+      'production',
+    );
   else
     gh(
       'pr',
@@ -342,6 +346,8 @@ export function propose(inputPath = process.argv[3] ?? '') {
       title,
       '--body-file',
       bodyFile,
+      '--label',
+      'production',
     );
   const current = api<{ object: { sha: string } }>(`repos/${repository}/git/ref/heads/${branch}`)
     .object.sha;
@@ -363,7 +369,8 @@ export function propose(inputPath = process.argv[3] ?? '') {
         'message=The production candidate changed. Review the current candidate again.',
       );
   }
-  gh('workflow', 'run', 'ci.yml', '--ref', branch);
+  // The app token behind GH_TOKEN authored the branch commit and the PR, so
+  // their pull_request events run CI on the new head without a dispatch.
 }
 
 function promote() {
@@ -663,13 +670,30 @@ function assertReviewed(path: string, expectedBranch: string, candidate: unknown
     {
       number: number;
       merged_at: string | null;
+      merge_commit_sha?: string;
       head: { ref: string; sha: string };
       base: { ref: string };
     }[]
   >(`repos/${repository}/commits/${merge}/pulls`);
-  const pull = pulls.find(
+  let pull = pulls.find(
     (p) => p.merged_at && p.head.ref === expectedBranch && p.base.ref === 'main',
   );
+  if (!pull) {
+    // GitHub can omit merged PRs from the commit association endpoint.
+    const owner = repository.split('/')[0];
+    const candidates = api<(typeof pulls)[]>(
+      '--paginate',
+      '--slurp',
+      `repos/${repository}/pulls?state=closed&head=${encodeURIComponent(`${owner}:${expectedBranch}`)}&base=main&per_page=100`,
+    ).flat();
+    pull = candidates.find(
+      (p) =>
+        p.merged_at &&
+        p.merge_commit_sha === merge &&
+        p.head.ref === expectedBranch &&
+        p.base.ref === 'main',
+    );
+  }
   if (!pull) throw new Error('Production requires a merged promotion PR');
   const reviews = api<{ state: string; commit_id: string }[]>(
     '--paginate',

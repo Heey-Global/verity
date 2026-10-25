@@ -1,89 +1,22 @@
+import { ForgeMergePermissionError, isForgeMergePermissionDenied } from './forge-provider.js';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
+import type {
+  ForgePrService,
+  OpenedPullRequest,
+  PullRequestStatus,
+  ReleaseSummary,
+} from './forge-provider.js';
+
+export type { OpenedPullRequest, PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 
 const execFileAsync = promisify(execFile);
 const defaultGit: GitOutput = async (args) => (await execFileAsync('git', [...args])).stdout;
 
-/**
- * Looks up the open PR number for a branch from GitHub (issue #125), so the mobile
- * header can show `PR #N` alongside the branch-derived `Issue #N`. Independent of
- * the issue chip: a branch may have a PR but no parseable issue, or vice versa.
- *
- * Degrades gracefully to `null` on every failure path (no token, no GitHub remote,
- * API error, branch with no open PR) — the header simply shows no PR chip and never
- * errors. Results are cached per branch with a TTL so the branch endpoint can be hit
- * repeatedly without hammering the API / burning rate limit.
- */
-export interface GitHubPrService {
-  /** The open PR number whose head is `branch`, or null if there's no open PR / the
-   *  lookup couldn't run. Never throws. Cached per branch for the configured TTL. */
-  prForBranch(branch: string): Promise<number | null>;
-  /** Compact live status for the open PR whose head is `branch`, or null if absent /
-   * unavailable. Includes title, URL and aggregate check-run counts for the head SHA. */
-  prStatusForBranch(branch: string): Promise<PullRequestStatus | null>;
-  /**
-   * The PR that best represents a session spanning SEVERAL branches (issue: the PR
-   * bar stays empty when a session's PR is on a branch other than its worktree HEAD).
-   * Looks each branch up (reusing the per-branch cache) and returns the most-recently-
-   * updated OPEN PR among them, so a multi-phase session that pushed a differently-
-   * named branch than its worktree HEAD still surfaces its PR. With no open PR
-   * anywhere it falls back to the FIRST branch's own status (caller passes the
-   * worktree HEAD first) — so a single-branch session behaves exactly as
-   * {@link prStatusForBranch}. Never throws.
-   */
-  prStatusForBranches(branches: readonly string[]): Promise<PullRequestStatus | null>;
-  /** Merge an open PR by number. Returns false when GitHub rejects or is unavailable. */
-  mergePr(number: number, expectedHeadSha?: string): Promise<boolean>;
-}
-
-export interface PullRequestStatus {
-  number: number;
-  title: string;
-  url: string;
-  phase: 'open' | 'merged' | 'closed';
-  /** The PR's `updated_at` (ISO 8601, UTC `Z`), when GitHub reported it. Used to rank
-   * open PRs across a multi-branch session's branches — ISO UTC strings sort
-   * chronologically. Omitted when absent from the row. */
-  updatedAt?: string;
-  /** Head commit SHA for the PR branch, used to dedupe per-commit automation. */
-  headSha?: string;
-  /** Merge commit whose workflow runs back the post-merge status. Kept separate from
-   * `headSha`: the latter is the old PR branch tip and cannot identify the commit on
-   * the base branch whose Actions Verity is reporting. */
-  mergeCommitSha?: string;
-  pipeline: 'pending' | 'running' | 'success' | 'failure' | 'unknown';
-  checks: {
-    completed: number;
-    total: number;
-    successful: number;
-    failed: number;
-    pending: number;
-  };
-  /** Tri-state: `true` = GitHub confirmed the PR merges cleanly, `false` = a genuine
-   * conflict / blocked merge, `null` = unknown — not applicable (not open, checks not
-   * green) OR GitHub is still computing mergeability (the seconds-long window right
-   * after a push). `null` must NOT be rendered as "blocked": that flashes a freshly
-   * green PR red until GitHub finishes the background merge check. */
-  mergeable: boolean | null;
-  /** GitHub's `mergeable_state` for the PR, when it was queried. `'dirty'` is the
-   * one state the UI and the repair automation act on: the head branch CONFLICTS
-   * with the base, so GitHub builds no merge ref and never starts the
-   * `pull_request` workflows — the PR then reports zero checks and would otherwise
-   * read as "status unavailable" forever. Omitted when mergeability wasn't queried
-   * (not open, or the cheap path skipped the detail call). */
-  mergeState?: 'clean' | 'dirty' | 'blocked' | 'behind' | 'unstable' | 'draft' | 'unknown';
-  /** The PR's base branch (e.g. `main`), so the conflict UI and the repair prompt can
-   * name the branch to merge in. Omitted when absent from the row. */
-  baseRef?: string;
-  /** Tip commit of that base branch, as GitHub reports it on the PR row (it tracks the
-   * branch, it is not frozen at PR creation). A conflict is a property of the PAIR, so
-   * the repair automation keys on this alongside the head SHA: the base moving is what
-   * can introduce a conflict without the head changing at all. Free — same row as
-   * `baseRef`, no extra request. Omitted when absent from the row. */
-  baseSha?: string;
-}
+/** The GitHub implementation of the provider-neutral {@link ForgePrService}. */
+export type GitHubPrService = ForgePrService;
 
 /** Minimal structural subset of the WHATWG `fetch` response the service needs —
  * narrow so tests can supply a fake without constructing a real `Response`.
@@ -183,7 +116,7 @@ export function parseGitHubRemote(remoteUrl: string): { owner: string; repo: str
 }
 
 /** GitHub repo identity (owner/name) resolved from the `origin` remote. */
-export type GitHubIdentity = { owner: string; repo: string };
+type GitHubIdentity = { owner: string; repo: string };
 
 /** A memoized lookup of the repo's `{ owner, repo }` GitHub identity — see
  *  {@link makeIdentityResolver}. Returns null when there's no GitHub `origin`. */
@@ -250,13 +183,6 @@ function githubHeaders(token: string): Record<string, string> {
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'verity-server',
   };
-}
-
-/** A pull request Verity opened itself. */
-export interface OpenedPullRequest {
-  number: number;
-  /** `html_url` — the page an operator opens, not the API url. */
-  url: string;
 }
 
 /** Raised when GitHub declines to open the pull request. `message` carries GitHub's
@@ -560,7 +486,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     number: number,
     token: string,
   ): Promise<
-    { ok: true; value: boolean | null; mergeState: PullRequestStatus['mergeState'] } | { ok: false }
+    | {
+        ok: true;
+        value: boolean | null;
+        mergeState: PullRequestStatus['mergeState'];
+        viewerCanMerge?: boolean;
+      }
+    | { ok: false }
   > => {
     const url = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls/${String(number)}`;
     const res = await fetchJson(url, token);
@@ -569,8 +501,16 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     }
     const body = res.body as Record<string, unknown>;
     const mergeable = body.mergeable;
+    const base = body.base as { repo?: { permissions?: { push?: boolean } } } | undefined;
+    // Repository write access cannot promise bypass of branch protection. Only
+    // an explicit denial is useful here; missing permissions remain unknown.
     return mergeable === null || typeof mergeable === 'boolean'
-      ? { ok: true, value: mergeable, mergeState: mergeStateOf(body) }
+      ? {
+          ok: true,
+          value: mergeable,
+          mergeState: mergeStateOf(body),
+          ...(base?.repo?.permissions?.push === false ? { viewerCanMerge: false } : {}),
+        }
       : { ok: false };
   };
 
@@ -646,36 +586,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (!checksResult.ok) return { ok: false, status: null };
       const checks = checksResult.checks;
       const pipeline = pipelineFromChecks(checks);
-      // Ask GitHub for mergeability on every SETTLED open PR — green, red, or with no
-      // checks at all — and never while checks are still running.
-      //
-      // Green is the merge-button path: mergeability decides whether it lights up.
-      //
-      // No checks at all is the conflict trap this feature exists for: a PR that
-      // conflicts with its base gets no merge ref, so GitHub never starts the
-      // `pull_request` workflows, `checks.total` stays 0 and the pipeline reads
-      // `unknown` forever. Without this call the bar could only say "status
-      // unavailable" and nothing could react to the conflict.
-      //
-      // Red matters because a branch with `on: push` workflows keeps reporting checks
-      // even while it conflicts — the workflows run on the branch head, which needs no
-      // merge ref. Such a PR has a real conflict AND real failures at once, and it is
-      // the only way that pair can arise. Skipping it would leave the conflict
-      // invisible behind a CI failure the agent cannot fix without merging the base
-      // first, and would make the conflict-before-CI repair precedence unreachable.
-      //
-      // Running/pending stays off the path deliberately: that is the state a busy PR
-      // polls in most often, nothing can act on either signal until checks settle, and
-      // the poll right after they do picks the conflict up.
-      //
-      // Keep the raw tri-state: `openPrMergeable` returns `null` while GitHub is still
-      // computing it, which must stay `null` — coercing it to `false` here is what made
-      // a just-fixed, now-green PR read as "blocked".
+      // Push workflows can still be running when a base update introduces a
+      // conflict. Probe every open PR so background discovery can repair it
+      // without waiting for CI or for someone to open the session.
+      // Preserve null while GitHub is still computing mergeability.
       const greenPath = phase === 'open' && pipeline === 'success';
-      const conflictProbe =
-        phase === 'open' && !greenPath && (checks.total === 0 || pipeline === 'failure');
       const mergeability =
-        greenPath || conflictProbe
+        phase === 'open'
           ? await openPrMergeable(id, num, token)
           : { ok: true as const, value: null, mergeState: undefined };
       // A failed lookup is only fatal on the green path, where mergeability decides
@@ -705,6 +622,11 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           pipeline,
           checks,
           mergeable,
+          ...(mergeability.ok &&
+          'viewerCanMerge' in mergeability &&
+          typeof mergeability.viewerCanMerge === 'boolean'
+            ? { viewerCanMerge: mergeability.viewerCanMerge }
+            : {}),
           ...(mergeState === undefined ? {} : { mergeState }),
           ...(typeof baseRef === 'string' && baseRef.length > 0 ? { baseRef } : {}),
           ...(typeof baseSha === 'string' && baseSha.length > 0 ? { baseSha } : {}),
@@ -885,34 +807,23 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
             ...(expectedHeadSha !== undefined ? { sha: expectedHeadSha } : {}),
           }),
         });
-        if (!res.ok) return confirmMerged();
+        if (!res.ok) {
+          if (await confirmMerged()) return true;
+          const refusal: unknown = await res.json().catch(() => undefined);
+          if (isForgeMergePermissionDenied(res.status, refusal))
+            throw new ForgeMergePermissionError();
+          return false;
+        }
         cache.clear();
         lastCacheByBranch.clear();
         responseCache.clear();
         return true;
-      } catch {
+      } catch (error) {
+        if (error instanceof ForgeMergePermissionError) throw error;
         return confirmMerged();
       }
     },
   };
-}
-
-/**
- * The latest published GitHub release for a repo, trimmed to what the project
- * overview surfaces: the tag, the human release name, its html url and the
- * publish timestamp. Only the `tag` is rendered today (the overview version
- * badge); `name`/`url`/`publishedAt` are carried + persisted for a follow-up
- * detail view / link-out. `null` fields where GitHub omitted them.
- */
-export interface ReleaseSummary {
-  /** The git tag the release points at (e.g. `v1.4.0`). Always present. */
-  tag: string;
-  /** The release's display name, or null when unnamed (GitHub falls back to the tag). */
-  name: string | null;
-  /** The release's html url on GitHub. */
-  url: string;
-  /** ISO 8601 publish timestamp, or null for a draft/unpublished release. */
-  publishedAt: string | null;
 }
 
 /**

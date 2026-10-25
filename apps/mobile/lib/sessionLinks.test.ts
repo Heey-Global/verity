@@ -1,6 +1,6 @@
 import { isLinkableSession } from './sessionLinks';
 
-it('keeps unavailable sessions and inactive or control-plane projects out of the picker', () => {
+it('keeps unavailable sessions and inactive projects out of the picker', () => {
   const candidates = [
     { sessionId: 'active', projectId: 'a' },
     { sessionId: 'inactive', projectId: 'b' },
@@ -17,5 +17,5 @@ it('keeps unavailable sessions and inactive or control-plane projects out of the
         { id: 'c', state: 'active', kind: 'control_plane' },
       ]),
     ),
-  ).toEqual([candidates[0]]);
+  ).toEqual([candidates[0], candidates[2]]);
 });

@@ -46,6 +46,30 @@ Release PR titles use `chore(release): <environment> <product> <version>`, with
 Staging approval builds both app variants; Production approval verifies the
 recorded production TestFlight build.
 
+## Tag registration and superseded snapshots
+
+Each release train reserves its approved release tag before entering its build
+queue. A failed Mobile registration does not prevent Server or Website work.
+Publication and signing still run in `release.yml` under the existing train locks.
+The workflow-change merge barrier checks all trains and remains closed when a
+required tag is missing or inconsistent.
+
+A snapshot can already contain a version bump while GitHub associates the trusted
+release PR with a later merge commit. Registration only treats this as superseded
+when fresh PR metadata and commit ancestry prove that both commits belong to
+current Main. It stops publication from the old snapshot and requests the existing
+`reconcile=true` dispatcher on current Main. Authors, ambiguous identities,
+conflicting tags and API errors remain failures.
+
+The handoff serializes requests and reserves an immutable bookkeeping tag,
+`release-reconcile-attempt/<main-sha>`, before dispatch. This tag is not a release
+source. It prevents duplicate dispatches while Actions listings catch up. An
+existing active reconcile is reused; an earlier completed attempt or a failed
+reserved dispatch requires inspection and an explicit manual reconcile after the
+cause is resolved. Never move a release tag or draft source to recover it. If Main
+advances during handoff, the scheduled reconciliation sweep handles the newer
+snapshot. Production approvals remain separate.
+
 ## Mobile registration
 
 Register `build.verity.app.staging` in App Store Connect and an iOS Google OAuth

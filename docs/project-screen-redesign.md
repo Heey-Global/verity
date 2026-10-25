@@ -3,8 +3,8 @@
 Status: proposed · Target: `apps/mobile/app/project/[id].tsx` (2409 lines) +
 `packages/mobile/src/projectSettings.ts`
 
-This spec defers to [`design-language.md`](./design-language.md) for the status pill, the
-auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
+This spec defers to [`design-system.md`](./design-system.md) for appearance, status intents,
+the auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
 restates none of those; it owns only what is project-specific.
 
 Companion to [`settings-redesign.md`](./settings-redesign.md) (the **server**-level screen).
@@ -107,7 +107,7 @@ Operate-first. Live state at the top, maintenance below, recent activity kept sh
 ‹ Projects        owner/repo
 
 ┌───────────────────────────────────────┐
-│  owner/repo              ✓ Active      │   container state pill (unified vocab)
+│  owner/repo              ✓ Active      │   container status tag (unified vocab)
 │  ‹main · claude-sonnet-…›              │   default branch/model at a glance
 └───────────────────────────────────────┘
 
@@ -147,7 +147,7 @@ Key moves:
   edit command/ports rather than echoing them read-only (kills the two-places defect).
 - **Unconfigured Dev Server = one calm empty state.** Do not render Error, logs, PID, health,
   Start, and Stop when no command/URL exists. Show a short explanation and one
-  `Configure dev server` action. Reserve Himbeere `! Error` for a configured process that
+  `Configure dev server` action. Reserve attention `Needs setup` for a configured process that
   attempted to start or was running and then failed.
 - **Compact facts, prominent actions.** Container/image/version/timestamps become labelled
   rows inside the Container card or Advanced details, not individual full-width cards.
@@ -164,8 +164,10 @@ Key moves:
   container and its provisioning".
 - **Config-changed banner.** After a relevant Configure auto-save (dev-server command/ports
   or the Doppler binding), the card raises a **"Config changed — Reprovision to apply"**
-  banner, per design-language.md's "applying config to a running container".
-- **Confirmation policy (per design-language.md).** Every container recreation —
+  banner, per the design system's
+  ["applying config to a running container"](./design-system.md#applying-config-to-a-running-container).
+- **Confirmation policy (per the
+  [design system](./design-system.md#destructive-action-confirmation-one-policy)).** Every container recreation —
   **Reprovision** and **Update sandbox** — is confirmed; **Refresh token** and dev-server
   Start / Stop / Restart are not destructive and need no confirmation.
 - **Configuration is a door, not a section.** A single row routes to the project-settings
@@ -216,35 +218,30 @@ DOPPLER
   runtime card per entry. The navigation and Configure/Operate split already accommodate that
   expansion without another IA change.
 - **Doppler binding** (`DopplerBindingSection`, `:1289`) keeps its guided project→config
-  picker verbatim; only its status pill folds into the unified pill.
+  picker verbatim; only its status tag folds into the shared status component.
 - The two Doppler concepts stay distinguishable from the **server**-level account token:
   here it's a per-project *binding*/token, there it's the account token that makes binding
   possible. Copy names them reciprocally: **"Doppler binding (uses the account token from
   server Settings)"**.
-- **Aggregate save signal on this sub-screen.** Per design-language.md's auto-save model,
+- **Aggregate save signal on this sub-screen.** Per the design system's
+  [auto-save model](./design-system.md#9-saving-and-interaction),
   the sub-screen carries the same subtle global `Saving…` / `✓ All changes saved` line plus a
   `Last saved HH:MM` footer — it must not drop it.
 - **Sealed store.** The Doppler-token field inherits the sealed-store handling verbatim: a
-  `503` shows `Unlock the secret store first` under the field and reverts the value.
+  `503` shows `Unlock the secret store first` under the field; revert the entered secret as specified by the shared sealed-store policy.
 
 ## 6. Status system  (shared with the server spec)
 
-Reuse the exact same pill (server spec §5): word in `text`/`textMuted` ≥ 4.5:1 + leading
-glyph; tone only drives dot/border/background; **green = ready · Himbeere = needs setup ·
-muted text = optional**. Map the current project vocab onto it:
+Use [the shared status component](./design-system.md#54-status) and
+[status intents](./design-system.md#8-status-intents), with labels from
+[the wording glossary](./design-system.md#11-wording). No project-specific status palette
+or glyph policy is introduced.
 
-| Today | New |
-| --- | --- |
-| Dev server `Running` | green `✓ Running` |
-| Dev server `Ready` | muted `Ready` |
-| Dev server absent, **optional** | muted `Not configured` (never Himbeere) |
-| Dev server absent but **required** | Himbeere `! Needs setup` |
-| Dev server `Error` / `Unreachable` | Himbeere `! Needs setup` |
-| Sandbox image `Update available` / `Security update` | green `✓ Up to date` / Himbeere `! Update available` |
-| Doppler `Minted` / `Bound` | green `✓ Minted` / `transient` `Bound` (spinner + word, not muted) |
-| Container `Active` / `Failed` / `Absent` | green `✓ Active` / Himbeere `! Failed` / muted `Absent` |
-
-Live/transient states (`Checking`, `Starting`, `Stopping`) keep a spinner + word, not a tone.
+Map live dev servers, minted Doppler bindings, active containers, and current sandbox
+images to `ready`. Required missing services, unreachable services, failed containers,
+and available sandbox updates use `needsSetup`. Optional absent services use `optional`.
+In-progress operations, including binding before minting, use `transient` with a spinner
+and word. Preserve the distinction between `Running` for processes and `Active` for containers.
 
 ## 7. Automations (Monitors)  — first-class, needs server work
 
@@ -264,7 +261,7 @@ redesign gives it a real home but is honest that it is not yet functional:
 | # | Change | Effort |
 | --- | --- | --- |
 | 1 | Retire `n/8` + Save button in the config → auto-save (text on blur, per-field feedback); reuse the server spec's model | quick-win |
-| 2 | Adopt the shared 3-state pill; map dev-server / sandbox / Doppler / container vocab onto it | quick-win |
+| 2 | Adopt the shared four-intent status component; map dev-server / sandbox / Doppler / container vocab onto it | quick-win |
 | 3 | Merge Dev-server config + runtime into one card; link to config instead of echoing it read-only | medium |
 | 4 | Fold Lifecycle + Sandbox + Concierge into one "Container" maintenance card; Purge under "More" | medium |
 | 5 | Split Configure into a dedicated `project/[id]/settings` sub-screen; overview becomes Operate-first | medium |

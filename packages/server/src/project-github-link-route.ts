@@ -11,6 +11,7 @@ export interface ProjectGitHubLinkRouteDeps {
     reply: FastifyReply,
     projectId: string,
     repository: string,
+    connectionId?: string,
   ) => Promise<unknown>;
 }
 
@@ -19,6 +20,15 @@ export function registerProjectGitHubLinkRoute(
   app: FastifyInstance,
   deps: ProjectGitHubLinkRouteDeps,
 ): void {
+  app.post('/projects/:id/link', async (request, reply): Promise<unknown> => {
+    if (!deps.isAvailable())
+      return reply.code(503).send({ error: 'project linking is unavailable' });
+    const { id } = projectParams.parse(request.params);
+    const { repo, connectionId } = linkBody
+      .extend({ connectionId: z.string().min(1) })
+      .parse(request.body);
+    return deps.link(request, reply, id, repo, connectionId);
+  });
   app.post('/projects/:id/link-github', async (request, reply): Promise<unknown> => {
     if (!deps.isAvailable()) {
       reply.code(503);

@@ -1,3 +1,4 @@
+import { reuseSnapshotRecords } from '../snapshotIdentity.js';
 import type { LiveHint } from '@verity/events';
 import {
   VerityApiError,
@@ -130,9 +131,21 @@ export class SessionListModel {
 
   constructor(private readonly opts: SessionListModelOptions) {}
 
+  // Equal polls and quota-only ticks must not invalidate every memoized session row.
+  private publishedSessions: SessionSummary[] = [];
+  private orderedSource: SessionSummary[] | undefined;
+
   get state(): SessionListState {
+    if (this.orderedSource !== this._sessions) {
+      this.publishedSessions = reuseSnapshotRecords(
+        this.publishedSessions,
+        orderedSessions(this._sessions),
+        (session) => session.sessionId,
+      );
+      this.orderedSource = this._sessions;
+    }
     return {
-      sessions: orderedSessions(this._sessions),
+      sessions: this.publishedSessions,
       sessionReordering: this.sessionReordering,
       attentionCount: attentionCount(this._sessions),
       loading: this._loading,
@@ -679,7 +692,7 @@ function orderedSessions(sessions: SessionSummary[]): SessionSummary[] {
   }
   for (const session of sessions) manual.get(session.projectId ?? null)?.push(session);
   for (const group of manual.values())
-    group.sort((a, b) => (a.sortOrder ?? -1) - (b.sortOrder ?? -1));
+    group.sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity));
   const offsets = new Map<string | null, number>();
   return queued.map((session) => {
     const key = session.projectId ?? null;

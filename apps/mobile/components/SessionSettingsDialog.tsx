@@ -18,6 +18,7 @@ import { Icon } from './Icon';
 import { randomUUID } from 'expo-crypto';
 import { useUnistyles } from 'react-native-unistyles';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
+import { tint } from './ui/tint';
 
 type MoveInput = Parameters<VerityClient['moveSession']>[1];
 // Keep ambiguous requests through dialog unmounts, scoped to the connected client.
@@ -27,6 +28,7 @@ const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
+  initialSection,
   sessionId,
   sessionName,
   displayName,
@@ -41,6 +43,7 @@ export function SessionSettingsDialog({
   onChanged,
   onDelete,
 }: {
+  initialSection?: 'links';
   sessionId: string;
   sessionName: string | null;
   displayName: string;
@@ -76,6 +79,15 @@ export function SessionSettingsDialog({
     h: number;
     cardHeight: number;
   }>();
+  const settingsScrollRef = useRef<ScrollView>(null);
+  const linksOffset = useRef(0);
+  const openedLinks = useRef(false);
+  const scrollToLinks = () => {
+    if (initialSection === 'links' && !openedLinks.current && linksOffset.current > 0) {
+      settingsScrollRef.current?.scrollTo({ y: linksOffset.current, animated: false });
+      openedLinks.current = true;
+    }
+  };
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
   // A pending wait for the keyboard to hide; dropped whenever the list closes so
@@ -144,6 +156,12 @@ export function SessionSettingsDialog({
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<MoveResult>();
   const [links, setLinks] = useState<Awaited<ReturnType<VerityClient['listSessionLinks']>>>([]);
+  const [savedLinks, setSavedLinks] = useState<typeof links>([]);
+  const [linksLoaded, setLinksLoaded] = useState(false);
+  const [linkLoadAttempt, setLinkLoadAttempt] = useState(0);
+  const linksDirty =
+    links.some((link) => !savedLinks.some((saved) => saved.sessionId === link.sessionId)) ||
+    savedLinks.some((saved) => !links.some((link) => link.sessionId === saved.sessionId));
   const [view, setView] = useState<'settings' | 'link'>('settings');
   const [linkQuery, setLinkQuery] = useState('');
   const [linkFilter, setLinkFilter] = useState<string | null>(null);
@@ -165,7 +183,6 @@ export function SessionSettingsDialog({
     slide.setValue(next === 'link' ? 1 : -1);
     Animated.timing(slide, { toValue: 0, duration: 180, useNativeDriver: true }).start();
   };
-  const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string>();
   const isLinked = (id: string) => links.some((link) => link.sessionId === id);
   const linkProjects = [
@@ -191,7 +208,11 @@ export function SessionSettingsDialog({
     void client
       .listSessionLinks(sessionId)
       .then((items) => {
-        if (active) setLinks(items);
+        if (active) {
+          setLinks(items);
+          setSavedLinks(items);
+          setLinksLoaded(true);
+        }
       })
       .catch(() => {
         if (active) setLinkError('Linked sessions could not be loaded.');
@@ -199,52 +220,55 @@ export function SessionSettingsDialog({
     return () => {
       active = false;
     };
-  }, [client, sessionId]);
-  const addLink = async (targetId: string) => {
-    setLinkBusy(true);
-    setLinkError(undefined);
-    try {
-      await client.linkSessions(sessionId, targetId);
-      setLinks(await client.listSessionLinks(sessionId));
-    } catch (error) {
-      setLinkError(
-        error instanceof VerityApiError && error.status < 500
-          ? `Could not link the sessions: ${error.message}.`
-          : 'Could not link the sessions. Please try again.',
-      );
-    } finally {
-      setLinkBusy(false);
-    }
+  }, [client, sessionId, linkLoadAttempt]);
+  const addLink = (targetId: string) => {
+    const candidate = linkableSessions.find((item) => item.id === targetId);
+    if (!candidate || !linksLoaded || isLinked(targetId)) return;
+    setLinks((current) => [
+      ...current,
+      {
+        sessionId: candidate.id,
+        name: candidate.name,
+        projectId: candidate.projectId,
+        projectName: candidate.projectName,
+      },
+    ]);
   };
-  const removeLink = async (targetId: string) => {
-    setLinkBusy(true);
-    setLinkError(undefined);
-    try {
-      await client.unlinkSessions(sessionId, targetId);
-      setLinks((current) => current.filter((link) => link.sessionId !== targetId));
-    } catch {
-      setLinkError('Could not disconnect the sessions. Please try again.');
-    } finally {
-      setLinkBusy(false);
-    }
+  const removeLink = (targetId: string) => {
+    setLinks((current) => current.filter((link) => link.sessionId !== targetId));
   };
   const willMove = unresolved || (target !== null && target !== projectId);
   const canSave =
     !busy &&
-    !linkBusy &&
-    (draftName.trim() !== (savedName ?? '') || willMove) &&
+    (draftName.trim() !== (savedName ?? '') || willMove || linksDirty) &&
     (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
     Keyboard.dismiss();
     setBusy(true);
     setError(undefined);
-    let step: 'rename' | 'move' = 'rename';
+    let step: 'rename' | 'move' | 'links' = 'rename';
     try {
       const name = draftName.trim() || null;
       if (name !== savedName) {
         await client.renameSession(sessionId, name);
         setSavedName(name);
+        onChanged(false);
+      }
+      step = 'links';
+      // Record each successful write so retrying a partial save does not repeat it.
+      for (const link of savedLinks.filter(
+        (saved) => !links.some((draft) => draft.sessionId === saved.sessionId),
+      )) {
+        await client.unlinkSessions(sessionId, link.sessionId);
+        setSavedLinks((current) => current.filter((saved) => saved.sessionId !== link.sessionId));
+        onChanged(false);
+      }
+      for (const link of links.filter(
+        (draft) => !savedLinks.some((saved) => saved.sessionId === draft.sessionId),
+      )) {
+        await client.linkSessions(sessionId, link.sessionId);
+        setSavedLinks((current) => [...current, link]);
         onChanged(false);
       }
       if (!willMove || !target) {
@@ -276,9 +300,13 @@ export function SessionSettingsDialog({
         setUnresolved(false);
       }
       setError(
-        step === 'move'
-          ? moveErrorMessage(cause)
-          : 'The session name could not be saved. Please try again.',
+        step === 'links'
+          ? cause instanceof VerityApiError && cause.status < 500
+            ? `Could not save session links: ${cause.message}.`
+            : 'Session links could not be saved. Please try again.'
+          : step === 'move'
+            ? moveErrorMessage(cause)
+            : 'The session name could not be saved. Please try again.',
       );
       setCommitConfirmation(cause instanceof VerityApiError && cause.code === 'source_commits');
     } finally {
@@ -290,7 +318,7 @@ export function SessionSettingsDialog({
       ? projectName
       : (projects.find((project) => project.id === target)?.name ?? target);
   const close = () => {
-    if (!busy && !linkBusy) onClose();
+    if (!busy) onClose();
   };
   const deleteButton = !result && (
     <Pressable
@@ -300,14 +328,14 @@ export function SessionSettingsDialog({
       onPress={onDelete}
       style={[styles.button, styles.deleteButton, (busy || unresolved) && styles.disabled]}
     >
-      <Icon name="trash-2" size={16} color={theme.colors.tone.danger} />
+      <Icon name="trash-2" size={16} color={theme.colors.attention} />
       <Text style={styles.deleteText}>Delete</Text>
     </Pressable>
   );
   const cancelButton = !result && (
     <Pressable
       accessibilityRole="button"
-      disabled={busy || linkBusy}
+      disabled={busy}
       onPress={close}
       style={[styles.button, busy && styles.disabled]}
     >
@@ -330,7 +358,7 @@ export function SessionSettingsDialog({
       }
       style={[styles.button, styles.primary, !result && !canSave && styles.disabled]}
     >
-      {busy && <ActivityIndicator size="small" color={theme.colors.onPrimary} />}
+      {busy && <ActivityIndicator size="small" color={theme.colors.onAction} />}
       <Text style={styles.primaryText}>
         {result
           ? 'Done'
@@ -351,7 +379,7 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back to session settings"
-          disabled={linkBusy}
+          disabled={busy}
           onPress={back}
           style={styles.iconButton}
         >
@@ -370,7 +398,7 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close session settings"
-          disabled={busy || linkBusy}
+          disabled={busy}
           onPress={close}
           style={styles.iconButton}
         >
@@ -383,6 +411,8 @@ export function SessionSettingsDialog({
     <>
       {header(result ? 'Session moved' : 'Session settings', undefined)}
       <ScrollView
+        ref={settingsScrollRef}
+        onContentSizeChange={scrollToLinks}
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -430,12 +460,15 @@ export function SessionSettingsDialog({
                 accessibilityValue={{ text: targetName ?? 'Choose a project' }}
                 accessibilityState={{
                   expanded: pickerOpen,
-                  disabled: busy || unresolved || !canMove || projects.length === 0,
+                  disabled: busy || unresolved || linksDirty || !canMove || projects.length === 0,
                 }}
-                disabled={busy || unresolved || !canMove || projects.length === 0}
+                disabled={busy || unresolved || linksDirty || !canMove || projects.length === 0}
                 onPress={togglePicker}
                 ref={selectRef}
-                style={[styles.select, (busy || unresolved || !canMove) && styles.disabled]}
+                style={[
+                  styles.select,
+                  (busy || unresolved || linksDirty || !canMove) && styles.disabled,
+                ]}
               >
                 <Icon name="folder" size={16} color={theme.colors.textMuted} />
                 <Text style={[styles.selectText, !target && styles.placeholder]} numberOfLines={1}>
@@ -448,6 +481,11 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
+            {linksDirty && (
+              <Text style={styles.hint}>
+                Save or discard link changes before moving the session.
+              </Text>
+            )}
             {!canMove && (
               <Text style={styles.hint}>
                 {moveDisabledReason ?? 'Moving is available for idle sessions in local projects.'}
@@ -481,7 +519,7 @@ export function SessionSettingsDialog({
                 <Icon
                   name={leaveCommits ? 'check-square' : 'square'}
                   size={20}
-                  color={theme.colors.accent}
+                  color={theme.colors.signature}
                 />
                 <Text style={styles.optionText}>Leave committed changes in the source project</Text>
               </Pressable>
@@ -492,7 +530,13 @@ export function SessionSettingsDialog({
                 original project.
               </Text>
             )}
-            <View style={styles.sectionHeaderRow}>
+            <View
+              style={styles.sectionHeaderRow}
+              onLayout={(event) => {
+                linksOffset.current = event.nativeEvent.layout.y;
+                scrollToLinks();
+              }}
+            >
               <Text style={styles.label} accessibilityRole="header">
                 Linked sessions
               </Text>
@@ -506,7 +550,7 @@ export function SessionSettingsDialog({
                 <Icon
                   name="info"
                   size={16}
-                  color={linkInfoOpen ? theme.colors.accent : theme.colors.textFaint}
+                  color={linkInfoOpen ? theme.colors.signature : theme.colors.textFaint}
                 />
               </Pressable>
             </View>
@@ -526,7 +570,7 @@ export function SessionSettingsDialog({
                 return (
                   <View key={link.sessionId} style={styles.groupRow}>
                     <View style={[styles.rowIcon, styles.rowIconLinked]}>
-                      <Icon name="link" size={15} color={theme.colors.primary} />
+                      <Icon name="link" size={15} color={theme.colors.action} />
                     </View>
                     <View style={styles.linkLabel}>
                       <Text style={styles.rowTitle} numberOfLines={1}>
@@ -539,7 +583,7 @@ export function SessionSettingsDialog({
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
-                      disabled={linkBusy || busy || unresolved || willMove}
+                      disabled={!linksLoaded || busy || unresolved || willMove}
                       onPress={() => void removeLink(link.sessionId)}
                       style={styles.linkRemove}
                     >
@@ -551,17 +595,17 @@ export function SessionSettingsDialog({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={links.length === 0 ? 'Link a session' : 'Link another session'}
-                accessibilityState={{ disabled: linkBusy || busy || unresolved || willMove }}
-                disabled={linkBusy || busy || unresolved || willMove}
+                accessibilityState={{ disabled: !linksLoaded || busy || unresolved || willMove }}
+                disabled={!linksLoaded || busy || unresolved || willMove}
                 onPress={() => showView('link')}
                 style={[
                   styles.groupRow,
                   links.length > 0 && styles.groupRowDivided,
-                  (linkBusy || busy || unresolved || willMove) && styles.disabled,
+                  (!linksLoaded || busy || unresolved || willMove) && styles.disabled,
                 ]}
               >
                 <View style={[styles.rowIcon, styles.rowIconAction]}>
-                  <Icon name="plus" size={16} color={theme.colors.accent} />
+                  <Icon name="plus" size={16} color={theme.colors.signature} />
                 </View>
                 <View style={styles.linkLabel}>
                   <Text style={styles.linkActionText}>
@@ -579,6 +623,19 @@ export function SessionSettingsDialog({
                 {linkError}
               </Text>
             ) : null}
+            {!linksLoaded && linkError && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading linked sessions"
+                disabled={busy}
+                onPress={() => {
+                  setLinkError(undefined);
+                  setLinkLoadAttempt((attempt) => attempt + 1);
+                }}
+              >
+                <Text style={styles.linkActionText}>Retry loading linked sessions</Text>
+              </Pressable>
+            )}
             {willMove ? (
               <Text style={styles.hint}>Save the project change before linking sessions.</Text>
             ) : null}
@@ -610,7 +667,11 @@ export function SessionSettingsDialog({
   );
   const linkView = (
     <>
-      {header('Link a session', 'Tap an agent to link it immediately.', () => showView('settings'))}
+      {header(
+        'Link a session',
+        'Choose sessions, then save your changes in session settings.',
+        () => showView('settings'),
+      )}
       <View style={styles.linkTools}>
         <View style={styles.search}>
           <Icon name="search" size={16} color={theme.colors.textMuted} />
@@ -684,8 +745,8 @@ export function SessionSettingsDialog({
                   key={item.id}
                   accessibilityRole="button"
                   accessibilityLabel={linked ? `${item.name}, linked` : `Link ${item.name}`}
-                  accessibilityState={{ disabled: linked || linkBusy, selected: linked }}
-                  disabled={linked || linkBusy}
+                  accessibilityState={{ disabled: linked || busy, selected: linked }}
+                  disabled={linked || busy}
                   onPress={() => void addLink(item.id)}
                   style={({ pressed }) => [styles.candidate, pressed && styles.candidatePressed]}
                 >
@@ -704,12 +765,12 @@ export function SessionSettingsDialog({
                   </View>
                   {linked ? (
                     <View style={styles.linkedBadge}>
-                      <Icon name="check" size={14} color={theme.colors.tone.done} />
+                      <Icon name="check" size={14} color={theme.colors.success} />
                       <Text style={styles.linkedText}>Linked</Text>
                     </View>
                   ) : (
                     <View style={styles.addButton}>
-                      <Icon name="plus" size={16} color={theme.colors.primary} />
+                      <Icon name="plus" size={16} color={theme.colors.action} />
                     </View>
                   )}
                 </Pressable>
@@ -729,11 +790,11 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Done linking"
-          disabled={linkBusy}
+          disabled={busy}
           onPress={() => showView('settings')}
           style={[styles.button, styles.secondary]}
         >
-          {linkBusy ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
+          {busy ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
           <Text style={styles.secondaryText}>Done</Text>
         </Pressable>
       </View>
@@ -763,7 +824,7 @@ export function SessionSettingsDialog({
       transparent
       animationType="fade"
       // Android back leaves the link view first, like its on-screen back button.
-      onRequestClose={linking ? () => !linkBusy && showView('settings') : close}
+      onRequestClose={linking ? () => !busy && showView('settings') : close}
     >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -833,9 +894,9 @@ export function SessionSettingsDialog({
                         accessibilityLabel={project.name}
                         accessibilityState={{
                           selected: target === project.id,
-                          disabled: busy || unresolved || !canMove,
+                          disabled: busy || unresolved || linksDirty || !canMove,
                         }}
-                        disabled={busy || unresolved || !canMove}
+                        disabled={busy || unresolved || linksDirty || !canMove}
                         style={[styles.option, target === project.id && styles.selected]}
                         onPress={() => {
                           setTarget(project.id);
@@ -849,7 +910,7 @@ export function SessionSettingsDialog({
                         <Icon name="folder" size={16} color={theme.colors.textMuted} />
                         <Text style={styles.optionText}>{project.name}</Text>
                         {target === project.id && (
-                          <Icon name="check" size={16} color={theme.colors.accent} />
+                          <Icon name="check" size={16} color={theme.colors.signature} />
                         )}
                       </Pressable>
                     ))}
@@ -893,7 +954,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       justifyContent: 'center',
       alignItems: 'center',
       padding: 24,
-      backgroundColor: 'rgba(3,2,10,0.72)',
+      backgroundColor: theme.colors.scrim,
     },
     card: {
       width: '100%',
@@ -902,11 +963,11 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 20,
       backgroundColor: theme.colors.surface,
       borderWidth: 1,
-      borderColor: `${theme.colors.accent}33`,
+      borderColor: tint(theme.colors.signature, 'ring'),
       overflow: 'hidden',
       // A faint accent halo lifts the card off the dimmed app (iOS; Android has no
       // coloured shadow and keeps the border alone).
-      shadowColor: theme.colors.accent,
+      shadowColor: theme.colors.signature,
       shadowOpacity: 0.16,
       shadowRadius: 28,
       shadowOffset: { width: 0, height: 8 },
@@ -915,8 +976,16 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     paneFill: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', padding: 20, paddingBottom: 16, gap: 12 },
     heading: { flex: 1, gap: 3 },
-    title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-    subtitle: { color: theme.colors.textMuted, fontSize: theme.text.sm },
+    title: {
+      color: theme.colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    subtitle: {
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
     iconButton: {
       width: 36,
       height: 36,
@@ -929,19 +998,21 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     content: { paddingHorizontal: 20, paddingBottom: 20, gap: 14 },
     description: {
       color: theme.colors.textMuted,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       lineHeight: 20 * theme.fontScale,
     },
     hint: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.xs,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
       lineHeight: 18 * theme.fontScale,
     },
     field: { gap: 8 },
     overline: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.xs,
-      fontWeight: '700',
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
       letterSpacing: 1,
       textTransform: 'uppercase',
     },
@@ -972,17 +1043,25 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       alignItems: 'center',
       justifyContent: 'center',
     },
-    rowIconLinked: { backgroundColor: `${theme.colors.primary}26` },
-    rowIconAction: { backgroundColor: `${theme.colors.accent}1f` },
-    rowTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+    rowIconLinked: { backgroundColor: tint(theme.colors.action, 'fill') },
+    rowIconAction: { backgroundColor: tint(theme.colors.signature, 'fill') },
+    rowTitle: {
+      color: theme.colors.text,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     rowTitleMuted: { color: theme.colors.textMuted },
-    rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+    rowDetail: {
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     linkLabel: { flex: 1, gap: 2 },
     linkRemove: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
     linkActionText: {
-      color: theme.colors.accent,
-      fontSize: theme.text.sm,
-      fontWeight: '600',
+      color: theme.colors.signature,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
     },
     linkTools: { paddingHorizontal: 20, paddingBottom: 12, gap: 12 },
     search: {
@@ -998,7 +1077,8 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       flex: 1,
       paddingVertical: 10,
       color: theme.colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
     },
     chips: { gap: 8 },
     chip: {
@@ -1011,11 +1091,15 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       backgroundColor: theme.colors.surfaceAlt,
     },
     chipActive: {
-      backgroundColor: `${theme.colors.accent}1f`,
-      borderColor: `${theme.colors.accent}80`,
+      backgroundColor: tint(theme.colors.signature, 'fill'),
+      borderColor: tint(theme.colors.signature, 'border'),
     },
-    chipText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-    chipTextActive: { color: theme.colors.accent },
+    chipText: {
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    chipTextActive: { color: theme.colors.signature },
     linkList: {
       flex: 1,
       borderTopWidth: StyleSheet.hairlineWidth,
@@ -1040,13 +1124,18 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       alignItems: 'center',
       justifyContent: 'center',
       borderWidth: 1.5,
-      borderColor: `${theme.colors.primary}b3`,
+      borderColor: theme.colors.action,
     },
     linkedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingRight: 4 },
-    linkedText: { color: theme.colors.tone.done, fontSize: theme.text.xs, fontWeight: '600' },
+    linkedText: {
+      color: theme.colors.success,
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     emptyText: {
       color: theme.colors.textFaint,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       textAlign: 'center',
       paddingVertical: 24,
     },
@@ -1059,9 +1148,10 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       paddingVertical: 10,
       backgroundColor: theme.colors.surfaceAlt,
       color: theme.colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
     },
-    inputFocused: { borderColor: `${theme.colors.accent}cc` },
+    inputFocused: { borderColor: theme.colors.action },
     compactFooter: { flexDirection: 'column', alignItems: 'stretch', flexWrap: 'nowrap' },
     compactActions: { flexShrink: 0, flexDirection: 'row', justifyContent: 'space-between' },
     footerRight: {
@@ -1074,8 +1164,16 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     },
     footerEnd: { justifyContent: 'flex-end' },
     deleteButton: { paddingHorizontal: 6, gap: 6 },
-    deleteText: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
-    label: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+    deleteText: {
+      color: theme.colors.attention,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    label: {
+      color: theme.colors.text,
+      fontSize: theme.typography.bodySmall.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     select: {
       minHeight: 48,
       flexDirection: 'row',
@@ -1086,7 +1184,12 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       borderRadius: 12,
       backgroundColor: theme.colors.surfaceAlt,
     },
-    selectText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
+    selectText: {
+      flex: 1,
+      color: theme.colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
     placeholder: { color: theme.colors.textFaint },
     options: {
       position: 'absolute',
@@ -1096,7 +1199,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       backgroundColor: theme.colors.surfaceAlt,
       paddingVertical: 4,
       // No overflow clipping here: on iOS it would mask the shadow.
-      shadowColor: '#000',
+      shadowColor: theme.elevation.floating.shadowColor,
       shadowOpacity: 0.45,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 8 },
@@ -1110,12 +1213,18 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       gap: 10,
       padding: 12,
     },
-    selected: { backgroundColor: `${theme.colors.accent}14` },
-    optionText: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
-    errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.tone.danger, paddingLeft: 12 },
+    selected: { backgroundColor: tint(theme.colors.signature, 'neutral') },
+    optionText: {
+      flex: 1,
+      color: theme.colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    errorBox: { borderLeftWidth: 2, borderLeftColor: theme.colors.attention, paddingLeft: 12 },
     error: {
-      color: theme.colors.tone.danger,
-      fontSize: theme.text.sm,
+      color: theme.colors.attention,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       lineHeight: 21 * theme.fontScale,
     },
     confirm: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 },
@@ -1143,11 +1252,23 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     primary: {
       minWidth: 96,
       borderRadius: theme.radius.md,
-      backgroundColor: theme.colors.primary,
+      backgroundColor: theme.colors.action,
     },
-    primaryText: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '700' },
+    primaryText: {
+      color: theme.colors.onAction,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     secondary: { minWidth: 96, backgroundColor: theme.colors.surfaceAlt },
-    secondaryText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
-    cancelText: { color: theme.colors.textMuted, fontSize: theme.text.md, fontWeight: '600' },
+    secondaryText: {
+      color: theme.colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
+    cancelText: {
+      color: theme.colors.textMuted,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.semibold,
+    },
     disabled: { opacity: 0.45 },
   });

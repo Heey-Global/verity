@@ -938,9 +938,9 @@ What the condition gates is now open, and it is not a flag — there never was o
 "Enabling" means migrating a deployment into managed mode: the topology lives
 behind the `managed` Compose profile plus the ownership overlay, and
 `deploy/bin/verity-compose managed-up` is the single guarded path into it
-(`deploy/README.md`, "Migrate to managed Server updates"). A deployment that has
-not run that command is host-managed and reports Server self-update as
-unsupported, whatever this matrix says.
+(`docs/operations/server-updates-and-recovery.md`, "Migrate to managed Server
+updates"). A deployment that has not run that command is host-managed and
+reports Server self-update as unsupported, whatever this matrix says.
 
 The condition explicitly covers an old managed topology moving to a newer target:
 the live smoke starts Server, Gateways and Updater on the previous published image,
@@ -1257,10 +1257,10 @@ restarts the retained container **by id**, without comparing it to the spec. A
 rollback that started re-comparing would put the fatal refusal back inside the
 cutover, at the one point where there is nothing to fall back to.
 
-`deploy/README.md` documents the blunt manual repair for a host already in the
-crash loop — remove the Server container so the Updater takes the create path —
-including its cost: one hard control-plane restart, no drain, in-flight sessions
-lost.
+`docs/operations/server-updates-and-recovery.md` documents the blunt manual
+repair for a host already in the crash loop — remove the Server container so
+the Updater takes the create path — including its cost: one hard control-plane
+restart, no drain, in-flight sessions lost.
 
 
 ## Amendment 2 — host runtime prerequisites are reconciled before activation (2026-09-23)
@@ -1313,3 +1313,36 @@ amendment, then re-run the installer once, then Repair the affected projects.
 new copy of the component, which reaches a host through `verity-install`. Hosts without systemd
 (e.g. Docker-in-Docker) get the component's reconciliation at install time only; their Updater
 reports `host-runtime-failed` with the instruction to re-run the installer.
+
+## Amendment 3 — a backup snapshot gates the update (2026-10-24)
+
+**Context.** [ADR 0025](0025-encrypted-backup-and-installer-recovery.md) makes the moment before an
+update the rollback point for data, because the promoted Server runs forward-only migrations.
+
+**Decision.**
+
+1. After `preflight` and before `creating-standby`, the Updater asks the old Server over the
+   control channel for one backup snapshot tagged `pre-update`, while the old Server still serves.
+2. With backups configured, "Updates wait for a backup" is on by default. A failed or timed-out
+   snapshot (one-hour timeout; while the first full backup is still running, the update holds until it
+   ends instead) holds the update in that phase, which has not touched data, and the app shows the
+   reason. The administrator may choose "Update anyway", which runs the update and records it as
+   unbacked in the update history. Automatic updates never override the hold. The hold is journaled
+   as a reason on the `preflight` phase, so an Updater restart resumes in `preflight` and asks for the
+   snapshot again; "Update anyway" clears the reason and continues from there. The installer's
+   same-host rollback is a second trigger of the automatic update hold, which then lasts until the
+   administrator resumes updates in the app.
+3. Without configured backups, or while backups are paused, the update runs and the update history
+   notes that no backup was taken.
+4. The host gains a second Verity component beside `verity-host-runtime`: a root-owned backup
+   identity helper with the same shape (script plus systemd path unit, installed by
+   `verity-install`, root-owned request directory). It only encrypts the root-only TLS CA key to the
+   recipient key the Server provides and writes it into the backup directory. Because the Server
+   chooses that key, this is safe only while the Server is host-root-equivalent through the raw
+   Docker socket; when the policy gateway removes that, the helper accepts only a recipient key
+   registered by root through the installer. Amendment 2's "exactly
+   one component" is amended accordingly.
+
+**Limits.** The snapshot is taken before quiescing, so changes between it and the switch are not in
+it. A quiesced final snapshot after `quiescing-old` needs the old Server's control socket and
+database to stay usable while quiesced and a new rollback path from that phase; ADR 0025 defers both.

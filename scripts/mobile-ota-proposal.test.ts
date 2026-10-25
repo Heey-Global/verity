@@ -13,6 +13,7 @@ import {
   otaConfigPath,
   otaManifestPath,
   otaReleasePlan,
+  otaPlanningBaseline,
   otaSourcePath,
   otaVersionPath,
 } from './mobile-ota-proposal.mjs';
@@ -35,7 +36,7 @@ it('starts a fresh runtime at patch one and refuses an unpublished native runtim
       { tag_name: 'mobile-v1.53.0', draft: false },
     ]).version,
   ).toBe('1.53.1');
-  expect(() => otaReleasePlan('1.53.0', [])).toThrow('not published');
+  expect(() => otaReleasePlan('1.53.0', [])).toThrow('no release candidate');
   expect(() => otaReleasePlan('1.53.1', [])).toThrow('native');
 });
 
@@ -165,10 +166,14 @@ function detectFixture(
     nativeVersion?: string;
     released?: boolean;
     complete?: boolean;
+    deferred?: boolean;
+    event?: string;
     tagCommit?: string;
     reviewedVersion?: string;
     production?: boolean;
     forged?: boolean;
+    missingAssociation?: boolean;
+    fallbackCommit?: string;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-proposal-'));
@@ -181,6 +186,7 @@ function detectFixture(
   const pr = {
     number: 12,
     merged_at: '2026-10-04',
+    merge_commit_sha: options.fallbackCommit ?? commit,
     base: { ref: 'main' },
     head: {
       ref: options.forged
@@ -193,13 +199,15 @@ function detectFixture(
       ? [{ name: 'autorelease: tagged-mobile-ota' }]
       : [{ name: 'autorelease: pending-mobile-ota' }],
   };
+  if (options.deferred) pr.labels.push({ name: 'autorelease: deferred-mobile-ota' });
   const gh = `#!${process.execPath}
 const args=process.argv.slice(2);
 const endpoint=args.at(-1);
 let response;
 if (args[0] === 'label' || args[0] === 'pr') response={};
 else if (endpoint.includes('/releases?')) response=[[${options.released ? JSON.stringify({ tag_name: 'mobile-v1.52.4', draft: false, prerelease: !options.production }) : ''}]];
-else if (endpoint.endsWith('/pulls')) response=[${JSON.stringify(pr)}];
+else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[]' : JSON.stringify([pr])};
+else if (endpoint.includes('/pulls?')) response=[[${JSON.stringify(pr)}]];
 else if (endpoint.includes('/contents/')) response={content: ${JSON.stringify(Buffer.from(options.reviewedVersion ?? '1.52.4').toString('base64'))}};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
@@ -225,6 +233,7 @@ process.stdout.write(process.argv[2] === 'log' ? '${commit}' : '${options.tagCom
           PATH: `${join(cwd, 'bin')}:${process.env.PATH}`,
           GITHUB_REPOSITORY: 'example/verity',
           GITHUB_OUTPUT: output,
+          GITHUB_EVENT_NAME: options.event ?? 'push',
         },
       },
     );
@@ -249,6 +258,23 @@ it('retries an incomplete promotion proposal even when its Staging prerelease al
   expect(completed.output).toBe('mode=plan\n');
 });
 
+it('resumes a deferred proposal after Staging completion and delivery dispatch', () => {
+  const deferred = detectFixture({
+    released: true,
+    complete: true,
+    deferred: true,
+    event: 'workflow_dispatch',
+  });
+  expect(deferred.status, deferred.stderr).toBe(0);
+  expect(deferred.output).toContain('mode=stage');
+  const nextMerge = detectFixture({ released: true, complete: true, deferred: true });
+  expect(nextMerge.status, nextMerge.stderr).toBe(0);
+  expect(nextMerge.output).toBe('mode=plan\n');
+  const recovered = detectFixture({ released: true, complete: true });
+  expect(recovered.status, recovered.stderr).toBe(0);
+  expect(recovered.output).toBe('mode=plan\n');
+});
+
 it('recovers a missed completion label after production has already delivered the version', () => {
   const result = detectFixture({ released: true, production: true });
   expect(result.status, result.stderr).toBe(0);
@@ -263,7 +289,7 @@ it('rejects a mismatched public tag or a changed release PR version', () => {
   expect(detectFixture({ forged: true }).status).not.toBe(0);
 });
 
-it('publishes only merged fixed versions under the shared mobile release lock', () => {
+it('publishes only merged fixed versions under an independent staging lock', () => {
   const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
     concurrency: { group: string; 'cancel-in-progress': boolean };
     jobs: {
@@ -272,12 +298,18 @@ it('publishes only merged fixed versions under the shared mobile release lock', 
       };
     };
   };
-  expect(workflow.concurrency.group).toBe('release-mobile');
+  const promotion = parse(readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8'));
+  expect(workflow.concurrency.group).not.toBe(promotion.concurrency.group);
+  expect(workflow.concurrency.group).not.toBe('release-mobile');
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);
   const steps = workflow.jobs.update.steps;
   const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage'));
   expect(stage?.if).toContain("steps.intent.outputs.mode == 'stage'");
   expect(stage?.run).toContain('steps.intent.outputs.version');
+  expect((stage as { id?: string })?.id).toBe('stage');
+  expect(
+    steps.find((step) => step.run?.includes('mobile-ota-proposal.mjs complete'))?.run,
+  ).toContain('steps.stage.outputs.deferred');
   expect(stage?.env?.OTA_SOURCE_SHA).toContain('steps.intent.outputs.commit');
   const refresh = steps.findIndex((step) => step.run?.includes('git fetch origin main'));
   const ownership = steps.findIndex(
@@ -302,4 +334,87 @@ it('plans the new native line instead of replaying an unfinished obsolete OTA re
   const result = detectFixture({ nativeVersion: '1.53.0' });
   expect(result.status).toBe(0);
   expect(result.output).toBe('mode=plan\n');
+});
+
+it('plans the first patch from a native draft while ignoring unfinished OTA drafts', () => {
+  expect(
+    otaReleasePlan('1.61.0', [
+      { tag_name: 'mobile-v1.60.3', draft: false },
+      { tag_name: 'mobile-v1.61.0', draft: true },
+      { tag_name: 'mobile-v1.61.1', draft: true },
+    ]),
+  ).toEqual({ baseline: 'mobile-v1.61.0', version: '1.61.1' });
+});
+
+it('gates OTA delivery on native publication while allowing PR planning immediately', () => {
+  const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+    jobs: { update: { steps: Array<{ id?: string; run?: string; if?: string }> } };
+  };
+  const steps = workflow.jobs.update.steps;
+  const plan = steps.find((step: { run?: string }) =>
+    step.run?.includes('mobile-ota-proposal.mjs plan'),
+  );
+  const gate = steps.find((step: { id?: string }) => step.id === 'version');
+  expect(plan?.if).toBe("steps.intent.outputs.mode == 'plan'");
+  expect(plan?.run).toContain('apps/mobile/version.txt');
+  expect(gate?.if).toBe("steps.intent.outputs.mode == 'stage'");
+  expect(
+    steps.find((step: { run?: string }) => step.run?.includes('mobile-ota-release.ts stage'))?.if,
+  ).toContain("steps.version.outputs.blocked != 'true'");
+});
+
+it('uses only an immutable compatible native draft source for early planning', () => {
+  const runtime = '1.61.0';
+  const source = 'c'.repeat(40);
+  const draft = {
+    tag_name: `mobile-v${runtime}`,
+    draft: true,
+    prerelease: false,
+    target_commitish: source,
+  };
+  const calls: string[][] = [];
+  const execute = (command: string, args: string[]) => {
+    calls.push([command, ...args]);
+    return args[0] === 'show' ? runtime : '';
+  };
+  expect(otaPlanningBaseline(runtime, draft.tag_name, [draft], execute)).toBe(source);
+  expect(calls).toContainEqual(['git', 'merge-base', '--is-ancestor', source, 'HEAD']);
+  expect(calls).toContainEqual(['node', 'scripts/mobile-native-compatibility.mjs', source, 'HEAD']);
+  expect(() =>
+    otaPlanningBaseline(runtime, draft.tag_name, [{ ...draft, target_commitish: 'main' }], execute),
+  ).toThrow('Invalid OTA release baseline');
+  expect(() => otaPlanningBaseline(runtime, draft.tag_name, [draft], () => '1.60.0')).toThrow(
+    'does not match',
+  );
+  expect(
+    otaPlanningBaseline(runtime, draft.tag_name, [draft], (command, args) =>
+      command === 'node' ? 'native-change' : args[0] === 'show' ? runtime : '',
+    ),
+  ).toBeNull();
+});
+
+// Planning must not reserve an undeliverable OTA on a published native line.
+it('checks native compatibility for published planning baselines too', () => {
+  const source = 'd'.repeat(40);
+  const baseline = 'mobile-v1.61.0';
+  const releases = [{ tag_name: baseline, draft: false, prerelease: true }];
+  const execute = (command: string, args: string[]) =>
+    command === 'node' ? 'Native input changed' : args[0] === 'rev-list' ? source : '';
+  expect(otaPlanningBaseline('1.61.0', baseline, releases, execute)).toBeNull();
+  expect(
+    otaPlanningBaseline('1.61.0', baseline, releases, (command, args) =>
+      command === 'git' && args[0] === 'rev-list' ? source : '',
+    ),
+  ).toBe(source);
+});
+
+it('recovers missing commit associations only for the exact merged release source', () => {
+  const result = detectFixture({ missingAssociation: true });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.output).toContain('mode=stage');
+  expect(
+    detectFixture({ missingAssociation: true, fallbackCommit: 'd'.repeat(40) }).status,
+  ).not.toBe(0);
+  expect(detectFixture({ missingAssociation: true, forged: true }).status).not.toBe(0);
+  expect(detectFixture({ missingAssociation: true, reviewedVersion: '1.52.3' }).status).not.toBe(0);
 });

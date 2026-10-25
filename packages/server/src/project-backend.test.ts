@@ -3,7 +3,7 @@ import { type Backend, type SpawnedProcess, type Spawner } from '@verity/session
 import { DockerExecBackend, containerPathFor, dockerHostFor } from './project-backend.js';
 
 const AGENT_SEED_PATH =
-  'PATH=/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+  'PATH=/opt/verity/package-managers:/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const SIGNING_DOCKER_CONTAINER = 'VERITY_SIGNING_DOCKER_CONTAINER=dev-heey-global--verity';
 
 function fakeProcess(stdout: string[] = []): SpawnedProcess {
@@ -110,13 +110,15 @@ describe('DockerExecBackend (#174)', () => {
     expect(spawner).toHaveBeenCalled();
     const [cmd, args, opts] = spawner.mock.calls[0]!;
     expect(cmd).toBe('docker');
-    expect(args.slice(0, 12)).toEqual([
+    expect(args.slice(0, 14)).toEqual([
       'exec',
       '-i',
       '-e',
       AGENT_SEED_PATH,
       '-e',
       SIGNING_DOCKER_CONTAINER,
+      '-e',
+      'VERITY_SESSION_WORKTREE=/work/.verity-sessions/agent-x',
       '-e',
       'VERITY_SESSION_ID=backend-session-fixture',
       '-w',

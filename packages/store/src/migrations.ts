@@ -4069,6 +4069,540 @@ const migrations: Record<string, Migration> = {
       await sql`drop table attendee_state`.execute(db);
     },
   },
+  '0147_project_allowed_agents': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Null keeps every connected agent available, so existing projects are unchanged.
+      await sql`alter table project_settings add column allowed_agents jsonb
+        check (allowed_agents is null or (
+          jsonb_typeof(allowed_agents) = 'array'
+          and jsonb_array_length(allowed_agents) > 0
+          and allowed_agents <@ '["claude","codex","opencode"]'::jsonb
+        ))`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table project_settings drop column allowed_agents`.execute(db);
+    },
+  },
+  '0148_starter_project': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The local project a fresh installation creates for its welcome session.
+      // Recorded by id because a slug match would also claim an operator's own
+      // project of the same name.
+      await db.schema
+        .createTable('starter_project')
+        .addColumn('singleton', 'boolean', (column) => column.primaryKey())
+        .addColumn('project_id', 'text', (column) =>
+          column.notNull().references('projects.id').onDelete('cascade'),
+        )
+        .addColumn('created_at', 'timestamptz', (column) => column.notNull().defaultTo(sql`now()`))
+        .addCheckConstraint('starter_project_singleton_check', sql`singleton = true`)
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('starter_project').execute();
+    },
+  },
+  '0149_resolved_meeting_questions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights add column resolved boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights drop column resolved`.execute(db);
+    },
+  },
+  '0150_premium_feature_switches': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Default on: a server that already shares or accepts remote control keeps doing so.
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_sharing_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_remote_access_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .dropColumn('premium_remote_access_enabled')
+        .dropColumn('premium_sharing_enabled')
+        .execute();
+    },
+  },
+  '0151_welcome_session_replay': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the id after session deletion: ordinary onboarding must not recreate
+      // a tour that was deliberately removed. Only explicit replay replaces it.
+      await db.schema
+        .alterTable('starter_project')
+        .addColumn('welcome_session_id', 'text')
+        .execute();
+      await sql`update starter_project set welcome_session_id = (
+        select s.session_id from sessions s
+        join session_automation_marker m on m.session_id = s.session_id
+        where s.project_id = starter_project.project_id and m.marker = 'welcome-session'
+        order by s.created_at, s.session_id limit 1
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('starter_project').dropColumn('welcome_session_id').execute();
+    },
+  },
+  '0152_live_meeting_titles': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column title text`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column title`.execute(db);
+    },
+  },
+};
+
+migrations['0153_project_package_protection'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_package_protection (
+      project_id text primary key references projects(id) on delete cascade,
+      decision text not null check (decision in ('protected', 'skipped'))
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_package_protection`.execute(db);
+  },
+};
+
+migrations['0154_task_generated_titles'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks add column generated_title_revision integer, add column title_generation_status text not null default 'none' check (title_generation_status in ('none', 'pending', 'ready', 'failed'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks drop column generated_title_revision, drop column title_generation_status`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0155_local_preview_shares'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table local_preview_shares (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text not null references sessions(session_id) on delete cascade,
+      managed_instance_id text,
+      network_port integer not null unique check (network_port between 1 and 65535),
+      url text not null,
+      target_port integer check (target_port between 1 and 65535),
+      static_path text,
+      connector_secret text not null,
+      state text not null check (state in ('active', 'revoking')),
+      expires_at timestamptz not null,
+      check ((target_port is null) <> (static_path is null))
+    )`.execute(db);
+    await sql`create unique index local_preview_target_idx on local_preview_shares
+      (session_id, coalesce(target_port, 0), coalesce(static_path, ''))`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table local_preview_shares`.execute(db);
+  },
+};
+
+migrations['0156_managed_dev_server_secret_bindings'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_servers
+      add column secret_bindings jsonb not null default '[]'::jsonb,
+      add column approved_secret_bindings jsonb not null default '[]'::jsonb`.execute(db);
+    await sql`alter table managed_dev_server_instances
+      add column last_run_secret_bindings jsonb not null default '[]'::jsonb`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances drop column last_run_secret_bindings`.execute(
+      db,
+    );
+    await sql`alter table managed_dev_servers drop column secret_bindings, drop column approved_secret_bindings`.execute(
+      db,
+    );
+  },
+};
+
+migrations['0157_trusted_cli_outputs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table trusted_cli_outputs (id text primary key, project_id text not null, session_id text not null, expires_at timestamptz not null, next_sequence integer not null, result text)`.execute(
+      db,
+    );
+    await sql`create index trusted_cli_outputs_expiry on trusted_cli_outputs(expires_at)`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`delete from secret_job_frames where job_id in (select id from trusted_cli_outputs)`.execute(
+      db,
+    );
+    await sql`drop table trusted_cli_outputs`.execute(db);
+  },
+};
+
+migrations['0158_matrix_outbound'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table integration_sources add column binding_version integer not null default 1`.execute(
+      db,
+    );
+    await sql`create function matrix_binding_version() returns trigger language plpgsql as $$
+      begin
+        if (new.project_id, new.status, new.activated_at) is distinct from
+           (old.project_id, old.status, old.activated_at) then
+          new.binding_version := old.binding_version + 1;
+        end if;
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger matrix_binding_version before update on integration_sources
+      for each row execute function matrix_binding_version()`.execute(db);
+    await sql`create table matrix_outbound (
+      invocation_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      account_id text not null,
+      source_id text not null,
+      binding_version integer not null,
+      payload_secret text not null,
+      transaction_id text not null unique,
+      state text not null check (state in ('queued', 'pending', 'sent', 'failed', 'cancelled')),
+      lease_id text,
+      lease_until timestamptz,
+      next_attempt_at timestamptz not null default now(),
+      attempts integer not null default 0,
+      event_id text,
+      error text,
+      created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create function matrix_binding_revoke() returns trigger language plpgsql as $$
+      begin
+        if new.binding_version is distinct from old.binding_version then
+          update matrix_outbound set state = 'cancelled',
+            error = 'Access revoked; an in-flight Matrix send may already have been accepted'
+            where account_id = new.account_id and source_id = new.source_id
+              and state in ('queued', 'pending');
+        end if;
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger matrix_binding_revoke after update on integration_sources
+      for each row execute function matrix_binding_revoke()`.execute(db);
+    // Returning to the original project must not revive an approval granted before movement.
+    await sql`create function matrix_session_revoke() returns trigger language plpgsql as $$
+      begin
+        if new.project_id is distinct from old.project_id then
+          update matrix_outbound set state = 'cancelled',
+            error = 'Access revoked; an in-flight Matrix send may already have been accepted'
+            where session_id = new.session_id and state in ('queued', 'pending');
+        end if;
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger matrix_session_revoke after update of project_id on sessions
+      for each row execute function matrix_session_revoke()`.execute(db);
+    await sql`create index matrix_outbound_dispatch on matrix_outbound(account_id, next_attempt_at)
+      where state in ('queued', 'pending')`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop trigger matrix_session_revoke on sessions`.execute(db);
+    await sql`drop function matrix_session_revoke()`.execute(db);
+    await sql`drop trigger matrix_binding_revoke on integration_sources`.execute(db);
+    await sql`drop function matrix_binding_revoke()`.execute(db);
+    await sql`drop table matrix_outbound`.execute(db);
+    await sql`drop trigger matrix_binding_version on integration_sources`.execute(db);
+    await sql`drop function matrix_binding_version()`.execute(db);
+    await sql`alter table integration_sources drop column binding_version`.execute(db);
+  },
+};
+
+migrations['0159_google_accounts'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table google_accounts (
+      id text primary key,
+      email text not null,
+      subject text unique,
+      display_name text,
+      client_id text not null,
+      refresh_token text not null,
+      scopes jsonb not null default '[]'::jsonb,
+      credential_version integer not null default 1,
+      created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create unique index google_accounts_email on google_accounts(lower(email))`.execute(
+      db,
+    );
+    // Copy the encrypted envelope verbatim: migrations must also work while sealed.
+    await sql`insert into google_accounts(id, email, client_id, refresh_token, scopes)
+      select 'legacy-google', google_drive_account_email, google_drive_client_id,
+        google_drive_refresh_token, google_granted_scopes
+      from verity_settings where nullif(trim(google_drive_account_email), '') is not null
+        and nullif(trim(google_drive_client_id), '') is not null
+        and nullif(trim(google_drive_refresh_token), '') is not null`.execute(db);
+    await sql`alter table project_google_connections add column revision text`.execute(db);
+    await sql`alter table project_google_connections add column account_id text
+      references google_accounts(id) on delete set null`.execute(db);
+    await sql`update project_google_connections c set account_id = a.id
+      from google_accounts a where lower(a.email) = lower(c.account_email)`.execute(db);
+    for (const table of [
+      'session_slide_decks',
+      'recent_google_slide_decks',
+      'google_slide_image_cleanup',
+    ]) {
+      await sql`alter table ${sql.table(table)} add column account_id text
+        references google_accounts(id) on delete set null`.execute(db);
+      await sql`update ${sql.table(table)} set account_id = a.id from google_accounts a`.execute(
+        db,
+      );
+    }
+    await sql`alter table session_slide_decks add column folder_link_id text`.execute(db);
+    await sql`create table google_service_overrides (
+      mode text not null check (mode in ('inherit', 'disabled', 'account')),
+      revision text not null,
+      session_id text not null references sessions(session_id) on delete cascade,
+      service text not null check (service in ('gmail', 'calendar', 'contacts')),
+      account_id text references google_accounts(id) on delete set null,
+      updated_at timestamptz not null default now(),
+      primary key(session_id, service)
+    )`.execute(db);
+    for (const service of ['gmail', 'calendar', 'contacts']) {
+      // A stale legacy grant becomes explicitly disabled, never inherited access.
+      await sql`insert into google_service_overrides(session_id, service, account_id, mode, revision)
+        select c.session_id, ${service}, a.id, case when a.id is null then 'disabled' else 'account' end,
+          'legacy-' || c.session_id || '-' || ${service}
+        from ${sql.table(`session_${service}_connections`)} c
+        left join google_accounts a on lower(a.email) = lower(c.account_email)`.execute(db);
+    }
+    await sql`create table project_google_drive_folders (
+      revision text not null,
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      account_id text not null references google_accounts(id) on delete cascade,
+      folder_id text not null,
+      name text not null,
+      access_mode text not null check (access_mode in ('read-only', 'read-write')),
+      created_at timestamptz not null default now(),
+      unique(project_id, account_id, folder_id)
+    )`.execute(db);
+    await sql`insert into project_google_drive_folders
+      (id, project_id, account_id, folder_id, name, access_mode, revision)
+      select 'legacy-drive-' || p.project_id, p.project_id, a.id,
+        p.google_drive_folder_id, coalesce(p.google_drive_folder_name, p.google_drive_folder_id),
+        p.google_drive_access_mode, 'legacy-drive-' || p.project_id
+      from project_settings p cross join google_accounts a
+      where p.google_drive_folder_id is not null`.execute(db);
+    await sql`update session_slide_decks d set folder_link_id = f.id
+      from sessions s join project_google_drive_folders f on f.project_id = s.project_id
+      where d.session_id = s.session_id and d.account_id = f.account_id`.execute(db);
+    await sql`create table google_workspace_recents (
+      account_id text not null references google_accounts(id) on delete cascade,
+      file_id text not null,
+      kind text not null check (kind in ('docs', 'sheets', 'slides')),
+      last_assigned_at timestamptz not null default now(),
+      primary key(account_id, file_id)
+    )`.execute(db);
+    await sql`insert into google_workspace_recents(account_id, file_id, kind, last_assigned_at)
+      select account_id, file_id, kind, last_assigned_at from recent_google_slide_decks
+      where account_id is not null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table google_workspace_recents`.execute(db);
+    await sql`alter table project_google_connections drop column revision`.execute(db);
+    await sql`alter table session_slide_decks drop column folder_link_id`.execute(db);
+    for (const table of [
+      'session_slide_decks',
+      'recent_google_slide_decks',
+      'google_slide_image_cleanup',
+      'project_google_connections',
+    ]) {
+      await sql`alter table ${sql.table(table)} drop column account_id`.execute(db);
+    }
+    await sql`drop table project_google_drive_folders`.execute(db);
+    await sql`drop table google_service_overrides`.execute(db);
+    await sql`drop table google_accounts`.execute(db);
+  },
+};
+
+migrations['0160_forge_connections'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table forge_connections (
+      id text primary key,
+      provider text not null check (provider in ('github', 'forgejo')),
+      base_url text not null,
+      label text not null,
+      personal_token text,
+      github_app_id text,
+      github_app_installation_id text,
+      github_app_private_key text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    // Preserve encrypted envelopes without needing an unlocked secret store.
+    // Keep legacy settings for older readers throughout the additive rollout.
+    await sql`insert into forge_connections
+      (id, provider, base_url, label, github_app_id, github_app_installation_id, github_app_private_key)
+      select 'legacy-github', 'github', 'https://github.com', 'GitHub',
+        github_app_id, github_app_installation_id, github_app_private_key
+      from verity_settings
+      where github_app_id is not null or github_app_installation_id is not null
+        or github_app_private_key is not null`.execute(db);
+    await sql`alter table projects add column forge_connection_id text
+      references forge_connections(id) on delete restrict`.execute(db);
+    await sql`alter table gh_token_capabilities add column forge_connection_id text
+      references forge_connections(id) on delete restrict`.execute(db);
+    await sql`update projects set forge_connection_id = 'legacy-github'
+      where kind = 'github' and exists
+        (select 1 from forge_connections where id = 'legacy-github')`.execute(db);
+    await sql`update gh_token_capabilities c set forge_connection_id = p.forge_connection_id
+      from projects p where p.id = c.project_id`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table gh_token_capabilities drop column forge_connection_id`.execute(db);
+    await sql`alter table projects drop column forge_connection_id`.execute(db);
+    await sql`drop table forge_connections`.execute(db);
+  },
+};
+
+migrations['0161_forge_connection_identity'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table forge_connections add column custom_ca_pem text`.execute(db);
+    await sql`create function sync_github_forge_connection() returns trigger language plpgsql as $$
+      begin
+        insert into forge_connections(id, provider, base_url, label, github_app_id,
+          github_app_installation_id, github_app_private_key)
+        values ('legacy-github', 'github', 'https://github.com', 'GitHub', new.github_app_id,
+          new.github_app_installation_id, new.github_app_private_key)
+        on conflict(id) do update set github_app_id = excluded.github_app_id,
+          github_app_installation_id = excluded.github_app_installation_id,
+          github_app_private_key = excluded.github_app_private_key, updated_at = now();
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger sync_github_forge_connection after insert or update of
+      github_app_id, github_app_installation_id, github_app_private_key on verity_settings
+      for each row execute function sync_github_forge_connection()`.execute(db);
+    await sql`alter table projects add column forge_scope text generated always as
+      (coalesce(forge_connection_id, 'legacy-github')) stored`.execute(db);
+    await sql`alter table project_identity_claims add column forge_connection_id text
+      references forge_connections(id) on delete restrict`.execute(db);
+    await sql`update project_identity_claims c set forge_connection_id = p.forge_connection_id
+      from projects p where p.id = c.project_id and p.owner = c.owner and p.repo = c.repo`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims add column forge_scope text generated always as
+      (coalesce(forge_connection_id, 'legacy-github')) stored`.execute(db);
+    await sql`drop index projects_owner_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq on projects(forge_scope, owner, repo)`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(owner, repo)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_owner_repo_uniq on projects(owner, repo)`.execute(db);
+    await sql`alter table project_identity_claims drop column forge_scope, drop column forge_connection_id`.execute(
+      db,
+    );
+    await sql`alter table projects drop column forge_scope`.execute(db);
+    await sql`drop trigger sync_github_forge_connection on verity_settings`.execute(db);
+    await sql`drop function sync_github_forge_connection()`.execute(db);
+    await sql`alter table forge_connections drop column custom_ca_pem`.execute(db);
+  },
+};
+
+migrations['0162_vulnerability_scan'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings
+      add column vuln_scan_enabled boolean not null default true,
+      add column vuln_scan_schedule text default '{"kind":"daily","hour":9,"minute":0,"timeZone":"UTC"}',
+      add column vuln_scan_session_changes boolean not null default true,
+      add column vuln_scan_include_dev boolean not null default true,
+      add column vuln_scan_notify_from text not null default 'high',
+      add column vuln_scan_daily_digest boolean not null default false`.execute(db);
+    await sql`create table vuln_scan_results (
+      content_hash text primary key,
+      findings text not null,
+      scanned_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table vuln_scan_state (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text unique references sessions(session_id) on delete cascade,
+      content_hash text references vuln_scan_results(content_hash) on delete set null,
+      status text not null check (status in ('ready','error','unavailable','no_lockfiles')),
+      detail text,
+      revision text,
+      attempted_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create unique index vuln_scan_main_project on vuln_scan_state(project_id)
+      where session_id is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vuln_scan_state`.execute(db);
+    await sql`drop table vuln_scan_results`.execute(db);
+    await sql`alter table verity_settings drop column vuln_scan_enabled,
+      drop column vuln_scan_schedule, drop column vuln_scan_session_changes,
+      drop column vuln_scan_include_dev, drop column vuln_scan_notify_from,
+      drop column vuln_scan_daily_digest`.execute(db);
+  },
+};
+
+migrations['0163_vulnerability_actions'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vuln_ignores (
+        id text primary key, project_id text not null references projects(id) on delete cascade,
+        advisory_id text not null, aliases text not null, package text not null, ecosystem text not null,
+        severity text not null, until_fix boolean not null, expires_at timestamptz not null,
+        reason text not null, created_at timestamptz not null default now()
+      )`.execute(db);
+    await sql`create index vuln_ignores_project on vuln_ignores(project_id)`.execute(db);
+    await sql`create table vuln_digests (user_id text not null references users(id) on delete cascade, day text not null, primary key(user_id, day))`.execute(
+      db,
+    );
+    await sql`create table vuln_notifications (
+        id text primary key, user_id text not null references users(id) on delete cascade,
+        project_id text not null references projects(id) on delete cascade,
+        session_id text references sessions(session_id) on delete cascade,
+        package text not null, created_at timestamptz not null default now(), sent_at timestamptz
+      )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vuln_notifications`.execute(db);
+    await sql`drop table vuln_digests`.execute(db);
+    await sql`drop table vuln_ignores`.execute(db);
+  },
+};
+
+// A session is compared with the commit it branched from, so packages the default
+// branch upgraded later are not reported as added by the session.
+migrations['0164_vulnerability_session_base'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // No foreign key: a removed result must leave the hash in place, so readers see an
+    // unreadable baseline instead of a missing one and do not fall back to main.
+    await sql`alter table vuln_scan_state add column base_content_hash text`.execute(db);
+    // False for rows written before branch points were recorded; those are rescanned once.
+    await sql`alter table vuln_scan_state add column base_checked boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_state drop column base_checked`.execute(db);
+    await sql`alter table vuln_scan_state drop column base_content_hash`.execute(db);
+  },
+};
+
+migrations['0165_vulnerability_classification'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results add column classification_version integer not null default 0`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results drop column classification_version`.execute(db);
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

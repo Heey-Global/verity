@@ -35,8 +35,61 @@ Before a materially larger change with real design choices, offer to plan it fir
 /** Sent with every turn while the session is in planning mode. */
 export const PLANNING_ACTIVE_SYSTEM_PROMPT = `# Planning mode is active (Verity)
 
-This session is in planning mode. You cannot change files, and every request for approval is refused. Investigate, ask clarifying questions, and discuss in the chat as usual.
+This session is in planning mode, started after the user chose to plan first. You cannot change files or use external tools (mail, calendar, Drive, secrets and the like); the Verity task list stays available. Investigate, ask clarifying questions, and discuss in the chat as usual.
 
-When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\` as concise Markdown (goal, steps, open questions or risks) instead of writing it into your reply. Verity shows it with an "Implement plan" button. Submit the whole revised plan the same way whenever it changes. Do not call \`ExitPlanMode\`.
+When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\`. Never write the plan into your reply: Verity shows a submitted plan as its own card above the composer with "Implement" and "Dismiss" buttons, while a plan in the reply is plain chat text that cannot be implemented. Resolve open questions in the chat before presenting the plan. Structure the plan as Markdown in this shape:
 
-Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\`: it asks the user to confirm, and Verity starts the implementation once your turn ends. End your turn right after it returns.`;
+\`\`\`markdown
+# Short plan title
+
+## Goal
+One sentence.
+
+## Steps
+1. **Short step title** — one line on what changes and where.
+
+\`\`\`
+
+Keep each step to one line and the whole plan scannable on a phone. After submitting, end your turn without repeating the plan or explaining the buttons. Submit the whole revised plan again whenever it changes. Do not add a \`verity:choices\` block to ask whether to implement the plan, since the card's button already asks that, and do not call \`ExitPlanMode\`.
+
+Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\` (after submitting the plan, if you have not yet): their message already authorizes implementation; no extra confirmation is needed. Verity starts implementation once your turn ends. End your turn right after it returns. If the user wants to leave planning without a plan, call the same tool with action "discard"; it asks once before restoring file access. Do not create tasks for unaccepted proposal steps. Accepted steps are saved automatically as assigned tasks; update those existing tasks instead of creating duplicates.`;
+
+/** Shared by the proposal card and task persistence: only numbered steps in the
+ * Steps section become accepted tasks, never numbered questions or risks. */
+export function parsePlanningProposal(markdown: string): {
+  title: string;
+  goal: string;
+  steps: string[];
+} {
+  const lines = markdown.trim().split('\n');
+  const titleIndex = lines.findIndex((line) => /^#\s+\S/.test(line));
+  const title = titleIndex >= 0 ? lines[titleIndex]!.replace(/^#\s+/, '').trim() : '';
+  const goal: string[] = [];
+  const steps: string[] = [];
+  const hasStepsHeading = lines.some((line) => /^#{1,6}\s+steps\b/i.test(line.trim()));
+  let section = 'goal';
+  for (const [index, line] of lines.entries()) {
+    if (index === titleIndex) continue;
+    const heading = /^#{1,6}\s+(.+)$/.exec(line.trim());
+    if (heading) {
+      section = /^steps\b/i.test(heading[1]!)
+        ? 'steps'
+        : /^goal\b/i.test(heading[1]!)
+          ? 'goal'
+          : 'other';
+      continue;
+    }
+    const step = /^\d{1,3}[.)]\s+(.+)$/.exec(line);
+    if (step && (section === 'steps' || (!hasStepsHeading && section === 'goal'))) {
+      steps.push(step[1]!.trim());
+    } else if (section === 'steps' && line.trim() && steps.length > 0) {
+      steps[steps.length - 1] += `\n${line.trim()}`;
+    } else if (section === 'goal') {
+      goal.push(line);
+    }
+  }
+  return { title, goal: goal.join('\n').trim(), steps };
+}
+
+export const DISMISSED_PLAN_SYSTEM_PROMPT =
+  'The user dismissed the plan. Keep it as context, but do not implement it unless the user asks.';

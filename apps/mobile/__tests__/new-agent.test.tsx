@@ -6,6 +6,7 @@ const mockReplace = jest.fn();
 const mockSetParams = jest.fn();
 const mockSessionChat = jest.fn((_props: unknown) => null);
 let mockWidth = 1024;
+let mockFocused = true;
 let mockParams: {
   project?: string;
   projectId?: string;
@@ -15,6 +16,7 @@ let mockParams: {
 } = {};
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => mockFocused,
   Stack: { Screen: () => null },
   router: {
     replace: (href: unknown) => mockReplace(href),
@@ -94,10 +96,132 @@ beforeEach(() => {
   mockSessionChat.mockReset();
   mockSessionChat.mockImplementation(() => null);
   mockWidth = 1024;
+  mockFocused = true;
   mockParams = {};
 });
 
 describe('NewAgentScreen', () => {
+  it.each([767, 768])(
+    'uses the shared split boundary for a new session at %i points',
+    async (width) => {
+      mockWidth = width;
+      mockCreateVerityClient.mockReturnValue(makeClient());
+      render(<NewAgentScreen />);
+      if (width === 768) {
+        await waitFor(() => expect(mockReplace).toHaveBeenCalledTimes(1));
+        expect(mockSessionChat).not.toHaveBeenCalled();
+      } else {
+        expect(mockSessionChat).toHaveBeenCalled();
+        expect(mockReplace).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('transfers a pending narrow launch into the split without repeating creation or its prompt', async () => {
+    mockWidth = 767;
+    mockParams = { prompt: 'First turn' };
+    let finishCreate!: (value: { sessionId: string }) => void;
+    const createSession = jest.fn(
+      () =>
+        new Promise<{ sessionId: string }>((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    const sendTurn = jest.fn().mockResolvedValue({ accepted: true });
+    mockCreateVerityClient.mockReturnValue(makeClient({ createSession, sendTurn }));
+    const view = render(<NewAgentScreen />);
+    const id = launchedSessionId();
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    const gate = pendingSession(id);
+    mockWidth = 768;
+    view.rerender(<NewAgentScreen />);
+    expect(mockReplace).toHaveBeenCalledWith({ pathname: '/session/[id]', params: { id } });
+    expect(pendingSession(id)).toBe(gate);
+    mockWidth = 767;
+    view.rerender(<NewAgentScreen />);
+    mockWidth = 1024;
+    view.rerender(<NewAgentScreen />);
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledTimes(1);
+    finishCreate({ sessionId: id });
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+    await expect(gate).resolves.toBeUndefined();
+  });
+
+  it('does not navigate a background launch on resize', () => {
+    mockWidth = 767;
+    mockCreateVerityClient.mockReturnValue(makeClient());
+    const view = render(<NewAgentScreen />);
+    mockFocused = false;
+    mockWidth = 768;
+    view.rerender(<NewAgentScreen />);
+    expect(mockReplace).not.toHaveBeenCalled();
+    mockFocused = true;
+    view.rerender(<NewAgentScreen />);
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a wide launch destination stable when resized during creation', async () => {
+    const createSession = jest.fn(() => new Promise<never>(() => undefined));
+    mockCreateVerityClient.mockReturnValue(makeClient({ createSession }));
+    const view = render(<NewAgentScreen />);
+    mockWidth = 767;
+    view.rerender(<NewAgentScreen />);
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockSessionChat).not.toHaveBeenCalled();
+  });
+
+  it('keeps the opened chat pending during provisioning and retries the same session id', async () => {
+    const createSession = jest
+      .fn()
+      .mockResolvedValueOnce({
+        awaitingProvisioning: true,
+        project: { ...project(), state: 'cloning' },
+      })
+      .mockResolvedValue({ sessionId: 's/1' });
+    const getProject = jest
+      .fn()
+      .mockResolvedValueOnce({ project: { ...project(), state: 'cloning' } })
+      .mockResolvedValue({ project: project() });
+    const client = makeClient({ createSession, getProject });
+    mockWidth = 390;
+    mockParams = { projectId: 'p/1' };
+    mockCreateVerityClient.mockReturnValue(client);
+
+    render(<NewAgentScreen />);
+    const id = launchedSessionId();
+    const pending = pendingSession(id);
+    expect(mockSessionChat).toHaveBeenCalled();
+    await waitFor(() => expect(getProject).toHaveBeenCalledWith('p/1'));
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(pendingSession(id)).toBe(pending);
+    await expect(pending).resolves.toBeUndefined();
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createSession.mock.calls[0]).toEqual(createSession.mock.calls[1]);
+    expect(client.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it('reports provisioning failure in the opened chat without retrying session creation', async () => {
+    const createSession = jest
+      .fn()
+      .mockResolvedValue({ awaitingProvisioning: true, project: project() });
+    mockWidth = 390;
+    mockParams = { projectId: 'p/1' };
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        createSession,
+        getProject: jest.fn().mockResolvedValue({
+          project: { ...project(), state: 'failed', provisionError: 'Build failed' },
+        }),
+      }),
+    );
+
+    render(<NewAgentScreen />);
+    await expect(pendingSession(launchedSessionId())).rejects.toThrow('Build failed');
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves a configured OpenCode model for session creation and the prepared turn', async () => {
     const client = makeClient();
     mockParams = {

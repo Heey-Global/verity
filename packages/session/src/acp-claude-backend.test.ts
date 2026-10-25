@@ -1,9 +1,24 @@
+import * as fsPromises from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpClaudeBackend } from './acp-claude-backend.js';
+import {
+  AcpClaudeBackend,
+  CLAUDE_ACP_PROFILE,
+  UNREADABLE_AGENTS_MD_DIRECTIVE,
+} from './acp-claude-backend.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
+
+// Delegates to the real implementation; single tests substitute a refusal the
+// Runner uid meets in production but a root test runner never would.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -764,6 +779,32 @@ describe('AcpClaudeBackend', () => {
     }
   });
 
+  it('retries an immediate Stop when the first SIGKILL call throws', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const controller = new AbortController();
+      const fake = acpSpawner({ exitHangs: true, cancel: { operator: controller } });
+      fake.kill.mockImplementationOnce(() => {
+        throw new Error('temporary kill channel failure');
+      });
+      const result = await new AcpClaudeBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-session-immediate-kill-throws',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'Do it',
+        spawner: fake.spawner,
+        signal: controller.signal,
+      });
+      expect(result.aborted).toBe(true);
+      expect(fake.kill.mock.calls).toEqual([['SIGKILL']]);
+      vi.advanceTimersByTime(10_000);
+      expect(fake.kill.mock.calls).toEqual([['SIGKILL'], ['SIGKILL']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('persists Claude ACP quota updates for the existing usage meters', async () => {
     const fake = acpSpawner({
       rateLimit: {
@@ -914,6 +955,33 @@ describe('AcpClaudeBackend', () => {
     const session = fake.writes.find((message) => message['method'] === 'session/new');
     expect(session).toMatchObject({ params: { mcpServers: [] } });
     expect(JSON.stringify(fake.writes)).not.toContain('turn-bearer');
+  });
+
+  it('keeps repository guidance as text while excluding settings, plugins and extra MCP servers', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-guidance-'));
+    try {
+      await writeFile(join(cwd, 'AGENTS.md'), 'Use the project conventions.');
+      const fake = acpSpawner({ httpMcp: true });
+      await new AcpClaudeBackend().run({
+        store: ctx.store,
+        storeSessionId: 'managed-config',
+        worktree: cwd,
+        cwd,
+        prompt: 'Read',
+        spawner: fake.spawner,
+      });
+      const session = fake.writes.find((message) => message['method'] === 'session/new');
+      expect(session).toMatchObject({
+        params: {
+          _meta: {
+            claudeCode: { options: { settingSources: [], strictMcpConfig: true, plugins: [] } },
+            systemPrompt: { append: expect.stringContaining('Use the project conventions.') },
+          },
+        },
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('runs a toolless turn with no tools, no MCP servers, and no settings files', async () => {
@@ -1539,6 +1607,7 @@ describe('AcpClaudeBackend', () => {
     // In Verity's planning mode the operator accepts a plan through Verity, the same
     // way for every agent. A card here would let one tap carry out an unaccepted plan.
     const fake = acpSpawner({ planPermission: true, modes: CLAUDE_MODES });
+    const spawn = vi.fn(fake.spawner);
     const asked: string[] = [];
     await new AcpClaudeBackend().run({
       store: ctx.store,
@@ -1548,13 +1617,14 @@ describe('AcpClaudeBackend', () => {
       prompt: 'Plan it',
       permissionMode: PLANNING_PERMISSION_MODE,
       planning: true,
-      spawner: fake.spawner,
+      spawner: spawn,
       permissionControl: true,
       onPermissionRequest: (request, respond) => {
         asked.push(request.toolName);
         respond({ behavior: 'allow' });
       },
     });
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ planning: true });
     expect(asked).toEqual([]);
     expect(fake.writes).toContainEqual(
       expect.objectContaining({
@@ -1898,6 +1968,30 @@ describe('AcpClaudeBackend', () => {
     );
   });
 
+  it('kills a live adapter immediately on Stop', async () => {
+    const controller = new AbortController();
+    const fake = acpSpawner({ holdPrompt: true });
+    const run = new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-immediate-stop',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: fake.spawner,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() =>
+      expect(fake.writes.some((write) => write.method === 'session/prompt')).toBe(true),
+    );
+    // A cooperative cancellation ACK cannot prove tools stopped executing.
+    controller.abort();
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    fake.finishPrompt();
+    expect(await run).toMatchObject({ aborted: true });
+    const events = await ctx.store.getEvents('verity-session-immediate-stop');
+    expect(events.filter((event) => event.t === 'error')).toEqual([]);
+  });
+
   it('settles an operator cancel without badging the session crashed', async () => {
     const controller = new AbortController();
     const fake = acpSpawner({ cancel: { operator: controller } });
@@ -1910,15 +2004,13 @@ describe('AcpClaudeBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    expect(result).toMatchObject({ exitCode: 0, aborted: true });
-    // Like the native Claude backend, an aborted turn ends on its `result`; the
-    // conductor appends the canonical `interrupted` marker. A terminal `status`
-    // here would stick as `crashed` in the mobile reducer.
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(result).toMatchObject({ exitCode: 143, aborted: true });
+    // Queued prose is dropped on Stop. The conductor appends `interrupted`;
+    // a terminal crash status here would incorrectly badge the stopped session.
     expect((await ctx.store.getEvents('verity-session-6')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
-      'result',
       'diagnostic',
     ]);
   });
@@ -1935,16 +2027,13 @@ describe('AcpClaudeBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    // An adapter that ignores `session/cancel` dies on the kill backstop, so the
-    // prompt never returns and the run settles through the error path. That is
-    // still the operator's stop: streamed prose is kept, but no `error` row and
-    // no terminal `status` — the diagnostic lives in `stderr` instead.
+    // Killing the adapter leaves the prompt unanswered, but must not record
+    // a crash or publish queued prose after the requested stop.
     expect(result).toMatchObject({ aborted: true, exitCode: 143 });
     expect(result.stderr).toContain('closed');
     expect((await ctx.store.getEvents('verity-session-8')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
       'diagnostic',
     ]);
   });
@@ -1967,7 +2056,7 @@ describe('AcpClaudeBackend', () => {
     // settles it as an interrupt, and so must this path: no `error` row, no
     // terminal `status`, and the conductor appends `interrupted`.
     expect(result).toMatchObject({ aborted: true, exitCode: 143 });
-    expect(result.stderr).toContain('ede_diagnostic');
+    expect(result.stderr).toContain('closed');
     expect(
       (await ctx.store.getEvents('verity-session-ede-cancel')).map((event) => event.t),
     ).toEqual(['session', 'status', 'diagnostic']);
@@ -2026,4 +2115,57 @@ describe('AcpClaudeBackend', () => {
       state: 'crashed',
     });
   });
+});
+
+it('does not import repository guidance through a symlink', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-symlink-'));
+  try {
+    const outside = join(cwd, 'outside.md');
+    await writeFile(outside, 'Do not import this symlink target.');
+    await symlink(outside, join(cwd, 'AGENTS.md'));
+    const metadata = await CLAUDE_ACP_PROFILE.sessionMeta({
+      store: ctx.store,
+      worktree: cwd,
+      cwd,
+      prompt: 'Read',
+      appendSystemPrompt: 'Managed policy',
+    });
+    expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+    expect(JSON.stringify(metadata)).not.toContain('Do not import this symlink target.');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+it('starts the turn when the Runner uid cannot read AGENTS.md', async () => {
+  // Agents write under umask 0077, so an AGENTS.md they rewrote is 0600 and
+  // agent-owned while this read runs as the Runner uid. Rethrowing EACCES here
+  // crashed every turn of such a session before the agent ever started.
+  const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-unreadable-'));
+  try {
+    const agentsMd = join(cwd, 'AGENTS.md');
+    await writeFile(agentsMd, 'Agent-owned guidance the Runner cannot read.');
+    vi.mocked(fsPromises.open).mockImplementationOnce((path) => {
+      expect(path).toBe(agentsMd);
+      return Promise.reject(
+        Object.assign(new Error(`EACCES: permission denied, open '${agentsMd}'`), {
+          code: 'EACCES',
+        }),
+      );
+    });
+    const metadata = await CLAUDE_ACP_PROFILE.sessionMeta({
+      store: ctx.store,
+      worktree: cwd,
+      cwd,
+      prompt: 'Read',
+      appendSystemPrompt: 'Managed policy',
+    });
+    // The guidance must still reach the agent, which owns the file and can read it.
+    expect(metadata).toMatchObject({
+      systemPrompt: { append: `Managed policy\n\n${UNREADABLE_AGENTS_MD_DIRECTIVE}` },
+    });
+    expect(JSON.stringify(metadata)).not.toContain('Agent-owned guidance');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

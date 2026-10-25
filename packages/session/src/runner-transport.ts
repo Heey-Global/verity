@@ -64,9 +64,10 @@ export interface RunnerFrameEnvelope {
  */
 export type RunnerFrame = RunnerFrameEnvelope & RunnerFrameBody;
 
-/** The canonical payload fingerprint the Server stores and compares on replay (it
- * never recomputes this, so the algorithm lives solely here). SHA-256 over the JSON
- * of the body — deterministic because each body is built with a fixed key order. */
+/** SHA-256 over the body's serialized JSON, preserving the writer's key order.
+ * Readers must verify the original body, before schema parsing can reorder keys,
+ * strip unknown fields, or transform legacy values. Keep this algorithm stable so
+ * frames from already-running runners remain valid across server upgrades. */
 export function frameBodyHash(body: RunnerFrameBody): string {
   return createHash('sha256').update(JSON.stringify(body)).digest('hex');
 }
@@ -163,14 +164,11 @@ function parseFrame(line: string): RunnerFrame {
   ) {
     throw new Error(`invalid runner frame envelope: ${line}`);
   }
-  let body: RunnerFrameBody;
   if (kind === 'session') {
     if (typeof f.id !== 'string' || f.id.length === 0) throw new Error('invalid session frame');
-    body = { kind, id: f.id };
   } else if (kind === 'event') {
     const event = agentEventSchema.safeParse(f.event);
     if (!event.success) throw new Error('invalid event frame');
-    body = { kind, event: event.data };
   } else if (kind === 'permission-request') {
     const request = f.request;
     if (
@@ -184,7 +182,6 @@ function parseFrame(line: string): RunnerFrame {
     ) {
       throw new Error('invalid permission-request frame');
     }
-    body = { kind, request: request as PermissionRequest };
   } else {
     const result = f.result;
     if (
@@ -196,8 +193,19 @@ function parseFrame(line: string): RunnerFrame {
     ) {
       throw new Error('invalid result frame');
     }
-    body = { kind, result: result as RunResult };
   }
+  // Remove only the envelope, retaining the exact JSON body the runner hashed.
+  // Zod's parsed output is validation evidence, not the wire payload.
+  const envelopeKeys = new Set([
+    'protocolVersion',
+    'runnerInstanceId',
+    'turnId',
+    'frameSeq',
+    'payloadHash',
+  ]);
+  const body = Object.fromEntries(
+    Object.entries(f).filter(([key]) => !envelopeKeys.has(key)),
+  ) as RunnerFrameBody;
   if (frameBodyHash(body) !== f.payloadHash) throw new Error('invalid runner frame payload hash');
   return parsed as RunnerFrame;
 }

@@ -240,8 +240,9 @@ export function shouldRequestOlderHistory(
   stalled = false,
   allowStalledRetry = false,
   appendSettling = false,
+  initialListLoaded = true,
 ): boolean {
-  if (!hasOlder || loadingOlder) return false;
+  if (!initialListLoaded || !hasOlder || loadingOlder) return false;
   if (stalled && !allowStalledRetry) return false;
   return !appendSettling;
 }

@@ -1,3 +1,4 @@
+import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
@@ -29,17 +30,31 @@ import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
 import { LiveConnectionLifecycle } from '../components/LiveConnectionLifecycle';
 import { WindowControlsProbe } from '../components/WindowControls';
-import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
+import { useServerUpdateNotice } from '../lib/serverUpdateBadge';
+import {
+  serverUpdateBannerFor,
+  useServerUpdateBannerDismissal,
+} from '../lib/serverUpdateBannerDismissal';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+import { isDemoShowcase } from '../lib/demoShowcase';
+// One subpath per weight: the package root would pull all eighteen Inter
+// files (about 6 MB) into the bundle, not just the four the theme uses.
+import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
+import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
+import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
+import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
+// The package's own hook loads through the expo-font copy the icon font already
+// uses, so Inter adds no further copy of that native module.
+import { useFonts } from '@expo-google-fonts/inter/useFonts';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
-import { dispatchVoiceShortcut } from '../lib/voiceShortcut';
+import { dispatchTaskVoiceShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
@@ -54,6 +69,7 @@ installBrowserAlerts();
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
 export default function RootLayout() {
+  useEffect(() => startRuntimeDiagnostics(), []);
   const { theme } = useUnistyles();
   const demoRevision = useDemoRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
@@ -66,6 +82,19 @@ export default function RootLayout() {
   useEffect(() => {
     void hydrateFontScale();
   }, []);
+
+  // Inter (docs/design-system.md § 3). A font that fails to load is not worth a
+  // locked app: text then falls back to the system font and the app continues.
+  // Styles carry their weight in the Inter family name only, so in that case
+  // all text renders at the system font's regular weight. The four files are
+  // bundled with the app, which makes the failure path rare enough to accept.
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+  const fontsReady = fontsLoaded || fontError !== null;
 
   // Apply a compatible OTA update before the UI becomes interactive, then load
   // the persisted server base URL before the first app render. A successful
@@ -103,14 +132,14 @@ export default function RootLayout() {
     };
   }, []);
 
-  if (!hydrated) {
+  if (!hydrated || !fontsReady) {
     return (
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -124,6 +153,9 @@ function HydratedRoot() {
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
+  useEffect(() => {
+    setRuntimeDiagnosticsScreen(pathname);
+  }, [pathname]);
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const handleSearchShortcut = useCallback(
     (action: 'context' | 'global' | 'close') => {
@@ -161,7 +193,7 @@ function HydratedRoot() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.textMuted} />
         </View>
       </GestureHandlerRootView>
     );
@@ -178,7 +210,11 @@ function HydratedRoot() {
       style={{ flex: 1, backgroundColor: theme.colors.background }}
       onZoom={adjustFontScale}
       onSearch={handleSearchShortcut}
-      onVoice={() => {
+      onVoice={(action) => {
+        if (action === 'task') {
+          dispatchTaskVoiceShortcut();
+          return;
+        }
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
       }}
     >
@@ -222,6 +258,10 @@ function HydratedRoot() {
               />
               <Stack.Screen name="project/[id]/settings/github" options={{ title: 'GitHub' }} />
               <Stack.Screen
+                name="project/[id]/settings/repository"
+                options={{ title: 'Repository' }}
+              />
+              <Stack.Screen
                 name="project/[id]/settings/services"
                 options={{ title: 'Connections' }}
               />
@@ -237,8 +277,13 @@ function HydratedRoot() {
                 it is on home by `route.name === 'index'`. */}
               <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
               <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="settings/forgejo/new" options={{ title: 'Connect Forgejo' }} />
+              <Stack.Screen name="settings/forgejo/[id]" options={{ title: 'Forgejo' }} />
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
-              <Stack.Screen name="settings/remote-access" options={{ title: 'Remote access' }} />
+              <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
+              <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
+              <Stack.Screen name="settings/design-system" options={{ title: 'Design system' }} />
+              <Stack.Screen name="settings/remote-access" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/secret-store" options={{ title: 'Secret store' }} />
               <Stack.Screen
                 name="settings/transcription"
@@ -258,11 +303,12 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/services/matrix/index" options={{ title: 'Matrix' }} />
-              <Stack.Screen name="settings/server-update" options={{ title: 'Server update' }} />
+              <Stack.Screen name="settings/server-update" options={{ title: 'Updates' }} />
               <Stack.Screen
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}
               />
+              <Stack.Screen name="settings/voice-input" options={{ title: 'Voice input' }} />
               <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
@@ -272,7 +318,11 @@ function HydratedRoot() {
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
             {isDemoMode() ? (
-              <DemoBanner />
+              // Product images are rendered from the showcase; the banner would
+              // only have to be cropped out of every one of them.
+              isDemoShowcase() ? null : (
+                <DemoBanner />
+              )
             ) : (
               <>
                 <ActiveMeetingOverlay />
@@ -350,7 +400,12 @@ function AppHeader({
   // Only the overview carries the update banner, and every screen renders this
   // header — so the screen tells the hook whether to poll at all rather than
   // filtering its answer afterwards.
-  const pendingServerUpdate = useServerUpdateBadge(isHome);
+  const pendingServerUpdate = useServerUpdateNotice(isHome);
+  const bannerDismissal = useServerUpdateBannerDismissal(
+    pendingServerUpdate?.baseUrl ?? null,
+    pendingServerUpdate?.version ?? null,
+  );
+  const serverUpdateBanner = serverUpdateBannerFor(pendingServerUpdate, bannerDismissal.dismissed);
   const showMessageSearch = showsMessageSearch(route.name);
   const title = options.title ?? (isHome ? 'Verity' : route.name);
   const routeParams = route.params as { id?: unknown; selected?: unknown } | undefined;
@@ -362,8 +417,8 @@ function AppHeader({
         : undefined;
   return (
     <View style={[styles.header, { paddingTop: insets.top }]}>
-      <WindowControlsProbe onInset={trackWindowControls} />
       <View style={[styles.headerRow, headerRowInset]}>
+        <WindowControlsProbe onInset={trackWindowControls} />
         <View style={styles.headerSide}>
           {isHome ? (
             <>
@@ -386,7 +441,7 @@ function AppHeader({
                   ]}
                   accessibilityRole="button"
                 >
-                  <Icon name="folder-plus" size={20} color={theme.colors.accent} />
+                  <Icon name="folder-plus" size={20} color={theme.colors.signature} />
                 </Pressable>
               </Link>
             </>
@@ -452,8 +507,12 @@ function AppHeader({
           ) : null}
         </View>
       </View>
-      {isHome && pendingServerUpdate !== null ? (
-        <ServerUpdateBanner version={pendingServerUpdate} />
+      {isHome && serverUpdateBanner !== null ? (
+        <ServerUpdateBanner
+          version={serverUpdateBanner.version}
+          problem={serverUpdateBanner.problem}
+          onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
+        />
       ) : null}
     </View>
   );
@@ -497,8 +556,8 @@ const styles = StyleSheet.create((theme) => ({
   headerBackTitle: {
     flexShrink: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '500',
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.row.fontSize,
   },
   headerPressed: {
     opacity: 0.62,
@@ -507,14 +566,13 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     textAlign: 'center',
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    ...theme.typography.title,
   },
   headerTitleSettings: {
     flex: 3,
   },
   headerTitleHome: {
-    color: theme.colors.accent,
+    color: theme.colors.signature,
   },
   headerIconButton: {
     width: 44,

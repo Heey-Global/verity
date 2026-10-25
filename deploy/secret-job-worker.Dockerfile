@@ -2,8 +2,9 @@
 # adapter at /usr/local/bin/verity-secret-job-pilot; the server pins the resulting image by digest.
 
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder
 WORKDIR /app
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/events/package.json packages/events/
 COPY packages/secret-contracts/package.json packages/secret-contracts/
@@ -28,8 +29,9 @@ COPY features features
 RUN npm run build
 
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
 WORKDIR /app
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY packages/events/package.json packages/events/
 COPY packages/secret-contracts/package.json packages/secret-contracts/
@@ -44,8 +46,10 @@ COPY apps/mobile/package.json apps/mobile/
 RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-workspace-root
 
 # Shell-less, non-root runtime. No network tools, package manager, writable worktree, or credentials.
-# renovate: datasource=docker depName=gcr.io/distroless/nodejs24-debian13
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:9eeb7f5887d0e239e78264b06f7f11d2e14be534050481803a9e4728fcdd278e AS worker-base
+# renovate: datasource=docker depName=gcr.io/distroless/nodejs26-debian13
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:96455baef11b178fc135b32206e3922c515dbed2400676c94f907f8f84e6abf6 AS worker-base
+# Use the builder's exact Node patch; the distroless base may lag a patch release.
+COPY --from=builder /usr/local/bin/node /nodejs/bin/node
 WORKDIR /app
 COPY --from=deps --chown=65532:65532 /app/node_modules ./node_modules
 COPY --from=deps --chown=65532:65532 /app/packages ./packages

@@ -140,7 +140,7 @@ replace a newer plan with an older source snapshot.
 GitHub delivers a push event at most once, not exactly once. A merge whose
 push never produced a run leaves a merged release PR, or an approved OTA
 candidate, with nothing scheduled to publish it and nothing failing.
-`release-reconcile.yml` runs every twenty minutes as the backstop for that
+`release-reconcile.yml` runs every five minutes as the backstop for that
 case. It publishes nothing itself: for a train whose merged release PR is still
 pending and whose version has no release yet, it dispatches
 `release-dispatch.yml` with `reconcile=true`, which replays the push lifecycle
@@ -149,12 +149,73 @@ is unpublished and whose approval was followed by no promotion run, it
 dispatches `mobile-ota-promote.yml`. A reconcile run accepts no recovery or
 re-plan input, and a re-plan accepts no reconcile flag.
 
-The sweep does not retry what already ran and failed. A pending release PR
-whose draft already exists, a published tag whose PR still carries the pending
-label, or a promotion run that ended in failure each fail the sweep with the
-exact state, so that every twenty minutes there is a red run naming what a
-human has to finish. Recovery paths are unchanged: the draft recovery inputs on
-`release-dispatch.yml` and a manual run of `mobile-ota-promote.yml`.
+It also recovers missing website planning from releasable commits since the
+published website boundary, using `website-replan=true`. Website exclusions
+from the Release Please configuration still apply, and an unsuccessful planning
+run is reported rather than dispatched indefinitely.
+
+It also recovers the later stages the same way:
+
+- an approved Server, native or OTA production promotion whose tag is still
+  unpublished and whose approval no promotion run followed dispatches
+  `server-production-promote.yml`, `mobile-production-promote.yml` or
+  `mobile-ota-promote.yml`;
+- a merged Staging OTA release whose `mobile-vX.Y.Z` tag does not exist yet
+  dispatches `mobile-ota.yml` at the main head, which stages it exactly like
+  its merge push would have.
+
+Ordering is waiting, not failure: an OTA promotion whose native runtime is not
+yet production, and a Staging OTA whose native runtime has not reached Staging,
+are left alone, and only attempts after that runtime arrived count.
+
+Production recovery allows at most two genuine attempts per approved manifest and
+promotion pipeline version: an initial attempt and one retry. The pipeline
+fingerprint hashes the immutable Git tree entries for the relevant workflow,
+publisher and helper scripts, dependency manifests and mobile configuration;
+`scripts/promotion-recovery.mjs` maintains the per-stage input list. Only OTA
+includes npm lock/config files and workspace lifecycle manifests, since Server
+and native promotion do not install npm dependencies. An ordinary
+product merge does not reset this budget. A relevant pipeline fix permits two
+new attempts for the same approved candidate, without granting a new approval.
+
+Promotion workflows persist candidate, pipeline and delivery outcome in a
+`recovery-v1` job step name. Explicit deferrals and stale-checkout skips consume
+no attempt. Reruns under the same GitHub run ID are counted separately through
+their attempt-specific job receipts. Historical runs without receipts are
+associated through the manifest
+and pipeline contents at their run commit; inaccessible or ambiguous evidence
+stops automatic recovery. A green historical run is not assumed to have waited:
+only evidence preceding the exact runtime's successful native promotion can
+exclude it as an old wait. Unexplained green runs without publication require
+human inspection. Failed attempts remain counted even after another native run.
+
+The sweep refreshes the candidate release before dispatch and before reporting
+completed-run stalls, and checks the exact OTA runtime's production release.
+Native completion evidence is matched by runtime, including runs begun before
+OTA approval; unrelated runtime publications cannot move the readiness boundary.
+For rerun native promotions, attempt-specific delivery timestamps establish the
+original transition; the run's latest update time cannot move it forward.
+Historical native reruns without that timing evidence require human inspection.
+API failures report an unverifiable state rather than assuming publication or
+closing a stall. Reads occur at decision points, without continuous polling.
+Before dispatch, Main must still match the inspected checkout; the workflow
+then verifies the expected candidate and pipeline before any publication effect.
+Queued and running workflows still prevent duplicate dispatches. All existing
+artifact, review, CI and production approval gates remain mandatory.
+
+Every recovered stage remains idempotent: moving an EAS channel, copying signed
+Server image tags, staging an OTA, or reusing a native build Apple already holds.
+Staging and planning retain their existing retry rules. Recovery paths remain
+the draft recovery inputs on `release-dispatch.yml` and a manual promotion run.
+
+A red cron run notifies nobody, so the sweep's `alarm` job turns its verdict
+into one issue labelled `release-stall` (`scripts/release-alarm.mjs`). The issue
+mentions the owner when it opens and again only when a new problem appears;
+an unchanged state stays quiet. The first clean sweep closes it, so the closed
+issues are the record of what was stuck and for how long. A sweep that crashes
+before reporting says nothing about the releases: it never closes the issue,
+and it raises one only after three failed sweeps in a row, when nothing is
+watching releases anymore.
 
 Server changes are collected from its configured root package. Website
 changes are collected from `docs/website`; its `concept.md` and `landing-copy.md`
@@ -257,10 +318,11 @@ each identity before offering production approval.
 
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the
-rolling PR only after preparing the candidate, then dispatches verification for
-its new head. Before dispatch, staging dismisses approvals of older heads and
-stops if dismissal fails. Promotion independently rejects any remaining stale
-approval. Configure required checks on the protected branch as well.
+rolling PR only after preparing the candidate; the app-authored commit triggers
+verification of the new head. Staging dismisses approvals of older heads right
+after writing the candidate and stops if dismissal fails. Promotion independently
+rejects any remaining stale approval. Configure required checks on the protected
+branch as well.
 
 Merging freezes the manifest used by promotion. Promotion validates that source,
 runtime, candidate reference, and EAS group agree, changes the candidate
@@ -278,10 +340,18 @@ Each lifecycle queue uses `queue: max` and does not cancel active publication.
 Arrival order is not commit order, so source and release-boundary checks remain
 necessary. Keep manual maintenance/rollback actions explicit.
 
-Release Please and OTA use the repository `GITHUB_TOKEN`. Bot-created PR updates
-do not recursively trigger normal PR workflows, so generated PRs explicitly
-dispatch CI against their current branch head. Do not weaken CI or add a personal
-token to work around that behavior.
+Release Please, the Staging OTA proposal and the production proposers write
+their branches, pull requests and labels with a short-lived installation token
+of the repository's release GitHub App (`actions/create-github-app-token` with
+the `RELEASE_APP_ID` variable and the `RELEASE_APP_PRIVATE_KEY` secret). Pull
+requests created with the workflow `GITHUB_TOKEN` never emit `pull_request`
+events, so earlier automation dispatched CI and Gitleaks against every generated
+branch by hand; app-authored pull requests trigger those workflows like any other
+PR, and CI classifies them by author and head branch into the owning release
+train. The app's `<slug>[bot]` login and `github-actions[bot]`, which authored
+the merged history, are the only trusted release authors; workflows pass the slug
+to the scripts as `RELEASE_BOT_LOGINS`. Everything else in the release workflows
+keeps the `GITHUB_TOKEN`. Do not weaken CI or add a personal token.
 
 Before deploying changed release automation, let old publication jobs finish:
 running jobs retain the workflow code and locks from their original commit.
@@ -299,3 +369,44 @@ backend maintenance inputs, or website version/ref. OTA promotion can be retried
 through its own workflow. Always inspect the recorded source and artifact
 identity; a successful retry should complete the original operation, not create
 a new one under the same name.
+
+## Tag registration and workflow merge ordering
+
+The dispatcher's `register-release-tags` job reserves approved release commits
+before entering any product's build queue. A tag records the source commit; it
+does not publish a GitHub release, move a channel, or approve production. Release
+Please still creates the draft, and the existing train lock still owns planning
+and publication. Existing tags must identify the validated source and are never
+moved. Registration requires only the standard `GITHUB_TOKEN` permissions.
+
+GitHub can reject tagging an older commit after its workflow contents have been
+removed from the current branch. Early registration alone does not close that
+race. CI's `release-tag-barrier` checks the base's release tags before a PR changes
+anything under `.github/workflows`, including deletions and rename sources.
+Ordinary source-only PRs pass without waiting for tags or builds. If the barrier
+fails because registration is still running, rerun CI once registration succeeds.
+A failed registration needs recovery; merging the workflow change is not a
+recovery mechanism.
+
+### Required repository configuration
+
+A repository administrator must enable these settings on `main` after deploying
+the workflow. The code alone does **not** enforce merge ordering:
+
+1. Require the GitHub Actions status check `release-tag-barrier`.
+2. Enable **Require branches to be up to date before merging** (strict required
+   status checks). This invalidates a passing check when another release merges.
+3. Apply the rule to administrators and automation; do not grant bypasses that
+   can merge workflow changes without the check. Preserve all existing required
+   checks and other protections when editing the rule.
+
+Do not substitute a non-strict status rule: two PRs could pass against the same
+base, then the workflow PR could overtake the release PR. This setup uses strict
+branch protection, not a merge queue; a merge queue would need its own
+`merge_group` check coverage before being enabled.
+
+Verify configuration with a workflow-changing PR based on a main commit whose
+release tag is absent: the barrier must fail and merging must be blocked. Once
+the exact tag is registered, rerun CI and confirm the barrier passes. Then advance
+main and confirm GitHub requires the PR to update before merging. Activation is
+incomplete until both the required check and strict base freshness are enforced.

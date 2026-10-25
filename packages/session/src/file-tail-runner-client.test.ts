@@ -1017,6 +1017,7 @@ describe('FileTailRunnerClient control reconnect (ADR 0006 D5)', () => {
     // applies the steer at most once.
     expect(attempts[1]?.commandId).toBe(attempts[0]?.commandId);
     expect(connects[1]).toEqual({
+      attachmentCwd: '/wt/roundtrip',
       turnId: 'turn-ctl',
       controllerId: connects[0]?.controllerId,
       resumeLeaseEpoch: 4,

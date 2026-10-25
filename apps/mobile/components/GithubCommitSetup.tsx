@@ -3,6 +3,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Button } from './ui';
 
 const GITHUB_SIGNING_KEY_URL = 'https://github.com/settings/ssh/new';
 
@@ -148,7 +149,7 @@ export function GithubCommitSetup({
   if (phase.kind === 'loading' || phase.kind === 'generating') {
     return (
       <View style={styles.card} accessibilityLiveRegion="polite">
-        <ActivityIndicator size="small" color={theme.colors.setup.text} />
+        <ActivityIndicator size="small" color={theme.colors.text} />
         <View style={styles.loadingCopy}>
           <Text style={styles.title}>Finishing GitHub setup…</Text>
           <Text style={styles.description}>
@@ -204,15 +205,13 @@ export function GithubCommitSetup({
             GitHub could not provide a personal commit author. Enter yours once to continue.
           </Text>
           {phase.message ? <Text style={styles.error}>{phase.message}</Text> : null}
-          <Pressable
-            style={[styles.primaryButton, !authorReady ? styles.buttonDisabled : null]}
-            onPress={submitAuthor}
-            disabled={!authorReady}
-            accessibilityRole="button"
+          <Button
+            label="Continue"
             accessibilityLabel="Create signing key"
-          >
-            <Text style={styles.primaryButtonLabel}>Continue</Text>
-          </Pressable>
+            disabled={!authorReady}
+            onPress={submitAuthor}
+            fullWidth
+          />
         </>
       ) : null}
 
@@ -221,9 +220,9 @@ export function GithubCommitSetup({
           <Text style={styles.error} accessibilityRole="alert">
             {phase.message}
           </Text>
-          <Pressable onPress={() => generate()} accessibilityRole="button">
-            <Text style={styles.linkText}>Try again</Text>
-          </Pressable>
+          <View style={styles.inline}>
+            <Button label="Try again" variant="text" size="compact" onPress={() => generate()} />
+          </View>
         </View>
       ) : null}
 
@@ -268,16 +267,16 @@ export function GithubCommitSetup({
                   {phase.publicKey}
                 </Text>
               </Pressable>
-              <Pressable
-                style={copied ? styles.retryButton : styles.primaryButton}
-                onPress={() => copy(phase.publicKey)}
-                accessibilityRole="button"
-                accessibilityLabel="Copy signing public key"
-              >
-                <Text style={copied ? styles.retryButtonLabel : styles.primaryButtonLabel}>
-                  {copied ? 'Copy again' : 'Copy signing key'}
-                </Text>
-              </Pressable>
+              <View style={styles.inline}>
+                <Button
+                  label={copied ? 'Copy again' : 'Copy signing key'}
+                  accessibilityLabel="Copy signing public key"
+                  icon={copied ? 'check' : 'copy'}
+                  variant={copied ? 'secondary' : 'primary'}
+                  size="compact"
+                  onPress={() => copy(phase.publicKey)}
+                />
+              </View>
             </View>
           </View>
 
@@ -293,22 +292,17 @@ export function GithubCommitSetup({
                 In GitHub, choose “Signing Key” as the key type, paste the key, and save it. Then
                 return to Verity.
               </Text>
-              <Pressable
-                style={copied && !githubOpened ? styles.primaryButton : styles.secondaryButton}
-                onPress={openGithub}
-                accessibilityRole="link"
-                accessibilityLabel="Open GitHub signing key settings"
-              >
-                <Text
-                  style={
-                    copied && !githubOpened
-                      ? styles.primaryButtonLabel
-                      : styles.secondaryButtonLabel
-                  }
-                >
-                  {githubOpened ? 'Open GitHub again ↗' : 'Open GitHub ↗'}
-                </Text>
-              </Pressable>
+              <View style={styles.inline}>
+                <Button
+                  label={githubOpened ? 'Open GitHub again' : 'Open GitHub'}
+                  accessibilityLabel="Open GitHub signing key settings"
+                  role="link"
+                  icon="external-link"
+                  variant={copied && !githubOpened ? 'primary' : 'secondary'}
+                  size="compact"
+                  onPress={openGithub}
+                />
+              </View>
             </View>
           </View>
 
@@ -349,80 +343,59 @@ export function GithubCommitSetup({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   loadingCopy: { flex: 1, gap: theme.spacing.xs },
   connectedRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  connectedGlyph: { color: theme.colors.tone.done, fontSize: theme.text.xl, fontWeight: '600' },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '600' },
-  sectionTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  connectedGlyph: { ...theme.typography.display, color: theme.colors.success },
+  title: { ...theme.typography.title, color: theme.colors.text },
+  sectionTitle: { ...theme.typography.row, color: theme.colors.text },
   description: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.setup.border },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: theme.colors.border },
   input: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     minHeight: 44,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
     backgroundColor: theme.colors.background,
     color: theme.colors.text,
-    fontSize: theme.text.md,
   },
   hint: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
+    ...theme.typography.footnote,
+    color: theme.colors.textMuted,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.attention,
   },
   errorBlock: { gap: theme.spacing.sm },
-  linkText: { color: theme.colors.setup.text, fontSize: theme.text.sm, fontWeight: '700' },
-  primaryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-  },
-  buttonDisabled: { opacity: 0.45 },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
   keyBox: {
     minHeight: 72,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.background,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
-  keyText: { color: theme.colors.text, fontSize: theme.text.xs, lineHeight: 18 * theme.fontScale },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-  },
-  secondaryButtonLabel: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  keyText: { ...theme.typography.footnote, color: theme.colors.text },
   verificationIntro: { gap: theme.spacing.sm },
-  requiredLabel: { color: theme.colors.setup.text, fontSize: theme.text.xs, fontWeight: '600' },
+  requiredLabel: {
+    ...theme.typography.footnote,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
   guidedStep: { flexDirection: 'row', gap: theme.spacing.md },
   stepBadge: {
     width: 30,
@@ -430,20 +403,22 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
-  stepBadgeDone: { backgroundColor: theme.colors.tone.done },
-  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
+  stepBadgeDone: { backgroundColor: theme.colors.success },
+  stepBadgeLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.onAction,
+  },
   stepContent: { flex: 1, gap: theme.spacing.sm },
-  stepTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  stepTitle: { ...theme.typography.row, color: theme.colors.text },
   stepConnector: {
     width: 2,
     height: theme.spacing.md,
     marginLeft: 14,
-    backgroundColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.border,
   },
-  retryButton: { minHeight: 36, alignItems: 'flex-start', justifyContent: 'center' },
-  retryButtonLabel: { color: theme.colors.setup.text, fontSize: theme.text.sm, fontWeight: '700' },
   checkboxRow: {
     minHeight: 52,
     padding: theme.spacing.sm,
@@ -452,9 +427,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
-  confirmedRow: { borderColor: theme.colors.tone.done },
+  confirmedRow: { borderColor: theme.colors.success },
   checkbox: {
     width: 24,
     height: 24,
@@ -462,9 +437,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: 6,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
-  checkboxChecked: { backgroundColor: theme.colors.tone.done, borderColor: theme.colors.tone.done },
-  checkboxGlyph: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
-  checkboxLabel: { flex: 1, color: theme.colors.text, fontSize: theme.text.sm },
+  checkboxChecked: { backgroundColor: theme.colors.success, borderColor: theme.colors.success },
+  checkboxGlyph: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.onAction,
+  },
+  checkboxLabel: { ...theme.typography.subtitle, flex: 1, color: theme.colors.text },
 }));

@@ -9,7 +9,8 @@ import { OpenCodeSetup } from '../../components/OpenCodeSetup';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import { createVerityClient } from '../../lib/client';
 
-const NEXT_HREF = '/';
+// The starter screen opens the welcome session, or the home screen when there is none.
+const NEXT_HREF = '/onboarding/starter';
 const BACK = '/onboarding/master-password';
 const CURRENT_HREF = '/onboarding/ai-backends';
 
@@ -114,7 +115,7 @@ function AiBackendsStep({
       }
     >
       {phase.kind === 'loading' ? (
-        <ActivityIndicator size="small" color={theme.colors.setup.text} />
+        <ActivityIndicator size="small" color={theme.colors.text} />
       ) : null}
 
       {phase.kind === 'error' ? (
@@ -160,16 +161,15 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   intro: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
+    ...theme.typography.body,
+    color: theme.colors.textMuted,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
 }));

@@ -22,7 +22,7 @@ if (
   );
 }
 
-if (process.argv.slice(2).join(' ') === 'auth status --json') {
+if (process.argv.slice(2, 5).join(' ') === 'auth status --json') {
   process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
   process.exit(0);
 }

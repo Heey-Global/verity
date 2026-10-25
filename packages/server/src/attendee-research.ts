@@ -7,17 +7,19 @@ export function attendeeResearchHints(options: {
     sessionId: string,
     utterance: string,
     context: string,
-  ) => Promise<Array<{ kind: 'research' | 'opinion'; request: string }>>;
+    meetingId: string,
+  ) => Promise<Array<{ kind: 'research' | 'opinion'; request: string; questionId?: string }>>;
 }) {
   return async (meeting: LiveMeetingSyncRecord, utterance: string, requestId: string) => {
     const requests = await options.classify(
       meeting.sessionId,
       utterance,
       meeting.transcript.slice(-1500),
+      meeting.id,
     );
     for (const [index, request] of requests.entries()) {
       const accepted = await options.store.liveMeetings.addInsight(meeting.sessionId, {
-        id: `${requestId}-${index}`,
+        id: request.questionId ?? `${requestId}-${index}`,
         meetingId: meeting.id,
         kind: 'research',
         summary: request.request,

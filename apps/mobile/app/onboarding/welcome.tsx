@@ -3,12 +3,13 @@
 import * as Application from 'expo-application';
 import { useState } from 'react';
 import { type Href, router } from 'expo-router';
-import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Image, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
 import { enterDemoMode } from '../../lib/demoMode';
+import { Button } from '../../components/ui';
 
 const NEXT = '/onboarding/server-url' as Href;
 // The splash mark trimmed to its bounds, so it lines up with the text below.
@@ -67,13 +68,11 @@ export default function OnboardingWelcome() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.footerInner}>
-          <Pressable
-            style={({ pressed }) => [styles.demoLink, pressed ? styles.pressed : null]}
-            accessibilityRole="button"
-            accessibilityLabel="Try demo"
+          <Button
+            label="Try demo"
             accessibilityHint="Explore Verity with local sample data, without a server"
-            disabled={startingDemo}
-            hitSlop={8}
+            variant="text"
+            loading={startingDemo}
             onPress={() => {
               setStartingDemo(true);
               void enterDemoMode()
@@ -86,18 +85,8 @@ export default function OnboardingWelcome() {
                   );
                 });
             }}
-          >
-            <Text style={styles.demoLabel}>{startingDemo ? 'Starting demo…' : 'Try demo'}</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
-            disabled={startingDemo}
-            onPress={() => router.push(NEXT)}
-            accessibilityRole="button"
-            accessibilityLabel="Continue"
-          >
-            <Text style={styles.nextLabel}>Continue</Text>
-          </Pressable>
+          />
+          <Button label="Continue" disabled={startingDemo} onPress={() => router.push(NEXT)} />
         </View>
       </View>
     </View>
@@ -125,47 +114,41 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing.sm,
   },
   eyebrow: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    ...theme.typography.label,
+    color: theme.colors.text,
   },
   version: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
+    ...theme.typography.footnote,
+    color: theme.colors.textMuted,
   },
   title: {
+    ...theme.typography.display,
     color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontWeight: '600',
   },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   lead: {
+    ...theme.typography.body,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
   },
   sectionTitle: {
+    ...theme.typography.row,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
   },
   item: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   footer: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
-    backgroundColor: theme.colors.setup.surface,
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   footerInner: {
     width: '100%',
@@ -175,31 +158,5 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.md,
-  },
-  demoLink: {
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  demoLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    textDecorationLine: 'underline',
-  },
-  nextButton: {
-    minHeight: 44,
-    minWidth: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-  },
-  nextLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  pressed: {
-    opacity: 0.62,
   },
 }));

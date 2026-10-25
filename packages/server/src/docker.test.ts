@@ -83,6 +83,7 @@ describe('createDockerClient (#174)', () => {
           Name: '/verity-agent-gateway-1',
           Config: { Image: 'ghcr.io/heey-global/verity/verity-server@sha256:old' },
           HostConfig: {
+            SecurityOpt: ['no-new-privileges:true'],
             Binds: [
               'verity-agent-gateway-control:/run/verity-agent-gateway:rw',
               '/var/run/docker.sock:/var/run/docker.sock',
@@ -149,8 +150,13 @@ describe('createDockerClient (#174)', () => {
 
     const create = fetch.calls.find((call) => /\/containers\/create\?/.test(call.url));
     const body = JSON.parse(create?.init?.body ?? '{}') as {
-      HostConfig?: { Binds?: string[]; Mounts?: Array<{ Target?: string }> };
+      HostConfig?: {
+        SecurityOpt?: string[];
+        Binds?: string[];
+        Mounts?: Array<{ Target?: string }>;
+      };
     };
+    expect(body.HostConfig?.SecurityOpt).toEqual(['no-new-privileges=true']);
     // The bound volume stays a Bind and must not appear a second time as a Mount.
     expect(body.HostConfig?.Binds).toContain(
       'verity-agent-gateway-control:/run/verity-agent-gateway:rw',
@@ -713,7 +719,7 @@ describe('createDockerClient (#174)', () => {
       ...sampleSpec,
       capDrop: ['ALL'],
       capAdd: ['NET_BIND_SERVICE'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 512,
       memoryBytes: 2 * 1024 ** 3,
       memorySwapBytes: 2 * 1024 ** 3,
@@ -727,7 +733,7 @@ describe('createDockerClient (#174)', () => {
     const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
     expect(body.HostConfig.CapDrop).toEqual(['ALL']);
     expect(body.HostConfig.CapAdd).toEqual(['NET_BIND_SERVICE']);
-    expect(body.HostConfig.SecurityOpt).toEqual(['no-new-privileges:true']);
+    expect(body.HostConfig.SecurityOpt).toEqual(['no-new-privileges=true']);
     expect(body.HostConfig.PidsLimit).toBe(512);
     expect(body.HostConfig.Memory).toBe(2 * 1024 ** 3);
     // Pinned to `Memory`: the swap ceiling is what stops a capped container from
@@ -1025,12 +1031,16 @@ describe('createDockerClient (#174)', () => {
   });
 
   it('stopContainer is no-op on 304 (already-stopped signal — Engine convention)', async () => {
-    // Engine convention: stop returns 304 when the container was already stopped,
-    // a NOT-modified status code that fetch treats as "ok" (2xx-3xx). The client
-    // resolves successfully — the caller doesn't care whether it was already
-    // stopped; only that it stopped / is stopped now.
+    // Engine convention: stop returns 304 when the container was already stopped.
+    // fetch reports 304 as `ok: false` (Response.ok is 2xx only); faking it as ok
+    // hid that the socket-proxy transport rejected every stop of a stopped
+    // container, which made rollbacks after a failed start mark projects failed.
     const fetch = fakeFetch([
-      { match: /\/containers\/abc\/stop/, method: 'POST', resp: res('', { status: 304 }) },
+      {
+        match: /\/containers\/abc\/stop/,
+        method: 'POST',
+        resp: res('', { ok: false, status: 304 }),
+      },
     ]);
     const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
     await expect(docker.stopContainer('abc')).resolves.toBeUndefined();
@@ -1222,7 +1232,7 @@ describe('createDockerClient (#174)', () => {
             Tmpfs: { '/tmp': 'rw,noexec' },
             CapDrop: ['ALL'],
             CapAdd: null,
-            SecurityOpt: ['no-new-privileges:true'],
+            SecurityOpt: ['no-new-privileges=true'],
             PidsLimit: 128,
             Memory: 536_870_912,
             MemorySwap: 536_870_912,
@@ -2160,7 +2170,7 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
   const client = (fetch: ReturnType<typeof fakeFetch>) =>
     createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
 
-  it('listContainers strips the daemon leading slash and drops entries with no image id', async () => {
+  it('listContainers strips the daemon leading slash and includes every container', async () => {
     const fetch = fakeFetch([
       {
         match: /\/containers\/json\?all=true/,
@@ -2174,11 +2184,6 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
             Created: 100,
           },
           { Id: 'c2', ImageID: 'sha256:b' },
-          // The GC removes an image only when NO container references it, so an
-          // entry whose ImageID the daemon did not report must not become a
-          // summary that silently claims "references nothing".
-          { Id: 'c3', Names: ['/no-image'] },
-          null,
         ]),
       },
     ]);
@@ -2193,6 +2198,28 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
       { id: 'c2', imageId: 'sha256:b', names: [], labels: {} },
     ]);
     expect(fetch.calls[0]?.url).toBe('http://127.0.0.1:9234/v1.41/containers/json?all=true');
+  });
+
+  it.each(
+    [
+      null,
+      {},
+      'invalid',
+      [null],
+      [42],
+      [[]],
+      [{ ImageID: 'sha256:a' }],
+      [{ Id: '', ImageID: 'sha256:a' }],
+      [{ Id: 'c1' }],
+      [{ Id: 'c1', ImageID: '' }],
+      [{ Id: 'c1', ImageID: 'sha256:a' }, { Id: 'c2' }],
+    ].map((inventory) => ({ inventory })),
+  )('rejects incomplete container inventory $inventory', async ({ inventory }) => {
+    const fetch = fakeFetch([{ match: /\/containers\/json/, method: 'GET', resp: res(inventory) }]);
+    await expect(client(fetch).listContainers?.()).rejects.toMatchObject({
+      kind: 'other',
+      message: 'Docker container inventory is incomplete or malformed',
+    });
   });
 
   it('listContainers surfaces a daemon failure instead of reporting an empty fleet', async () => {

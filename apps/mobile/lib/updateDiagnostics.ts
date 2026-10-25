@@ -1,3 +1,8 @@
+import { exportRuntimeDiagnostics } from './runtimeDiagnostics';
+import { exportSessionSwitchTimings } from '@verity/mobile';
+import { exportGestureDiagnostics } from './gestureDiagnostics';
+import { exportPinnedTransportTimings } from './pinnedTransport';
+import { BUILD_COMMIT } from './buildInfo.generated';
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
@@ -76,7 +81,13 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     : [];
   const logs: ReturnType<typeof compactLog>[] = [];
   const report = {
-    schema: 2,
+    schema: 6,
+    runtimeDiagnostics: exportRuntimeDiagnostics(),
+    commit: BUILD_COMMIT,
+    sessionSwitchTimings: exportSessionSwitchTimings(),
+    nativeTransportTimings: exportPinnedTransportTimings(),
+    gestureDiagnostics: exportGestureDiagnostics(),
+    captureSummary: { omittedSwitches: 0 },
     exportedAt: new Date().toISOString(),
     version: shorten(runningReleaseVersion(Application.nativeApplicationVersion), 256),
     nativeVersion: boundedIdentity(Application.nativeApplicationVersion),
@@ -104,6 +115,25 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     },
     logs,
   };
+  // Transport metadata also counts against the report ceiling. Preserve the
+  // latest gesture and leave half the byte budget for update/recovery logs.
+  while (utf8Bytes(JSON.stringify(report, null, 2)) > MAX_REPORT_BYTES / 2) {
+    if (report.sessionSwitchTimings.length > 1) {
+      report.sessionSwitchTimings.shift();
+      report.captureSummary.omittedSwitches++;
+    } else if (report.gestureDiagnostics.events.length > 0) {
+      report.gestureDiagnostics.events.shift();
+      report.gestureDiagnostics.dropped++;
+    } else if (report.runtimeDiagnostics.samples.length > 1) {
+      report.runtimeDiagnostics.samples.shift();
+      report.runtimeDiagnostics.dropped++;
+    } else if (report.nativeTransportTimings.records.length > 0) {
+      report.nativeTransportTimings.records.shift();
+      report.nativeTransportTimings.omitted++;
+    } else {
+      break;
+    }
+  }
   const ordered = [...retained].sort(
     (a, b) => priority(a) - priority(b) || b.timestamp - a.timestamp,
   );

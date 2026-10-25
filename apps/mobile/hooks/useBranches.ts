@@ -37,6 +37,8 @@ export interface UseBranches {
    * is older OR there's no GitHub remote, in which case the chips stay non-tappable. */
   owner: string | undefined;
   repo: string | undefined;
+  /** The web host for those chips when it is not GitHub (a Forgejo project). */
+  codeHost: BranchList['codeHost'];
   /** True while the initial (or a forced) load is in flight. */
   loading: boolean;
   /** True when the transcript exists but the session workspace was cleaned up. */
@@ -54,7 +56,9 @@ export interface UseBranches {
   switchTo: (
     opts: BranchSwitchRequest,
   ) => Promise<{ ok: true } | { ok: false; dirty: boolean; message: string }>;
-  mergePullRequest: (number: number) => Promise<{ ok: true } | { ok: false; message: string }>;
+  mergePullRequest: (
+    number: number,
+  ) => Promise<{ ok: true } | { ok: false; message: string; permissionDenied?: boolean }>;
   /** The base branch this session can be merged into WITHOUT GitHub, or undefined
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
@@ -83,6 +87,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   );
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
+  const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
   const [localMergeBase, setLocalMergeBase] = useState<string | undefined>(
     cached?.localMerge?.base,
   );
@@ -113,6 +118,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     promise: Promise<void>;
     followup: boolean;
     silent: boolean;
+    controller: AbortController;
   } | null>(null);
 
   // A reused split-view pane must never show the previous session's PR, even for
@@ -120,7 +126,10 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   if (identity.client !== client || identity.sessionId !== sessionId) {
     setIdentity({ client, sessionId });
     reqId.current += 1;
-    if (pending.current) pending.current.followup = false;
+    if (pending.current) {
+      pending.current.followup = false;
+      pending.current.controller.abort();
+    }
     pending.current = null;
     setCurrent(cached?.current);
     setSwitchable(cached?.switchable ?? []);
@@ -129,6 +138,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPullRequest(cached?.pullRequest ?? null);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
+    setCodeHost(cached?.codeHost);
     setLocalMergeBase(cached?.localMerge?.base);
     setLocalMergeHasChanges(hasLocalSaveChanges(cached?.localMerge));
     setLoading(cached === undefined);
@@ -152,18 +162,21 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         promise: Promise.resolve(),
         followup: false,
         silent: opts.silent === true,
+        controller: new AbortController(),
       };
       pending.current = request;
       request.promise = (async () => {
         do {
           request.followup = false;
           const id = ++reqId.current;
-          const fresh = (): boolean => mounted.current && id === reqId.current;
+          const fresh = (): boolean =>
+            mounted.current && id === reqId.current && !request.controller.signal.aborted;
           if (!request.silent) setLoading(true);
           try {
             const publishSnapshot = branchesSnapshotWriter(client, sessionId);
-            const prefetched = takePrefetchedBranches(client, sessionId);
-            const res = await (prefetched ?? client.getBranches(sessionId));
+            const prefetched = takePrefetchedBranches(client, sessionId, request.controller.signal);
+            const res = await (prefetched ??
+              client.getBranches(sessionId, request.controller.signal));
             if (fresh()) {
               publishSnapshot(res);
               setCurrent(res.current);
@@ -173,6 +186,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setPullRequest(res.pullRequest ?? null);
               setOwner(res.owner);
               setRepo(res.repo);
+              setCodeHost(res.codeHost);
               setLocalMergeBase(res.localMerge?.base);
               setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
               setWorkspaceMissing(res.workspaceMissing === true);
@@ -192,6 +206,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     [client, sessionId],
   );
 
+  useEffect(
+    () => () => {
+      pending.current?.controller.abort();
+      pending.current = null;
+    },
+    [client, sessionId],
+  );
+
   // Fetch on focus — opening the session OR returning to it — and pause between
   // visits so a session left in the background (another one opened on top) fires no
   // requests. This immediate load also covers the initial mount (the screen is
@@ -205,7 +227,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       return () => {
         setFocused(false);
         reqId.current += 1;
-        if (pending.current) pending.current.followup = false;
+        if (pending.current) {
+          pending.current.followup = false;
+          pending.current.controller.abort();
+        }
+        pending.current = null;
       };
     }, [appActive, load, enabled]),
   );
@@ -216,7 +242,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       setAppActive(active);
       if (!active) {
         reqId.current += 1; // stale in-flight response must not write in background
-        if (pending.current) pending.current.followup = false;
+        if (pending.current) {
+          pending.current.followup = false;
+          pending.current.controller.abort();
+        }
+        pending.current = null;
       }
       // Changing appActive reruns the focus effect (immediate load) and recreates
       // the polling interval; native timers are not guaranteed to resume themselves.
@@ -302,6 +332,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         }
         return {
           ok: false,
+          permissionDenied: err instanceof VerityApiError && err.code === 'merge_permission_denied',
           message: err instanceof Error ? err.message : String(err),
         };
       }
@@ -329,6 +360,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     pullRequest,
     owner,
     repo,
+    codeHost,
     loading,
     workspaceMissing,
     error,

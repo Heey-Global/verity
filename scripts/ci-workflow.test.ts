@@ -66,8 +66,13 @@ describe('workflow token least privilege', () => {
       'mobile-ota-promote.yml': {
         promote: { actions: 'write', contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
+      // Writes go through the release app token so generated PRs run their
+      // own pull_request CI; GITHUB_TOKEN keeps only what the app cannot do.
       'mobile-ota.yml': {
-        update: { actions: 'write', contents: 'write', issues: 'write', 'pull-requests': 'write' },
+        update: { contents: 'read' },
+      },
+      'mobile-production-build.yml': {
+        'finalize-mobile-production': { actions: 'read', contents: 'read' },
       },
       'release-reconcile.yml': {
         // contents: write reads draft releases, which GitHub hides from read
@@ -78,12 +83,9 @@ describe('workflow token least privilege', () => {
         notices: { actions: 'write', contents: 'write' },
       },
       'release.yml': {
-        'release-please': {
-          actions: 'write',
-          contents: 'write',
-          issues: 'write',
-          'pull-requests': 'write',
-        },
+        // contents: write reads draft releases for the lifecycle steps.
+        'release-please': { contents: 'write', 'pull-requests': 'read' },
+        'finalize-backend-release': { contents: 'read' },
         'self-update-gate': { contents: 'read', packages: 'read' },
       },
     };
@@ -91,7 +93,9 @@ describe('workflow token least privilege', () => {
     for (const [file, jobs] of Object.entries(expected)) {
       const parsed = workflow(file);
       expect(parsed.permissions, file).toEqual(
-        file === 'release.yml' ? { contents: 'read' } : 'read-all',
+        ['release.yml', 'mobile-production-build.yml'].includes(file)
+          ? { contents: 'read' }
+          : 'read-all',
       );
       for (const [job, permissions] of Object.entries(jobs))
         expect(parsed.jobs?.[job]?.permissions, `${file}:${job}`).toEqual(permissions);
@@ -151,17 +155,38 @@ describe('release-please train isolation', () => {
     expect(JSON.stringify(job)).not.toContain('.release/backend--');
   });
 
-  it('dispatches each generated PR with its owning train', () => {
-    const dispatch = workflowReleaseJob().steps?.find(
-      (step) => step.name === 'Run checks for release PRs',
-    );
-
-    expect(dispatch?.run).toContain(
-      'gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"',
+  it('authors generated PRs as the release app so they run their own CI', () => {
+    const steps = workflowReleaseJob().steps ?? [];
+    // GITHUB_TOKEN-authored PRs emit no pull_request event; the app's do.
+    expect(steps.find((step) => step.name === 'Run checks for release PRs')).toBeUndefined();
+    expect(JSON.stringify(steps)).not.toContain('gh workflow run ci.yml');
+    expect(steps.find((step) => step.id === 'app-token')?.with?.['app-id']).toBe(
+      '${{ secrets.RELEASE_APP_ID }}',
     );
     for (const train of trains) {
-      expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
+      const action = steps.find((step) => step.id === `release-${train}`);
+      expect(action?.with?.token, train).toBe('${{ steps.app-token.outputs.token }}');
     }
+  });
+
+  it('loads every release app token ID from the configured secret', () => {
+    // A variable reference resolves empty when deployment only supplies the
+    // secret, stopping publication before any release logic can execute.
+    const tokenSteps = readdirSync('.github/workflows')
+      .filter((file) => file.endsWith('.yml'))
+      .flatMap((file) => {
+        const workflow = parse(readFileSync(`.github/workflows/${file}`, 'utf8')) as {
+          jobs?: Record<string, { steps?: WorkflowStep[] }>;
+        };
+        return Object.values(workflow.jobs ?? {}).flatMap((job) =>
+          (job.steps ?? [])
+            .filter((step) => step.uses?.startsWith('actions/create-github-app-token@'))
+            .map((step) => ({ file, step })),
+        );
+      });
+    expect(tokenSteps.length).toBeGreaterThan(0);
+    for (const { file, step } of tokenSteps)
+      expect(step.with?.['app-id'], file).toBe('${{ secrets.RELEASE_APP_ID }}');
   });
 
   it('never plans a next PR in the invocation that creates a release', () => {
@@ -849,6 +874,18 @@ describe('mobile native patch CI', () => {
     expect(build, 'this job builds the mobile data layer').toBeGreaterThan(patch);
   });
 
+  it('requires installed Unistyles reload guards in the mobile job', () => {
+    const guard = steps.find((step) =>
+      step.run?.includes('vitest run scripts/unistyles-reload.test.ts'),
+    );
+    expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
+  });
+
+  it('requires installed Expo CLI compatibility checks in the mobile job', () => {
+    const guard = steps.find((step) => step.run?.includes('scripts/expo-cli-zod-compat.test.ts'));
+    expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
+  });
+
   it('checks release and OTA contracts without pulling mobile config into backend shards', () => {
     const contract = workflow.jobs['contract-test'].steps.find((step) =>
       step.run?.includes('vitest run scripts'),
@@ -968,6 +1005,32 @@ describe('native iOS compile gate', () => {
     // Ahead of prebuild it would run under its own bundle defaults, which pass
     // while the shipping rules reject every self-hosted server.
     expect(smoke).toBeGreaterThan(prebuild);
+  });
+
+  it('gives each tunnel protocol and platform its own bounded Apple smoke step', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      jobs: Record<string, { steps: Array<WorkflowStep & { 'timeout-minutes'?: number }> }>;
+    };
+    const steps = workflow.jobs['verify-ios'].steps;
+    const prebuild = steps.findIndex((step) => step.name === 'Generate the iOS project');
+    const smokes = steps.filter((step) =>
+      step.run?.includes('scripts/remote-control-tunnel/run-apple.sh'),
+    );
+    // Combining cold simulator builds silently consumes the shared deadline before h2 runs.
+    expect(smokes).toHaveLength(4);
+    const cases = smokes.map((step) => {
+      expect(step.run?.trim().split('\n')).toHaveLength(1);
+      expect(step['timeout-minutes']).toBeGreaterThan(0);
+      expect(step['timeout-minutes']).toBeLessThanOrEqual(10);
+      expect(step.if).toBe(
+        "needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'",
+      );
+      expect(steps.indexOf(step)).toBeGreaterThan(prebuild);
+      const command = step.run?.match(/run-apple\.sh (macos|ios) (h1|h2)$/u);
+      expect(command).not.toBeNull();
+      return command?.slice(1).join(' ');
+    });
+    expect(cases.sort()).toEqual(['ios h1', 'ios h2', 'macos h1', 'macos h2']);
   });
 
   it('runs fixture Apple probes without compiling the iOS app', () => {
@@ -1128,7 +1191,10 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('export VERITY_IOS_BUILD_NUMBER="$next_build"');
     expect(commands).toContain('config.fetch("cli")["appVersionSource"] = "local"');
     expect(commands).toContain('["autoIncrement"] = false');
-    expect(commands).toContain('Print :CFBundleVersion');
+    // Archive parsing is exercised by staging-delivery-regression.test.ts.
+    // Both variants must reject a build number that would publish the wrong IPA.
+    expect(commands).toContain('"$next_build" != "$VERITY_IOS_BUILD_NUMBER"');
+    expect(commands).toContain('"$next_build" -le "$latest_build"');
     expect(commands).toContain('filter[version]=$next_build');
     expect(commands).toContain('processingState');
     expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
@@ -1155,12 +1221,11 @@ describe('native iOS compile gate', () => {
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
       commands.indexOf('filter[version]=$next_build'),
     );
+    // App-authored release PRs reach mobile-native-verify through its own
+    // pull_request path filter; no dispatch from the release job remains.
     const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(releaseSource).toContain(
-      '^apps/mobile/(CHANGELOG\\.md|app\\.config\\.ts|version\\.txt)$',
-    );
-    expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
-    expect(releaseSource).toContain('gh workflow run gitleaks-dispatch.yml');
+    expect(releaseSource).not.toContain('gh workflow run mobile-native-verify.yml');
+    expect(releaseSource).not.toContain('gh workflow run gitleaks-dispatch.yml');
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
@@ -2090,7 +2155,14 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
-    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26', 'xcode-27']);
+    const hostedImages = new Set([
+      'ubuntu-24.04',
+      'ubuntu-24.04-arm',
+      'ubuntu-26.04',
+      'ubuntu-26.04-arm',
+      'macos-26',
+      'xcode-27',
+    ]);
     const offenders = jobs
       .filter(declaresRunner)
       .filter(({ job }) => {
@@ -2114,9 +2186,13 @@ describe('GitHub-hosted runner boundary', () => {
       };
       const job = workflow.jobs['architecture-smoke'];
       expect(job?.['runs-on']).toBe('${{ matrix.runner }}');
+      const runner = job?.strategy?.matrix?.include?.find(
+        ({ architecture }) => architecture === 'amd64',
+      )?.runner;
+      expect(runner).toMatch(/^ubuntu-(?:24|26)\.04$/u);
       expect(job?.strategy?.matrix?.include).toEqual([
-        { architecture: 'amd64', runner: 'ubuntu-24.04' },
-        { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+        { architecture: 'amd64', runner },
+        { architecture: 'arm64', runner: `${runner}-arm` },
       ]);
       const build = job?.steps?.find((step) => step.uses?.startsWith('docker/build-push-action@'));
       expect(build?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
@@ -2125,7 +2201,7 @@ describe('GitHub-hosted runner boundary', () => {
       const gate = workflow.jobs['smoke-test'];
       expect([gate?.needs].flat()).toContain('architecture-smoke');
       expect(gate?.if).toBe('${{ always() }}');
-      expect(gate?.['runs-on']).toBe('ubuntu-24.04');
+      expect(gate?.['runs-on']).toBe('ubuntu-26.04');
       expect(gate?.steps).toHaveLength(1);
       expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
     }
@@ -2250,7 +2326,7 @@ describe('GitHub-hosted runner boundary', () => {
     const snapshot = ci.jobs['public-snapshot'];
     expect(snapshot?.if).toBeUndefined();
     expect(snapshot?.needs).toBeUndefined();
-    expect(snapshot?.['runs-on']).toBe('ubuntu-24.04');
+    expect(snapshot?.['runs-on']).toBe('ubuntu-26.04');
     const install = (snapshot?.steps ?? []).find((step) => step.name === 'Install pinned Gitleaks');
     expect(install?.run).toContain('version=8.30.1');
     expect(install?.run).toContain(
@@ -2309,7 +2385,7 @@ describe('GitHub-hosted runner boundary', () => {
       jobs: Record<string, Job>;
     };
     const job = ci.jobs.installer;
-    expect(job?.['runs-on']).toBe('ubuntu-24.04');
+    expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
     const suite = (job?.steps ?? []).find((step) =>
       step.run?.includes('node --test deploy/bin/verity-install.test.mjs'),
@@ -4113,7 +4189,51 @@ describe('Claude ACP sandbox smoke', () => {
     expect(source).toContain("runnerSupervisorBackend: 'claude-acp'");
     expect(script).toContain('-e DOPPLER_TOKEN=must-not-cross');
     expect(script).toContain('-e GITHUB_TOKEN=must-not-cross');
-    expect(script).toContain('"credentialBoundary":"no-credentials"');
+    expect(script).toContain('"credentialBoundary":"non-secret-placeholder"');
+    for (const harness of [
+      script,
+      readFileSync('scripts/test-runner-claude-live-recreate.sh', 'utf8'),
+    ]) {
+      expect(harness).toContain('umask 077; printf');
+      expect(harness).toContain(
+        'http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url',
+      );
+    }
+  });
+
+  it('uses the session home for durable transcript recreation and checks loss before restore', () => {
+    const recreate = readFileSync('packages/server/src/runner-claude-recreate-server.ts', 'utf8');
+    expect(recreate).toMatch(/new ServerTranscript\(\{[^}]*veritySessionId: STORE_SESSION_ID/su);
+    expect(recreate).toContain('persistentSessionHomes: true');
+    const lossCheck = recreate.indexOf(
+      'existsSync(serverTranscript.transcriptFile(resumeSessionId, worktree))',
+    );
+    expect(lossCheck).toBeGreaterThan(0);
+    expect(lossCheck).toBeLessThan(recreate.indexOf('client.startTurn('));
+  });
+
+  it('answers ACP auth probes with managed settings without starting a session', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-auth-probe-fixture-'));
+    try {
+      for (const fixture of ['fake-claude-live-smoke.mjs', 'fake-claude-recreate-smoke.mjs']) {
+        for (const settings of [[], ['--settings', '{"apiKeyHelper":""}']]) {
+          const result = spawnSync(
+            process.execPath,
+            [`scripts/fixtures/${fixture}`, 'auth', 'status', '--json', ...settings],
+            {
+              env: { VERITY_LIVE_SMOKE_WORKTREE: worktree },
+              encoding: 'utf8',
+              timeout: 5_000,
+            },
+          );
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stderr).toBe('');
+          expect(JSON.parse(result.stdout)).toEqual({ loggedIn: false });
+        }
+      }
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
   });
 
   it('waits for the ACP stream-json prompt before emitting Claude output', async () => {
@@ -4595,6 +4715,7 @@ describe('changed-area detector', () => {
       'apps/mobile/package.json',
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       expect(
@@ -4631,6 +4752,7 @@ describe('changed-area detector', () => {
     for (const file of [
       'scripts/patch-mobile-native-deps.mjs',
       'scripts/patch-mobile-native-deps.test.ts',
+      'scripts/expo-cli-zod-compat.test.ts',
     ]) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       for (const area of broad) {
@@ -5279,6 +5401,7 @@ describe('changed-area detector', () => {
       expect.arrayContaining([
         'apps/mobile/app.config.ts',
         'apps/mobile/native/**',
+        'apps/mobile/targets/**',
         'apps/mobile/package.json',
         'package-lock.json',
         'scripts/mobile-native-lock-changes.mjs',
@@ -5581,4 +5704,17 @@ describe('changed-area detector', () => {
       ).toBe(true);
     }
   }, 120_000);
+});
+
+it('verifies the immutable OTA artifact source before installing mobile dependencies', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    jobs: { 'mobile-app': WorkflowJob };
+  };
+  const steps = workflow.jobs['mobile-app'].steps;
+  const source = steps.findIndex((step) => step.run?.includes('git checkout --detach "$source"'));
+  expect(source).toBeGreaterThan(-1);
+  expect(source).toBeLessThan(steps.findIndex((step) => step.run === 'npm ci'));
+  expect(steps[source].if).toContain('automation/promote-mobile-ota-');
+  expect(steps[source].run).toContain('ota-promotion.json');
+  expect(steps[source].run).toContain('git merge-base --is-ancestor');
 });

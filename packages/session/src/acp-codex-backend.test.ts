@@ -1,3 +1,4 @@
+import { agentEventSchema } from '@verity/events';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -10,6 +11,7 @@ import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
+const setTimeoutOriginal = globalThis.setTimeout;
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -76,9 +78,29 @@ function acpSpawner(
     loadSession?: boolean;
     startupFailure?: string;
     promptFailure?: string;
+    capacityFailures?: number;
+    capacityPrefix?: string;
+    splitCapacityPrefix?: boolean;
+    capacityInterleavedTool?: boolean;
+    capacityInterleavedRefusal?: boolean;
+    capacityLifecycle?: boolean;
+    capacityTool?: boolean;
+    capacityUsage?: boolean;
+    capacityTrailingTool?: boolean;
+    onPrompt?: () => void;
+    onCapacity?: () => void;
+    processExit?: { code: number | null; signal: NodeJS.Signals | null };
+    exitDelayMs?: number;
+    exitDetailsBeforeClose?: boolean;
+    setupFailure?: boolean;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
+    /** Answer `session/load` with this JSON-RPC error instead. */
+    loadError?: { code: number; message: string; data?: unknown };
+    /** Answer `session/prompt` with this JSON-RPC error instead. */
+    promptError?: { code: number; message: string; data?: unknown };
+    updatesBeforePromptError?: Record<string, unknown>[];
     /** Answer `session/new` without the `model` config option, as an adapter
      *  build that does not expose it would. */
     withoutModelOption?: boolean;
@@ -91,7 +113,7 @@ function acpSpawner(
     echoStaleModel?: boolean;
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
-    cancel?: { operator?: AbortController };
+    cancel?: { operator?: AbortController; disconnect?: boolean };
     generatedImage?: string;
     fragmentImageFrame?: boolean;
   } = {},
@@ -103,6 +125,8 @@ function acpSpawner(
   const queue: string[] = [];
   const waiters: Array<(value: IteratorResult<string>) => void> = [];
   let closed = false;
+  let exitReady = false;
+  let resolveExit: ((code: number) => void) | undefined;
   const enqueue = (value: string): void => {
     const waiter = waiters.shift();
     if (waiter === undefined) queue.push(value);
@@ -118,6 +142,11 @@ function acpSpawner(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    if (behavior.exitDelayMs !== undefined)
+      setTimeout(() => {
+        exitReady = true;
+        resolveExit?.(behavior.processExit?.code ?? 1);
+      }, behavior.exitDelayMs);
     for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
   };
   const kill = vi.fn(close);
@@ -152,8 +181,20 @@ function acpSpawner(
     return {
       stdout,
       pid: 321,
-      exited: Promise.resolve(0),
-      stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
+      exited:
+        behavior.exitDelayMs === undefined
+          ? Promise.resolve(behavior.processExit?.code ?? 0)
+          : new Promise<number>((resolve) => {
+              resolveExit = resolve;
+            }),
+      exitDetails: () =>
+        closed &&
+        (behavior.exitDetailsBeforeClose || behavior.exitDelayMs === undefined || exitReady)
+          ? behavior.processExit
+          : undefined,
+      stderr: () =>
+        (behavior.startupFailure ?? behavior.promptFailure ?? '') +
+        (exitReady ? '\nlate stderr' : ''),
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -192,11 +233,17 @@ function acpSpawner(
                 data: { uri: 'codex-session-existing' },
               },
             });
+          } else if (method === 'session/load' && behavior.loadError !== undefined) {
+            push({ jsonrpc: '2.0', id, error: behavior.loadError });
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('codex-session-existing') });
           } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
             push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'mode refused' } });
           } else if (method === 'session/set_mode' || method === 'session/set_config_option') {
+            if (behavior.setupFailure) {
+              close();
+              return true;
+            }
             // Echoing nothing is the adapter shape Codex actually has today, and it
             // keeps the plain ack's meaning in `applySelectOption`. `echoStaleModel`
             // is the other half of that contract — an adapter that answers with the
@@ -209,6 +256,15 @@ function acpSpawner(
                   ? sessionResult('codex-session-1')
                   : {},
             });
+          } else if (method === 'session/prompt' && behavior.promptError !== undefined) {
+            for (const update of behavior.updatesBeforePromptError ?? []) {
+              push({
+                jsonrpc: '2.0',
+                method: 'session/update',
+                params: { sessionId: 'codex-session-existing', update },
+              });
+            }
+            push({ jsonrpc: '2.0', id, error: behavior.promptError });
           } else if (method === 'session/prompt' && behavior.cancel !== undefined) {
             push({
               jsonrpc: '2.0',
@@ -222,8 +278,110 @@ function acpSpawner(
               },
             });
             behavior.cancel.operator?.abort();
-            push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+            if (behavior.cancel.disconnect) close();
+            else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            behavior.onPrompt?.();
+            if ((behavior.capacityFailures ?? 0) > 0) {
+              behavior.capacityFailures!--;
+              if (behavior.capacityTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call',
+                      toolCallId: 'completed-before-capacity',
+                      kind: 'execute',
+                      title: 'write file',
+                      status: 'completed',
+                      rawInput: { command: 'touch completed' },
+                    },
+                  },
+                });
+              for (const text of [
+                ...(behavior.splitCapacityPrefix ? [behavior.capacityPrefix ?? ''] : []),
+                `${behavior.splitCapacityPrefix ? '' : (behavior.capacityPrefix ?? '')}Selected model is at `,
+                'capacity. Please try a different model.',
+              ]) {
+                if (
+                  (behavior.capacityInterleavedTool && text.startsWith('Selected')) ||
+                  (behavior.capacityInterleavedRefusal && text.startsWith('capacity.'))
+                )
+                  push({
+                    jsonrpc: '2.0',
+                    method: 'session/update',
+                    params: {
+                      sessionId: 'codex-session-1',
+                      update: {
+                        sessionUpdate: 'tool_call_update',
+                        toolCallId: 'completed-before-capacity',
+                        status: 'completed',
+                      },
+                    },
+                  });
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'agent_message_chunk',
+                      content: { type: 'text', text },
+                      ...(behavior.capacityLifecycle
+                        ? {
+                            _meta: {
+                              verity: {
+                                lifecycle: { type: 'compaction', id: 'capacity-compaction' },
+                              },
+                            },
+                          }
+                        : {}),
+                    },
+                  },
+                });
+              }
+              if (behavior.capacityTrailingTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call_update',
+                      toolCallId: 'completed-before-capacity',
+                      status: 'completed',
+                    },
+                  },
+                });
+              const finishCapacity = () =>
+                push({
+                  jsonrpc: '2.0',
+                  id,
+                  result: {
+                    stopReason: 'cancelled',
+                    ...(behavior.capacityUsage
+                      ? {
+                          usage: {
+                            totalTokens: 16,
+                            inputTokens: 10,
+                            outputTokens: 6,
+                            cachedReadTokens: 2,
+                            cachedWriteTokens: 1,
+                          },
+                        }
+                      : {}),
+                  },
+                });
+              if (behavior.onCapacity)
+                setTimeoutOriginal(() => {
+                  behavior.onCapacity?.();
+                  finishCapacity();
+                }, 25);
+              else finishCapacity();
+              return true;
+            }
             if (behavior.promptFailure !== undefined) {
               close();
               return true;
@@ -314,6 +472,367 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it.each([false, true])(
+    'continues after a split capacity refusal (trailing tool: %s)',
+    async (capacityTrailingTool) => {
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityTool: true,
+        capacityUsage: true,
+        capacityInterleavedRefusal: true,
+        capacityTrailingTool,
+      });
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((handler, delay) =>
+          setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+        );
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work',
+          cwd: '/work',
+          prompt: 'Run',
+          spawner: fake.spawner,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(true);
+        const prompts = fake.writes.filter((entry) => entry.method === 'session/prompt');
+        expect(prompts).toHaveLength(2);
+        expect(prompts[1]?.params).toMatchObject({
+          sessionId: 'codex-session-1',
+          prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
+        });
+        const events = await ctx.store.getEvents('codex-session-1');
+        expect(events.find((event) => event.t === 'result')).toMatchObject({
+          usage: { inputTokens: 14, outputTokens: 9, cacheReadTokens: 2, cacheCreationTokens: 1 },
+        });
+        expect(
+          events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
+        ).toBe(false);
+        expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+          'model_capacity_retry',
+        ]);
+      } finally {
+        timer.mockRestore();
+      }
+    },
+  );
+
+  it('withholds steering before a capacity retry produces fresh agent content', async () => {
+    let steer: ((message: { text: string }) => boolean) | undefined;
+    const accepted: boolean[] = [];
+    const appendEvent = ctx.store.appendEvent.bind(ctx.store);
+    vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'compaction') {
+        accepted.push(steer?.({ text: 'change direction' }) ?? true);
+        await new Promise<void>((resolve) => setTimeoutOriginal(resolve, 1));
+      }
+      return appendEvent(...args);
+    });
+    const fake = acpSpawner({
+      capacityFailures: 1,
+      capacityLifecycle: true,
+      capacityTool: true,
+      onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+      onCapacity: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+    });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+        onSteer: (inject) => {
+          steer = inject;
+        },
+      });
+      expect(accepted.length).toBeGreaterThan(3);
+      expect(accepted.every((value) => !value)).toBe(true);
+      expect(fake.writes.some((entry) => entry.method === '_session/steering')).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('bounds capacity retries and records the final refusal as a system error', async () => {
+    const fake = acpSpawner({ capacityFailures: 5 });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(3);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+        'model_capacity_retry',
+        'model_capacity_retry',
+        'model_capacity',
+      ]);
+      expect(events.some((event) => event.t === 'text')).toBe(false);
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(true);
+      expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+        true,
+      );
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('stops during the capacity retry wait without dispatching another prompt', async () => {
+    const fake = acpSpawner({ capacityFailures: 1 });
+    const controller = new AbortController();
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((handler, delay) => {
+      if (delay === 5_000) setTimeoutOriginal(() => controller.abort(), 1);
+      return setTimeoutOriginal(handler, delay);
+    });
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: controller.signal,
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(false);
+      expect(events.some((event) => event.t === 'error' && event.kind === 'acp')).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it.each([false, true, 'interleaved'] as const)(
+    'keeps quoted capacity prose without retrying (split prefix: %s)',
+    async (splitCapacityPrefix) => {
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityPrefix: 'The provider said: ',
+        splitCapacityPrefix: splitCapacityPrefix !== false,
+        capacityInterleavedTool: splitCapacityPrefix === 'interleaved',
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events
+          .filter((event) => event.t === 'text')
+          .map((event) => event.delta)
+          .join(''),
+      ).toContain('The provider said: Selected model is at capacity.');
+      expect(events.some((event) => event.t === 'error')).toBe(false);
+    },
+  );
+
+  it.each([
+    { code: 1, signal: null },
+    { code: null, signal: 'SIGKILL' as const },
+    { code: 0, signal: null },
+  ])(
+    'persists redacted process details for an unexpected active-turn exit: %j',
+    async (processExit) => {
+      const append = vi.spyOn(ctx.store, 'appendEvent');
+      const secret = 'ghp_' + 'a'.repeat(24);
+      const opaque = 'opaque-runtime-credential';
+      const fake = acpSpawner({
+        promptFailure: `fatal: ${secret} ${opaque}\nCUSTOM_VALUE=private-setting\nlast failure`,
+        processExit,
+      });
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        model: 'codex/gpt-6.1-sol',
+        env: { CUSTOM_SECRET: opaque },
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      const diagnostic = events.findLast((event) => event.t === 'diagnostic');
+      expect(diagnostic).toMatchObject({
+        t: 'diagnostic',
+        outcome: 'failed',
+        exitCode: processExit.code,
+        signal: processExit.signal,
+        turnActive: true,
+        model: 'codex/gpt-6.1-sol',
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(secret);
+      expect(JSON.stringify(diagnostic)).not.toContain(opaque);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
+      expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
+      expect(result.exitCode).toBe(1);
+      const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
+      // Older frame readers hash schema output, so new diagnostics must keep its field order.
+      expect(JSON.stringify(persisted)).toBe(JSON.stringify(agentEventSchema.parse(persisted)));
+      expect(JSON.stringify(persisted)).not.toContain(secret);
+      expect(JSON.stringify(persisted)).not.toContain(opaque);
+      expect(JSON.stringify(persisted)).not.toContain('private-setting');
+      append.mockRestore();
+    },
+  );
+
+  it.each([false, true])(
+    'omits process failure details for an intentional stop (disconnect=%s)',
+    async (disconnect) => {
+      const operator = new AbortController();
+      const fake = acpSpawner({
+        cancel: { operator, disconnect },
+        processExit: { code: null, signal: 'SIGTERM' },
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: operator.signal,
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
+      ).toEqual([]);
+      expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+        false,
+      );
+    },
+  );
+
+  it('captures delayed exit details and stderr after transport EOF', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 30,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+      stderrTail: expect.stringContaining('late stderr'),
+    });
+  });
+
+  it('records native process termination even when stdio close exceeds the drain wait', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 350,
+        exitDetailsBeforeClose: true,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+    });
+  });
+
+  it('records a startup process failure with no active prompt', async () => {
+    await ctx.store.createSession({
+      sessionId: 'startup',
+      worktree: '/work',
+      model: 'codex/default',
+    });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'startup',
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        startupFailure: 'fatal startup',
+        processExit: { code: 1, signal: null },
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('startup');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+      phase: 'initialize',
+    });
+  });
+
+  it('keeps the prompt inactive when the process exits during session configuration', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ setupFailure: true, processExit: { code: 1, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+    });
+  });
+
+  it('preserves raw pre-execution rejection evidence for recovery classification', async () => {
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ startupFailure: 'API key: invalid api key' }).spawner,
+    });
+    expect(result.failedBeforeExecution).toBe(true);
+  });
+
+  it('does not record a process failure for a clean completed turn', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ processExit: { code: 0, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+      false,
+    );
+    expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+      false,
+    );
+  });
+
   it('externalizes an image generation notification larger than the ACP frame limit', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
     const png = largePng();
@@ -928,6 +1447,130 @@ describe('AcpCodexBackend', () => {
     expect(result.stderr).toContain('Resource not found: codex-session-existing');
   });
 
+  // codex-acp 2.2.2 refuses the load of a thread Codex never wrote a rollout for —
+  // one whose first turn died before its prompt — with -32603 and the reason only
+  // in `data`. Without recognizing it, every later turn re-resumed the same thread
+  // and failed with a bare "Internal error".
+  it.each([
+    ['no rollout found for thread id codex-session-existing', { staleResume: true }],
+    // The conductor's second rung tries the Verity session id, which need not be a
+    // thread id Codex can even parse.
+    [
+      'invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `v` at 1',
+      { staleResume: true },
+    ],
+    // Codex's state database still lists the thread, but its rollout is not where
+    // the database recorded it — after a restart, or a restore to another path.
+    ['thread not found: codex-session-existing', { staleResume: true }],
+    // The same answer about a different thread says nothing about this one.
+    ['thread not found: codex-session-other', { staleResume: undefined }],
+    // Any other internal failure is a condition of the moment, not proof that the
+    // conversation is gone; dropping the binding on it would discard one for good.
+    ['state db unavailable', { staleResume: undefined }],
+  ])('classifies a Codex load refused with "%s"', async (details, expected) => {
+    await ctx.store.createSession({
+      sessionId: 'verity-codex-rollout',
+      worktree: '/work/project',
+      model: 'codex/default',
+    });
+    const fake = acpSpawner({
+      loadError: { code: -32603, message: 'Internal error', data: { details } },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-rollout',
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      spawner: fake.spawner,
+    });
+    expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
+    expect(result.staleResume).toBe(expected.staleResume);
+  });
+
+  // codex-acp answers a prompt it cannot run with -32603 and leaves stderr empty;
+  // the reason is only in `data.details`. Dropping it left the operator with a
+  // bare "Internal error" and nothing to tell one failure from another.
+  it('keeps the reason a refused prompt carries in its error data', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'example reason with secret-token-123' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Look at this',
+      env: { EXAMPLE_TOKEN: 'secret-token-123' },
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Internal error: example reason with');
+    // The same redaction the agent's own stderr gets before it is stored.
+    expect(result.stderr).not.toContain('secret-token-123');
+  });
+
+  // The conductor recognizes a prompt Codex rejected for the resumed thread by
+  // this exact line; pin it here, where the backend writes it.
+  it('appends a prompt rejected for a missing thread in the shape the conductor reads', async () => {
+    const fake = acpSpawner({
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      env: {},
+      spawner: fake.spawner,
+    });
+    expect(result.stderr).toBe('\nInternal error: thread not found: codex-session-existing');
+  });
+
+  it('retains replay protection after tool execution followed by a capacity fragment and missing-thread error', async () => {
+    const fake = acpSpawner({
+      updatesBeforePromptError: [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'side-effect',
+          title: 'Write file',
+          kind: 'execute',
+          status: 'completed',
+        },
+        {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Selected model is at capacity.' },
+        },
+      ],
+      promptError: {
+        code: -32603,
+        message: 'Internal error',
+        data: { details: 'thread not found: codex-session-existing' },
+      },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      env: {},
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.executionObserved).toBe(true);
+    expect(result.staleResume).not.toBe(true);
+  });
+
   it('settles an operator cancel without badging the session crashed', async () => {
     const controller = new AbortController();
     const fake = acpSpawner({ cancel: { operator: controller } });
@@ -940,12 +1583,11 @@ describe('AcpCodexBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    expect(result).toMatchObject({ exitCode: 0, aborted: true });
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(result).toMatchObject({ exitCode: 143, aborted: true });
     expect((await ctx.store.getEvents('verity-codex-11')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
-      'result',
       'diagnostic',
     ]);
   });

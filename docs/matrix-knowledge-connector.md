@@ -2,7 +2,7 @@
 
 ## Goal and boundary
 
-A dedicated Matrix account joins selected rooms bridged from WhatsApp or Signal. Verity imports new text messages and attachments into the assigned project's Knowledge only after a person pairs the room with a project. A room belongs to at most one project; a project may have many rooms. The connector does not send messages back to Matrix.
+A dedicated Matrix account joins selected rooms bridged from WhatsApp or Signal. Verity imports new text messages and attachments into the assigned project's Knowledge only after a person pairs the room with a project. A room belongs to at most one project; a project may have many rooms. Project sessions can send text messages to active connected rooms after a separate approval for each exact destination and message.
 
 This is an inbound integration. It does not run through an agent session or MCP. Agent tools may later read imported knowledge, but an agent must never treat chat content as instructions.
 
@@ -60,7 +60,7 @@ Write one Markdown source per room and day under `sources/documents/matrix/`, us
 
 An edit replaces the affected entry in the current projection. A redaction removes its body from the current projection and records that it was redacted. Previous Knowledge versions and backups follow Verity's normal retention rules; changing the current projection does not erase them.
 
-Image, file, audio, and video events of at most 50 MiB are saved as original files under the room's `attachments/` folder. The existing Knowledge extractor creates a hidden `.text/` artifact for each file; supported files up to its separate 10 MiB processing limit provide readable derived content. Larger originals retain an extraction-skipped artifact. After a PNG, JPEG, GIF, or WebP image of at most 3.75 MB is stored, the server asks the project's default model (or the server default) in the background to transcribe the text it shows, and appends it to that artifact under "Text in image (extracted by model)". Images are processed one at a time. Claude uses a stateless ACP turn with tools disabled. Codex and configured OpenCode models use direct image requests without an agent or tool dispatcher: Codex uses the existing gateway-managed ChatGPT login, and OpenCode uses the configured provider URL and API key. No additional login is required. The selected model must support image input; unsupported models fail without switching providers. The legacy `codex/default` alias resolves to the first Codex model in the configured catalog order. Incomplete responses are not saved. A failed call leaves the original and its regular artifact unchanged, a re-delivered image is not sent to the model again, and a redaction that lands meanwhile wins. The server needs a refiner working directory (`repoDir`) for this step. Attachments over 50 MiB leave a visible skipped-attachment entry. Redacting an attachment removes its current original and extracted text, subject to normal backup retention. Import begins after room activation; history backfill, reply threading, automatic summaries, audio transcription, and outbound replies remain separate features.
+Image, file, audio, and video events of at most 50 MiB are saved as original files under the room's `attachments/` folder. The existing Knowledge extractor creates a hidden `.text/` artifact for each file; supported files up to its separate 10 MiB processing limit provide readable derived content. Larger originals retain an extraction-skipped artifact. After a PNG, JPEG, GIF, or WebP image of at most 3.75 MB is stored, the server asks the project's default model (or the server default) in the background to transcribe the text it shows, and appends it to that artifact under "Text in image (extracted by model)". Images are processed one at a time. Claude uses a stateless ACP turn with tools disabled. Codex and configured OpenCode models use direct image requests without an agent or tool dispatcher: Codex uses the existing gateway-managed ChatGPT login, and OpenCode uses the configured provider URL and API key. No additional login is required. The selected model must support image input; unsupported models fail without switching providers. The legacy `codex/default` alias resolves to the first Codex model in the configured catalog order. Incomplete responses are not saved. A failed call leaves the original and its regular artifact unchanged, a re-delivered image is not sent to the model again, and a redaction that lands meanwhile wins. The server needs a refiner working directory (`repoDir`) for this step. Attachments over 50 MiB leave a visible skipped-attachment entry. Redacting an attachment removes its current original and extracted text, subject to normal backup retention. Import begins after room activation; history backfill, reply threading, automatic summaries, and audio transcription remain separate features.
 
 ## Settings and project flow
 
@@ -71,3 +71,32 @@ Server routes for settings use paired-device authentication. Worker routes use a
 ## Verification gate
 
 Before enabling a room, test an encrypted bridged room end to end: invitation appears, project binding causes join, a new message appears in Knowledge, a restart preserves decryption and avoids duplicates, and an edit/redaction changes the current source. A deliberately broken binding must reject ingestion. The live test requires a dedicated Matrix account and a test room; no credentials belong in the repository.
+
+
+## Sending from a session
+
+Ask a project session to send a text message to a connected room. The agent uses `verity_matrix` to list active rooms, prepare the exact text and destination, and request a send. The approval card shows the connector account, homeserver, room name, stable room ID and complete text. Approval applies to that one message; there is no session-wide or project-wide send permission. Denying or dismissing the card sends nothing. Changed text or destination requires a new approval. Imported messages, including echoes from the connector account, remain untrusted source material and cannot authorize a send.
+
+The first release sends plain-text `m.text` events only. It does not send attachments, HTML, notices, replies or threads, and does not change bridge relay formatting. WhatsApp and Signal bridges may add their configured sender prefix or apply their own relay permissions. A matching display name does not identify the connector account: use its exact Matrix user ID when configuring relay rules.
+
+The server persists approved messages before the worker dispatches them. Each job has one stable Matrix transaction ID, retained after timeouts, a lost acknowledgement or a worker restart. The worker uses its existing device and encrypted crypto store; it refreshes encryption state and uses the Matrix SDK's encrypted send path for encrypted rooms. It never falls back to plaintext when encryption is unknown or fails. A disconnected worker leaves messages queued. Do not reset its device or data volume while deliveries have uncertain outcomes: Matrix transaction deduplication is scoped to the sending device.
+
+The tool's `status` action is scoped to the originating session and returns:
+
+- `queued`: approved and persisted, not yet claimed by the worker.
+- `pending`: claimed or waiting for a retry; a timed-out attempt may already have been accepted.
+- `sent`: Matrix returned an event ID. This confirms Matrix acceptance, not WhatsApp/Signal delivery or recipient reading.
+- `failed`: a terminal send failure; inspect the result before approving a new message.
+- `cancelled`: access or the room binding changed; no further attempts will start. An already in-flight request may still have reached Matrix.
+
+Pausing, leaving, disconnecting or reconnecting a room invalidates older approvals and queued jobs, including a pause followed by resume. Moving the originating session to another project also blocks delivery. The worker checks its account and room membership and asks the server to revalidate the binding immediately before sending. Revocation cannot recall a request already on the network. A Matrix acceptance received after revocation is recorded as `sent` rather than hidden.
+
+### Worker dispatch protocol
+
+All endpoints require the existing connector bearer token and are internal, not session tools. They cannot approve or enqueue messages:
+
+- `POST /internal/integrations/matrix/outbound/claim` with `accountId` returns one leased `job` or `null`. A job contains the approved snapshot, `invocationId`, `transactionId` and `leaseId`.
+- `POST /internal/integrations/matrix/outbound/check` with `accountId`, `invocationId` and `leaseId` returns `allowed` after rechecking the current account, session/project and binding version.
+- `POST /internal/integrations/matrix/outbound/result` with the same identity accepts either `eventId` or a bounded error code; a retryable failure also supplies `retryAfterMs`. Stale lease results are rejected.
+
+Dispatch is serial within a worker. Claims expire after three minutes; send attempts time out after two minutes and SDK message-request retries are disabled so the server controls subsequent attempts. Rate-limit delays are respected. An expired claim keeps its transaction ID; a replacement lease never turns an uncertain attempt into a different logical message.

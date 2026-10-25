@@ -3,6 +3,8 @@ import { createConnection, createServer, type Server as NetServer, type Socket }
 import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
+import { CoordinatedRecordingManager } from './coordinated-recording.js';
+import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { RemoteConnectorReservation } from './uplink-control-client.js';
 
 const open = new Set<{ close: () => Promise<void> }>();
@@ -16,8 +18,13 @@ async function fixture(
   connectLocal?: (host: string, port: number) => Socket,
   serviceOptions: { autoPong?: boolean } = {},
   log?: Pick<Console, 'info' | 'warn'>,
+  returnPathExpiry?: () => number | undefined,
+  factory?: (url: string) => WebSocket,
+  activation?: ReturnPathActivation,
+  onReturnPathSnapshot?: (snapshot: unknown) => void,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
+  diagnosticConnectorCount: () => number;
   recentStreams: ReturnType<typeof createRemoteConnectorPool>['recentStreams'];
   received: unknown[];
   peer: () => WebSocket;
@@ -57,15 +64,26 @@ async function fixture(
     });
   });
   const pool = createRemoteConnectorPool({
+    ...(onReturnPathSnapshot ? { onReturnPathSnapshot } : {}),
     ...(log ? { log } : {}),
+    ...(returnPathExpiry ? { returnPathExpiry } : {}),
+    ...(activation
+      ? {
+          returnPathExpiry: () => activation.expiry(),
+          returnPathBeforeStopSubscribe: (listener: () => void) => activation.beforeStop(listener),
+          returnPathSubscribe: (listener: () => void) => activation.subscribe(listener),
+        }
+      : {}),
     dataUrl: 'wss://uplink.example/data',
     localHost: '127.0.0.1',
     localPort: address.port,
-    webSocketFactory: () => new WebSocket(`ws://127.0.0.1:${serviceAddress.port}/data`),
+    webSocketFactory: () =>
+      (factory ?? ((url) => new WebSocket(url)))(`ws://127.0.0.1:${serviceAddress.port}/data`),
     ...(connectLocal ? { connectLocal } : {}),
   });
   return {
     reserve: pool.reserve,
+    diagnosticConnectorCount: pool.diagnosticConnectorCount,
     recentStreams: pool.recentStreams,
     received,
     peer: () => {
@@ -94,6 +112,448 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it.each(['active', 'retired'])('rejects an array reset code on an %s stream', async (state) => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.open',
+        streamId: 'reset_target',
+        channel: 'remote',
+        meta: {},
+      }),
+    );
+    await vi.waitFor(() => expect(f.localConnections()).toBe(1));
+    if (state === 'retired') {
+      f.peer().send(
+        JSON.stringify({ type: 'stream.reset', streamId: 'reset_target', code: 'timeout' }),
+      );
+      await vi.waitFor(() => expect(f.localCloses()).toBe(1));
+    }
+    // String coercion would silently turn this invalid wire value into a valid reset code.
+    f.peer().send(
+      JSON.stringify({ type: 'stream.reset', streamId: 'reset_target', code: ['timeout'] }),
+    );
+    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+    await reservation.closed;
+  });
+
+  it.each([
+    ['unknown JSON field', { seq: 0, payload: 'AQ==', extra: true }],
+    ['noncanonical base64 pad bits', { seq: 0, payload: 'AR==' }],
+    ['missing base64 padding', { seq: 0, payload: 'AQ' }],
+    ['sequence gap', { seq: 1, payload: 'AQ==' }],
+    ['negative sequence', { seq: -1, payload: 'AQ==' }],
+    ['unsafe sequence', { seq: Number.MAX_SAFE_INTEGER + 1, payload: 'AQ==' }],
+    ['decoded limit', { seq: 0, payload: Buffer.alloc(65_537).toString('base64') }],
+  ])('rejects %s before bytes reach the local target', async (_name, fields) => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+    );
+    await vi.waitFor(() => expect(f.localConnections()).toBe(1));
+    f.peer().send(JSON.stringify({ type: 'stream.data', streamId: 'bounded', ...fields }));
+    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+    await reservation.closed;
+    expect(f.recentStreams()).toEqual([
+      expect.objectContaining({ receivedFromAppBytes: 0, writtenToLocalBytes: 0 }),
+    ]);
+  });
+
+  it('accepts the decoded boundary and forbids stream ID reuse until a fresh connection', async () => {
+    const f = await fixture();
+    const payload = Buffer.alloc(65_536, 0x5a);
+    for (let generation = 0; generation < 2; generation++) {
+      const reservation = await reserve(f);
+      const baseline = f.received.length;
+      const attached = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received.length).toBe(baseline + 1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      );
+      await attached;
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+      );
+      f.peer().send(
+        JSON.stringify({
+          type: 'stream.data',
+          streamId: 'bounded',
+          seq: 0,
+          payload: payload.toString('base64'),
+        }),
+      );
+      f.peer().send(JSON.stringify({ type: 'stream.end', streamId: 'bounded' }));
+      await vi.waitFor(() =>
+        expect(f.received.slice(baseline)).toContainEqual({
+          type: 'stream.end',
+          streamId: 'bounded',
+        }),
+      );
+      const replies = f.received
+        .slice(baseline)
+        .filter(
+          (frame): frame is { type: string; seq: number; payload: string } =>
+            typeof frame === 'object' &&
+            frame !== null &&
+            'type' in frame &&
+            frame.type === 'stream.data',
+        );
+      expect(replies.map((frame) => frame.seq)).toEqual(replies.map((_, index) => index));
+      expect(Buffer.concat(replies.map((frame) => Buffer.from(frame.payload, 'base64')))).toEqual(
+        payload,
+      );
+      // A retired stream ID must not alias delayed frames into a new local socket.
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+      );
+      await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+      await reservation.closed;
+      expect(f.localConnections()).toBe(generation + 1);
+    }
+  });
+
+  it('retains the activation baseline when recording starts on an attached socket', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const manager = new CoordinatedRecordingManager(activation, {
+      start: async () => {},
+      stop: async () => {},
+      export: async () => ({ records: [] }),
+    });
+    try {
+      const f = await fixture(
+        undefined,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        activation,
+        (snapshot) => manager.observe(snapshot),
+      );
+      const reservation = await reserve(f);
+      const attached = reservation.attach(
+        'private_ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received).toHaveLength(1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      );
+      await attached;
+      const runId = '11111111-1111-4111-8111-111111111111';
+      await manager.start(runId, 120_000);
+      expect(await manager.export(runId)).toMatchObject({
+        core: {
+          dropped: 0,
+          records: [
+            expect.objectContaining({
+              transport: expect.objectContaining({
+                wsState: WebSocket.OPEN,
+                socketBytesRead: expect.any(Number),
+              }),
+            }),
+          ],
+        },
+      });
+      await manager.stop(runId);
+      reservation.release('done');
+    } finally {
+      manager.dispose();
+      activation.dispose();
+    }
+  });
+
+  it('delivers retained metadata without a logger and isolates sink errors from transport', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const sink = vi.fn(() => {
+      throw new Error('sink unavailable');
+    });
+    const f = await fixture(undefined, {}, undefined, undefined, undefined, activation, sink);
+    const reservation = await reserve(f);
+    let closed = false;
+    void reservation.closed!.then(() => {
+      closed = true;
+    });
+    activation.start(new Date(Date.now() + 60000).toISOString());
+    activation.stop();
+    expect(sink).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'remote.return_path', stage: 'summary' }),
+    );
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    reservation.release('done');
+    activation.dispose();
+  });
+
+  it('activates and stops existing connectors without closing transport or renewing reconnect consent', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log, undefined, undefined, activation);
+    const first = await reserve(f);
+    let closed = false;
+    void first.closed!.then(() => {
+      closed = true;
+    });
+    expect(f.diagnosticConnectorCount()).toBe(0);
+    const expiry = new Date(Date.now() + 60_000).toISOString();
+    activation.start(expiry);
+    expect(f.diagnosticConnectorCount()).toBe(1);
+    const second = await reserve(f, 'second');
+    expect(f.diagnosticConnectorCount()).toBe(2);
+    expect(activation.status().expiresAt).toBe(expiry);
+    activation.stop();
+    expect(f.diagnosticConnectorCount()).toBe(0);
+    expect(closed).toBe(false);
+    first.release('done');
+    second.release('done');
+    activation.dispose();
+    expect(
+      log.info.mock.calls.filter(([entry]) => entry.event === 'remote.return_path'),
+    ).toHaveLength(2);
+  });
+  it('keeps detailed diagnostics disabled by default and expires opt-in without ending transport', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const ordinary = await fixture(undefined, {}, log);
+    const ordinaryReservation = await reserve(ordinary);
+    ordinaryReservation.release('test end');
+    expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(false);
+    const expiry = Date.now() + 250;
+    const selected = await fixture(undefined, {}, log, () => expiry);
+    const selectedReservation = await reserve(selected);
+    let ended = false;
+    void selectedReservation.closed!.then(() => {
+      ended = true;
+    });
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThanOrEqual(expiry));
+    const exported = log.info.mock.calls.filter(
+      ([entry]) => entry.event === 'remote.return_path',
+    ).length;
+    expect(exported).toBe(1);
+    expect(ended).toBe(false);
+    selectedReservation.release('test end');
+    expect(
+      log.info.mock.calls.filter(([entry]) => entry.event === 'remote.return_path'),
+    ).toHaveLength(exported);
+  });
+  it('exports exact target send callback evidence without ticket or payload', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const expiry = Date.now() + 1000;
+    const f = await fixture(undefined, {}, log, () => expiry);
+    const reservation = await reserve(f);
+    const attaching = reservation.attach(
+      'private_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attaching;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'target', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.data',
+        streamId: 'target',
+        seq: 0,
+        payload: Buffer.from('private-body').toString('base64'),
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(f.received.some((entry) => (entry as { type: string }).type === 'stream.data')).toBe(
+        true,
+      ),
+    );
+    reservation.release('test end');
+    const summary = log.info.mock.calls
+      .filter(([entry]) => entry.event === 'remote.return_path')
+      .at(-1)?.[0];
+    expect(summary.transport).toMatchObject({
+      wsState: WebSocket.OPEN,
+      socketPaused: false,
+      socketEncrypted: false,
+      socketBytesRead: expect.any(Number),
+      socketBytesWritten: expect.any(Number),
+    });
+    expect(summary.lastCloseRequest).toMatchObject({ eventOrder: expect.any(Number) });
+    expect(summary.streams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          completedFrames: 1,
+          decodedBytes: 12,
+          firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+        }),
+      ]),
+    );
+    expect(summary.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'parser',
+          type: 'stream.data',
+          decodedBytes: 12,
+          encodedBytes: Buffer.byteLength(
+            JSON.stringify({
+              type: 'stream.data',
+              streamId: 'target',
+              seq: 0,
+              payload: Buffer.from('private-body').toString('base64'),
+            }),
+          ),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(summary)).not.toContain('private');
+  });
+  it.each(['socket close', 'new recording window'])(
+    'attributes delayed callbacks across %s',
+    async (transition) => {
+      let late: (() => void) | undefined;
+      class DeferredWebSocket extends WebSocket {
+        override send(
+          data: Parameters<WebSocket['send']>[0],
+          options?: Parameters<WebSocket['send']>[1] | ((error?: Error) => void),
+          callback?: (error?: Error) => void,
+        ): void {
+          const cb = typeof options === 'function' ? options : callback;
+          if (
+            typeof data === 'string' &&
+            (JSON.parse(data) as { type: string }).type === 'stream.data'
+          ) {
+            super.send(data, (error) => {
+              late = () => cb?.(error);
+            });
+          } else if (typeof options === 'function') super.send(data, options);
+          else if (options) super.send(data, options, callback);
+          else super.send(data, callback);
+        }
+      }
+      const log = { info: vi.fn(), warn: vi.fn() };
+      const activation = new ReturnPathActivation(() => ({
+        enabled: true,
+        installationId: 'paired',
+      }));
+      const expiry = Date.now() + 60_000;
+      const f = await fixture(
+        undefined,
+        {},
+        log,
+        () => expiry,
+        (url) => new DeferredWebSocket(url),
+        activation,
+      );
+      activation.start(new Date(expiry).toISOString());
+      const reservation = await reserve(f);
+      const attaching = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received).toHaveLength(1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      );
+      await attaching;
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'late', channel: 'remote', meta: {} }),
+      );
+      f.peer().send(
+        JSON.stringify({ type: 'stream.data', streamId: 'late', seq: 0, payload: 'eA==' }),
+      );
+      await vi.waitFor(() => expect(late).toBeTypeOf('function'));
+      if (transition === 'socket close') {
+        reservation.release('test stop');
+        await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+      } else {
+        activation.stop();
+        activation.start(new Date(Date.now() + 60000).toISOString());
+      }
+      late?.();
+      if (transition === 'new recording window') activation.stop();
+      const summary = log.info.mock.calls
+        .filter(([entry]) => entry.event === 'remote.return_path')
+        .at(-1)?.[0];
+      if (transition === 'new recording window') {
+        expect(summary.streams).toEqual([]);
+        expect(summary.events).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ stage: 'callback' })]),
+        );
+        reservation.release('test stop');
+      } else {
+        expect(summary.streams).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              enqueuedFrames: 1,
+              completedFrames: 1,
+              firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+            }),
+          ]),
+        );
+        expect(summary.lastClose).not.toBeNull();
+      }
+      activation.dispose();
+    },
+  );
   it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
     const f = await fixture(undefined, {}, log);
@@ -726,7 +1186,9 @@ describe('remote control connector', () => {
     // Without the heartbeat a half-open /data socket keeps its reservation
     // and local sockets forever now that attached sessions have no deadline.
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], shouldAdvanceTime: true });
-    const f = await fixture(undefined, { autoPong: false });
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const expiry = Date.now() + 120_000;
+    const f = await fixture(undefined, { autoPong: false }, log, () => expiry);
     const reservation = await reserve(f);
     const attached = reservation.attach(
       'installation_ticket',
@@ -750,6 +1212,12 @@ describe('remote control connector', () => {
     expect(closed).toBe(false);
     await vi.advanceTimersByTimeAsync(30_000);
     await reservation.closed;
+    const summary = log.info.mock.calls
+      .filter(([entry]) => entry.event === 'remote.return_path')
+      .at(-1)?.[0];
+    expect(summary).toMatchObject({
+      lastCloseRequest: { eventOrder: expect.any(Number), elapsedMs: expect.any(Number) },
+    });
   });
 
   it('keeps an attached session whose data socket answers pings', async () => {
@@ -803,4 +1271,92 @@ describe('remote control connector', () => {
     ).toBe('object');
     for (const reservation of reservations) reservation.release('test complete');
   });
+});
+
+it('does not assign an old connector generation to a different installation', async () => {
+  const descriptor = { enabled: true, installationId: 'one' };
+  const activation = new ReturnPathActivation(() => descriptor);
+  const pool = createRemoteConnectorPool({
+    dataUrl: 'wss://uplink.example/data',
+    localHost: 'localhost',
+    localPort: 443,
+    log: { info: vi.fn(), warn: vi.fn() },
+    returnPathInstallation: () => descriptor.installationId,
+    returnPathExpiry: () => activation.expiry(),
+    returnPathSubscribe: (listener) => activation.subscribe(listener),
+  });
+  const request = {
+    requestId: 'request',
+    sessionId: 'session',
+    decisionExpiresAt: Date.now() + 15_000,
+  };
+  const first = await pool.reserve(request, new AbortController().signal);
+  if (typeof first === 'string') throw new Error(first);
+  activation.start(new Date(Date.now() + 60_000).toISOString());
+  expect(pool.diagnosticConnectorCount()).toBe(1);
+  descriptor.installationId = 'two';
+  expect(activation.status().enabled).toBe(false);
+  activation.start(new Date(Date.now() + 60_000).toISOString());
+  expect(pool.diagnosticConnectorCount()).toBe(0);
+  const second = await pool.reserve(
+    { ...request, sessionId: 'next' },
+    new AbortController().signal,
+  );
+  if (typeof second === 'string') throw new Error(second);
+  expect(pool.diagnosticConnectorCount()).toBe(1);
+  first.release('done');
+  second.release('done');
+  activation.dispose();
+  pool.disposeDiagnostics();
+});
+
+it('exports actual DATA tuples and a fresh socket identity with explicit late coverage', async () => {
+  const snapshots: Array<Record<string, unknown>> = [];
+  const activation = new ReturnPathActivation(() => ({ enabled: true, installationId: 'paired' }));
+  activation.start(new Date(Date.now() + 60000).toISOString());
+  const f = await fixture(undefined, {}, undefined, undefined, undefined, activation, (snapshot) =>
+    snapshots.push(snapshot as Record<string, unknown>),
+  );
+  const connect = async (sessionId: string) => {
+    const receivedBefore = f.received.length;
+    const session = await reserve(f, sessionId);
+    const attaching = session.attach(
+      'private-ticket',
+      Date.now() + 30000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(receivedBefore + 1));
+    f.peer().send(JSON.stringify({ type: 'attached', sessionId, capability: 'remote-control-v1' }));
+    await attaching;
+    return session;
+  };
+  try {
+    const first = await connect('first');
+    const before = snapshots.at(-1)!.association as Record<string, unknown>;
+    expect(before).toMatchObject({
+      coverageStart: 'before_socket_creation',
+      socketLifetimeId: expect.any(String),
+      socketEndpoints: {
+        local: { address: '127.0.0.1', port: expect.any(Number) },
+        remote: { address: '127.0.0.1', port: expect.any(Number) },
+      },
+      uplinkConnectionId: null,
+    });
+    first.release('test');
+    activation.stop();
+    const second = await connect('second');
+    activation.start(new Date(Date.now() + 60000).toISOString());
+    await vi.waitFor(() =>
+      expect(snapshots.at(-1)!.association).toMatchObject({
+        coverageStart: 'after_socket_creation',
+      }),
+    );
+    const after = snapshots.at(-1)!.association as Record<string, unknown>;
+    expect(after.socketLifetimeId).not.toBe(before.socketLifetimeId);
+    expect(after.processBootId).toBe(before.processBootId);
+    expect(JSON.stringify(snapshots)).not.toContain('private-ticket');
+    second.release('test');
+  } finally {
+    activation.dispose();
+  }
 });

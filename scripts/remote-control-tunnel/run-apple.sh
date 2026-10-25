@@ -8,6 +8,17 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 platform="${1:-macos}"
 [[ "$platform" == macos || "$platform" == ios ]] || { echo 'usage: run-apple.sh [macos|ios]' >&2; exit 2; }
+# Exercise negotiation against both fixture protocols, including the H1 fallback.
+protocol="${2:-}"
+if [[ -z "$protocol" ]]; then
+  bash scripts/remote-control-tunnel/run-apple.sh "$platform" h1
+  bash scripts/remote-control-tunnel/run-apple.sh "$platform" h2
+  exit 0
+fi
+[[ "$protocol" == h1 || "$protocol" == h2 ]] || { echo 'Expected h1 or h2 fixture protocol.' >&2; exit 2; }
+if [[ "$platform" == macos && "$protocol" == h1 ]]; then
+  bash scripts/remote-control-tunnel/verify-writer-stall.sh
+fi
 tmp="$(mktemp -d)"
 fixture_pid=''
 simulator_udid=''
@@ -36,7 +47,7 @@ openssl x509 -req -in "$tmp/leaf.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem"
   -set_serial 1 -out "$tmp/leaf.pem" -days 1 -extfile "$tmp/leaf.ext"
 cat "$tmp/leaf.pem" "$tmp/ca.pem" >"$tmp/cert.pem"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
-node scripts/remote-control-tunnel/mock.mjs "$tmp/key.pem" "$tmp/cert.pem" >"$tmp/fixture.json" 2>"$tmp/fixture.log" &
+node scripts/remote-control-tunnel/mock.mjs "$tmp/key.pem" "$tmp/cert.pem" "$protocol" >"$tmp/fixture.json" 2>"$tmp/fixture.log" &
 fixture_pid=$!
 for _ in {1..100}; do
   [[ -s "$tmp/fixture.json" ]] && break
@@ -45,10 +56,10 @@ for _ in {1..100}; do
 done
 relay_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["relayPort"])' "$tmp/fixture.json")"
 outer_url="wss://127.0.0.1:${relay_port}/tunnel"
-sources=(apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/Smoke.swift)
+sources=(scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-staging/StallDiagnostics.swift scripts/remote-control-tunnel/StallDiagnosticsCheck.swift apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift apps/mobile/native/PinnedHTTPSessionPool.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/NativeProtocol.swift scripts/remote-control-tunnel/Smoke.swift)
 if [[ "$platform" == macos ]]; then
-  xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
-  "$tmp/smoke" "$outer_url" "$pin" "$pin"
+  xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
+  "$tmp/smoke" "$outer_url" "$pin" "$pin" "$protocol" "https://127.0.0.1:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corePort"])' "$tmp/fixture.json")/"
   exit 0
 fi
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
@@ -75,7 +86,7 @@ xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
 app="$tmp/VerityRemoteTunnel.app"
 mkdir -p "$app"
-xcrun swiftc -parse-as-library -module-name VerityRemoteTunnel \
+xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -module-name VerityRemoteTunnel \
   -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   -target "$(uname -m)-apple-ios17.0-simulator" "${sources[@]}" -framework UIKit -o "$app/VerityRemoteTunnel"
 python3 - "$app_plist" "$app/Info.plist" <<'PY'
@@ -101,6 +112,8 @@ mkdir -p "$(dirname "$result")"
 SIMCTL_CHILD_VERITY_TUNNEL_URL="$outer_url" \
 SIMCTL_CHILD_VERITY_TUNNEL_OUTER_PIN="$pin" \
 SIMCTL_CHILD_VERITY_TUNNEL_CORE_PIN="$pin" \
+SIMCTL_CHILD_VERITY_TUNNEL_PROTOCOL="$protocol" \
+SIMCTL_CHILD_VERITY_TUNNEL_DIRECT_URL="https://127.0.0.1:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corePort"])' "$tmp/fixture.json")/" \
 SIMCTL_CHILD_VERITY_TUNNEL_RESULT="$result" \
   xcrun simctl launch "$simulator_udid" app.verity.remote-tunnel-spike
 for _ in {1..180}; do

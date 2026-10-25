@@ -1,10 +1,10 @@
+import { StderrTail } from './stderr-tail.js';
 import { createConnection, type Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
 const PROTOCOL_VERSION = 1;
-const MAX_STDERR_CHARS = 64 * 1024;
 const STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 const MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
 
@@ -94,7 +94,55 @@ function send(socket: Socket, frame: object): boolean {
   return true;
 }
 
-export function createBrokerSpawner(socketPath: string): Spawner {
+async function requireBrokerIsolation(socketPath: string, planning: boolean): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const peer = createConnection(socketPath);
+    let buffered = '';
+    const timer = setTimeout(
+      () => finish(new Error('Agent security capability check timed out')),
+      10_000,
+    );
+    const finish = (error?: Error): void => {
+      clearTimeout(timer);
+      peer.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    peer.once('error', finish);
+    peer.once('connect', () => send(peer, { protocolVersion: PROTOCOL_VERSION, kind: 'status' }));
+    peer.on('data', (chunk: Buffer) => {
+      buffered += chunk.toString('utf8');
+      if (Buffer.byteLength(buffered) > 8192)
+        return finish(new Error('Invalid broker capabilities'));
+      if (!buffered.includes('\n')) return;
+      try {
+        const status = JSON.parse(buffered.split('\n')[0]!) as Record<string, unknown>;
+        if (
+          status['ok'] !== true ||
+          status['managedAgentConfig'] !== true ||
+          (planning && status['planningIsolation'] !== true)
+        ) {
+          return finish(
+            new Error(
+              'Agent configuration or planning isolation is unavailable; update the Sandbox toolkit',
+            ),
+          );
+        }
+        finish();
+      } catch {
+        finish(new Error('Invalid broker capabilities'));
+      }
+    });
+    peer.once('end', () =>
+      finish(new Error('Broker did not report required security capabilities')),
+    );
+  });
+}
+
+export function createBrokerSpawner(
+  socketPath: string,
+  requireManagedConfiguration = false,
+): Spawner {
   const spawner: Spawner = (command, args, options): SpawnedProcess => {
     const socket = createConnection(socketPath);
     let processBuffered = (): void => undefined;
@@ -105,9 +153,9 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         queueMicrotask(processBuffered);
       },
     );
-    let stderrTail = '';
+    const stderrTail = new StderrTail();
+    let exitDetails: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
     let pid: number | undefined;
     let spawned = false;
     let settled = false;
@@ -122,7 +170,6 @@ export function createBrokerSpawner(socketPath: string): Spawner {
       settled = true;
       const stdoutTail = stdoutDecoder.end();
       if (stdoutTail !== '') stdout.push(stdoutTail);
-      stderrTail = `${stderrTail}${stderrDecoder.end()}`.slice(-MAX_STDERR_CHARS);
       stdout.end();
       socket.destroy();
       resolveExited(code);
@@ -139,19 +186,33 @@ export function createBrokerSpawner(socketPath: string): Spawner {
     };
 
     socket.once('connect', () => {
-      const sessionEnv = sessionRuntimeEnv(options.env);
-      send(socket, {
-        protocolVersion: PROTOCOL_VERSION,
-        kind: 'spawn-agent',
-        command,
-        args,
-        cwd: options.cwd,
-        ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
-      });
+      void (async () => {
+        if (requireManagedConfiguration || options.planning === true) {
+          try {
+            await requireBrokerIsolation(socketPath, options.planning === true);
+          } catch (error) {
+            stderrTail.push(String(error));
+            settle(1);
+            return;
+          }
+        }
+        if (settled) return;
+        const sessionEnv = sessionRuntimeEnv(options.env);
+        send(socket, {
+          protocolVersion: PROTOCOL_VERSION,
+          kind: 'spawn-agent',
+          command,
+          args,
+          cwd: options.cwd,
+          ...(options.planning === true ? { planning: true } : {}),
+          ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
+        });
+      })();
     });
     processBuffered = (): void => {
       if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes('\n')) {
-        stderrTail = 'spawn broker frame exceeded the size limit';
+        stderrTail.clear();
+        stderrTail.push('spawn broker frame exceeded the size limit');
         settle(1);
         return;
       }
@@ -162,7 +223,8 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
         if (Buffer.byteLength(line) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = 'spawn broker frame exceeded the size limit';
+          stderrTail.clear();
+          stderrTail.push('spawn broker frame exceeded the size limit');
           settle(1);
           break;
         }
@@ -170,13 +232,14 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
-          stderrTail = 'spawn broker returned malformed JSON';
+          stderrTail.clear();
+          stderrTail.push('spawn broker returned malformed JSON');
           settle(1);
           break;
         }
         if (frame.ok !== true) {
           const error = typeof frame.error === 'string' ? frame.error : 'spawn broker failed';
-          stderrTail = `${stderrTail}${stderrTail ? '\n' : ''}${error}`.slice(-MAX_STDERR_CHARS);
+          stderrTail.push(`${stderrTail.text() ? '\n' : ''}${error}`);
           settle(1);
         } else if (frame.kind === 'spawned') {
           spawned = true;
@@ -186,11 +249,12 @@ export function createBrokerSpawner(socketPath: string): Spawner {
           const decoded = stdoutDecoder.write(Buffer.from(frame.data, 'base64'));
           if (decoded !== '' && !stdout.push(decoded)) break;
         } else if (frame.kind === 'stderr' && typeof frame.data === 'string') {
-          stderrTail =
-            `${stderrTail}${stderrDecoder.write(Buffer.from(frame.data, 'base64'))}`.slice(
-              -MAX_STDERR_CHARS,
-            );
+          stderrTail.push(Buffer.from(frame.data, 'base64'));
         } else if (frame.kind === 'exit') {
+          exitDetails = {
+            code: typeof frame.code === 'number' ? frame.code : null,
+            signal: typeof frame.signal === 'string' ? (frame.signal as NodeJS.Signals) : null,
+          };
           const signalNumber =
             typeof frame.signal === 'string'
               ? (osConstants.signals as Record<string, number>)[frame.signal]
@@ -205,15 +269,14 @@ export function createBrokerSpawner(socketPath: string): Spawner {
       processBuffered();
     });
     socket.once('error', (error) => {
-      stderrTail = `${stderrTail}${stderrTail ? '\n' : ''}${error.message}`.slice(
-        -MAX_STDERR_CHARS,
-      );
+      stderrTail.push(`${stderrTail.text() ? '\n' : ''}${error.message}`);
       settle(1);
     });
     socket.once('close', () => {
       if (!settled) {
         if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = 'spawn broker frame exceeded the size limit';
+          stderrTail.clear();
+          stderrTail.push('spawn broker frame exceeded the size limit');
         }
         settle(1);
       }
@@ -225,7 +288,8 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         return pid;
       },
       exited,
-      stderr: () => stderrTail,
+      stderr: () => stderrTail.text(),
+      exitDetails: () => exitDetails,
       kill: (signal = 'SIGTERM') => {
         if (signal !== 'SIGTERM' && signal !== 'SIGKILL') return;
         if (!spawned) pendingSignal = signal;

@@ -8,8 +8,8 @@
 // the one action that answers it, and that a choice made on a screen lands on
 // the server as exactly the PATCH the server expects.
 import { subscribeProjectStatusMutations, type ProjectDetail } from '@verity/mobile';
+import { Alert, Linking } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -18,9 +18,14 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
 import ProjectServicesScreen from '../app/project/[id]/settings/services';
-import ProjectGitHubScreen from '../app/project/[id]/settings/github';
+import ProjectRepositoryScreen from '../app/project/[id]/settings/repository';
 import ProjectModelScreen from '../app/project/[id]/settings/model';
-import { healthWithRebuild, makeClient, makeDetail } from './support/projectHarness';
+import {
+  forgejoConnections,
+  healthWithRebuild,
+  makeClient,
+  makeDetail,
+} from './support/projectHarness';
 import {
   mockCreateVerityClient,
   mockDismissTo,
@@ -30,6 +35,11 @@ import {
   resetSettingsHarness,
   setSearchParams,
 } from './support/settingsHarness';
+
+// A row is announced with its subtitle and status after the title, so find it
+// by the title its spoken label starts with.
+const rowLabel = (title: string) =>
+  new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`);
 
 beforeEach(() => {
   setSearchParams({ id: 'p/1' });
@@ -41,15 +51,31 @@ afterEach(() => {
 });
 
 describe('project settings index — destinations', () => {
+  it.each(['local', 'control_plane'] as const)(
+    'hides the scan destination for %s',
+    async (kind) => {
+      const detail = makeDetail();
+      mockCreateVerityClient.mockReturnValue(
+        makeClient({
+          detail: { ...detail, project: { ...detail.project, kind } },
+        }),
+      );
+      render(<ProjectSettingsIndexScreen />);
+      await screen.findByLabelText(rowLabel('Sandbox'));
+      expect(screen.queryByLabelText(rowLabel('Vulnerability scan'))).toBeNull();
+      expect(screen.queryByText('Security')).toBeNull();
+    },
+  );
   // Each row opens its project-specific destination directly.
   it.each([
+    ['Vulnerability scan', '/project/[id]/vulnerability-scan'],
     ['Sandbox', '/project/[id]/settings/sandbox'],
-    ['Default model', '/project/[id]/settings/model'],
+    ['Agents', '/project/[id]/settings/model'],
   ])('routes %s to %s', async (label, pathname) => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText(label));
+    fireEvent.press(await screen.findByLabelText(rowLabel(label)));
     expect(mockPush).toHaveBeenCalledWith({ pathname, params: { id: 'p/1' } });
   });
 
@@ -62,7 +88,7 @@ describe('project settings index — destinations', () => {
       render(<ProjectSettingsIndexScreen />);
 
       const label = section === 'drive' ? 'Google Drive' : section === 'mcp' ? 'MCP' : 'Doppler';
-      fireEvent.press(await screen.findByLabelText(label));
+      fireEvent.press(await screen.findByLabelText(rowLabel(label)));
       expect(mockPush).toHaveBeenCalledWith({
         pathname: '/project/[id]/settings/services',
         params: { id: 'p/1', section },
@@ -79,47 +105,51 @@ describe('project settings index — destinations', () => {
       }),
     );
     render(<ProjectSettingsIndexScreen />);
-    fireEvent.press(await screen.findByLabelText('Add connection'));
+    fireEvent.press(await screen.findByLabelText(/^Add connection(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services');
-    expect(screen.queryByLabelText('Doppler')).toBeNull();
-    expect(screen.queryByLabelText('Google Drive')).toBeNull();
-    expect(screen.queryByLabelText('MCP')).toBeNull();
+    expect(screen.queryByLabelText(/^Doppler(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Google Drive(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^MCP(,|$)/)).toBeNull();
   });
 
   it('shows the sandbox state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(
-      makeClient({ detail: makeDetail({ defaultModel: 'codex/default' }) }),
+      makeClient({
+        detail: makeDetail({ defaultModel: 'codex/default', allowedAgents: ['codex'] }),
+      }),
     );
     render(<ProjectSettingsIndexScreen />);
 
-    expect(await screen.findByLabelText('Sandbox')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('GitHub')).toBeNull();
-    expect(screen.queryByLabelText('Dev Server')).toBeNull();
+    expect(await screen.findByLabelText(/^Sandbox(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^GitHub(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Dev Server(,|$)/)).toBeNull();
     // The same badge label the overview dot uses for an `absent` project.
-    expect(screen.getByLabelText('Paused')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Paused(,|$)/)).toBeOnTheScreen();
     expect(screen.getByText('Codex')).toBeOnTheScreen();
+    expect(screen.getByText('Codex only')).toBeOnTheScreen();
   });
 
-  it('keeps the GitHub connection action for local projects', async () => {
+  it('keeps the repository connection action for local projects', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail({ kind: 'local' }) }));
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Connect GitHub'));
+    fireEvent.press(await screen.findByLabelText(/^Connect repository, GitHub(,|$)/));
     expect(mockPush).toHaveBeenCalledWith({
-      pathname: '/project/[id]/settings/github',
+      pathname: '/project/[id]/settings/repository',
       params: { id: 'p/1' },
     });
-    expect(screen.getByText('Server default')).toBeOnTheScreen();
+    expect(screen.getByText('Automatic')).toBeOnTheScreen();
+    expect(screen.getByText('All agents')).toBeOnTheScreen();
   });
 
   it('keeps every editable field off the index', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);
 
-    await screen.findByLabelText('Doppler');
-    expect(screen.queryByLabelText('Choose Doppler binding')).toBeNull();
-    expect(screen.queryByLabelText('Start project')).toBeNull();
-    expect(screen.queryByLabelText('Use the server default model')).toBeNull();
+    await screen.findByLabelText(/^Doppler(,|$)/);
+    expect(screen.queryByLabelText(/^Choose Doppler binding(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Start project(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Use the first allowed model(,|$)/)).toBeNull();
   });
 
   // `replace` here swapped this screen for `/` while the home it was opened from
@@ -134,7 +164,7 @@ describe('project settings index — destinations', () => {
     });
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Delete project'));
+    fireEvent.press(await screen.findByLabelText(/^Delete project(,|$)/));
 
     await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('p/1'));
     await waitFor(() => expect(mockDismissTo).toHaveBeenCalledWith('/'));
@@ -149,7 +179,7 @@ describe('project settings index — destinations', () => {
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     render(<ProjectSettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Delete project'));
+    fireEvent.press(await screen.findByLabelText(/^Delete project(,|$)/));
 
     const [title, message] = alert.mock.calls[0];
     expect(title).toBe('Delete project?');
@@ -190,12 +220,12 @@ describe('project settings — sandbox', () => {
     // the pill reads the same badge the overview dot pulses on. A green settled
     // "Running" beside a row saying a rebuild is in flight is the screen
     // reporting two states of one container.
-    expect(await screen.findByLabelText('Updating secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Running')).toBeNull();
+    expect(await screen.findByLabelText(/^Updating secure workspace…(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Running(,|$)/)).toBeNull();
     // Still pausable — an update in flight is not a lifecycle transition.
-    expect(screen.getByLabelText('Pause project')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Pause project(,|$)/)).toBeOnTheScreen();
     // The slim update row appears only because an update is available.
-    expect(screen.getByLabelText('Update project sandbox')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Update project sandbox(,|$)/)).toBeOnTheScreen();
     // Reads as reassurance, not as a fault: while Verity is still rebuilding the
     // sandbox the row says so, and the manual Update stays available anyway.
     expect(
@@ -239,15 +269,16 @@ describe('project settings — sandbox', () => {
     expect(
       await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
     ).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Update project sandbox'));
+    fireEvent.press(screen.getByLabelText(/^Update project sandbox(,|$)/));
 
     const [title, message, buttons] = alert.mock.calls[0];
     expect(title).toBe('Update waiting for a turn');
     expect(message).toContain('cancel the turn first');
-    expect(buttons?.map((button) => button.text)).toEqual(['OK']);
-    // Nothing on this path may reach the route that would 409 — or, if SBX-1 ever
-    // stopped holding, kill the turn the message just promised was safe.
-    buttons?.forEach((button) => button.onPress?.());
+    // Only an acknowledgement, no action button: nothing on this path may reach
+    // the route that would 409 — or, if SBX-1 ever stopped holding, kill the turn
+    // the message just promised was safe.
+    expect(buttons).toBeUndefined();
+    expect(screen.queryByText('Update project?')).toBeNull();
     expect(recreateProjectContainer).not.toHaveBeenCalled();
     alert.mockRestore();
   });
@@ -301,7 +332,7 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Paused')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Paused(,|$)/)).toBeOnTheScreen();
     expect(screen.queryByText(/needs re-checking/)).toBeNull();
   });
 
@@ -338,8 +369,8 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Rebuilding secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Running')).toBeNull();
+    expect(await screen.findByLabelText(/^Rebuilding secure workspace…(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Running(,|$)/)).toBeNull();
   });
 
   // The pill reads from the shared `projectBadge`, so it names the container state
@@ -355,20 +386,17 @@ describe('project settings — sandbox', () => {
     const detail: ProjectDetail = { ...base, project: { ...base.project, state: 'active' } };
     const deprovisionProject = jest.fn().mockResolvedValue({ ...detail.project, state: 'absent' });
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, deprovisionProject }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Pause')?.onPress?.();
-    });
     const published = jest.fn();
     const unsubscribe = subscribeProjectStatusMutations(published);
     render(<ProjectSandboxScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Pause project'));
+    fireEvent.press(await screen.findByLabelText(/^Pause project(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Pause sandbox' }));
     await waitFor(() => expect(deprovisionProject).toHaveBeenCalledWith('p/1', { purge: false }));
     await waitFor(() => expect(published).toHaveBeenCalledTimes(1));
     expect(published).toHaveBeenCalledWith(expect.objectContaining({ id: 'p/1', state: 'absent' }));
-    expect(await screen.findByLabelText('Start project')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
     unsubscribe();
-    alert.mockRestore();
   });
 
   // Every stacked screen sees the same `pending` status on load; without a
@@ -395,8 +423,8 @@ describe('project settings — sandbox', () => {
       </>,
     );
 
-    expect(await screen.findByLabelText('Delete project')).toBeOnTheScreen();
-    expect(await screen.findByLabelText('Start project')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Delete project(,|$)/)).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
     await waitFor(() => expect(setProjectSetupStatus).toHaveBeenCalledWith('p/1', 'complete'));
     expect(setProjectSetupStatus).toHaveBeenCalledTimes(1);
     // Settling the PATCH must not let the second instance, whose own fetch
@@ -412,9 +440,9 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail() }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Paused')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Start project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Update project sandbox')).toBeNull();
+    expect(await screen.findByLabelText(/^Paused(,|$)/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Update project sandbox(,|$)/)).toBeNull();
   });
 
   it('offers Repair for a failed sandbox', async () => {
@@ -423,8 +451,8 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Needs repair')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Needs repair(,|$)/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Repair project(,|$)/)).toBeOnTheScreen();
   });
 
   it('offers Repair while a sandbox is starting', async () => {
@@ -436,9 +464,9 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Starting secure workspace…')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('container_starting')).toBeNull();
-    expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Starting secure workspace…(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^container_starting(,|$)/)).toBeNull();
+    expect(screen.getByLabelText(/^Repair project(,|$)/)).toBeOnTheScreen();
   });
 
   // The escape hatch for a devcontainer change the image cache cannot see:
@@ -459,12 +487,11 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ detail, recreateProjectContainer, getHealth: healthWithRebuild() }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Rebuild')?.onPress?.();
-    });
     render(<ProjectSandboxScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Rebuild project image'));
+    fireEvent.press(await screen.findByLabelText(/^Rebuild project image(,|$)/));
+    expect(screen.getByText('Rebuild image?')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Rebuild' }));
 
     await waitFor(() =>
       expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
@@ -472,8 +499,6 @@ describe('project settings — sandbox', () => {
         forceRebuild: true,
       }),
     );
-    expect(alert.mock.calls[0][0]).toBe('Rebuild image?');
-    alert.mockRestore();
   });
 
   // The canonical reason to want a cacheless rebuild: the project built once and
@@ -492,8 +517,8 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, getHealth: healthWithRebuild() }));
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Repair project')).toBeOnTheScreen();
-    expect(await screen.findByLabelText('Rebuild project image')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Repair project(,|$)/)).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Rebuild project image(,|$)/)).toBeOnTheScreen();
   });
 
   // A project running the pulled sandbox image has no build of its own to redo,
@@ -513,8 +538,8 @@ describe('project settings — sandbox', () => {
     );
     const view = render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
+    expect(await screen.findByLabelText(/^Pause project(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Rebuild project image(,|$)/)).toBeNull();
     view.unmount();
 
     const paused: ProjectDetail = {
@@ -526,8 +551,8 @@ describe('project settings — sandbox', () => {
     );
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Start project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
+    expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Rebuild project image(,|$)/)).toBeNull();
   });
 
   // The app ships on its own release train, and the server's recreate body schema
@@ -553,8 +578,8 @@ describe('project settings — sandbox', () => {
     );
     render(<ProjectSandboxScreen />);
 
-    expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
+    expect(await screen.findByLabelText(/^Pause project(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Rebuild project image(,|$)/)).toBeNull();
   });
 });
 
@@ -589,15 +614,15 @@ describe('project settings — connected services', () => {
       makeClient({ listDopplerProjects, listDopplerConfigs, updateProjectSettings }),
     );
     render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     // Open the picker → project list loads.
-    fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
-    fireEvent.press(await screen.findByLabelText('Doppler project Acme App'));
+    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Doppler project Acme App(,|$)/));
     await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('acme-app'));
 
     // Pick a config → PATCH lands with the binding.
-    fireEvent.press(await screen.findByLabelText('Doppler config dev'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler config dev(,|$)/));
     await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
     const [, patch] = updateProjectSettings.mock.calls[0];
     expect(patch).toEqual({ dopplerProject: 'acme-app', dopplerConfig: 'dev' });
@@ -607,9 +632,9 @@ describe('project settings — connected services', () => {
     const listDopplerProjects = jest.fn().mockResolvedValue({ error: 'not configured' });
     mockCreateVerityClient.mockReturnValue(makeClient({ listDopplerProjects }));
     render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
-    fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
+    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
     expect(
       await screen.findByText(/Set the Doppler account token in Verity settings/),
     ).toBeOnTheScreen();
@@ -625,10 +650,10 @@ describe('project settings — connected services', () => {
       }),
     );
     render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     expect(await screen.findByText('acme-app / dev')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Change Doppler binding')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Change Doppler binding(,|$)/)).toBeOnTheScreen();
   });
 
   it('enables an MCP connection for the project with a switch', async () => {
@@ -643,7 +668,7 @@ describe('project settings — connected services', () => {
     );
     render(<ProjectServicesScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Linear'));
+    fireEvent.press(await screen.findByLabelText(/^Linear(,|$)/));
     await waitFor(() => expect(setProjectMcpBinding).toHaveBeenCalledWith('p/1', 'c1', true));
   });
 
@@ -655,7 +680,7 @@ describe('project settings — connected services', () => {
     expect(
       await screen.findByText(/Add and authorize MCP servers in Verity settings/),
     ).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Add connection')).toBeNull();
+    expect(screen.queryByLabelText(/^Add connection(,|$)/)).toBeNull();
     expect(mockPush).not.toHaveBeenCalled();
   });
 
@@ -665,11 +690,11 @@ describe('project settings — connected services', () => {
 
     expect(await screen.findByText('Credentials')).toBeOnTheScreen();
     expect(await screen.findByText('Matrix rooms')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Connect Matrix')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Connect Matrix(,|$)/)).toBeOnTheScreen();
   });
 });
 
-describe('project settings — default model', () => {
+describe('project settings — agents', () => {
   it('keeps a saved model when an older project refresh finishes afterward', async () => {
     const before = makeDetail();
     const client = makeClient({ detail: before });
@@ -680,7 +705,7 @@ describe('project settings — default model', () => {
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectModelScreen />);
 
-    expect(await screen.findByLabelText('Use model Codex, codex/default')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeOnTheScreen();
     const initialLoads = getProject.mock.calls.length;
     getProject.mockImplementationOnce(
       () =>
@@ -691,33 +716,35 @@ describe('project settings — default model', () => {
     act(() => refocus());
     await waitFor(() => expect(getProject).toHaveBeenCalledTimes(initialLoads + 1));
 
-    fireEvent.press(screen.getByLabelText('Use model Codex, codex/default'));
+    fireEvent.press(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/));
     await waitFor(() =>
       expect(
-        screen.getByLabelText('Use model Codex, codex/default').props.accessibilityState.checked,
+        screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/).props.accessibilityState
+          .checked,
       ).toBe(true),
     );
     await act(async () => finishRefresh?.());
     expect(
-      screen.getByLabelText('Use model Codex, codex/default').props.accessibilityState.checked,
+      screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/).props.accessibilityState
+        .checked,
     ).toBe(true);
   });
 
-  it('offers the server default plus the models the server can spawn', async () => {
+  it('offers Automatic plus the models the project can spawn', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectModelScreen />);
 
-    const serverDefault = await screen.findByLabelText('Use the server default model');
+    const serverDefault = await screen.findByLabelText(/^Use the first allowed model(,|$)/);
     expect(serverDefault.props.accessibilityState.checked).toBe(true);
     expect(
-      screen.getByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6'),
+      screen.getByLabelText(/^Use model Claude Sonnet 4\.6, claude-sonnet-4-6(,|$)/),
     ).toBeOnTheScreen();
-    expect(screen.getByLabelText('Use model Codex, codex/default')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeOnTheScreen();
   });
 
   // The choice has to reach the server as the `defaultModel` key alone — a
   // PATCH that also carried `defaultBranch` or `memory` would clear them.
-  it('PATCHes { defaultModel } when a model is picked and null for the server default', async () => {
+  it('PATCHes { defaultModel } when a model is picked and null for Automatic', async () => {
     const updateProjectSettings = jest
       .fn()
       .mockImplementation((_id: string, patch: object) =>
@@ -726,19 +753,219 @@ describe('project settings — default model', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
     render(<ProjectModelScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Use model Codex, codex/default'));
+    fireEvent.press(await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/));
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { defaultModel: 'codex/default' }),
     );
     expect(
-      (await screen.findByLabelText('Use model Codex, codex/default')).props.accessibilityState
-        .checked,
+      (await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/)).props
+        .accessibilityState.checked,
     ).toBe(true);
 
-    fireEvent.press(screen.getByLabelText('Use the server default model'));
+    fireEvent.press(screen.getByLabelText(/^Use the first allowed model(,|$)/));
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { defaultModel: null }),
     );
+  });
+
+  // The toggles PATCH the agent list alone; a list naming every agent is stored
+  // as null so agents connected later are allowed too.
+  it('turns an agent off and back on through allowedAgents', async () => {
+    const updateProjectSettings = jest
+      .fn()
+      .mockImplementation((_id: string, patch: object) =>
+        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    for (const agent of ['Claude', 'Codex', 'OpenCode']) {
+      expect((await screen.findByLabelText(agent)).props.accessibilityState.checked).toBe(true);
+    }
+    fireEvent.press(screen.getByLabelText(/^Codex(,|$)/));
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
+        allowedAgents: ['claude', 'opencode'],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Codex(,|$)/).props.accessibilityState.checked).toBe(false),
+    );
+    fireEvent.press(screen.getByLabelText(/^Codex(,|$)/));
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { allowedAgents: null }),
+    );
+  });
+
+  it('keeps the latest project models when post-save refreshes finish out of order', async () => {
+    const all = { models: ['claude-sonnet-4-6', 'codex/default', 'verity/kimi-k2'] };
+    const pending: Array<(value: typeof all) => void> = [];
+    let projectReads = 0;
+    const listModels = jest.fn().mockImplementation((projectId?: string) => {
+      if (projectId === undefined || projectReads++ === 0) return Promise.resolve(all);
+      return new Promise<typeof all>((resolve) => pending.push(resolve));
+    });
+    const updateProjectSettings = jest
+      .fn()
+      .mockImplementation((_id: string, patch: object) =>
+        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      );
+    mockCreateVerityClient.mockReturnValue(makeClient({ listModels, updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Codex(,|$)/));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Claude(,|$)/).props.accessibilityState.disabled).toBe(false),
+    );
+    fireEvent.press(screen.getByLabelText(/^Claude(,|$)/));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => pending[1]?.({ models: ['verity/kimi-k2'] }));
+    expect(
+      screen.queryByLabelText(/^Use model Claude Sonnet 4\.6, claude-sonnet-4-6(,|$)/),
+    ).toBeNull();
+    // A late refresh must not reintroduce models excluded by the newer saved rule.
+    await act(async () => pending[0]?.({ models: ['claude-sonnet-4-6', 'verity/kimi-k2'] }));
+    expect(
+      screen.queryByLabelText(/^Use model Claude Sonnet 4\.6, claude-sonnet-4-6(,|$)/),
+    ).toBeNull();
+  });
+
+  it('locks the final allowed agent even when disconnected', async () => {
+    const client = makeClient({
+      detail: makeDetail({ allowedAgents: ['codex'] }),
+      listModels: jest.fn().mockResolvedValue({ models: ['claude-sonnet-4-6'] }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ProjectModelScreen />);
+
+    const codex = await screen.findByLabelText(/^Codex(,|$)/);
+    expect(codex.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(codex);
+    expect(client.updateProjectSettings).not.toHaveBeenCalled();
+  });
+
+  // A banner sliding in above the list while a toggle saves shifts the whole
+  // screen; the flipped toggle is the feedback.
+  it('flips a toggle at once without a saving banner or dimmed rows', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Codex(,|$)/));
+    expect(screen.getByLabelText(/^Codex(,|$)/).props.accessibilityState).toMatchObject({
+      checked: false,
+      disabled: false,
+    });
+    expect(screen.queryByText('Saving changes…')).toBeNull();
+    await act(async () => finish?.());
+    expect(screen.getByLabelText(/^Codex(,|$)/).props.accessibilityState.checked).toBe(false);
+  });
+
+  // Dropping a tap that lands mid-save leaves the screen showing one state while
+  // the project keeps another.
+  it('sends a toggle tapped during a save once that save lands', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Codex(,|$)/));
+    fireEvent.press(screen.getByLabelText(/^OpenCode(,|$)/));
+    expect(screen.getByLabelText(/^OpenCode(,|$)/).props.accessibilityState.checked).toBe(false);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { allowedAgents: ['claude'] }),
+    );
+    await act(async () => finishers[1]?.());
+    expect(screen.getByLabelText(/^Claude(,|$)/).props.accessibilityState.checked).toBe(true);
+    expect(screen.getByLabelText(/^OpenCode(,|$)/).props.accessibilityState.checked).toBe(false);
+  });
+
+  it('disables an excluded model while its agent restriction is saving', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Codex(,|$)/));
+    const model = screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/);
+    expect(model.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(model);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+    await act(async () => finish?.());
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a queued default when its agent is subsequently excluded', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^OpenCode(,|$)/));
+    fireEvent.press(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/));
+    fireEvent.press(screen.getByLabelText(/^Codex(,|$)/));
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
+        defaultModel: null,
+        allowedAgents: ['claude'],
+      }),
+    );
+    await act(async () => finishers[1]?.());
+  });
+
+  // Turning off the last connected agent would leave the project unable to start
+  // any session, so its toggle cannot be switched off.
+  it('locks the last connected allowed agent and lists the project models', async () => {
+    const listModels = jest.fn().mockImplementation((projectId?: string) =>
+      Promise.resolve(
+        projectId === undefined
+          ? { models: ['claude-sonnet-4-6', 'codex/default'], default: 'claude-sonnet-4-6' }
+          : {
+              models: ['claude-sonnet-4-6'],
+              default: 'claude-sonnet-4-6',
+              allowedAgents: ['claude'],
+            },
+      ),
+    );
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ detail: makeDetail({ allowedAgents: ['claude'] }), listModels }),
+    );
+    render(<ProjectModelScreen />);
+
+    expect((await screen.findByLabelText(/^Claude(,|$)/)).props.accessibilityState.disabled).toBe(
+      true,
+    );
+    expect(screen.getByLabelText(/^Codex(,|$)/).props.accessibilityState.checked).toBe(false);
+    expect(screen.queryByLabelText(/^OpenCode(,|$)/)).toBeNull();
+    expect(
+      await screen.findByText('First allowed model · currently Claude Sonnet 4.6'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeNull();
+    expect(listModels).toHaveBeenCalledWith('p/1');
   });
 
   // A model the server no longer offers is still what this project starts
@@ -751,23 +978,23 @@ describe('project settings — default model', () => {
     render(<ProjectModelScreen />);
 
     expect(
-      (await screen.findByLabelText('Use model Claude Opus 4.8, claude-opus-4-8')).props
+      (await screen.findByLabelText(/^Use model Claude Opus 4\.8, claude-opus-4-8(,|$)/)).props
         .accessibilityState.checked,
     ).toBe(true);
     expect(
-      screen.getByLabelText('Use the server default model').props.accessibilityState.checked,
+      screen.getByLabelText(/^Use the first allowed model(,|$)/).props.accessibilityState.checked,
     ).toBe(false);
   });
 });
 
-describe('project settings — GitHub', () => {
+describe('project settings — repository', () => {
   it('shows the bound repository for a GitHub project', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
     expect(await screen.findByText('heey-global/verity')).toBeOnTheScreen();
     expect(screen.getByText('No published release')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Connect project to GitHub')).toBeNull();
+    expect(screen.queryByLabelText(/^Connect project to GitHub(,|$)/)).toBeNull();
   });
 
   it('connects a local project to a repository the installation can see', async () => {
@@ -783,36 +1010,187 @@ describe('project settings — GitHub', () => {
         linkProjectToGitHub,
       }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Connect')?.onPress?.();
-    });
-    render(<ProjectGitHubScreen />);
+    render(<ProjectRepositoryScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Connect project to GitHub'));
+    // Linking pushes history, so nothing is preselected for a single tap.
+    expect(await screen.findByLabelText(/^Connect project to GitHub(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to GitHub(,|$)/));
+    expect(linkProjectToGitHub).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(linkProjectToGitHub).toHaveBeenCalledWith('p/1', 'acme/site'));
-    alert.mockRestore();
+  });
+
+  // Linking through the GitHub route would bind a Forgejo repository to the
+  // wrong host; the Forgejo choice must carry its connection id.
+  it('connects a local project to a Forgejo repository through its connection', async () => {
+    const linkProject = jest
+      .fn()
+      .mockResolvedValue({ project: { ...makeDetail({ kind: 'forgejo' }).project } });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        listAvailableRepositories: jest
+          .fn()
+          .mockResolvedValue([{ ...makeDetail().project, id: 'r/1', owner: 'acme', repo: 'site' }]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest
+          .fn()
+          .mockResolvedValue([{ owner: 'team', repo: 'website', archived: false }]),
+        linkProject,
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('acme/site'));
+    fireEvent.press(await screen.findByLabelText(/^Forgejo, git\.example\.org/));
+    // The GitHub choice must not travel with the Forgejo connection.
+    expect(screen.getByLabelText(/^Connect project to Forgejo(,|$)/)).toBeDisabled();
+    fireEvent.press(await screen.findByText('team/website'));
+    fireEvent.press(screen.getByLabelText(/^Connect project to Forgejo(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() =>
+      expect(linkProject).toHaveBeenCalledWith('p/1', 'team/website', 'forgejo-1'),
+    );
+  });
+
+  it('offers only the connected code host when GitHub is not connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^GitHub, github\.com/)).toBeNull();
+  });
+
+  it('reloads repository hosts after returning from connection setup', async () => {
+    const connections = jest
+      .fn()
+      .mockResolvedValue({ connections: [], forgejoProjectsAvailable: true });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+        listConnections: connections,
+        listConnectionRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+    fireEvent.press(await screen.findByText('Open Connections'));
+    connections.mockResolvedValue(forgejoConnections());
+    act(() => refocus());
+    expect(await screen.findByLabelText(/^Forgejo, git\.example\.org/)).toBeOnTheScreen();
+  });
+
+  it('sends a local project without any code host to Connections', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listAvailableRepositories: jest.fn().mockResolvedValue([]),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    fireEvent.press(await screen.findByText('Open Connections'));
+    expect(mockPush).toHaveBeenCalledWith('/settings/services');
+  });
+
+  it('shows a Forgejo project with its instance and opens it there', async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectRepositoryScreen />);
+
+    expect(await screen.findByText('Forgejo (git.example.org)')).toBeOnTheScreen();
+    expect(screen.queryByText('Latest release')).toBeNull();
+    fireEvent.press(screen.getByText('Open in browser'));
+    expect(openURL).toHaveBeenCalledWith('https://git.example.org/heey-global/verity');
   });
 });
 
-it('changes only the project Drive access mode', async () => {
+describe('project settings index — code hosts', () => {
+  it('offers Forgejo for a local project when only Forgejo is connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Connect repository, Forgejo(,|$)/)).toBeOnTheScreen();
+  });
+
+  it('hides the action when Forgejo cannot run projects on this server', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'local' }),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections(false)),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(await screen.findByLabelText(/^Google Drive,/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Connect repository/)).toBeNull();
+  });
+
+  it('names a Forgejo project by its host', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail: makeDetail({ kind: 'forgejo' }),
+        listConnections: jest.fn().mockResolvedValue(forgejoConnections()),
+      }),
+    );
+    render(<ProjectSettingsIndexScreen />);
+    expect(
+      await screen.findByLabelText(/^Forgejo repository, heey-global\/verity · git\.example\.org/),
+    ).toBeOnTheScreen();
+  });
+});
+
+it('changes only the selected account-bound project Drive folder mode', async () => {
   setSearchParams({ id: 'p/1', section: 'drive' });
-  const detail = makeDetail();
-  detail.settings = {
-    ...detail.settings!,
-    googleDriveFolderId: 'root',
-    googleDriveFolderName: 'Documents',
-    googleDriveAccessMode: 'read-only',
-  };
-  const updateProjectSettings = jest
-    .fn()
-    .mockResolvedValue({ ...detail.settings, googleDriveAccessMode: 'read-write' });
-  mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+  const connectProjectGoogleDriveFolder = jest.fn().mockResolvedValue({});
+  const client = makeClient({ detail: makeDetail() });
+  Object.assign(client, {
+    listProjectDriveFolders: jest.fn().mockResolvedValue([
+      {
+        id: 'link',
+        projectId: 'p/1',
+        accountId: 'work',
+        accountEmail: 'work@example.test',
+        accountName: null,
+        folderId: 'root',
+        name: 'Documents',
+        accessMode: 'read-only',
+      },
+    ]),
+    connectProjectGoogleDriveFolder,
+  });
+  mockCreateVerityClient.mockReturnValue(client);
   render(<ProjectServicesScreen />);
-  fireEvent.press(await screen.findByText('Google Drive folder'));
-  fireEvent.press(await screen.findByLabelText('Allow changes to Google Drive files'));
+  fireEvent.press(await screen.findByText('Google Drive folders'));
+  fireEvent.press(await screen.findByText('Documents'));
+  fireEvent.press(await screen.findByLabelText(/^Allow changes to Google Drive files(,|$)/));
   await waitFor(() =>
-    expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
-      googleDriveAccessMode: 'read-write',
-    }),
+    expect(connectProjectGoogleDriveFolder).toHaveBeenCalledWith(
+      'p/1',
+      'root',
+      'read-write',
+      'work',
+    ),
   );
 });

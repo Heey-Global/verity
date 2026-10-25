@@ -77,11 +77,25 @@ async function applyUpdate(
     if (!fetched.isNew && !fetched.isRollBackToEmbedded) return 'current';
 
     phase = 'reload';
-    await client.reloadAsync();
+    await restartIntoUpdate(client);
     return 'reloading';
   } catch (error) {
     return updateFailure(phase, error);
   }
+}
+
+/**
+ * Restart into the update that is downloaded. Shared by the startup path and
+ * the update screen's "Restart now", so both show the same reload screen.
+ */
+export async function restartIntoUpdate(client: Pick<UpdatesClient, 'reloadAsync'> = Updates) {
+  // Expo's native reload screen defaults to white, even with a dark splash.
+  await client.reloadAsync({
+    reloadScreenOptions: {
+      backgroundColor: '#06030d',
+      spinner: { enabled: false },
+    },
+  });
 }
 
 /** Download a foreground update without restarting an interactive app. Expo will

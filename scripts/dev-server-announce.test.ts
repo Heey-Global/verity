@@ -124,3 +124,72 @@ it('keeps the toolkit copy of verity-dev-server identical to the agent seed', as
     read(resolve('features/verity-sandbox-toolkit/agent-seed/bin/verity-dev-server'), 'utf8'),
   ).toBe(read(resolve('agent-seed/bin/verity-dev-server'), 'utf8'));
 });
+
+it('registers alias mappings without placing key values in the managed command', async () => {
+  const { createServer } = await import('node:http');
+  const { writeFileSync } = await import('node:fs');
+  const { execFile } = await import('node:child_process');
+  const requests: Record<string, unknown>[] = [];
+  const server = createServer((request, response) => {
+    let raw = '';
+    request.on('data', (chunk: Buffer) => {
+      raw += chunk.toString();
+    });
+    request.on('end', () => {
+      requests.push(JSON.parse(raw) as Record<string, unknown>);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ message: 'Registered' }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const root = mkdtempSync(join(tmpdir(), 'verity-managed-cli-secrets-'));
+  directories.push(root);
+  writeFileSync(join(root, 'cap'), 'synthetic-capability');
+  try {
+    const address = server.address() as { port: number };
+    for (const args of [
+      [
+        'add',
+        'API',
+        '--command',
+        'node server.mjs',
+        '--secrets',
+        'ATTENDEE_API_KEY=API_KEY,EXPO_TOKEN=OTHER_KEY',
+      ],
+      ['update', 'API', '--secrets', ''],
+    ]) {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          process.execPath,
+          [resolvePath(), ...args],
+          {
+            env: {
+              ...process.env,
+              VERITY_SESSION_ID: 'session-1',
+              VERITY_DEV_SERVER_URL: `http://127.0.0.1:${address.port}/internal/dev-servers`,
+              VERITY_GH_BROKER_CAPABILITY_FILE: join(root, 'cap'),
+            },
+          },
+          (error) => {
+            if (error) reject(new Error(error.message));
+            else resolve();
+          },
+        ),
+      );
+    }
+    expect(requests[0]).toMatchObject({
+      command: 'node server.mjs',
+      secretBindings: [
+        { secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' },
+        { secretAlias: 'EXPO_TOKEN', env: 'OTHER_KEY' },
+      ],
+    });
+    expect(requests[1]).toMatchObject({ action: 'update', secretBindings: [] });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+function resolvePath() {
+  return resolve('agent-seed/bin/verity-dev-server');
+}

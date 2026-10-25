@@ -4,10 +4,7 @@ import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
 import { registerIntegrationRoutes } from './routes.js';
 
-it.each([
-  ['edit', 'missing'],
-  ['edit', 'non_message'],
-] as const)(
+it.each([['edit', 'non_message']] as const)(
   'identifies a rejected %s with a %s target without logging content',
   async (kind, targetState) => {
     const records: string[] = [];
@@ -20,9 +17,7 @@ it.each([
     const app = Fastify({ logger: { stream, level: 'warn' } });
     const ingestEvent = vi.fn();
     const store = {
-      getEvent: vi.fn(async () =>
-        targetState === 'missing' ? null : { kind: 'edit', body: 'private target text' },
-      ),
+      getEvent: vi.fn(async () => ({ kind: 'edit', body: 'private target text' })),
       ingestEvent,
     } as unknown as IntegrationStore;
     const token = 'a-secret-long-enough-for-the-worker-route';

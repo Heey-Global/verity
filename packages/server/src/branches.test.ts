@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BaseCheckoutStrandedError,
   BaseCheckoutUnavailableError,
@@ -69,6 +69,34 @@ function fakeGit(routes: Record<string, () => string>) {
   return { git, calls };
 }
 
+it('reads branch metadata in one scoped operation with a shared HEAD result', async () => {
+  const { git, calls } = fakeGit({
+    'rev-parse --abbrev-ref HEAD': () => 'feature\n',
+    'for-each-ref --format=%(refname:short) refs/heads': () => 'feature\nmain\nbusy\nfree\n',
+    'worktree list --porcelain': () => 'worktree /other\nbranch refs/heads/busy\n',
+    'for-each-ref --format=%(refname:short) refs/remotes/origin': () =>
+      'origin/HEAD\norigin/main\norigin/feature\norigin/busy\n',
+  });
+  const scoped = vi.fn();
+  const branches = createGitBranchService({
+    git: async () => {
+      throw new Error('unscoped read');
+    },
+    withGit: async (worktree, operation) => {
+      scoped(worktree);
+      return operation(git);
+    },
+  });
+  expect(await branches.metadata!('/wt')).toEqual({
+    current: 'feature',
+    switchable: ['main', 'free'],
+    previewableRaw: ['busy'],
+  });
+  expect(scoped).toHaveBeenCalledOnce();
+  expect(calls.filter((args) => args.includes('rev-parse'))).toHaveLength(1);
+  expect(calls).toHaveLength(4);
+});
+
 /** The pins the local-merge path puts on every index-touching invocation in `repoPath`.
  *  A session can write each of the corresponding keys into the shared `.git/config` of
  *  its project clone, where they either name a program git runs server-side or move
@@ -128,6 +156,56 @@ describe('createGitBranchService', () => {
   });
 
   describe('current', () => {
+    it('reads the local base through the owning session sandbox', async () => {
+      const git = vi.fn(async () => {
+        throw new Error('Git operation has no project session context');
+      });
+      const scopedGit = vi.fn(async () => 'trunk\n');
+      const withGit = vi.fn();
+      const svc = createGitBranchService({
+        git,
+        withGit: async (worktree, operation) => {
+          withGit(worktree);
+          return operation(scopedGit);
+        },
+      });
+
+      // A base checkout is not a session worktree and cannot select its own sandbox.
+      await expect(svc.current('/clones/local', '/clones/local/session')).resolves.toBe('trunk');
+      expect(withGit).toHaveBeenCalledWith('/clones/local/session');
+      expect(scopedGit).toHaveBeenCalledWith([
+        '-C',
+        '/clones/local',
+        'rev-parse',
+        '--abbrev-ref',
+        'HEAD',
+      ]);
+      expect(git).not.toHaveBeenCalled();
+    });
+
+    it('shares one isolated context across detached HEAD lookups', async () => {
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'HEAD\n',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () => '',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/heads': () => '',
+        'rev-parse --short HEAD': () => 'abc123\n',
+      });
+      const scoped = vi.fn();
+      const svc = createGitBranchService({
+        git: async () => {
+          throw new Error('unscoped read');
+        },
+        withGit: async (worktree, operation) => {
+          scoped(worktree);
+          return operation(git);
+        },
+      });
+
+      await expect(svc.current('/wt')).resolves.toBe('abc123');
+      expect(scoped).toHaveBeenCalledExactlyOnceWith('/wt');
+      expect(calls).toHaveLength(4);
+    });
+
     it('returns the trimmed branch name', async () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feature/x\n',
@@ -139,6 +217,30 @@ describe('createGitBranchService', () => {
   });
 
   describe('sessionBranches', () => {
+    it('shares one isolated context across detached HEAD, reflog and branch probes', async () => {
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'HEAD\n',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
+          'origin/feature\n',
+        'reflog show --format=%gs HEAD': () => 'checkout: moving from earlier to feature\n',
+        'show-ref --verify --quiet refs/heads/earlier': () => '',
+      });
+      const scoped = vi.fn();
+      const svc = createGitBranchService({
+        git: async () => {
+          throw new Error('unscoped read');
+        },
+        withGit: async (worktree, operation) => {
+          scoped(worktree);
+          return operation(git);
+        },
+      });
+
+      await expect(svc.sessionBranches('/wt')).resolves.toEqual(['feature', 'earlier']);
+      expect(scoped).toHaveBeenCalledExactlyOnceWith('/wt');
+      expect(calls).toHaveLength(4);
+    });
+
     it('returns the worktree HEAD plus the other branches from its reflog, recency-first', async () => {
       // A multi-phase session: HEAD is agent/ad858d4e (no PR), but it also created
       // several security/audit branches (some carrying their own PR). The worktree's
@@ -238,12 +340,18 @@ describe('createGitBranchService', () => {
       git('add', 'notes.txt');
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
       git('commit', '-qm', 'edit');
+      git('branch', '-m', 'renamed-session');
+      writeFileSync(
+        join(repo, '.verity-worktree.json'),
+        JSON.stringify({ headRef: 'renamed-session', headSha: 'stale' }),
+      );
+      expect(await svc.current(repo)).toBe('renamed-session');
       // A clean index must not hide file changes still awaiting Save to project.
       expect(await svc.isDirty(repo)).toBe(false);
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(true);
       git('switch', 'main');
-      git('merge', '--ff-only', 'session');
-      git('switch', 'session');
+      git('merge', '--ff-only', 'renamed-session');
+      git('switch', 'renamed-session');
       expect(await svc.hasProjectChanges(repo, 'main')).toBe(false);
     } finally {
       rmSync(repo, { recursive: true, force: true });

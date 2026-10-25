@@ -145,7 +145,11 @@ describe('Staging finalization retries', () => {
     expect(publication).toBeGreaterThan(evidence);
     expect(steps[evidence]?.run).toContain('native-staging.json');
     expect(steps[evidence]?.run).not.toContain('native-production.json');
-    expect(publication).toBe(steps.length - 1);
+    expect(
+      steps
+        .slice(publication + 1)
+        .every((step) => step.run?.includes('gh workflow run mobile-ota.yml')),
+    ).toBe(true);
   });
   it('delegates archive reuse and expiry replacement to the production proposer', () => {
     const production = parse(
@@ -194,4 +198,17 @@ describe('Staging finalization retries', () => {
       rmSync(f.root, { recursive: true, force: true });
     }
   });
+});
+
+it('resumes skipped OTA planning after successful native Staging publication', () => {
+  const steps = workflow.jobs['finalize-mobile-staging']!.steps;
+  const published = steps.findIndex(
+    (step) => step.name === 'Publish verified native GitHub release',
+  );
+  const resume = steps.findIndex((step) =>
+    step.run?.includes('gh workflow run mobile-ota.yml --ref main'),
+  );
+  expect(published).toBeGreaterThan(-1);
+  expect(resume).toBeGreaterThan(published);
+  expect(steps[resume]?.env?.GH_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}');
 });

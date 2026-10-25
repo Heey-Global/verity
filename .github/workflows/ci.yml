@@ -51,8 +51,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-tag-barrier:
+    # Require this check with strict up-to-date branches on main. A green check
+    # against an older base cannot authorize a merge past a new release commit.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      # Merged release PRs are authored by the release app, whose `<slug>[bot]`
+      # login the barrier must trust next to github-actions[bot]. The slug is an
+      # output of minting a token, so mint one that can only read metadata.
+      # Fork and Dependabot PRs get no secrets and keep the GitHub Actions
+      # default; a failed mint degrades the same way instead of failing CI.
+      - name: Resolve release app identity
+        id: app-token
+        if: github.event_name != 'push' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
+      - name: Protect untagged releases from workflow changes
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${PR_BASE:-$(git rev-parse origin/main)}"
+          # Include deletions and rename sources; otherwise moving a workflow
+          # could pass the barrier while removing the permitted workflow tree.
+          if ! git diff --quiet --no-renames "$base" HEAD -- .github/workflows; then
+            node scripts/release-tag-registration.mjs check "$base"
+          fi
+
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # `actions: read` is for the base commit's own CI verdict, which the
     # release-please skip below refuses to take on faith. A job-level block
     # replaces the workflow-level one rather than adding to it, so `contents`
@@ -82,6 +132,25 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: .github/scripts/validate-release-title "$PR_TITLE"
+      # Generated release and promotion PRs are authored by the release app and
+      # scoped below by author and head branch. The app's `<slug>[bot]` login is
+      # an output of minting a token, so mint one that can only read metadata,
+      # and only for the branches that can be release PRs; a fork PR has no
+      # secrets and runs the full suite like any other PR.
+      - name: Resolve release app identity
+        id: app-token
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          (startsWith(github.head_ref, 'release-please--branches--main--components--') ||
+          startsWith(github.head_ref, 'automation/promote-')))
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - id: detect
         name: Detect changed areas
         shell: bash
@@ -93,8 +162,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
           PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
         run: |
           set -euo pipefail
+
+          # Release PRs come from GitHub Actions (history) or the release app.
+          is_release_bot() { [[ -n "$1" && ",github-actions[bot],${RELEASE_BOT_LOGINS:-}," == *",$1,"* ]]; }
 
           lint=false
           typecheck=false
@@ -117,7 +190,7 @@ jobs:
             installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
           }
 
-          # Scope generated PR `synchronize` events through the checked classifier.
+          # Scope generated PR events through the checked classifier.
           release_scoped=false
           release_base=''
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -135,8 +208,8 @@ jobs:
               fi
               pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR}" --jq \
                 '[.user.login, .base.ref, .head.ref, .head.sha, .base.sha] | join("|")')"
-              expected="github-actions[bot]|main|${GITHUB_REF_NAME}|${GITHUB_SHA}|"
-              if [[ "$pr" != "$expected"* ]]; then
+              expected="main|${GITHUB_REF_NAME}|${GITHUB_SHA}|"
+              if ! is_release_bot "${pr%%|*}" || [[ "${pr#*|}" != "$expected"* ]]; then
                 echo "::error::PR ${RELEASE_PR} is not the Release Please PR for this ref" >&2
                 exit 1
               fi
@@ -218,8 +291,8 @@ jobs:
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
             [ "${RELEASE_TRAIN:-full}" = "backend" ]; then
-            # GITHUB_TOKEN-created PRs do not emit pull_request events. The
-            # API-verified immutable base lets this metadata-only dispatch inherit
+            # A manual scoped dispatch has no pull_request payload. The
+            # API-verified immutable base lets this metadata-only run inherit
             # the exact green tree Release Please used.
             before="$release_base"
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
@@ -383,7 +456,7 @@ jobs:
                 # `mobile-app` job — which has the only full mobile install in CI —
                 # is where that is checked. A change to the anchors themselves is
                 # the likeliest way to break it, so it must reach that job.
-                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts)
+                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts|scripts/unistyles-reload.test.ts|scripts/expo-cli-zod-compat.test.ts)
                   lint=true
                   typecheck=true
                   test=true
@@ -524,6 +597,10 @@ jobs:
                 docs/runbooks/*)
                   test=true
                   ;;
+                # Guides the app help catalog cites; a suite checks they exist.
+                docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md)
+                  test=true
+                  ;;
                 # Mobile auth callback authorization is covered by a root test.
                 docs/website/site/apple-app-site-association.json)
                   test=true
@@ -570,14 +647,14 @@ jobs:
   # Security classification and secret scanning cover the whole publishable tree,
   # including prose-only changes for which the expensive code jobs stay inert.
   public-snapshot:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - name: Install pinned Gitleaks
         shell: bash
@@ -609,14 +686,14 @@ jobs:
   lint:
     needs: changes
     if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # ESLint covers every Node package but deliberately ignores the Expo app
       # (see eslint.config.js). Install that exact workspace set plus the root
@@ -724,14 +801,14 @@ jobs:
   knip:
     needs: changes
     if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Knip analyzes the whole monorepo, so install every workspace. Its parser
       # has a platform-specific optional binding, which rules out the lint lane's
@@ -743,14 +820,14 @@ jobs:
   typecheck:
     needs: changes
     if: needs.changes.outputs.typecheck == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
           # the lockfile-derived install across parallel jobs. Keep the repository's
           # limited Actions cache available for the smaller targeted tool caches and
@@ -776,7 +853,7 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       # Every shard reports, so one red shard never hides another's verdict.
       fail-fast: false
@@ -798,9 +875,9 @@ jobs:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
       # only the Server dependency closure plus root test tooling; the Expo graph
@@ -881,14 +958,14 @@ jobs:
   contract-test:
     needs: changes
     if: needs.changes.outputs.contract_test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
       - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
       - name: Run repository contract suites
         run: |
@@ -919,11 +996,11 @@ jobs:
   installer:
     needs: changes
     if: needs.changes.outputs.installer == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,
@@ -981,16 +1058,16 @@ jobs:
   runner-postgres-race:
     needs: changes
     if: needs.changes.outputs.test == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       VERITY_RUNNER_RACE_POSTGRES: verity-runner-race-postgres-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci --workspace @verity/server --include-workspace-root
       # Only the PostgreSQL-gated suites run here, and the sole reason they need
@@ -1024,6 +1101,7 @@ jobs:
         run: |
           set -euo pipefail
           npx vitest run \
+            packages/store/src/google-account-cleanup-postgres.test.ts \
             packages/store/src/runner-frames-postgres.test.ts \
             packages/store/src/schema-forward-postgres.test.ts \
             packages/store/src/pool-checkout-error-postgres.test.ts \
@@ -1044,14 +1122,14 @@ jobs:
     # uninstrumented tests; repeating the whole repository after every merge was
     # the slowest job in the pipeline and did not improve path-specific feedback.
     if: needs.changes.outputs.coverage == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Coverage exercises the same root Vitest package set as the sharded test
       # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
@@ -1107,14 +1185,14 @@ jobs:
   mobile:
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.12.1'
       # The full mobile dependency closure grows the shared npm cache to roughly
       # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
       # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
@@ -1138,14 +1216,24 @@ jobs:
   mobile-app:
     needs: changes
     if: needs.changes.outputs.mobile_app == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          fetch-depth: 0
+      - name: Check out the immutable OTA candidate for mobile verification
+        if: startsWith(github.head_ref, 'automation/promote-mobile-ota-') || startsWith(github.ref, 'refs/heads/automation/promote-mobile-ota-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$(node -e 'const c = require("./apps/mobile/ota-promotion.json"); if (!/^[a-f0-9]{40}$/.test(c.commit)) throw new Error("Invalid candidate source"); process.stdout.write(c.commit)')"
+          git merge-base --is-ancestor "$source" HEAD
+          git checkout --detach "$source"
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache
@@ -1163,6 +1251,9 @@ jobs:
       # `npm ci` tree, which nothing caches or shares (no `cache: npm`, and the
       # only cache above is apps/mobile/.cache/jest).
       - run: npm run -w @verity/mobile-app patch:native
+      - run: npx vitest run scripts/unistyles-reload.test.ts scripts/expo-cli-zod-compat.test.ts --maxWorkers=1
+        env:
+          VERITY_REQUIRE_MOBILE_NATIVE: '1'
       - run: npm run -w @verity/mobile build
       - run: npm run -w @verity/mobile-app typecheck
       - run: npm run -w @verity/mobile-app test
@@ -1171,7 +1262,7 @@ jobs:
   # changes reach main. A host cargo check does not invoke the final linker and
   # cannot detect a missing system library in the image builder.
   matrix-connector-image:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1222,7 +1313,7 @@ jobs:
   server-image-build:
     needs: changes
     if: needs.changes.outputs.server_image == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     # Failed installer reruns reuse the successful producer from the same run.
     env:
@@ -1370,7 +1461,7 @@ jobs:
       # Avoid recompressing the multi-GB Docker archive on the runner.
       - name: Upload Server image archive
         # renovate: datasource=github-actions depName=actions/upload-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-image-${{ github.run_id }}
           path: ${{ runner.temp }}/${{ env.VERITY_CI_IMAGE_ARCHIVE }}
@@ -1389,7 +1480,7 @@ jobs:
   server-image:
     needs: [changes, server-image-build]
     if: needs.changes.outputs.server_image == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
     # cache-janitor.yml). The janitor only deletes entries nothing has read for
     # that long, and that is the whole reason it cannot pull a cache out from
@@ -1432,7 +1523,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download Server image archive
         # renovate: datasource=github-actions depName=actions/download-artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: server-image-${{ github.run_id }}
           path: ${{ runner.temp }}
@@ -1717,7 +1808,7 @@ jobs:
   agent-seed-drift:
     needs: changes
     if: needs.changes.outputs.agent_seed_drift == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -1728,7 +1819,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server bin/verity-repo code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else
@@ -1768,7 +1859,7 @@ jobs:
     # cancellation into a stale red aggregate check; the newer run publishes the
     # required verdict for the same PR head.
     if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Verify all required jobs succeeded
         run: |

@@ -97,6 +97,8 @@ export interface ModeSwitchMessage {
   id: string;
   createdAt: number;
   event: AgentEvent;
+  /** How many identical consecutive failures this row stands for (absent = 1). */
+  repeatCount?: number;
 }
 
 /** Live infrastructure wait. A later status event removes it from the transcript. */

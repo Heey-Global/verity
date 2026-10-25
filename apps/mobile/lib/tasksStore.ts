@@ -1,4 +1,5 @@
 import Storage from 'expo-sqlite/kv-store';
+import { subscribeLiveRefresh } from './liveConnection';
 import {
   TaskQueue,
   projectRecordSchema,
@@ -9,6 +10,7 @@ import {
   type TaskCapture,
   type TaskPatch,
   type TaskQueueState,
+  type VerityClient,
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { useSyncExternalStore } from 'react';
@@ -21,6 +23,7 @@ const empty: TaskQueueState = { tasks: [], pending: [], conflicts: [] };
 let state = empty;
 let scope: string | null = null;
 let queue: TaskQueue | null = null;
+let detachLive: (() => void) | undefined;
 let ready: Promise<void> = Promise.resolve();
 const listeners = new Set<() => void>();
 function publish(next: TaskQueueState): void {
@@ -37,9 +40,29 @@ export function taskAccountScope(): string | null {
         : null;
   return url && token ? JSON.stringify([url, token]) : null;
 }
+function attachLiveRefresh(api: VerityClient, instance: TaskQueue): void {
+  const restored = ready;
+  detachLive = subscribeLiveRefresh(
+    api,
+    async () => {
+      await restored;
+      await instance.sync();
+    },
+    (path) => path.split('?')[0] === '/tasks',
+    [{ path: '/tasks' }],
+  );
+}
 function switchScope(): void {
   const next = taskAccountScope();
-  if (next === scope) return;
+  if (next === scope) {
+    if (queue && !detachLive) {
+      const api = createVerityClient();
+      if (api) attachLiveRefresh(api, queue);
+    }
+    return;
+  }
+  detachLive?.();
+  detachLive = undefined;
   scope = next;
   queue = null;
   publish(empty);
@@ -54,6 +77,7 @@ function switchScope(): void {
   });
   queue = instance;
   ready = instance.restore();
+  attachLiveRefresh(api, instance);
   void ready.then(() => instance.sync()).catch(() => undefined);
 }
 export function startTasksStore(): () => void {
@@ -65,6 +89,8 @@ export function startTasksStore(): () => void {
   switchScope();
   return () => {
     for (const stop of unsub) stop();
+    detachLive?.();
+    detachLive = undefined;
   };
 }
 export function useTasks(): TaskQueueState {
@@ -84,16 +110,25 @@ export async function refreshTasks(force = false): Promise<void> {
   await ready;
   await queue?.sync(force);
 }
-export async function captureTask(body: TaskCapture): Promise<Task> {
+/** `id` and `createdAt` come from captures made elsewhere (the Apple Watch). The
+ *  stable id makes a repeated hand-over a no-op while the task is still in the
+ *  local queue, and the server answers a PUT for an existing id with that task.
+ *  In that case the returned task is the one built here, not the stored row. */
+export async function captureTask(
+  body: TaskCapture,
+  origin: { id?: string; createdAt?: string } = {},
+): Promise<Task> {
   switchScope();
   const startedScope = scope;
   await ready;
   if (scope !== startedScope) throw new Error('Your connection changed; reopen Tasks');
   if (!queue) throw new Error('Sign in to save tasks');
+  if (!body.projectId) throw new Error('Choose a project to save this task');
   const now = new Date().toISOString();
   const task: Task = {
-    id: randomUUID(),
+    id: origin.id ?? randomUUID(),
     title: body.title,
+    titleGenerationStatus: body.generateTitle ? 'pending' : 'none',
     projectId: body.projectId,
     sourceSessionId: body.sourceSessionId ?? null,
     detail: body.detail ?? null,
@@ -108,7 +143,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
     result: null,
     sort: 0,
     revision: 0,
-    createdAt: now,
+    createdAt: origin.createdAt ?? now,
     updatedAt: now,
     completedAt: null,
   };
@@ -144,6 +179,8 @@ export async function resolveTaskConflict(id: string, keepLocal: boolean): Promi
 export async function loadTaskContextData(): Promise<{
   projects: ProjectRecord[];
   sessions: SessionSummary[];
+  /** The account the data belongs to. */
+  scope: string;
 } | null> {
   const started = taskAccountScope();
   if (!started) return null;
@@ -153,6 +190,7 @@ export async function loadTaskContextData(): Promise<{
   return {
     projects: parsed.projects.map((value) => projectRecordSchema.parse(value)),
     sessions: parsed.sessions.map((value) => sessionSummarySchema.parse(value)),
+    scope: started,
   };
 }
 export async function saveTaskContextData(

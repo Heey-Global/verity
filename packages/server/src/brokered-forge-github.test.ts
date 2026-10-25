@@ -45,6 +45,29 @@ function harness(repo = 'acme/app', type = 'Issue') {
 }
 
 describe('GitHub forge policy', () => {
+  it.each([
+    { method: 'GET', path: '/pre-commit/pre-commit-hooks.git/info/refs?service=git-upload-pack' },
+    { method: 'POST', path: '/pre-commit/pre-commit-hooks.git/git-upload-pack' },
+  ])('permits anonymous foreign Git reads: $method $path', async (request) => {
+    const h = harness();
+    const result = await h.adapter.authorize(
+      { hostname: 'github.com', ...request },
+      binding,
+      actions,
+      new AbortController().signal,
+    );
+    expect(result).toEqual({ action: 'git-read', credentials: [] });
+    expect(h.mint).not.toHaveBeenCalled();
+    await expect(
+      h.adapter.authorize(
+        { hostname: 'github.com', ...request },
+        binding,
+        new Set(),
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+  });
+
   it.each<ForgeRequest>([
     { hostname: 'example.com', method: 'GET', path: '/repos/acme/app/issues' },
     { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/other/issues' },
@@ -53,7 +76,7 @@ describe('GitHub forge policy', () => {
     {
       hostname: 'github.com',
       method: 'GET',
-      path: '/acme/other.git/info/refs?service=git-upload-pack',
+      path: '/acme/other.git/info/refs?service=git-receive-pack',
     },
     { hostname: 'api.github.com', method: 'GET', path: '//example.com/repos/acme/app/issues' },
     { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/app/%2e%2e/other/issues' },

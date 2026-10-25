@@ -7,6 +7,7 @@ export const taskSchema = z.object({
   sessionId: z.string().nullable(),
   sourceSessionId: z.string().nullable(),
   origin: z.enum(['user', 'agent']),
+  titleGenerationStatus: z.enum(['none', 'pending', 'ready', 'failed']).optional(),
   title: z.string(),
   detail: z.string().nullable(),
   attachments: z.array(z.object({ hash: z.string(), filename: z.string(), mimeType: z.string() })),
@@ -20,6 +21,7 @@ export const taskSchema = z.object({
 });
 export type Task = z.infer<typeof taskSchema>;
 export const taskCaptureSchema = z.object({
+  generateTitle: z.boolean().optional(),
   title: z.string(),
   projectId: z.string().nullable(),
   detail: z.string().nullable().optional(),
@@ -44,6 +46,14 @@ export const taskPatchSchema = taskSchema
   });
 export type TaskCapture = z.infer<typeof taskCaptureSchema>;
 export type TaskPatch = z.infer<typeof taskPatchSchema>;
+/** A useful local label while the complete transcript is preserved in detail. */
+export function provisionalTaskTitle(transcript: string): string {
+  const text = transcript.trim().replace(/\s+/gu, ' ');
+  if (text.length <= 80) return text;
+  const prefix = text.slice(0, 77);
+  const boundary = prefix.lastIndexOf(' ');
+  return `${boundary > 40 ? prefix.slice(0, boundary) : prefix}…`;
+}
 export interface TaskContext {
   projectId: string | null;
   sessionId: string | null;
@@ -67,6 +77,23 @@ export function taskContext(
     sessionId: null,
     projectId: pathname.startsWith('/project/') ? (params.id ?? null) : null,
   };
+}
+/** Projects in the order the operator last captured into them, for the capture
+ *  pickers. Only the operator's own tasks count, by creation time: an agent
+ *  adding or ticking off steps in a busy project must not push that project
+ *  above the one the operator just saved to. Ties keep the incoming order. */
+export function projectsByRecentCapture<P extends { id: string }>(
+  projects: readonly P[],
+  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
+): P[] {
+  const latest = new Map<string, number>();
+  for (const task of tasks) {
+    if (task.origin !== 'user' || !task.projectId) continue;
+    const at = Date.parse(task.createdAt);
+    if (Number.isNaN(at)) continue;
+    latest.set(task.projectId, Math.max(latest.get(task.projectId) ?? 0, at));
+  }
+  return [...projects].sort((a, b) => (latest.get(b.id) ?? 0) - (latest.get(a.id) ?? 0));
 }
 /** "just now", "5 min ago", "2 h ago", "yesterday", "3 days ago": the age a task
  *  row shows. Coarse on purpose; the exact time is not what the list is for. */

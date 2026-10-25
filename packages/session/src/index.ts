@@ -123,6 +123,7 @@ export {
   type RunnerWorkerFailureReason,
   type TrustedCliExecutionInput,
   type TrustedCliExecutionResult,
+  type TrustedCliOutputSink,
   type TrustedCliDispatchStage,
   type TrustedCliBrokerFailurePhase,
 } from './runner-supervisor-client.js';

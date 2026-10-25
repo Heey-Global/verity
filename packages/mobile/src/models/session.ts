@@ -1,4 +1,9 @@
-import type { AgentEvent, Attachment } from '@verity/events';
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from '../sessionSwitchTiming.js';
+import type { AgentEvent, Attachment, BoundedHistoryPage } from '@verity/events';
 import {
   VerityApiError,
   type AttachmentUpload,
@@ -16,11 +21,7 @@ import type { LiveSessionTransport } from '../live/connection.js';
 import { SessionStream, type SessionStreamConnectionState } from '../stream.js';
 import { engineLabel } from '../ui/modelPicker.js';
 
-/** How many of the most recent events to open a session from (the tail). One turn
- * is several events (prompt + text + tool calls/results), so this is ~15–20 recent
- * turns — enough context on open while skipping the bulk of a long backlog. Older
- * turns load on scroll-up. Stays within the server's 200 page cap. */
-const HISTORY_PAGE = 150;
+/** Explicit older-history requests also bound metadata-only scans. */
 const HISTORY_VISIBLE_SCAN_MAX_PAGES = 5;
 export const DEFAULT_ACTIVITY_POLL_MS = 10_000;
 
@@ -60,6 +61,8 @@ export interface SessionModelState {
   session: SessionState;
   /** Last stream error (server `error` frame / connection); cleared on the next event. */
   streamError: string | undefined;
+  historyError: string | undefined;
+  loadingHistory: boolean;
   /** Current live transport state, used for reconnecting/offline banners. */
   connectionState: SessionStreamConnectionState;
   /** A `sendTurn` POST is in flight. */
@@ -303,7 +306,7 @@ export class SessionModel {
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
   // server-side git read (#110), so a slow tick must not let requests stack up.
-  private _activityInFlight = false;
+  private _activityInFlight: Promise<void> | undefined;
   private _activityRefreshPending = false;
   private _activityRequest = 0;
   private _planningDecisionAfterActivityRequest = 0;
@@ -315,6 +318,7 @@ export class SessionModel {
   private _olderLoadNeedsContinuation = false;
   private _olderLoadGeneration = 0;
   private _cancelError: string | undefined;
+  private _cancelRequested = false;
   // The tool_use_id of a permission decision POST in flight (#149), or undefined.
   private _decidingPermission: string | undefined;
   private _permissionError: string | undefined;
@@ -336,12 +340,26 @@ export class SessionModel {
   // has to OPEN the stream rather than resume a socket that does not exist.
   private _opened = false;
   private _historyAttemptComplete = false;
+  private _historyError: string | undefined;
+  private _historyLoad: AbortController | undefined;
+  // UI state can retire metadata frames; that must never erase the history cursor.
+  private _historyBefore: number | undefined;
+  private _historySnapshot: number | undefined;
+  private readonly _historyLifetime = new AbortController();
+
+  private readonly timing: SwitchTiming | undefined;
 
   constructor(private readonly opts: SessionModelOptions) {
+    this.timing = sessionSwitchTiming(opts.sessionId);
     this.stream = new SessionStream({
       sessionId: opts.sessionId,
       transport: opts.transport,
       onUpdate: (session) => {
+        if (this._cancelRequested) {
+          if (session.running && !this.stream.outputSuppressed) {
+            this._cancelRequested = false;
+          }
+        }
         if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
           this._activityAnimating = undefined;
           this._permissionChangedAfterActivityRequest = this._activityRequest;
@@ -401,7 +419,8 @@ export class SessionModel {
 
   get state(): SessionModelState {
     const working =
-      this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq);
+      !this._cancelRequested &&
+      (this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq));
     const awaiting =
       this._session.pendingPermission !== undefined ||
       this._session.status === 'awaiting_input' ||
@@ -426,6 +445,8 @@ export class SessionModel {
     return {
       session,
       streamError: this._streamError,
+      historyError: this._historyError,
+      loadingHistory: this._historyLoad !== undefined,
       connectionState: this._connectionState,
       sending: this._sending,
       sendError: this._sendError,
@@ -448,7 +469,7 @@ export class SessionModel {
         createdAt: p.createdAt,
         ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
       })),
-      busy: this._busy,
+      busy: !this._cancelRequested && this._busy,
       // The reconciled "agent is working" signal that drives the Stop button +
       // activity line. `_busy` is server-authoritative (it already counts open
       // background tasks via `isBusy || derived==='running'`). The reducer's eager
@@ -471,7 +492,7 @@ export class SessionModel {
       decidingPlanning: this._decidingPlanning,
       planningError: this._planningError,
       hasOlder: this._hasOlder,
-      oldestHistorySeq: this.stream.oldestSeq,
+      oldestHistorySeq: this._historyBefore,
       loadingOlder: this._loadingOlder,
       olderLoadStalled: this._olderLoadStalled,
       olderLoadNeedsContinuation: this._olderLoadNeedsContinuation,
@@ -621,13 +642,18 @@ export class SessionModel {
 
   /** Refresh the activity snapshot now — on a live hint that the session's
    * activity, status or pending requests changed. */
-  refreshActivity(): void {
-    if (!this._running || this._paused || !this._historyAttemptComplete) return;
+  /** Refresh REST metadata after session settings change. */
+  refreshMetadata(): void {
+    void this.loadDetail();
+  }
+
+  refreshActivity(): Promise<void> {
+    if (!this._running || this._paused || !this._historyAttemptComplete) return Promise.resolve();
     if (this._activityInFlight) {
       this._activityRefreshPending = true;
-      return;
+      return this._activityInFlight;
     }
-    void this.loadActivity();
+    return this.loadActivity();
   }
 
   /** Leave the live subscription + stop the activity poll while backgrounded. */
@@ -697,52 +723,66 @@ export class SessionModel {
     this._activityTimer = undefined;
   }
 
-  /**
-   * Open the live stream from the session's TAIL: fetch recent history until it
-   * contains a visible message, seed the reducer from those REST pages, then resume
-   * the WS after the newest snapshot event. This keeps both large histories and
-   * long metadata-only tails out of the socket backlog while preserving the race:
-   * anything persisted after the REST snapshot is replayed by the stream.
-   * On any failure before a snapshot is seeded, fall back to a full replay.
-   */
+  /** Retry a failed initial snapshot without falling back to a full live replay. */
+  async retryHistory(): Promise<void> {
+    if (!this._running || this._historyAttemptComplete || this._historyLoad) return;
+    await this.openStreamFromTail();
+  }
+
   private async openStreamFromTail(): Promise<void> {
+    markSessionSwitch(this.timing, 'history-load-start');
+    const controller = new AbortController();
+    this._historyLoad = controller;
+    this._historyError = undefined;
+    this.emit();
+    const pages: BoundedHistoryPage[] = [];
     try {
-      let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
-      const pages = [page.events];
-      const newest = page.events.at(-1)?.seq;
-      let oldest = page.events[0]?.seq;
-      while (
-        page.hasMore &&
-        oldest !== undefined &&
-        !this.historyPageRendersMessages(page.events)
-      ) {
-        page = await this.opts.client.getHistory(this.opts.sessionId, {
-          beforeSeq: oldest,
-          limit: HISTORY_PAGE,
+      for (let count = 0; count < 2; count += 1) {
+        const previous = pages.at(-1);
+        const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
+          ...(previous?.beforeSeq != null
+            ? { beforeSeq: previous.beforeSeq, snapshotSeq: previous.snapshotSeq }
+            : {}),
+          signal: controller.signal,
+          timing: this.timing,
         });
-        pages.push(page.events);
-        oldest = page.events[0]?.seq;
+        if (controller.signal.aborted || !this._running) return;
+        pages.push(page);
+        if (!page.hasMore || this.historyPageRendersMessages(page.events, this.timing)) break;
       }
-      if (!this._running) return;
-      if (newest !== undefined) {
-        this._hasOlder = page.hasMore;
-        this.stream.setSinceSeq(newest);
-        this.stream.seedHistory(pages.reverse().flat());
-      }
-    } catch {
-      // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
+    } catch (error) {
+      if (controller.signal.aborted || !this._running) return;
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
+    } finally {
+      if (this._historyLoad === controller) this._historyLoad = undefined;
     }
-    if (!this._running) return;
-    // Register the start even in background: the stream defers its socket until
-    // resume, otherwise a probe settling while paused leaves it unstarted forever.
-    this._historyAttemptComplete = true;
-    this.stream.start();
-    if (!this._paused) this.startActivityPoll();
+    if (controller.signal.aborted || !this._running) return;
+    const first = pages[0];
+    const last = pages.at(-1);
+    if (first && last) {
+      this._historySnapshot = first.snapshotSeq;
+      this._hasOlder = last.hasMore;
+      this._historyBefore = last.beforeSeq ?? undefined;
+      this._olderLoadStalled = this._historyError !== undefined;
+      this._olderLoadNeedsContinuation = last.hasMore;
+      this.stream.setSinceSeq(first.snapshotSeq);
+      markSessionSwitch(this.timing, 'history-install-start', pages.length);
+      this.stream.seedHistory(pages.flatMap((p) => p.events).sort((a, b) => a.seq - b.seq));
+      markSessionSwitch(this.timing, 'history-install-end');
+      this._loaded = true;
+      this._historyAttemptComplete = true;
+      this.stream.start();
+      if (!this._paused) this.startActivityPoll();
+    }
+    this.emit();
   }
 
   private historyPageRendersMessages(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+    timing?: SwitchTiming,
   ): boolean {
+    markSessionSwitch(timing, 'history-page-reduce-start');
     const reducer = new SessionReducer();
     for (const e of events) {
       reducer.applyFrame({
@@ -752,6 +792,7 @@ export class SessionModel {
         event: e.event,
       });
     }
+    markSessionSwitch(timing, 'history-page-reduce-end');
     return reducer.state.messages.length > 0;
   }
 
@@ -762,14 +803,16 @@ export class SessionModel {
    * keep what's loaded and let the operator retry by scrolling again.
    */
   async loadOlder(): Promise<void> {
-    if (!this._hasOlder || this._loadingOlder) return;
-    const beforeSeq = this.stream.oldestSeq;
+    if (!this._running || !this._hasOlder || this._loadingOlder) return;
+    const beforeSeq = this._historyBefore;
     if (beforeSeq === undefined) return;
     this._loadingOlder = true;
+    this._historyError = undefined;
     this._olderLoadStalled = false;
     this._olderLoadNeedsContinuation = false;
     this.emit();
     const fetchedPages: SessionHistoryPage['events'][] = [];
+    let fetchedBefore = beforeSeq;
     let fetchedHasMore: boolean = this._hasOlder;
     let producedVisibleRows = false;
     try {
@@ -780,12 +823,16 @@ export class SessionModel {
       // normally reveals content without allowing malformed/huge metadata runs to
       // monopolize the UI or network.
       for (let pages = 0; pages < HISTORY_VISIBLE_SCAN_MAX_PAGES; pages += 1) {
-        const page = await this.opts.client.getHistory(this.opts.sessionId, {
+        const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
           beforeSeq: cursor,
-          limit: HISTORY_PAGE,
+          snapshotSeq: this._historySnapshot,
+          signal: this._historyLifetime.signal,
+          timing: this.timing,
         });
+        if (!this._running) return;
         fetchedPages.push(page.events);
         fetchedHasMore = page.hasMore;
+        fetchedBefore = page.beforeSeq ?? cursor;
         const pageRendersMessages = this.historyPageRendersMessages(page.events);
         producedVisibleRows ||= pageRendersMessages;
         if (!page.hasMore || pageRendersMessages) break;
@@ -798,22 +845,27 @@ export class SessionModel {
         }
         cursor = nextBeforeSeq;
       }
-    } catch {
+    } catch (error) {
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
       // Keep pages fetched before a later transient failure. Advancing the stream's
       // oldest cursor avoids refetching them on retry and preserves their events even
       // when they did not independently render a transcript row.
       this._olderLoadStalled = true;
     } finally {
-      if (fetchedPages.length > 0) {
-        const events = fetchedPages.reverse().flat();
-        this.installOlderHistory(events);
-        this._hasOlder = fetchedHasMore;
-        this._olderLoadNeedsContinuation =
-          fetchedHasMore && !this._olderLoadStalled && !producedVisibleRows;
+      if (this._running) {
+        if (fetchedPages.length > 0) {
+          const events = fetchedPages.reverse().flat();
+          this.installOlderHistory(events);
+          this._hasOlder = fetchedHasMore;
+          this._historyBefore = fetchedBefore;
+          this._olderLoadNeedsContinuation =
+            fetchedHasMore && !this._olderLoadStalled && !producedVisibleRows;
+        }
+        this._loadingOlder = false;
+        this._olderLoadGeneration += 1;
+        this.emit();
       }
-      this._loadingOlder = false;
-      this._olderLoadGeneration += 1;
-      this.emit();
     }
   }
 
@@ -823,54 +875,65 @@ export class SessionModel {
     this.stream.prependHistory(events, { notify: false });
     this._session = this.stream.state;
     this.retirePending();
-    this._streamError = undefined;
   }
 
   /**
-   * Load older history in ONE fetch down to (and including) `targetSeq` — the backing
-   * for a bookmark jump to a message that isn't in the loaded window. Instead of
-   * paging {@link HISTORY_PAGE} at a time (N round-trips, and the forward-only reducer
-   * rebuilt N times), it sizes a single request to the exact span between the current
-   * oldest loaded event and the target. `seq` is monotonic per event, so
-   * `oldestSeq - targetSeq` is an upper bound on the events in between — the target is
-   * always included (a sparse seq space just loads a few extra older events, never too
-   * few). No-op when the target is already loaded, nothing older exists, or a load is
-   * in flight. If the server caps the page below the requested span the target may not
-   * arrive in one shot — the caller re-invokes until it lands (or `hasOlder` clears),
-   * so this still converges far faster than the 150-at-a-time scroll path. Non-fatal on
-   * failure: keep what's loaded and let the caller retry.
+   * Load one bounded page toward `targetSeq` — the backing
+   * for a bookmark jump. Callers can continue explicitly until the target is in
+   * the loaded window. Sparse sequence IDs never become an event-count budget.
    */
   async loadOlderUntil(targetSeq: number): Promise<void> {
-    if (!this._hasOlder || this._loadingOlder) return;
-    const beforeSeq = this.stream.oldestSeq;
+    if (!this._running || !this._hasOlder || this._loadingOlder) return;
+    const beforeSeq = this._historyBefore;
     if (beforeSeq === undefined || targetSeq >= beforeSeq) return;
     this._loadingOlder = true;
+    this._historyError = undefined;
     this._olderLoadStalled = false;
     this._olderLoadNeedsContinuation = false;
     this.emit();
     try {
-      const page = await this.opts.client.getHistory(this.opts.sessionId, {
+      const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
         beforeSeq,
-        limit: beforeSeq - targetSeq,
+        snapshotSeq: this._historySnapshot,
+        signal: this._historyLifetime.signal,
+        timing: this.timing,
       });
+      if (!this._running) return;
       this.installOlderHistory(page.events);
       this._hasOlder = page.hasMore;
-    } catch {
+      this._historyBefore = page.beforeSeq ?? beforeSeq;
+    } catch (error) {
+      if (!this._running) return;
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
       // transient — leave _hasOlder as-is so a later attempt retries
       this._olderLoadStalled = true;
     } finally {
-      this._loadingOlder = false;
-      this._olderLoadGeneration += 1;
-      this.emit();
+      if (this._running) {
+        this._loadingOlder = false;
+        this._olderLoadGeneration += 1;
+        this.emit();
+      }
     }
   }
 
   /** Refresh the server-authoritative busy/queued activity. A failure is
    * non-fatal — keep the last known values until the next poll. */
-  private async loadActivity(): Promise<void> {
-    // Skip if a prior poll is still in flight, so a slow tick can't stack requests.
-    if (this._activityInFlight) return;
-    this._activityInFlight = true;
+  private loadActivity(): Promise<void> {
+    if (this._activityInFlight) return this._activityInFlight;
+    // Keep the promise pending through a queued refresh so external refresh
+    // coordinators do not mistake a detached request for completed work.
+    this._activityInFlight = this.readActivity().finally(() => {
+      this._activityInFlight = undefined;
+      if (this._activityRefreshPending) {
+        this._activityRefreshPending = false;
+        return this.refreshActivity();
+      }
+    });
+    return this._activityInFlight;
+  }
+
+  private async readActivity(): Promise<void> {
     const activityRequest = ++this._activityRequest;
     // Snapshot the newest seq NOW, before the request goes out: the server's answer
     // reflects the session state at roughly this moment, so anchoring the settled
@@ -994,12 +1057,6 @@ export class SessionModel {
       this.emit();
     } catch {
       // transient — keep the last values
-    } finally {
-      this._activityInFlight = false;
-      if (this._activityRefreshPending) {
-        this._activityRefreshPending = false;
-        this.refreshActivity();
-      }
     }
   }
 
@@ -1025,7 +1082,7 @@ export class SessionModel {
   private async loadDetail(): Promise<void> {
     const seqAtRequest = this.stream.newestSeq;
     try {
-      const detail = await this.opts.client.getSession(this.opts.sessionId);
+      const detail = await this.opts.client.getSession(this.opts.sessionId, { trace: this.timing });
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
       }
@@ -1116,6 +1173,8 @@ export class SessionModel {
   /** Close the stream (stops reconnecting) and stop the activity poll. */
   stop(): void {
     this._running = false;
+    this._historyLoad?.abort();
+    this._historyLifetime.abort();
     this.stream.stop();
     this.stopActivityPoll();
   }
@@ -1188,8 +1247,8 @@ export class SessionModel {
 
   /**
    * Stop the in-flight turn (issue #79). Fire-and-forget like {@link sendTurn}:
-   * the `interrupted` event + the cleared `running` flag arrive over the stream,
-   * so there's no optimistic local state to flip here. A failure sets
+   * Freeze output and activity immediately while the server terminates the turn.
+   * A failure restores the live stream and sets
    * {@link SessionModelState.cancelError}; a no-op (`cancelled: false`, the
    * session was already idle) is silent.
    *
@@ -1201,18 +1260,29 @@ export class SessionModel {
    */
   async cancel(opts?: { force?: boolean }): Promise<RestoredQueuedTurn[]> {
     this._cancelError = undefined;
+    this._cancelRequested = true;
+    const outputFreeze = this.stream.freezeOutput();
     this.emit();
     try {
       const result = await this.opts.client.cancelTurn(this.opts.sessionId, opts);
       this._waiting = [];
       if (result.forceReleased) this._terminationUnconfirmed = false;
+      const restoredOutput = this.stream.settleOutput(outputFreeze, result.cancelled);
       if (result.cancelled) this.opts.onTurnCancelled?.();
+      else if (restoredOutput) {
+        // An already-idle session emits no new terminal event to release Stop.
+        this._cancelRequested = false;
+        this._busy = false;
+        this._session = this.stream.state;
+      }
       this.emit();
       return (result.droppedQueued ?? []).map((item) => ({
         prompt: item.prompt,
         ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
       }));
     } catch (error) {
+      if (this.stream.settleOutput(outputFreeze, false)) this._cancelRequested = false;
+      this._session = this.stream.state;
       this._cancelError = error instanceof VerityApiError ? error.message : 'failed to stop turn';
       this.emit();
       return [];
@@ -1301,6 +1371,11 @@ export class SessionModel {
 
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
     if (this._decidingPermission !== undefined) return; // a decision is already in flight
+    const allowTiming =
+      decision.behavior === 'allow'
+        ? sessionSwitchTiming(this.opts.sessionId, 'permission')
+        : undefined;
+    markSessionSwitch(allowTiming, 'allow-model-handler');
     this._decidingPermission = toolUseId;
     this._permissionError = undefined;
     this.emit();
@@ -1309,14 +1384,17 @@ export class SessionModel {
         this.opts.sessionId,
         toolUseId,
         decision,
+        ...(allowTiming ? ([{ trace: allowTiming }] as const) : []),
       );
       if (result.scopeSaved === false) {
         this._permissionError =
           'Request allowed, but the reusable permission could not be saved. Future requests will ask again.';
       }
+      markSessionSwitch(allowTiming, 'allow-model-response');
       this.stream.resolvePermission(toolUseId);
       this.opts.onPermissionSettled?.(toolUseId, true);
     } catch (error) {
+      markSessionSwitch(allowTiming, 'allow-model-error');
       // 404 = no pending prompt under that id (already stale): not an error — the
       // prompt is gone server-side, so drop the card here too rather than waiting
       // for a stream event that may never come. Any other failure is surfaced and

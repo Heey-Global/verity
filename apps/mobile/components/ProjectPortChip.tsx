@@ -44,8 +44,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   label: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     lineHeight: 16 * theme.fontScale,
   },
 }));

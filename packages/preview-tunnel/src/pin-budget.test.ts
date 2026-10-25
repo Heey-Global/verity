@@ -130,6 +130,19 @@ it.each([
   });
 });
 
+it('cancels unread error bodies before releasing the PIN verification slot', async () => {
+  const cancel = vi.fn();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 503 })),
+  );
+  const budget = createPreviewPinBudget('http://uplink', 'a'.repeat(43), 'id');
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    expect(await budget.begin()).toEqual({ state: 'unavailable' });
+    expect(cancel).toHaveBeenCalledTimes(attempt + 1);
+  }
+});
+
 it('fails closed on transport failure', async () => {
   vi.stubGlobal(
     'fetch',

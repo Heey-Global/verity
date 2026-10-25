@@ -94,12 +94,17 @@ for _ in $(seq 1 60); do
 done
 docker exec "$sandbox" test -S /run/verity-runner/supervisor.sock \
   || fail "supervisor socket never appeared"
+# The fake CLI never requests inference; provision the trusted loopback gateway
+# coordinate required by managed homes without introducing any provider key.
+docker exec --user 0:0 "$sandbox" sh -c \
+  'umask 077; printf "%s\n" http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url'
+
 
 postgres_url="postgresql://verity:$db_password@$postgres:5432/verity"
 server_args=(--network "$network" --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$(pwd):/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:24-bookworm-slim node packages/server/dist/runner-claude-live-server.js)
+  node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe node packages/server/dist/runner-claude-live-server.js)
 
 docker run -d --name "$server_a" "${server_args[@]}" start >/dev/null
 for _ in $(seq 1 120); do
@@ -133,6 +138,6 @@ turn_invocations="$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
 test "$turn_invocations" -eq 1 \
   || fail "expected exactly one Claude turn process, got: $turn_invocations"
 docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
-  grep -q '"credentialBoundary":"no-credentials"' /work/claude-invocations.jsonl \
+  grep -q '"credentialBoundary":"non-secret-placeholder"' /work/claude-invocations.jsonl \
   || fail "Claude process did not attest the credential-free boundary"
 echo 'Claude ACP live managed-container restart smoke passed'

@@ -1,6 +1,6 @@
 # Verity Server image — the standalone control-plane an operator installs to run
 # Verity on any host (ADR 0003, Phase A). The compiled Fastify server
-# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
+# (packages/server -> dist) and static browser client on a minimal Node 26 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
 # The shared Expo client is exported for the browser and served under /app/.
 #
@@ -17,12 +17,13 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder-deps
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder-deps
 
 WORKDIR /app
 
 # Copy the manifests first so the dependency layer caches independently of source
 # churn. The lockfile + every workspace package.json are needed for `npm ci`.
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/events/package.json packages/events/
@@ -85,10 +86,11 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
 
 WORKDIR /app
 
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY packages/events/package.json packages/events/
 COPY packages/secret-contracts/package.json packages/secret-contracts/
@@ -113,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS docker-cli
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -194,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
+FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -228,37 +230,31 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # content-hash-cached derived image onto the mounted daemon. It drives the docker
 # CLI + buildx plugin copied above via DOCKER_HOST. Installed BEFORE `USER node`
 # so the global package lands in the image's root-owned prefix; pinned exactly.
-# Keep each global CLI in its own annotated RUN instruction. Renovate's regex
-# manager matches one dependency per instruction; combining these pins silently
-# hides every package after the first one from dependency updates.
-# renovate: datasource=npm depName=@devcontainers/cli
-RUN npm install -g @devcontainers/cli@0.89.0
-# renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.289
-# renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.85.1
+# Install shared CLI lockfiles with integrity checks, preserving global paths.
+COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
+COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-code
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-acp
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
 # leaves the session unresumable for good. The sandbox toolkit's install.sh runs
-# the same script; it's copied on its own here so the pinned installs above keep
-# their cache layers. It no-ops on a fixed upstream and FAILS THE BUILD if it can
+# the same script; it's copied on its own here so both installation paths apply
+# the same adapter patches. It no-ops on a fixed upstream and FAILS THE BUILD if it can
 # no longer be applied, because a silently unhardened adapter is
 # indistinguishable from a hardened one until a session dies. See ADR 0012.
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-harden.mjs /tmp/verity-claude-acp-harden.mjs
 RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.mjs
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
-# renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.160.0
-# renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@2.1.1
-# renovate: datasource=npm depName=opencode-ai
-RUN npm install -g opencode-ai@1.18.34
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex-acp
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs opencode
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
 # `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
 # Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
-# scripts above, to keep the pinned installs' cache layers. The pin must match
+# scripts above, to keep the pinned installs' cache layers. The shared lockfile version must match
 # `OPENCODE_VERSION` in that Feature's install.sh — `scripts/agent-cli-pins.test.ts`
 # fails the build's own test suite when it does not.
 COPY features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh /tmp/verity-opencode-acp-install.sh
@@ -274,17 +270,32 @@ COPY features/verity-sandbox-toolkit /opt/verity-features/verity-sandbox-toolkit
 # sidecar. Keep its root-owned launch surface identical to project Sandboxes;
 # Compose selects it with an explicit entrypoint, while the Server still runs as
 # the unprivileged `node` user below.
+ARG TARGETARCH
+# The Control runner bypasses the Feature installer, so install its script
+# isolation helper explicitly from the same checksum-verified release artifacts.
+RUN set -eu; \
+    case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported script sandbox architecture: $TARGETARCH" >&2; exit 1 ;; esac; \
+    cd /opt/verity-features/verity-sandbox-toolkit/prebuilt; \
+    grep "  linux-$TARGETARCH/verity-script-sandbox$" sha256sums.txt | sha256sum --check --strict; \
+    install -m 0755 "linux-$TARGETARCH/verity-script-sandbox" /usr/local/bin/verity-script-sandbox
 RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs /usr/local/bin/verity-runner-supervisor \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor-start /usr/local/bin/verity-runner-supervisor-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-stack-start /usr/local/bin/verity-runner-stack-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-node-modules-install /usr/local/bin/verity-node-modules-install \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs /usr/local/bin/verity-runner-worker \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs /usr/local/bin/verity-agent-spawn-broker \
+    && install -m 0644 /opt/verity-features/verity-sandbox-toolkit/bin/verity-managed-secret-servers.mjs /usr/local/bin/verity-managed-secret-servers.mjs \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs /usr/local/bin/verity-egress-connector \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector-start /usr/local/bin/verity-egress-connector-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-run /usr/local/bin/verity-agent-run
+# Control Runner bypasses the Feature installer and needs its own immutable Git baseline.
+# Keep public agent policy outside the private deployment-state directory.
+COPY --chmod=0644 deploy/control-runner.gitconfig /etc/verity-agent.gitconfig
 COPY deploy/bin/verity-control-plane-runner-start /usr/local/bin/verity-control-plane-runner-start
 COPY deploy/bin/verity-control-plane-git-sign /usr/local/bin/verity-control-plane-git-sign
+COPY deploy/bin/verity-control-plane-memory /usr/local/bin/verity-memory
+COPY deploy/bin/verity-control-plane-knowledge-init /usr/local/bin/verity-control-plane-knowledge-init
+RUN chmod 0755 /usr/local/bin/verity-memory /usr/local/bin/verity-control-plane-knowledge-init
 # The launcher calls this one and treats a non-zero exit as fatal, so an image
 # that forgets it does not degrade quietly — it refuses to start the
 # control-plane Runner. `verity-compose.test.ts` pins the pair for that reason.
@@ -311,6 +322,7 @@ COPY --from=builder --chown=node:node /app/packages/store/package.json ./package
 COPY --from=builder --chown=node:node /app/packages/session/dist ./packages/session/dist
 COPY --from=builder --chown=node:node /app/packages/session/package.json ./packages/session/package.json
 COPY --from=builder --chown=node:node /app/packages/preview-tunnel/dist ./packages/preview-tunnel/dist
+COPY --from=builder --chown=node:node /app/packages/preview-tunnel/assets/verity-mark.png ./packages/preview-tunnel/assets/verity-mark.png
 COPY --from=builder --chown=node:node /app/packages/server/dist ./packages/server/dist
 COPY --from=builder --chown=node:node /app/packages/server/package.json ./packages/server/package.json
 COPY --from=builder --chown=node:node /app/package.json ./package.json

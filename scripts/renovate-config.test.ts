@@ -260,47 +260,43 @@ describe('Renovate Expo native compatibility', () => {
 });
 
 describe('Renovate global CLI pins', () => {
-  it('detects every CLI installed directly in the server image', () => {
+  it('keeps every installed CLI in an npm-managed manifest with a matching lockfile', () => {
     const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
-    const manager = config.customManagers.find((candidate) =>
-      candidate.description?.startsWith('Track globally-installed CLIs'),
-    );
-    const matchString = manager?.matchStrings?.[0];
-    expect(matchString).toBeDefined();
-
+    expect(config.enabledManagers?.includes('npm') ?? true).toBe(true);
+    expect(config.ignorePaths).toBeUndefined();
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
-    const dependencies = [...dockerfile.matchAll(new RegExp(matchString as string, 'g'))].map(
-      (match) => ({
-        datasource: match.groups?.datasource,
-        depName: match.groups?.depName,
-        currentValue: match.groups?.currentValue,
-      }),
-    );
-    const installedCliNames = [...dockerfile.matchAll(/^RUN npm install -g (.+)@(\S+)$/gm)].map(
+    const ids = [...dockerfile.matchAll(/^RUN node \S*\/verity-cli-install\.mjs ([a-z-]+)$/gm)].map(
       (match) => match[1],
     );
-
-    expect(dependencies.map(({ depName }) => depName).sort()).toEqual(installedCliNames.sort());
-
-    expect(dependencies).toEqual(
-      expect.arrayContaining([
-        {
-          datasource: 'npm',
-          depName: '@devcontainers/cli',
-          currentValue: expect.stringMatching(/^\d+\.\d+\.\d+$/),
-        },
-        {
-          datasource: 'npm',
-          depName: '@anthropic-ai/claude-code',
-          currentValue: expect.stringMatching(/^\d+\.\d+\.\d+$/),
-        },
-        {
-          datasource: 'npm',
-          depName: '@openai/codex',
-          currentValue: expect.stringMatching(/^\d+\.\d+\.\d+$/),
-        },
-      ]),
-    );
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) {
+      const directory = `features/verity-sandbox-toolkit/npm/${id}`;
+      const manifest = JSON.parse(readFileSync(`${directory}/package.json`, 'utf8')) as {
+        dependencies: Record<string, string>;
+      };
+      const lock = JSON.parse(readFileSync(`${directory}/package-lock.json`, 'utf8')) as {
+        packages: Record<
+          string,
+          {
+            dependencies?: Record<string, string>;
+            version?: string;
+            integrity?: string;
+            resolved?: string;
+          }
+        >;
+      };
+      expect(Object.keys(manifest.dependencies)).toHaveLength(1);
+      expect(lock.packages['']?.dependencies).toEqual(manifest.dependencies);
+      for (const [name, version] of Object.entries(manifest.dependencies)) {
+        expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+        expect(lock.packages[`node_modules/${name}`]?.version).toBe(version);
+      }
+      for (const [location, entry] of Object.entries(lock.packages)) {
+        if (!location) continue;
+        expect(entry.resolved).toMatch(/^https:\/\/registry\.npmjs\.org\//);
+        expect(entry.integrity).toMatch(/^sha512-/);
+      }
+    }
   });
 });
 

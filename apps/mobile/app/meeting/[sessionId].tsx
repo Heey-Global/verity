@@ -1,3 +1,10 @@
+import {
+  meetingModelChoice,
+  meetingResearchModel,
+  type MeetingModelChoice,
+  setMeetingModel,
+} from '../../lib/meetingResearchModel';
+import { setMeetingTranscriptVisible, useMeetingPreferences } from '../../lib/meetingPreferences';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -20,6 +27,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -43,38 +51,54 @@ import {
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 import {
-  latestResearchQuestion,
+  meetingQuestionKey,
   meetingRequestId,
   meetingRequestPrompt,
+  meetingRequestTime,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
 import {
-  compactMeetingAnswer,
-  meetingAnswerTruncated,
   meetingAnswerCards,
+  distinctMeetingAnswers,
   meetingAnswerSource,
+  meetingAnswerSourceUrl,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   type MeetingAnswerCard,
   unacknowledgedMeetingAnswers,
 } from '../../lib/liveMeetingAnswers';
 import {
+  meetingTranscriptRows,
   resolvedSpeaker,
-  speakerLines,
-  reconcileTimedTranscript,
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
+import { MeetingWave } from '../../components/meeting/MeetingWave';
+import { AskVerityField, MeetingModelSheet, VerityPane } from '../../components/meeting/VerityPane';
 import {
   type CardAction,
   MeetingAnswerText,
   NoticedCard,
   SectionLabel,
+  MeetingMetrics,
   SpeakerAvatar,
   speakerTone,
 } from '../../components/meeting/MeetingUI';
+import {
+  Button,
+  Card,
+  Group,
+  HintBox,
+  IconButton,
+  Row,
+  SectionHeader,
+  Text as UiText,
+  TextField,
+  Toggle,
+} from '../../components/ui';
+import { tint } from '../../components/ui/tint';
 
-type TranscriptRow = SpeakerLine | { text: string };
+type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
 
 const pendingDrafts = new Map<string, MeetingNote>();
 const pendingNoteErrors = new Map<string, string>();
@@ -99,11 +123,15 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, meetingId } = useLocalSearchParams<{
+    sessionId: string;
+    meetingId?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const wide = width >= 900;
   const { theme } = useUnistyles();
+  const colors = theme.colors;
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
@@ -115,6 +143,7 @@ export default function MeetingScreen() {
     null,
   );
   const [draft, setDraft] = useState<MeetingNote | null>(null);
+  const recoveryMeetingId = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [noteSaveError, setNoteSaveError] = useState<{ meetingId: string; message: string } | null>(
@@ -123,6 +152,7 @@ export default function MeetingScreen() {
   const [engines, setEngines] = useState<STTEngine[]>([]);
   const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
   const [meetingUrl, setMeetingUrl] = useState('');
+  const [meetingTitle, setMeetingTitle] = useState('');
   const [attendeeConfigured, setAttendeeConfigured] = useState(false);
   useEffect(() => {
     let current = true;
@@ -156,6 +186,9 @@ export default function MeetingScreen() {
   const [recorderOnline, setRecorderOnline] = useState(true);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [insightQuestion, setInsightQuestion] = useState('');
+  const askClearedAfterSend = useRef(false);
+  const askText = useRef(insightQuestion);
+  askText.current = insightQuestion;
   const [sendingInsight, setSendingInsight] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
   const [composing, setComposing] = useState<'note' | 'ask' | null>(null);
@@ -169,6 +202,8 @@ export default function MeetingScreen() {
     merges: Record<string, number>;
   } | null>(null);
   const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
+  const speakerEditBusy = useRef(false);
+  const [speakerEditPending, setSpeakerEditPending] = useState(false);
   if (speakerEditDraft.current?.meetingId !== meeting?.id || meeting?.engine === 'attendee')
     speakerEditDraft.current = meeting
       ? {
@@ -180,6 +215,7 @@ export default function MeetingScreen() {
       : null;
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
+  if (meeting && meeting.id !== recoveryMeetingId.current) recoveryMeetingId.current = null;
   const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
 
@@ -197,6 +233,8 @@ export default function MeetingScreen() {
               id: `voice-${Date.now()}-${current.length}`,
               request: event.request!,
               requestId: event.requestId,
+              ...(event.questionId ? { questionId: event.questionId } : {}),
+              ...(event.questionTitle ? { questionTitle: event.questionTitle } : {}),
               kind: event.kind ?? 'request',
               status: 'working',
               answer: '',
@@ -208,7 +246,8 @@ export default function MeetingScreen() {
 
   useEffect(() => {
     const listener = (meetingId: string) => {
-      if (displayedMeetingId.current !== meetingId) return;
+      if (displayedMeetingId.current !== meetingId && recoveryMeetingId.current !== meetingId)
+        return;
       const pending = pendingDrafts.get(meetingId) ?? null;
       setDraft(pending);
       if (pending) {
@@ -220,7 +259,8 @@ export default function MeetingScreen() {
       }
       void listNotes(meetingId)
         .then((saved) => {
-          if (displayedMeetingId.current !== meetingId) return;
+          if (displayedMeetingId.current !== meetingId && recoveryMeetingId.current !== meetingId)
+            return;
           setNotes((current) => {
             const merged = new Map(saved.map((note) => [note.id, note]));
             for (const note of current) if (note.meetingId === meetingId) merged.set(note.id, note);
@@ -244,8 +284,30 @@ export default function MeetingScreen() {
   const refresh = useCallback(async () => {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
+    if (
+      !meetingId &&
+      currentMeeting()?.state !== 'active' &&
+      !saved.some((item) => item.state === 'active')
+    ) {
+      for (const item of saved) {
+        const recovered = pendingDrafts.get(item.id) ?? (await loadDraftNote(item.id));
+        if (!recovered || (!recovered.text.trim() && !pendingNoteErrors.has(item.id))) continue;
+        // A slow storage read must not replace a draft in a newly started meeting.
+        if (displayedMeetingId.current || currentMeeting()?.state === 'active') break;
+        pendingDrafts.set(item.id, recovered);
+        recoveryMeetingId.current = item.id;
+        setDraft(recovered);
+        const message = pendingNoteErrors.get(item.id) ?? null;
+        noteSaveErrorRef.current = message;
+        setNoteSaveError(message ? { meetingId: item.id, message } : null);
+        break;
+      }
+    }
     setMeeting((current) => {
+      const selected = meetingId ? saved.find((item) => item.id === meetingId) : undefined;
       const local = currentMeeting();
+      if (meetingId && (!selected || selected.id !== local?.id || local.state !== 'active'))
+        return selected ?? null;
       const serverId = getActiveMeetingServerId();
       if (
         local?.sessionId === sessionId &&
@@ -253,9 +315,17 @@ export default function MeetingScreen() {
         ((local.serverId ?? null) === serverId || local.serverId == null)
       )
         return local;
-      return saved[0] ?? ((current?.serverId ?? null) === serverId ? current : null);
+      return (
+        saved.find(
+          (item) =>
+            item.state === 'active' || (item.engine === 'attendee' && item.state === 'interrupted'),
+        ) ??
+        (current?.sessionId === sessionId && (current.serverId ?? null) === serverId
+          ? (saved.find((item) => item.id === current.id) ?? current)
+          : null)
+      );
     });
-  }, [sessionId]);
+  }, [sessionId, meetingId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -299,14 +369,19 @@ export default function MeetingScreen() {
               let events = page.events;
               const cached =
                 answerEvents.current?.meetingId === shown ? answerEvents.current : null;
+              const summaryHistory =
+                meeting?.state === 'ended' ||
+                (meeting?.state === 'interrupted' && meeting.engine !== 'attendee');
               let pages = 1;
               while (
                 page.hasMore &&
-                pages < 10 &&
+                (summaryHistory || pages < 10) &&
                 events[0]?.seq > 0 &&
-                (cached
-                  ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
-                  : meetingAnswerCards(events, shown).length < 4)
+                (summaryHistory
+                  ? page.events[0]?.ts === undefined || page.events[0].ts >= meeting.startedAt
+                  : cached
+                    ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
+                    : distinctMeetingAnswers(meetingAnswerCards(events, shown)).length < 4)
               ) {
                 page = await client.getHistory(sessionId, {
                   beforeSeq: events[0]!.seq,
@@ -319,19 +394,18 @@ export default function MeetingScreen() {
               for (const entry of cached?.events ?? []) merged.set(entry.seq, entry);
               for (const entry of events) merged.set(entry.seq, entry);
               const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-              const promptIndexes = ordered.flatMap((entry, index) =>
-                entry.event.t === 'prompt' && meetingRequestFromPrompt(entry.event.text, shown)
-                  ? [index]
-                  : [],
+              const retained = distinctMeetingAnswers(meetingAnswerCards(ordered, shown)).slice(
+                -32,
               );
-              const kept =
-                promptIndexes.length > 32
-                  ? ordered.slice(promptIndexes.at(-32))
-                  : ordered.slice(-4_000);
+              const firstSeq = Number(retained[0]?.id);
+              const firstIndex = ordered.findIndex((entry) => entry.seq === firstSeq);
+              const kept = summaryHistory
+                ? ordered
+                : (firstIndex >= 0 ? ordered.slice(firstIndex) : ordered).slice(-4_000);
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
                 const historyCards = meetingAnswerCards(kept, shown);
-                setAnswers(historyCards.slice(-4));
+                setAnswers(historyCards);
                 setLocalAnswers((current) => unacknowledgedMeetingAnswers(current, historyCards));
               }
               if (client.getActivity) {
@@ -377,13 +451,15 @@ export default function MeetingScreen() {
       mounted = false;
       detach();
     };
-  }, [sessionId, refresh, meeting?.id]);
+  }, [sessionId, refresh, meeting?.id, meeting?.state]);
 
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));
     return subscribeMeeting((active) => {
       if (
         active?.sessionId === sessionId &&
+        (!meetingId || active.id === meetingId) &&
+        (active.state === 'active' || active.id === displayedMeetingId.current) &&
         (active.serverId == null || active.serverId === getActiveMeetingServerId())
       ) {
         setMeeting(active);
@@ -392,7 +468,7 @@ export default function MeetingScreen() {
         void refresh().catch((reason) => setError(String(reason)));
       }
     });
-  }, [refresh, sessionId]);
+  }, [refresh, sessionId, meetingId]);
 
   useEffect(() => {
     if (!meeting) return;
@@ -400,6 +476,7 @@ export default function MeetingScreen() {
     setNotes([]);
     setInsights([]);
     setAnswers([]);
+    setDismissed([]);
     setQueuedAnswers([]);
     setLocalAnswers([]);
     setExpandedAnswer(null);
@@ -451,47 +528,80 @@ export default function MeetingScreen() {
       .catch((reason) => setError(String(reason)));
   }, []);
 
-  const chunks = useMemo(() => {
-    if (meeting?.timedWords?.length) {
-      const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
-      if (!aligned) return [{ text: meeting.transcript }];
-      const lines: TranscriptRow[] = speakerLines(
-        aligned.words,
-        meeting.speakerTurns ?? [],
-        meeting.speakerCorrections ?? [],
-        meeting.speakerMerges ?? {},
-      );
-      if (aligned.tail) lines.push({ text: `Speaker pending: ${aligned.tail}` });
-      return lines;
-    }
-    const text = meeting?.transcript ?? '';
-    const result: TranscriptRow[] = [];
-    for (let start = 0; start < text.length; start += 900)
-      result.push({ text: text.slice(start, start + 900) });
-    return result;
-  }, [
-    meeting?.transcript,
-    meeting?.timedWords,
-    meeting?.speakerTurns,
-    meeting?.speakerCorrections,
-    meeting?.speakerMerges,
-  ]);
-  const suggestedQuestion = useMemo(
-    () => latestResearchQuestion(meeting?.transcript ?? ''),
-    [meeting?.transcript],
+  const chunks = useMemo<TranscriptRow[]>(
+    () => (meeting ? meetingTranscriptRows(meeting) : []),
+    // Recomputed only when the transcript or its attribution changes, not on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      meeting?.transcript,
+      meeting?.timedWords,
+      meeting?.speakerTurns,
+      meeting?.tentativeSpeakerTurns,
+      meeting?.speakerHorizon,
+      meeting?.speakerStatus,
+      meeting?.state,
+      meeting?.speakerCorrections,
+      meeting?.speakerMerges,
+    ],
   );
-  const visibleAnswers = useMemo(() => {
+  const allMeetingAnswers = useMemo(() => {
     const canonical = [
       ...answers,
       ...queuedAnswers.filter(
         (queued) => !answers.some((card) => sameMeetingRequest(card, queued)),
       ),
     ];
-    return [
+    return distinctMeetingAnswers([
       ...canonical,
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
-    ].slice(-4);
+    ]);
   }, [answers, queuedAnswers, localAnswers]);
+  const completedAnswerCount = allMeetingAnswers.filter((card) => card.status === 'ready').length;
+  const visibleAnswers = useMemo(() => {
+    const shown = allMeetingAnswers.filter(
+      (card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)),
+    );
+    return meeting?.state === 'ended' ||
+      (meeting?.state === 'interrupted' && meeting.engine !== 'attendee')
+      ? shown
+      : shown.slice(-4);
+  }, [allMeetingAnswers, dismissed, meeting?.state, meeting?.engine]);
+  const newestReady = visibleAnswers.findLast((card) => card.status === 'ready')?.id;
+  const responseMs = visibleAnswers.find((card) => card.id === newestReady)?.responseMs;
+  useEffect(() => {
+    setExpandedAnswer(newestReady ?? null);
+  }, [newestReady]);
+  useEffect(() => {
+    if (responseMs !== undefined) console.debug('Meeting answer timing', { responseMs });
+  }, [newestReady, responseMs]);
+  const { transcript: showTranscript } = useMeetingPreferences();
+  // The model chip and picker live in Verity's pane, which only the wide layout shows.
+  const [modelChoice, setModelChoice] = useState<MeetingModelChoice | null>(null);
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+  const liveMeetingId = meeting?.id;
+  const meetingActive = meeting?.state === 'active';
+  useEffect(() => {
+    setModelChoice(null);
+    if (!wide || !meetingActive || !sessionId || !liveMeetingId) return;
+    const client = createVerityClient();
+    if (!client) return;
+    let current = true;
+    void meetingModelChoice(client, sessionId, liveMeetingId).then((choice) => {
+      if (current) setModelChoice(choice);
+    });
+    return () => {
+      current = false;
+    };
+  }, [wide, meetingActive, sessionId, liveMeetingId]);
+  const pickMeetingModel = (model: string) => {
+    setModelSheetOpen(false);
+    if (!liveMeetingId) return;
+    setMeetingModel(liveMeetingId, model);
+    setModelChoice((current) => (current ? { ...current, model, effective: model } : current));
+  };
+  const transcriptEnd = useRef<ScrollView>(null);
+  // New words follow the reader only while they are at the end; reading back stays put.
+  const wideTranscriptAtEnd = useRef(true);
   const speakerLabel = (speaker: number | null) =>
     speaker === null
       ? 'Unknown speaker'
@@ -503,24 +613,35 @@ export default function MeetingScreen() {
       corrections: SpeakerCorrection[];
       merges: Record<string, number>;
     }>,
+    optimistic = true,
   ) => {
     if (
       !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
       speakerEditDraft.current?.meetingId !== meeting.id
     )
-      return;
+      return false;
+    if (speakerEditBusy.current) {
+      setError('Wait for the current speaker change to finish saving.');
+      return false;
+    }
+    if (!optimistic) {
+      speakerEditBusy.current = true;
+      setSpeakerEditPending(true);
+    }
     const next = { ...speakerEditDraft.current, ...change };
-    speakerEditDraft.current = next;
-    setMeeting((current) =>
-      current?.id === next.meetingId
-        ? {
-            ...current,
-            speakerNames: next.names,
-            speakerCorrections: next.corrections,
-            speakerMerges: next.merges,
-          }
-        : current,
-    );
+    if (optimistic) speakerEditDraft.current = next;
+    const apply = () =>
+      setMeeting((current) =>
+        current?.id === next.meetingId
+          ? {
+              ...current,
+              speakerNames: next.names,
+              speakerCorrections: next.corrections,
+              speakerMerges: next.merges,
+            }
+          : current,
+      );
+    if (optimistic) apply();
     try {
       const write = speakerEditWrite.current
         .catch(() => undefined)
@@ -538,9 +659,20 @@ export default function MeetingScreen() {
         });
       speakerEditWrite.current = write;
       await write;
+      if (!optimistic) {
+        speakerEditDraft.current = next;
+        apply();
+      }
       setSyncError(true);
+      return true;
     } catch (reason) {
       setError(`Could not save speaker correction: ${String(reason)}`);
+      return false;
+    } finally {
+      if (!optimistic) {
+        speakerEditBusy.current = false;
+        setSpeakerEditPending(false);
+      }
     }
   };
 
@@ -614,7 +746,12 @@ export default function MeetingScreen() {
     ]);
   };
 
-  const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
+  const openResearch = async (
+    question: string,
+    kind: 'research' | 'request' = 'research',
+    questionId?: string,
+    questionTitle?: string,
+  ) => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
     if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId()) {
       setError('Reconnect to this meeting’s server before asking Verity.');
@@ -634,23 +771,45 @@ export default function MeetingScreen() {
       id: `local-${requestId}`,
       request: question.trim(),
       requestId,
+      ...(questionId ? { questionId } : {}),
+      ...(questionTitle ? { questionTitle } : {}),
       kind,
       status: 'working',
       answer: '',
     };
     setLocalAnswers((current) => [...current, local]);
     try {
+      const server = getActiveMeetingServerId();
+      const model = await meetingResearchModel(client, sessionId, meeting.id);
+      if (getActiveMeetingServerId() !== server) throw new Error('Meeting server changed.');
       await client.sendTurn(sessionId, {
+        ...(model ? { model } : {}),
         prompt:
           kind === 'research'
-            ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId)
-            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
+            ? researchPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              )
+            : meetingRequestPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              ),
         // Each request needs its own reply; steering would fold it into the running one.
         queueBehindActiveTurn: true,
       });
       // A retried card must not clear what is being typed in the composer.
-      if (kind === 'request')
-        setInsightQuestion((current) => (current === question ? '' : current));
+      if (kind === 'request' && askText.current === question) {
+        askClearedAfterSend.current = true;
+        setInsightQuestion('');
+      }
     } catch (reason) {
       setLocalAnswers((current) => current.filter((card) => card.id !== local.id));
       setError(`Could not start meeting request: ${String(reason)}`);
@@ -679,7 +838,12 @@ export default function MeetingScreen() {
       if (meetingSource === 'online') {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server.');
-        const result = await client.startOnlineMeeting(sessionId, meetingUrl.trim());
+        const result = await client.startOnlineMeeting(
+          sessionId,
+          meetingUrl.trim(),
+          true,
+          meetingTitle.trim() || undefined,
+        );
         await syncMeetingSession(sessionId);
         const synced = (await listMeetings(sessionId)).find((item) => item.id === result.meetingId);
         if (synced) setMeeting(synced);
@@ -687,7 +851,9 @@ export default function MeetingScreen() {
         await refresh();
         return;
       }
-      const next = await startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4);
+      const next = await (meetingTitle.trim()
+        ? startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4, meetingTitle.trim())
+        : startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4));
       setSyncError(true);
       setMeeting(next);
       setShowNewMeeting(false);
@@ -754,7 +920,9 @@ export default function MeetingScreen() {
 
   const editNote = (value: string) => {
     // Keystrokes can arrive before React re-renders; the module draft is already current then.
-    const current = meeting ? (pendingDrafts.get(meeting.id) ?? draft) : null;
+    const current = meeting
+      ? (pendingDrafts.get(meeting.id) ?? (draft?.meetingId === meeting.id ? draft : null))
+      : null;
     if (!meeting || (meeting.state !== 'active' && !current)) return;
     const note = current ?? {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -848,7 +1016,8 @@ export default function MeetingScreen() {
   const live =
     meeting?.state === 'active' ||
     (meeting?.engine === 'attendee' && meeting.state === 'interrupted');
-  const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
+  const noteUnsaved =
+    noteSaveError !== null && noteSaveError.meetingId === (meeting?.id ?? draft?.meetingId);
   const syncDelayed = syncPendingSince !== null && now - syncPendingSince > 30_000;
   // The live header shows only what needs attention, in one fixed slot so nothing moves.
   const liveProblem =
@@ -957,35 +1126,89 @@ export default function MeetingScreen() {
   };
 
   const noticedCards = (): ReactNode[] => {
+    // Only the recording device asks the model; a typed name always wins over a suggestion.
+    const nameCards: ReactNode[] =
+      meeting?.state === 'active' && !!meeting.ownerToken
+        ? (meeting.speakerNameSuggestions ?? [])
+            .filter((suggestion) => meeting.speakerNames?.[suggestion.speaker] === undefined)
+            .map((suggestion) => (
+              <NoticedCard
+                key={`name-${String(suggestion.speaker)}`}
+                tone={speakerTone(colors, suggestion.speaker)}
+                quote={`“${suggestion.quote}”`}
+                title={`${speakerLabel(suggestion.speaker)} is ${suggestion.name}?`}
+                onDismiss={() => clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, true)}
+                dismissLabel={`Not ${suggestion.name}`}
+                actions={[
+                  {
+                    label: `Yes, ${suggestion.name}`,
+                    disabled: speakerEditPending,
+                    primary: true,
+                    onPress: () => {
+                      const names = {
+                        ...(speakerEditDraft.current?.names ?? meeting.speakerNames ?? {}),
+                      };
+                      if (names[suggestion.speaker] === undefined)
+                        names[suggestion.speaker] = suggestion.name;
+                      // Keep the card until the name is saved, so a failed save can be retried.
+                      void persistSpeakerEdits({ names }, false).then((saved) => {
+                        if (saved)
+                          clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
+                      });
+                    },
+                  },
+                ]}
+              />
+            ))
+        : [];
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
+      const sourceUrl = source ? meetingAnswerSourceUrl(card.answer) : null;
+      const askedAt = meetingRequestTime(card.requestId);
       const note = card.status === 'ready' ? asNote(card.answer) : null;
-      const compact = compactMeetingAnswer(card.answer);
+      const compact =
+        card.answer
+          .trim()
+          .split('\n')
+          .find((line) => line.trim()) ?? '';
       const expanded = expandedAnswer === card.id;
       return (
         <NoticedCard
           key={card.id}
           label={
             card.status === 'ready'
-              ? 'ANSWER'
+              ? undefined
               : card.status === 'failed'
                 ? card.combined
                   ? 'NOT ANSWERED SEPARATELY'
                   : 'REQUEST INTERRUPTED'
                 : card.kind === 'research'
-                  ? 'RESEARCHING'
-                  : 'VERITY IS WORKING'
+                  ? 'Researching…'
+                  : 'Working on it…'
           }
           tone={
             card.status === 'ready'
-              ? theme.colors.tone.done
+              ? colors.success
               : card.status === 'failed'
-                ? theme.colors.tone.danger
-                : theme.colors.primary
+                ? colors.attention
+                : colors.action
           }
           working={card.status === 'working'}
-          prominent
-          title={card.request}
+          fresh={live && card.id === newestReady}
+          time={askedAt === null ? undefined : timeOfDay(askedAt)}
+          title={card.questionTitle ?? card.request}
+          onDismiss={() =>
+            setDismissed((current) => [
+              ...current,
+              card.questionId ?? meetingQuestionKey(card.request),
+            ])
+          }
+          dismissLabel="Dismiss meeting answer"
+          onToggle={
+            card.status === 'ready'
+              ? () => setExpandedAnswer((current) => (current === card.id ? null : card.id))
+              : undefined
+          }
           body={
             card.status === 'failed'
               ? card.combined
@@ -993,18 +1216,19 @@ export default function MeetingScreen() {
                 : 'Verity stopped before answering.'
               : undefined
           }
-          source={source ? `Source: ${source}` : null}
+          source={source}
+          sourceUrl={sourceUrl}
           actions={
             card.status === 'ready'
               ? [
                   {
-                    label: 'Open in chat ›',
+                    label: 'Open in chat',
                     accessibilityLabel: 'Open answer in chat',
                     primary: true,
                     onPress: () =>
                       router.push({ pathname: '/session/[id]', params: { id: sessionId } }),
                   },
-                  ...(meetingAnswerTruncated(card.answer)
+                  ...(card.answer.trim()
                     ? [
                         {
                           label: expanded ? 'Show less' : 'Show full answer',
@@ -1025,7 +1249,13 @@ export default function MeetingScreen() {
                       accessibilityLabel: 'Retry meeting request',
                       primary: true,
                       disabled: sendingInsight,
-                      onPress: () => void openResearch(card.request, card.kind),
+                      onPress: () =>
+                        void openResearch(
+                          card.request,
+                          card.kind,
+                          card.questionId,
+                          card.questionTitle,
+                        ),
                     },
                   ]
                 : []
@@ -1038,74 +1268,77 @@ export default function MeetingScreen() {
       );
     });
     // A suggestion that was sent becomes its answer card rather than staying beside it.
-    const requested = (text: string) => visibleAnswers.some((card) => card.request === text.trim());
-    for (const insight of insights.slice(0, 4)) {
-      if (dismissed.includes(insight.id)) continue;
+    const requested = (text: string, questionId?: string) =>
+      [...answers, ...queuedAnswers, ...localAnswers].some((card) =>
+        questionId && card.questionId
+          ? card.questionId === questionId
+          : meetingQuestionKey(card.request) === meetingQuestionKey(text),
+      );
+    let shownInsights = 0;
+    for (const insight of insights) {
+      if (dismissed.includes(insight.id) || dismissed.includes(meetingQuestionKey(insight.summary)))
+        continue;
       const contradiction = insight.kind === 'contradiction';
       const researchText = contradiction
         ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
-        : insight.evidenceA;
-      if ((contradiction || insight.kind === 'research') && requested(researchText)) continue;
+        : insight.id.startsWith('question-')
+          ? insight.summary
+          : insight.evidenceA;
+      const questionId = insight.id.startsWith('question-') ? insight.id : undefined;
+      if (
+        (contradiction || insight.kind === 'research') &&
+        (requested(researchText, questionId) || requested(insight.evidenceA, questionId))
+      )
+        continue;
+      if (shownInsights >= 4) break;
+      shownInsights += 1;
       const note = asNote(insight.summary);
       cards.push(
         <NoticedCard
           key={insight.id}
-          label={contradiction ? 'CONTRADICTS PROJECT' : 'WORTH CHECKING'}
-          tone={contradiction ? theme.colors.accent : theme.colors.primary}
+          label={
+            contradiction
+              ? 'CONTRADICTS PROJECT'
+              : insight.id.startsWith('question-')
+                ? 'OPEN QUESTION'
+                : 'WORTH CHECKING'
+          }
+          tone={contradiction ? colors.signature : colors.action}
           time={timeOfDay(insight.createdAt)}
           quote={`“${insight.evidenceA}”${insight.evidenceB ? ` · “${insight.evidenceB}”` : ''}`}
           title={insight.summary}
+          onDismiss={() =>
+            setDismissed((current) => [...current, insight.id, meetingQuestionKey(insight.summary)])
+          }
+          dismissLabel="Dismiss meeting question"
           source={insight.sourcePath ? `Source: ${insight.sourcePath}` : null}
           actions={[
             ...(contradiction || insight.kind === 'research'
               ? [
                   {
                     label: contradiction ? 'Let Verity check' : 'Let Verity research',
-                    accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
+                    accessibilityLabel: contradiction
+                      ? 'Check meeting claim'
+                      : insight.id.startsWith('question-')
+                        ? 'Research meeting question'
+                        : 'Research insight',
                     primary: true,
                     disabled: sendingInsight,
-                    onPress: () => void openResearch(researchText),
+                    onPress: () =>
+                      void openResearch(
+                        researchText,
+                        'research',
+                        insight.id.startsWith('question-') ? insight.id : undefined,
+                      ),
                   },
                 ]
               : []),
             ...(note ? [note] : []),
-            {
-              label: 'Not now',
-              onPress: () => setDismissed((current) => [...current, insight.id]),
-            },
           ]}
         />,
       );
     }
-    if (
-      suggestedQuestion &&
-      !dismissed.includes(suggestedQuestion) &&
-      !requested(suggestedQuestion) &&
-      !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion))
-    )
-      cards.push(
-        <NoticedCard
-          key="question"
-          label="OPEN QUESTION"
-          tone={theme.colors.primary}
-          prominent
-          title={suggestedQuestion}
-          actions={[
-            {
-              label: 'Let Verity research',
-              accessibilityLabel: 'Research meeting question',
-              primary: true,
-              disabled: sendingInsight,
-              onPress: () => void openResearch(suggestedQuestion),
-            },
-            {
-              label: 'Not now',
-              onPress: () => setDismissed((current) => [...current, suggestedQuestion]),
-            },
-          ]}
-        />,
-      );
-    return cards;
+    return [...nameCards, ...cards];
   };
 
   const statusLines = (
@@ -1136,7 +1369,7 @@ export default function MeetingScreen() {
       <SpeakerAvatar
         key={speaker}
         initial={speakerInitial(speaker)}
-        tone={speakerTone(theme.colors, speaker)}
+        tone={speakerTone(colors, speaker)}
         active={activeVoice === speaker}
         dashed={!meeting?.speakerNames?.[speaker]}
         size={captions ? 44 : 36}
@@ -1189,65 +1422,120 @@ export default function MeetingScreen() {
       </Text>
     ));
 
-  const noteComposer = (autoFocus: boolean) => (
-    <View style={styles.composer}>
-      <Text style={styles.composerTime}>
-        {meeting
-          ? noteClockTime(
-              meeting.startedAt,
-              draft?.atSeconds ?? (Date.now() - meeting.startedAt) / 1000,
-            )
-          : ''}
+  const switchComposer = (mode: 'note' | 'ask') => {
+    if (mode === composing) return;
+    if (mode === 'ask') {
+      askClearedAfterSend.current = false;
+      setInsightQuestion(draft?.text ?? '');
+    } else if (!askClearedAfterSend.current) editNote(insightQuestion);
+    setComposing(mode);
+  };
+  const composerMode = (mode: 'note' | 'ask') => (
+    <View style={styles.block}>
+      {!wide && live ? (
+        <View style={styles.segmented}>
+          {(['note', 'ask'] as const).map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              accessibilityLabel={value === 'note' ? 'Switch to note' : 'Switch to Ask Verity'}
+              accessibilityState={{ selected: mode === value, disabled: noteUnsaved }}
+              disabled={noteUnsaved}
+              onPress={() => switchComposer(value)}
+              style={[styles.segment, mode === value && styles.segmentSelected]}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  mode === value && {
+                    color: colors.actionLabel,
+                  },
+                ]}
+              >
+                {value === 'note' ? 'Note' : 'Ask Verity'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : (
+        <SectionLabel>{mode === 'note' ? 'NOTE' : 'ASK VERITY'}</SectionLabel>
+      )}
+      <Text style={styles.hint}>
+        {mode === 'note'
+          ? 'Saved with the meeting · no AI'
+          : 'Answer appears under “Verity noticed”'}
       </Text>
-      <TextInput
-        accessibilityLabel="Add a meeting note"
-        autoFocus={autoFocus}
-        maxLength={10_000}
-        placeholder="Add a note…"
-        placeholderTextColor={theme.colors.textFaint}
-        multiline
-        submitBehavior="submit"
-        value={draft?.text ?? ''}
-        onChangeText={editNote}
-        onSubmitEditing={submitNote}
-        style={styles.composerInput}
-      />
-      <Pressable
-        onPress={submitNote}
-        accessibilityRole="button"
-        accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
-        style={styles.composerSend}
-      >
-        <Icon name={noteUnsaved ? 'rotate-cw' : 'check'} size={18} color={theme.colors.onPrimary} />
-      </Pressable>
+    </View>
+  );
+
+  const noteComposer = (autoFocus: boolean) => (
+    <View style={styles.composerPanel}>
+      {composerMode('note')}
+      <View style={styles.composer}>
+        <Text style={styles.composerTime}>
+          {meeting
+            ? noteClockTime(
+                meeting.startedAt,
+                draft?.atSeconds ?? (Date.now() - meeting.startedAt) / 1000,
+              )
+            : ''}
+        </Text>
+        <TextInput
+          accessibilityLabel="Add a meeting note"
+          autoFocus={autoFocus}
+          maxLength={10_000}
+          placeholder="Add a note…"
+          placeholderTextColor={colors.textFaint}
+          multiline
+          submitBehavior="submit"
+          value={draft?.text ?? ''}
+          onChangeText={editNote}
+          onSubmitEditing={submitNote}
+          style={styles.composerInput}
+        />
+        <Pressable
+          onPress={submitNote}
+          accessibilityRole="button"
+          accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
+          style={styles.composerSend}
+        >
+          <Text style={styles.startButtonText}>{noteUnsaved ? 'Retry save' : 'Save note'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 
   const askComposer = (autoFocus: boolean) => (
-    <View style={styles.composer}>
-      <Text style={[styles.composerTime, { color: theme.colors.accent }]}>✦</Text>
-      <TextInput
-        accessibilityLabel="Ask Verity about this meeting"
-        autoFocus={autoFocus}
-        placeholder="Ask Verity about this meeting…"
-        placeholderTextColor={theme.colors.textFaint}
-        multiline
-        submitBehavior="submit"
-        returnKeyType="send"
-        value={insightQuestion}
-        onChangeText={setInsightQuestion}
-        onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
-        style={styles.composerInput}
-      />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Ask Verity in meeting"
-        disabled={!insightQuestion.trim() || sendingInsight}
-        onPress={() => void openResearch(insightQuestion, 'request')}
-        style={styles.composerSend}
-      >
-        <Icon name="arrow-up" size={18} color={theme.colors.onPrimary} />
-      </Pressable>
+    <View style={styles.composerPanel}>
+      {composerMode('ask')}
+      <View style={styles.composer}>
+        <Text style={[styles.composerTime, { color: colors.signature }]}>✦</Text>
+        <TextInput
+          accessibilityLabel="Ask Verity about this meeting"
+          autoFocus={autoFocus}
+          placeholder="Ask Verity about this meeting…"
+          placeholderTextColor={colors.textFaint}
+          multiline
+          submitBehavior="submit"
+          returnKeyType="send"
+          value={insightQuestion}
+          onChangeText={(text) => {
+            askClearedAfterSend.current = false;
+            setInsightQuestion(text);
+          }}
+          onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
+          style={styles.composerInput}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Ask Verity in meeting"
+          disabled={!insightQuestion.trim() || sendingInsight}
+          onPress={() => void openResearch(insightQuestion, 'request')}
+          style={styles.composerSend}
+        >
+          <Text style={styles.startButtonText}>Ask Verity</Text>
+        </Pressable>
+      </View>
     </View>
   );
 
@@ -1255,18 +1543,22 @@ export default function MeetingScreen() {
     <Modal
       visible={transcriptExpanded}
       animationType="slide"
-      presentationStyle="pageSheet"
+      presentationStyle="fullScreen"
       onRequestClose={() => setTranscriptExpanded(false)}
     >
-      <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+      <View
+        style={[styles.sheet, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}
+      >
         <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Transcript</Text>
+          <Text style={styles.sheetTitle}>
+            {meeting.title ? `${meeting.title} · Transcript` : 'Transcript'}
+          </Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Collapse transcript"
             onPress={() => setTranscriptExpanded(false)}
           >
-            <Text style={styles.link}>Done</Text>
+            <Icon name="x" size={22} color={colors.text} />
           </Pressable>
         </View>
         {(meeting.ownerToken || meeting.engine === 'attendee') && speakers.length ? (
@@ -1281,7 +1573,7 @@ export default function MeetingScreen() {
           keyExtractor={(_, index) => String(index)}
           contentContainerStyle={styles.transcriptContent}
           renderItem={({ item }) =>
-            'start' in item ? (
+            'start' in item && !item.pending ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Correct speaker for ${item.text}`}
@@ -1289,11 +1581,18 @@ export default function MeetingScreen() {
                 onPress={() => correctSpeaker(item, speakerChoices)}
               >
                 <Text style={styles.transcriptText}>
-                  {speakerLabel(item.speaker)}: {item.text}
+                  <Text style={styles.hint}>{elapsed(0, item.start * 1000)} </Text>
+                  <Text style={{ color: speakerTone(colors, item.speaker ?? 0) }}>
+                    {speakerLabel(item.speaker)}
+                  </Text>
+                  {`  ${item.text}`}
                 </Text>
               </Pressable>
             ) : (
-              <Text style={styles.transcriptText}>{item.text}</Text>
+              // Not yet attributed: shown without a speaker until the diarizer catches up.
+              <Text style={[styles.transcriptText, item.pending && styles.transcriptPending]}>
+                {item.text}
+              </Text>
             )
           }
           ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}
@@ -1334,197 +1633,167 @@ export default function MeetingScreen() {
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>New meeting</Text>
-            <Pressable
-              accessibilityRole="button"
+            <Button
+              label="Cancel"
+              variant="text"
               onPress={() => (meeting ? setShowNewMeeting(false) : router.back())}
-            >
-              <Text style={styles.link}>Cancel</Text>
-            </Pressable>
+            />
           </View>
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-          {noteUnsaved ? (
-            // The note is the only part of the last meeting at risk: the device could not
-            // write it to its own storage. Show it and let it be saved again from here.
-            <View style={styles.recoveryCard} testID="unsaved-note">
-              <Text style={styles.recoveryTitle}>A note from your last meeting isn’t saved</Text>
-              {draft?.text.trim() ? <Text style={styles.body}>“{draft.text.trim()}”</Text> : null}
-              <Text style={styles.hint}>
-                The meeting itself is kept. The note is still on screen and will be saved when you
-                retry.
-                {noteSaveError?.message
-                  ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
-                  : ''}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Retry saving note"
-                onPress={submitNote}
-                style={styles.recoveryButton}
-              >
-                <Icon name="rotate-cw" size={16} color={theme.colors.primary} />
-                <Text style={styles.recoveryButtonText}>Retry save</Text>
-              </Pressable>
-            </View>
+          {error ? <HintBox title="Could not start the meeting" message={error} /> : null}
+          {noteUnsaved || draft?.text.trim() ? (
+            <Card>
+              <View style={styles.setupCard} testID="unsaved-note">
+                <UiText variant="row">
+                  {noteUnsaved
+                    ? 'A note from your last meeting isn’t saved'
+                    : 'Finish a note from your last meeting'}
+                </UiText>
+                {draft?.text.trim() ? <UiText>“{draft.text.trim()}”</UiText> : null}
+                <UiText variant="subtitle">
+                  The meeting itself is kept. Save this note to finish it.
+                  {noteSaveError?.message
+                    ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
+                    : ''}
+                </UiText>
+                <View style={styles.setupInline}>
+                  <Button
+                    label={noteUnsaved ? 'Retry save' : 'Save note'}
+                    accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Save recovered note'}
+                    icon="rotate-cw"
+                    variant="secondary"
+                    size="compact"
+                    onPress={submitNote}
+                  />
+                </View>
+              </View>
+            </Card>
           ) : null}
-          <View>
-            <Text style={styles.rowText}>Meeting source</Text>
-            {(['presence', 'online'] as const).map((source) => (
-              <Pressable
-                key={source}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: meetingSource === source }}
-                onPress={() => setMeetingSource(source)}
-                style={styles.engineChoice}
-              >
-                <Text
-                  style={{
-                    color: meetingSource === source ? theme.colors.primary : theme.colors.text,
-                  }}
-                >
-                  {meetingSource === source ? '● ' : '○ '}
-                  {source === 'presence' ? 'In person' : 'Online meeting'}
-                </Text>
-              </Pressable>
-            ))}
-            {meetingSource === 'online' ? (
-              <>
-                <TextInput
-                  value={meetingUrl}
-                  onChangeText={setMeetingUrl}
-                  placeholder="Meeting link"
-                  placeholderTextColor={theme.colors.textFaint}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  accessibilityLabel="Online meeting link"
-                  style={styles.engineChoice}
-                />
-                <Text style={styles.hint}>
-                  {attendeeConfigured
-                    ? 'Attendee joins and transcribes while the app is closed. Requires premium Uplink / Online Sharing.'
-                    : 'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.'}
-                </Text>
-                {!attendeeConfigured ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => router.push('/settings/services')}
-                  >
-                    <Text style={styles.link}>Set up Attendee</Text>
-                  </Pressable>
-                ) : null}
-              </>
-            ) : null}
+          <TextField
+            label="Title"
+            accessibilityLabel="Meeting title"
+            value={meetingTitle}
+            onChangeText={setMeetingTitle}
+            maxLength={200}
+            placeholder="Optional"
+          />
+          <View style={styles.setupSection}>
+            <SectionHeader title="Meeting source" />
+            <Group>
+              <Row
+                title="In person"
+                subtitle="Records with this device's microphone"
+                leading={{ icon: 'mic' }}
+                selected={meetingSource === 'presence'}
+                onPress={() => setMeetingSource('presence')}
+              />
+              <Row
+                title="Online meeting"
+                subtitle="Joins the call and keeps transcribing in the background"
+                leading={{ icon: 'video' }}
+                selected={meetingSource === 'online'}
+                onPress={() => setMeetingSource('online')}
+              />
+            </Group>
           </View>
-          {meetingSource === 'presence' ? (
+          {meetingSource === 'online' ? (
+            <View style={styles.setupSection}>
+              <TextField
+                label="Meeting link"
+                accessibilityLabel="Online meeting link"
+                value={meetingUrl}
+                onChangeText={setMeetingUrl}
+                placeholder="https://"
+                keyboardType="url"
+              />
+              <UiText variant="footnote">
+                {attendeeConfigured
+                  ? 'Transcription continues while the app is closed. Requires Verity Premium Online sharing.'
+                  : 'Configure online meetings and enable Verity Premium Online sharing.'}
+              </UiText>
+              <View style={styles.setupInline}>
+                {!attendeeConfigured ? (
+                  <Button
+                    label="Configure online meetings"
+                    variant="text"
+                    size="compact"
+                    onPress={() => router.push('/settings/services')}
+                  />
+                ) : null}
+                <Button
+                  label="Verity Premium"
+                  variant="text"
+                  size="compact"
+                  onPress={() => router.push('/settings/premium')}
+                />
+              </View>
+            </View>
+          ) : (
             <>
-              <View style={styles.block}>
-                <SectionLabel>WHO IS THERE?</SectionLabel>
-                <View style={styles.segmented}>
+              <View style={styles.setupSection}>
+                <SectionHeader title="Who is there?" />
+                <Group>
                   {(
                     [
-                      [4, 'Up to 4 people'],
-                      [10, 'Larger group'],
+                      [4, 'Up to 4 people', 'Each voice gets its own speaker'],
+                      [10, 'Larger group', 'Tuned for many voices in one room'],
                     ] as const
-                  ).map(([count, label]) => {
-                    const selected = (expectedParticipants ?? 4) === count;
-                    return (
-                      <Pressable
-                        key={count}
-                        accessibilityRole="radio"
-                        accessibilityLabel={label}
-                        accessibilityState={{ selected }}
-                        disabled={busy}
-                        onPress={() => setExpectedParticipants(count)}
-                        style={[styles.segment, selected && styles.segmentSelected]}
-                      >
-                        <Text style={selected ? styles.segmentTextSelected : styles.segmentText}>
-                          {label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-                <Text style={styles.hint}>
-                  {(expectedParticipants ?? 4) > 4
-                    ? 'Separates up to 10 voices, with more mix-ups between similar ones.'
-                    : 'Keeps voices apart most reliably.'}{' '}
-                  Can’t be changed once the meeting runs.
-                </Text>
+                  ).map(([count, label, detail]) => (
+                    <Row
+                      key={count}
+                      title={label}
+                      subtitle={detail}
+                      selected={(expectedParticipants ?? 4) === count}
+                      disabled={busy}
+                      onPress={() => setExpectedParticipants(count)}
+                    />
+                  ))}
+                </Group>
               </View>
-              <View style={styles.block}>
-                <SectionLabel>PRIVACY</SectionLabel>
-                <Text style={styles.body}>
-                  Audio stays on this device and is not saved. Text goes to your Verity server only.
-                </Text>
-              </View>
-              <View style={styles.block}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Speech recognition"
-                  accessibilityState={{ expanded: showEngines }}
-                  onPress={() => setShowEngines((shown) => !shown)}
-                  style={styles.row}
-                >
-                  <Text style={styles.rowText}>Speech recognition</Text>
-                  <Text style={styles.rowValue}>{engine?.name ?? 'On device'}</Text>
-                  <Icon
-                    name={showEngines ? 'chevron-down' : 'chevron-right'}
-                    size={16}
-                    color={theme.colors.textFaint}
-                  />
-                </Pressable>
-                {showEngines
-                  ? engines.map((item) => (
-                      <Pressable
+              <View style={styles.setupSection}>
+                <SectionHeader title="Speech recognition" />
+                <Group>
+                  {showEngines && engines.length > 0 ? (
+                    engines.map((item) => (
+                      <Row
                         key={item.id}
-                        accessibilityRole="radio"
-                        accessibilityState={{
-                          selected: selectedEngine === item.id,
-                          disabled: !item.available,
-                        }}
+                        title={item.name}
+                        subtitle={item.available ? undefined : 'Unavailable on this device'}
+                        selected={selectedEngine === item.id}
                         disabled={!item.available || busy}
-                        onPress={() => setSelectedEngine(item.id)}
-                        style={styles.engineChoice}
-                      >
-                        <Text
-                          style={
-                            selectedEngine === item.id ? styles.segmentTextSelected : styles.rowText
-                          }
-                        >
-                          {selectedEngine === item.id ? '● ' : '○ '}
-                          {item.name}
-                          {item.available ? '' : ' · unavailable'}
-                        </Text>
-                      </Pressable>
+                        onPress={() => {
+                          setSelectedEngine(item.id);
+                          setShowEngines(false);
+                        }}
+                      />
                     ))
-                  : null}
+                  ) : (
+                    <Row
+                      title={engine?.name ?? 'On device'}
+                      leading={{ icon: 'cpu' }}
+                      trailing="Change"
+                      accessibilityLabel="Speech recognition"
+                      onPress={() => setShowEngines(true)}
+                    />
+                  )}
+                </Group>
               </View>
             </>
-          ) : null}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Start meeting"
-            disabled={
-              busy || (meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim()))
+          )}
+          <Button
+            label={
+              returning
+                ? 'Return to live meeting'
+                : meetingSource === 'online'
+                  ? 'Start online meeting'
+                  : 'Start recording'
             }
+            accessibilityLabel="Start meeting"
+            icon={returning ? 'arrow-right' : meetingSource === 'online' ? 'video' : 'mic'}
+            loading={busy}
+            disabled={meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim())}
             onPress={start}
-            style={styles.startButton}
-          >
-            {busy ? (
-              <ActivityIndicator color={theme.colors.primary} />
-            ) : (
-              <>
-                {returning ? null : <View style={styles.recordDot} />}
-                <Text style={styles.startButtonText}>
-                  {returning
-                    ? 'Return to live meeting'
-                    : meetingSource === 'online'
-                      ? 'Start online meeting'
-                      : 'Start recording'}
-                </Text>
-              </>
-            )}
-          </Pressable>
+            fullWidth
+          />
         </ScrollView>
       </View>
     );
@@ -1555,7 +1824,7 @@ export default function MeetingScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.titleRow}>
-            <Text style={styles.title}>Meeting</Text>
+            <Text style={styles.title}>{meeting.title || 'Meeting'}</Text>
             <Pressable accessibilityRole="button" onPress={() => router.back()}>
               <Text style={styles.link}>Done</Text>
             </Pressable>
@@ -1564,10 +1833,16 @@ export default function MeetingScreen() {
             {new Date(meeting.startedAt).toLocaleString([], {
               dateStyle: 'medium',
               timeStyle: 'short',
-            })}{' '}
-            · {minutes} min
-            {speakers.length ? ` · ${speakers.length} people` : ''} · {finalizedNotes.length} notes
+            })}
           </Text>
+          <MeetingMetrics
+            values={[
+              { label: 'min', value: minutes },
+              { label: 'people', value: speakers.length },
+              { label: 'answers', value: completedAnswerCount },
+              { label: 'notes', value: finalizedNotes.length },
+            ]}
+          />
           <View style={styles.savedCard}>
             <Icon
               name={
@@ -1577,53 +1852,55 @@ export default function MeetingScreen() {
               }
               size={22}
               color={
-                noteUnsaved || meeting.state === 'interrupted'
-                  ? theme.colors.tone.danger
-                  : theme.colors.tone.done
+                noteUnsaved || meeting.state === 'interrupted' ? colors.attention : colors.success
               }
             />
             <View style={styles.fill}>{statusLines}</View>
           </View>
-          {openPoints.length ? (
-            <View style={styles.block}>
-              <SectionLabel>{`OPEN POINTS · ${openPoints.length}`}</SectionLabel>
-              {openPoints}
-            </View>
-          ) : null}
           {visibleAnswers.length ? (
             <View style={styles.block}>
               <SectionLabel>{`ANSWERS · ${visibleAnswers.length}`}</SectionLabel>
               {noticedCards().slice(0, visibleAnswers.length)}
             </View>
           ) : null}
-          <View style={styles.block}>
-            <SectionLabel>{`YOUR NOTES · ${finalizedNotes.length}`}</SectionLabel>
-            {finalizedNotes.length ? (
-              noteRows(finalizedNotes)
-            ) : (
-              <Text style={styles.hint}>No notes in this meeting.</Text>
-            )}
-            {composerVisible ? noteComposer(false) : null}
-          </View>
-          <View style={styles.block}>
-            <SectionLabel>PEOPLE</SectionLabel>
-            {speakers.length ? (
-              <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
-            ) : (
-              <Text style={styles.hint}>{speakerStatus}</Text>
-            )}
-            {unnamed !== undefined && (meeting.ownerToken || meeting.engine === 'attendee') ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => renameSpeaker(unnamed)}
-                style={styles.row}
-              >
-                <Text style={styles.rowValue}>{speakerLabel(unnamed)} has no name yet</Text>
-                <Text style={styles.link}>Name ›</Text>
-              </Pressable>
-            ) : null}
-            {restoreMerged}
-          </View>
+          {openPoints.length ? (
+            <View style={styles.block}>
+              <SectionLabel>{`OPEN POINTS · ${openPoints.length}`}</SectionLabel>
+              {openPoints}
+            </View>
+          ) : null}
+          {finalizedNotes.length || composerVisible ? (
+            <View style={styles.block}>
+              <SectionLabel>{`YOUR NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              {finalizedNotes.length ? (
+                noteRows(finalizedNotes)
+              ) : (
+                <Text style={styles.hint}>No notes in this meeting.</Text>
+              )}
+              {composerVisible ? noteComposer(false) : null}
+            </View>
+          ) : null}
+          {speakers.length ? (
+            <View style={styles.block}>
+              <SectionLabel>PEOPLE</SectionLabel>
+              {speakers.length ? (
+                <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
+              ) : (
+                <Text style={styles.hint}>{speakerStatus}</Text>
+              )}
+              {unnamed !== undefined && (meeting.ownerToken || meeting.engine === 'attendee') ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => renameSpeaker(unnamed)}
+                  style={styles.row}
+                >
+                  <Text style={styles.rowValue}>{speakerLabel(unnamed)} has no name yet</Text>
+                  <Text style={styles.link}>Name ›</Text>
+                </Pressable>
+              ) : null}
+              {restoreMerged}
+            </View>
+          ) : null}
           <View style={styles.bottomBar}>
             <Pressable
               accessibilityRole="button"
@@ -1641,16 +1918,6 @@ export default function MeetingScreen() {
               <Text style={styles.barButtonPrimaryText}>Continue in chat</Text>
             </Pressable>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => {
-              setTranscriptExpanded(false);
-              setShowNewMeeting(true);
-            }}
-            style={styles.centered}
-          >
-            <Text style={styles.link}>Start another meeting</Text>
-          </Pressable>
         </ScrollView>
         {transcriptSheet}
       </KeyboardAvoidingView>
@@ -1668,8 +1935,16 @@ export default function MeetingScreen() {
         accessibilityLabel="Minimize meeting"
         style={styles.circleButton}
       >
-        <Icon name="chevron-down" size={22} color={theme.colors.text} />
+        <Icon name="chevron-down" size={22} color={colors.text} />
       </Pressable>
+      {wide ? (
+        <View style={styles.fill}>
+          <Text style={styles.rowText}>{meeting.title || 'Live meeting'}</Text>
+          <Text style={styles.hint}>
+            {meeting.engine === 'attendee' ? 'Online meeting' : 'In this room'}
+          </Text>
+        </View>
+      ) : null}
       <Text
         testID="meeting-live-status"
         numberOfLines={2}
@@ -1677,7 +1952,7 @@ export default function MeetingScreen() {
       >
         {liveProblem ??
           (meeting.captureStatus === 'paused'
-            ? 'Ⅱ Paused'
+            ? 'Paused'
             : meeting.captureStatus === 'downloading'
               ? 'Preparing language model…'
               : meeting.captureStatus === 'preparing'
@@ -1687,18 +1962,15 @@ export default function MeetingScreen() {
                   : '')}
       </Text>
       <View
-        style={[styles.pill, voiceSending && { borderColor: theme.colors.accent }]}
+        style={[styles.pill, voiceSending && { borderColor: colors.signature }]}
         accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
       >
         {voiceSending ? (
-          <Text style={[styles.pillText, { color: theme.colors.accent }]}>✦ Sending request…</Text>
+          <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>
         ) : (
           <>
-            <BreathingDot
-              color={paused ? theme.colors.tone.attention : theme.colors.tone.danger}
-              breathing={!paused && !preparing}
-            />
-            <Text style={[styles.pillText, paused && { color: theme.colors.tone.attention }]}>
+            <BreathingDot color={colors.attention} breathing={!paused && !preparing} />
+            <Text style={[styles.pillText, paused && { color: colors.attention }]}>
               {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
             </Text>
           </>
@@ -1716,7 +1988,7 @@ export default function MeetingScreen() {
         accessibilityRole="button"
         accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
       >
-        <Icon name={paused ? 'play' : 'pause'} size={18} color={theme.colors.text} />
+        <Icon name={paused ? 'play' : 'pause'} size={18} color={colors.text} />
       </Pressable>
       <Pressable
         disabled={busy || pendingCommand === 'stop'}
@@ -1754,7 +2026,7 @@ export default function MeetingScreen() {
   const noticed = (
     <View style={styles.block}>
       <View style={styles.noticedHeader}>
-        <Text style={[styles.sparkle, { color: theme.colors.accent }]}>✦</Text>
+        <Text style={[styles.sparkle, { color: colors.signature }]}>✦</Text>
         <Text style={styles.noticedTitle}>Verity noticed</Text>
         {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
       </View>
@@ -1768,7 +2040,39 @@ export default function MeetingScreen() {
     </View>
   );
 
-  if (wide)
+  if (wide) {
+    const stateWord = voiceSending
+      ? 'Sending request…'
+      : paused
+        ? 'Paused'
+        : meeting.captureStatus === 'downloading'
+          ? 'Preparing language model…'
+          : preparing
+            ? 'Preparing microphone…'
+            : 'Recording';
+    const statusLine = [
+      stateWord,
+      paused || preparing ? null : elapsed(meeting.startedAt, now),
+      meeting.engine === 'attendee' ? 'Online meeting' : 'In this room',
+      meeting.serverId === null ? 'Saved only on this device' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    // Consecutive lines of one speaker read as one turn; words the diarizer has not
+    // reached yet trail the latest turn in a muted tone.
+    const turns: { speaker: number | null; start: number; parts: TranscriptRow[] }[] = [];
+    for (const line of chunks.slice(-12)) {
+      const last = turns.at(-1);
+      if ('speaker' in line && !line.pending && last?.speaker !== line.speaker)
+        turns.push({ speaker: line.speaker, start: line.start, parts: [line] });
+      else if (last) last.parts.push(line);
+      else
+        turns.push({
+          speaker: 'speaker' in line && !line.pending ? line.speaker : null,
+          start: 'start' in line ? line.start : (now - meeting.startedAt) / 1000,
+          parts: [line],
+        });
+    }
     return (
       <KeyboardAvoidingView
         behavior="padding"
@@ -1776,35 +2080,212 @@ export default function MeetingScreen() {
       >
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.page}>
-          {header}
+          {transcriptExpanded ? null : (
+            <View style={styles.header}>
+              <IconButton
+                icon="chevron-down"
+                accessibilityLabel="Minimize meeting"
+                onPress={minimize}
+              />
+              <View style={styles.fill}>
+                <Text style={styles.wideTitle} numberOfLines={1}>
+                  {meeting.title || 'Live meeting'}
+                </Text>
+                <View style={styles.wideStatus}>
+                  {liveProblem === null ? (
+                    <BreathingDot
+                      color={paused || preparing ? colors.textFaint : colors.success}
+                      breathing={!paused && !preparing}
+                    />
+                  ) : null}
+                  <Text
+                    testID="meeting-live-status"
+                    numberOfLines={1}
+                    style={[styles.wideStatusText, liveProblem !== null && styles.statusError]}
+                  >
+                    {liveProblem ?? statusLine}
+                  </Text>
+                </View>
+              </View>
+              <IconButton
+                icon={paused ? 'play' : 'pause'}
+                accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
+                disabled={
+                  busy ||
+                  meeting.engine === 'attendee' ||
+                  !!pendingCommand ||
+                  (!paused && meeting.captureStatus !== 'listening')
+                }
+                onPress={togglePause}
+              />
+              <Button
+                label="End"
+                accessibilityLabel="End meeting"
+                variant="secondary"
+                size="compact"
+                disabled={busy || pendingCommand === 'stop'}
+                onPress={end}
+              />
+            </View>
+          )}
           <View style={styles.columns}>
             <View style={styles.column}>
-              <SectionLabel>IN THE ROOM</SectionLabel>
-              {speakerRow(true)}
-              <SectionLabel>{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              <View style={styles.roomHead}>
+                <Text style={styles.roomLabel}>IN THE ROOM</Text>
+                <Pressable
+                  accessibilityRole="switch"
+                  accessibilityLabel="Transcript"
+                  accessibilityState={{ checked: showTranscript }}
+                  onPress={() => {
+                    // Shown again, the transcript starts at the newest words and follows them.
+                    wideTranscriptAtEnd.current = true;
+                    setMeetingTranscriptVisible(!showTranscript);
+                  }}
+                  style={styles.transcriptSwitch}
+                >
+                  <Text style={styles.wideStatusText}>Transcript</Text>
+                  <Toggle value={showTranscript} />
+                </Pressable>
+              </View>
+              {speakers.length ? (
+                <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
+              ) : (
+                <Text style={styles.hint}>{speakerStatus}</Text>
+              )}
+              {restoreMerged}
+              {showTranscript ? (
+                <ScrollView
+                  ref={transcriptEnd}
+                  testID="meeting-transcript"
+                  style={styles.transcriptPane}
+                  contentContainerStyle={styles.transcriptTurns}
+                  scrollEventThrottle={100}
+                  onScroll={({ nativeEvent }) => {
+                    wideTranscriptAtEnd.current =
+                      nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height >=
+                      nativeEvent.contentSize.height - 24;
+                  }}
+                  onContentSizeChange={() => {
+                    if (wideTranscriptAtEnd.current)
+                      transcriptEnd.current?.scrollToEnd({ animated: false });
+                  }}
+                >
+                  {turns.length ? (
+                    turns.map((turn, index) => (
+                      <View key={index} style={styles.turn}>
+                        <SpeakerAvatar
+                          initial={turn.speaker === null ? '?' : speakerInitial(turn.speaker)}
+                          tone={
+                            turn.speaker === null
+                              ? colors.textFaint
+                              : speakerTone(colors, turn.speaker)
+                          }
+                          dashed={turn.speaker === null}
+                          size={28}
+                        />
+                        <View style={styles.fill}>
+                          <Text>
+                            <Text style={styles.turnName}>{speakerLabel(turn.speaker)}</Text>
+                            <Text style={styles.turnTime}>
+                              {'  '}
+                              {noteClockTime(meeting.startedAt, turn.start)}
+                            </Text>
+                          </Text>
+                          <Text style={styles.transcriptText}>
+                            {turn.parts.map((part, partIndex) => (
+                              <Text
+                                key={partIndex}
+                                style={part.pending ? styles.transcriptPending : undefined}
+                              >
+                                {partIndex ? ' ' : ''}
+                                {part.text}
+                              </Text>
+                            ))}
+                          </Text>
+                        </View>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.hint}>Listening…</Text>
+                  )}
+                </ScrollView>
+              ) : null}
+              <Text style={styles.roomLabel}>NOTES</Text>
               <View style={styles.notesCard}>
                 <ScrollView style={styles.fill} keyboardShouldPersistTaps="handled">
-                  {noteRows(finalizedNotes)}
+                  {finalizedNotes.map((note, index) => (
+                    <View
+                      key={note.id}
+                      testID="meeting-note"
+                      style={[styles.noteRow, index > 0 && styles.noteRowDivided]}
+                    >
+                      <Text style={styles.noteRowTime}>
+                        {noteClockTime(meeting.startedAt, note.atSeconds)}
+                      </Text>
+                      <Text style={styles.noteRowText}>{note.text}</Text>
+                    </View>
+                  ))}
                 </ScrollView>
+                <View style={styles.noteField}>
+                  <TextInput
+                    accessibilityLabel="Add a meeting note"
+                    maxLength={10_000}
+                    placeholder="Add a note…"
+                    placeholderTextColor={colors.textFaint}
+                    multiline
+                    submitBehavior="submit"
+                    value={draft?.text ?? ''}
+                    onChangeText={editNote}
+                    onSubmitEditing={submitNote}
+                    style={styles.noteInput}
+                  />
+                  <Pressable
+                    onPress={submitNote}
+                    accessibilityRole="button"
+                    accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Add note'}
+                    style={styles.noteAdd}
+                  >
+                    <Icon
+                      name={noteUnsaved ? 'rotate-cw' : 'plus'}
+                      size={18}
+                      color={noteUnsaved ? colors.attention : colors.action}
+                    />
+                  </Pressable>
+                </View>
               </View>
-              {noteComposer(false)}
             </View>
-            <View style={styles.divider} />
             <View style={styles.column}>
-              <ScrollView
-                style={styles.fill}
-                contentContainerStyle={styles.content}
-                keyboardShouldPersistTaps="handled"
+              <VerityPane
+                footer={
+                  <AskVerityField
+                    value={insightQuestion}
+                    onChangeText={(text) => {
+                      askClearedAfterSend.current = false;
+                      setInsightQuestion(text);
+                    }}
+                    onSubmit={() => void openResearch(insightQuestion, 'request')}
+                    sending={sendingInsight}
+                    model={modelChoice?.effective}
+                    onPickModel={() => setModelSheetOpen(true)}
+                  />
+                }
               >
-                {noticed}
-              </ScrollView>
-              {askComposer(false)}
+                {cards}
+              </VerityPane>
             </View>
           </View>
         </View>
+        <MeetingModelSheet
+          visible={modelSheetOpen}
+          models={modelChoice?.models ?? []}
+          selected={modelChoice?.effective}
+          onPick={pickMeetingModel}
+          onClose={() => setModelSheetOpen(false)}
+        />
         {transcriptSheet}
       </KeyboardAvoidingView>
     );
+  }
 
   const lastNote = finalizedNotes.at(-1);
   return (
@@ -1814,12 +2295,13 @@ export default function MeetingScreen() {
     >
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.page}>
-        {header}
+        {transcriptExpanded ? null : header}
         <ScrollView
           style={styles.fill}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
         >
+          <MeetingWave active={!paused && !preparing} addressed={voiceSending} />
           {speakerRow(false)}
           {noticed}
           {composing === 'note' && finalizedNotes.length ? (
@@ -1844,7 +2326,7 @@ export default function MeetingScreen() {
                 accessibilityLabel="Close note"
                 onPress={() => setComposing(null)}
               >
-                <Icon name="x" size={20} color={theme.colors.textMuted} />
+                <Icon name="x" size={20} color={colors.textMuted} />
               </Pressable>
             )}
           </View>
@@ -1856,7 +2338,7 @@ export default function MeetingScreen() {
               accessibilityLabel="Close question"
               onPress={() => setComposing(null)}
             >
-              <Icon name="x" size={20} color={theme.colors.textMuted} />
+              <Icon name="x" size={20} color={colors.textMuted} />
             </Pressable>
           </View>
         ) : (
@@ -1868,7 +2350,7 @@ export default function MeetingScreen() {
               style={styles.barButton}
             >
               <Text style={styles.barButtonText}>
-                ✎ Note
+                Note
                 {draft?.text
                   ? ' · draft'
                   : finalizedNotes.length
@@ -1920,239 +2402,347 @@ function timeOfDay(at: number) {
   return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-const styles = StyleSheet.create((theme) => ({
-  root: { flex: 1, backgroundColor: theme.colors.background },
-  fill: { flex: 1 },
-  page: {
-    flex: 1,
-    width: '100%',
-    maxWidth: 1200,
-    alignSelf: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    gap: theme.spacing.md,
-  },
-  content: { padding: theme.spacing.lg, gap: theme.spacing.xl, paddingBottom: theme.spacing.xl },
-  narrow: { width: '100%', maxWidth: 640, alignSelf: 'center' },
-  block: { gap: theme.spacing.md },
-  header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  circleButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    minHeight: 40,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  pillText: {
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  dotRing: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  endButton: {
-    minHeight: 40,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    justifyContent: 'center',
-  },
-  headerStatus: {
-    flex: 1,
-    color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    textAlign: 'right',
-  },
-  endButtonText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
-  status: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  statusError: { color: theme.colors.tone.danger },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
-  hint: { color: theme.colors.textFaint, fontSize: theme.text.sm },
-  body: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
-  link: { color: theme.colors.primary, fontSize: theme.text.md },
-  centered: { alignItems: 'center', paddingVertical: theme.spacing.sm },
-  avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
-  noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  sparkle: { fontSize: theme.text.md },
-  noticedTitle: { flex: 1, color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-  note: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
-  noteTime: { color: theme.colors.textFaint, fontWeight: '700' },
-  notesCard: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderColor: theme.colors.border,
-    borderWidth: 1,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
-  },
-  composerLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
-  },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.lg,
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.xs,
-    paddingVertical: theme.spacing.xs,
-  },
-  composerTime: { color: theme.colors.primary, fontWeight: '700', fontSize: theme.text.sm },
-  composerInput: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    minHeight: 40,
-    maxHeight: 120,
-    paddingVertical: theme.spacing.sm,
-  },
-  composerSend: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bottomBar: { flexDirection: 'row', gap: theme.spacing.md, paddingVertical: theme.spacing.sm },
-  barButton: {
-    flex: 1,
-    minHeight: 52,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  barButtonText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  barButtonPrimary: { borderColor: theme.colors.primary, backgroundColor: 'transparent' },
-  barButtonPrimaryText: { color: theme.colors.primary, fontSize: theme.text.md, fontWeight: '700' },
-  columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
-  column: { flex: 1, gap: theme.spacing.md },
-  divider: { width: 1, backgroundColor: theme.colors.border },
-  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { color: theme.colors.text, fontSize: theme.text.xl, fontWeight: '800' },
-  subtitle: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    marginTop: -theme.spacing.lg,
-  },
-  segmented: {
-    flexDirection: 'row',
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderRadius: theme.radius.pill,
-    padding: theme.spacing.xs,
-  },
-  segment: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: theme.spacing.md,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  segmentSelected: { borderColor: theme.colors.primary, backgroundColor: theme.colors.background },
-  segmentText: { color: theme.colors.textMuted, fontSize: theme.text.md },
-  segmentTextSelected: { color: theme.colors.primary, fontSize: theme.text.md, fontWeight: '700' },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
-  },
-  rowText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
-  rowValue: { flex: 1, color: theme.colors.textMuted, fontSize: theme.text.sm, textAlign: 'right' },
-  engineChoice: { paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.sm },
-  startButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.md,
-    minHeight: 56,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.primary,
-  },
-  recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.tone.danger },
-  startButtonText: { color: theme.colors.primary, fontSize: theme.text.lg, fontWeight: '700' },
-  recoveryCard: {
-    gap: theme.spacing.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-  },
-  recoveryTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  recoveryButton: {
-    flexDirection: 'row',
-    alignSelf: 'flex-start',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.primary,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-  },
-  recoveryButtonText: { color: theme.colors.primary, fontWeight: '700' },
-  savedCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-  },
-  sheet: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
-  },
-  sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  sheetTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-  transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
-  transcriptText: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 24 },
-}));
+const styles = StyleSheet.create((theme) => {
+  const colors = theme.colors;
+  return {
+    root: { flex: 1, backgroundColor: colors.background },
+    fill: { flex: 1 },
+    page: {
+      flex: 1,
+      width: '100%',
+      maxWidth: 1200,
+      alignSelf: 'center',
+      paddingHorizontal: theme.spacing.lg,
+      gap: theme.spacing.md,
+    },
+    content: { padding: theme.spacing.lg, gap: theme.spacing.xl, paddingBottom: theme.spacing.xl },
+    narrow: { width: '100%', maxWidth: 640, alignSelf: 'center' },
+    block: { gap: theme.spacing.md },
+    header: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    circleButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    pill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      minHeight: 40,
+      paddingHorizontal: theme.spacing.lg,
+      borderRadius: theme.radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    pillText: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+      fontVariant: ['tabular-nums'],
+    },
+    dotRing: {
+      width: 18,
+      height: 18,
+      borderRadius: 9,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dot: { width: 10, height: 10, borderRadius: 5 },
+    endButton: {
+      minHeight: 40,
+      paddingHorizontal: theme.spacing.lg,
+      borderRadius: theme.radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      justifyContent: 'center',
+    },
+    headerStatus: {
+      flex: 1,
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+      textAlign: 'right',
+    },
+    endButtonText: {
+      color: colors.attention,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.row.fontSize,
+    },
+    status: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
+    statusError: { color: colors.attention },
+    error: {
+      color: colors.attention,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    hint: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    link: {
+      color: colors.action,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
+    avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+    avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
+    noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    sparkle: { fontFamily: theme.fonts.regular, fontSize: theme.typography.row.fontSize },
+    noticedTitle: {
+      flex: 1,
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    note: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    noteTime: { color: colors.textFaint, fontFamily: theme.fonts.bold },
+    notesCard: {
+      flex: 1,
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: theme.radius.lg,
+      padding: theme.spacing.lg,
+      gap: theme.spacing.md,
+    },
+    composerLine: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      paddingVertical: theme.spacing.sm,
+    },
+    composerPanel: {
+      gap: 8,
+      borderRadius: 26,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+    },
+    composer: {
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+      borderRadius: theme.radius.lg,
+      paddingLeft: 0,
+      paddingRight: 0,
+      paddingVertical: theme.spacing.xs,
+    },
+    composerTime: {
+      color: colors.action,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    composerInput: {
+      alignSelf: 'stretch',
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      minHeight: 40,
+      maxHeight: 120,
+      paddingVertical: theme.spacing.sm,
+    },
+    composerSend: {
+      alignSelf: 'flex-end',
+      minWidth: 96,
+      minHeight: 44,
+      paddingHorizontal: 12,
+      borderRadius: 22,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    bottomBar: { flexDirection: 'row', gap: theme.spacing.md, paddingVertical: theme.spacing.sm },
+    barButton: {
+      flex: 1,
+      minHeight: 52,
+      borderRadius: theme.radius.pill,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    barButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    barButtonPrimary: { borderColor: colors.action, backgroundColor: 'transparent' },
+    barButtonPrimaryText: {
+      color: colors.action,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
+    wideTitle: { ...theme.typography.title, color: colors.text },
+    wideStatus: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    wideStatusText: { ...theme.typography.subtitle, flexShrink: 1, color: colors.textMuted },
+    roomHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    roomLabel: { ...theme.typography.label, color: colors.textMuted },
+    transcriptSwitch: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    transcriptPane: { flexGrow: 0, maxHeight: '45%' },
+    transcriptTurns: { gap: theme.spacing.lg },
+    turn: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
+    turnName: { ...theme.typography.row, color: colors.text },
+    turnTime: { ...theme.typography.footnote, color: colors.textFaint },
+    noteRow: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: theme.spacing.lg,
+      paddingVertical: theme.spacing.md,
+    },
+    noteRowDivided: { borderTopWidth: 1, borderTopColor: colors.border },
+    noteRowTime: { ...theme.typography.footnote, width: 44, color: colors.textFaint },
+    noteRowText: { ...theme.typography.body, flex: 1, color: colors.text },
+    noteField: {
+      minHeight: 48,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      paddingLeft: theme.spacing.md,
+      paddingRight: theme.spacing.xs,
+      paddingVertical: theme.spacing.xs,
+      borderRadius: theme.radius.control,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+    },
+    noteInput: {
+      ...theme.typography.body,
+      flex: 1,
+      maxHeight: 120,
+      color: colors.text,
+      paddingVertical: theme.spacing.sm,
+    },
+    noteAdd: {
+      width: 40,
+      height: 40,
+      borderRadius: theme.radius.control,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: tint(colors.action, 'fill'),
+      borderWidth: 1,
+      borderColor: tint(colors.action, 'border'),
+    },
+    column: { flex: 1, gap: theme.spacing.md },
+    setupSection: { gap: theme.spacing.sm },
+    setupCard: { flex: 1, gap: theme.spacing.sm },
+    setupInline: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
+    titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    title: { ...theme.typography.display, color: colors.text },
+    subtitle: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+      marginTop: -theme.spacing.lg,
+    },
+    segmented: {
+      flexDirection: 'row',
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surfaceAlt,
+      borderRadius: theme.radius.control,
+      padding: theme.spacing.xs,
+    },
+    segment: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: theme.spacing.sm,
+      borderRadius: theme.radius.tile,
+      borderWidth: 1,
+      borderColor: 'transparent',
+    },
+    segmentSelected: {
+      borderColor: tint(colors.action, 'border'),
+      backgroundColor: tint(colors.action, 'fill'),
+    },
+    segmentText: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      borderRadius: theme.radius.lg,
+      paddingHorizontal: theme.spacing.lg,
+      paddingVertical: theme.spacing.md,
+    },
+    rowText: {
+      flex: 1,
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
+    rowValue: {
+      flex: 1,
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+      textAlign: 'right',
+    },
+    startButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    savedCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      borderRadius: theme.radius.lg,
+      padding: theme.spacing.lg,
+    },
+    sheet: {
+      flex: 1,
+      backgroundColor: colors.background,
+      padding: theme.spacing.lg,
+      gap: theme.spacing.md,
+    },
+    sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    sheetTitle: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
+    transcriptText: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 24,
+    },
+    transcriptPending: { color: colors.textMuted },
+  };
+});

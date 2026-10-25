@@ -55,6 +55,8 @@ export {
 } from './automation.js';
 export {
   END_PLANNING_TOOL,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
+  parsePlanningProposal,
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
@@ -72,7 +74,7 @@ export { LANGUAGE_SYSTEM_PROMPT } from './language.js';
 export { LOCAL_PROJECT_SYSTEM_PROMPT } from './local-project.js';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from './project-provision.js';
 export { MEMORY_SYSTEM_PROMPT } from './memory.js';
-export { PULL_REQUEST_SYSTEM_PROMPT } from './pull-requests.js';
+export { PULL_REQUEST_SYSTEM_PROMPT, repoToolPullRequestSystemPrompt } from './pull-requests.js';
 export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export {
@@ -107,6 +109,24 @@ export {
   publishSessionProgressRequestSchema,
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
+export {
+  APP_HELP_SYSTEM_PROMPT,
+  APP_HELP_TOOL,
+  APP_HELP_TOOL_DESCRIPTION,
+  APP_HELP_TOPICS,
+  DOCS_BASE_URL,
+  WELCOME_SESSION_MARKER,
+  answerAppHelp,
+  appHelpRequestSchema,
+  renderWelcomeGuidePrompt,
+  renderWelcomeOpener,
+  welcomeChoices,
+  type WelcomeSetupStatus,
+  type AppHelpAnswer,
+  type AppHelpEntry,
+  type AppHelpRequest,
+  type AppHelpTopic,
+} from './app-help.js';
 export {
   ASSIGNED_TASKS_PROMPT_MAX,
   TASKS_ADD_MAX,
@@ -181,3 +201,32 @@ export {
 } from './live.js';
 
 export { liveResourceInterval } from './live-resources.js';
+export {
+  socketEvidenceRecordSchema,
+  socketEvidenceMetadataSchema,
+  socketEvidenceHashSchema,
+  socketEvidenceExportSchema,
+  canonicalEvidenceJson,
+  socketEvidenceHashInput,
+} from './socket-evidence.js';
+export type { SocketEvidenceExport } from './socket-evidence.js';
+export {
+  selectedEvidenceMetadataSchema,
+  selectedEvidenceRecordSchema,
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+} from './selected-socket-evidence.js';
+export type {
+  SelectedEvidenceMetadata,
+  SelectedEvidenceExport,
+} from './selected-socket-evidence.js';
+
+export {
+  HISTORY_MAX_BYTES,
+  HISTORY_MAX_EVENTS,
+  boundedHistoryPageSchema,
+  boundedHistoryResultSchema,
+} from './history.js';
+export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
+
+export * from './vulnerability.js';

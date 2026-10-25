@@ -1,6 +1,10 @@
-import type { BranchList, VerityClient } from '@verity/mobile';
+import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 
-type PendingBranches = { promise: Promise<BranchList>; settledAt?: number };
+type PendingBranches = {
+  promise: Promise<BranchList>;
+  controller: AbortController;
+  settledAt?: number;
+};
 type BranchesCache = {
   pending: Map<string, PendingBranches>;
   snapshots: Map<string, BranchList>;
@@ -57,6 +61,27 @@ export function rememberBranches(client: VerityClient, sessionId: string, value:
   remember(cacheFor(client), sessionId, value);
 }
 
+/** Carry the overview's known PR into the opening frame without another HTTP read. */
+export function seedSessionBranches(client: VerityClient, session: SessionSummary): void {
+  const cached = cachedBranches(client, session.sessionId);
+  const known = session.pullRequest === undefined ? cached?.pullRequest : session.pullRequest;
+  if (known === undefined) return;
+  // A confirmed action can update the compact projection before the next full read.
+  const pullRequest = session.pr === null || known === null ? null : { ...known, ...session.pr };
+  // A speculative read predating this snapshot must not overwrite it on entry.
+  const cache = cacheFor(client);
+  cache.pending.get(session.sessionId)?.controller.abort();
+  cache.pending.delete(session.sessionId);
+  cache.versions.delete(session.sessionId);
+  rememberBranches(client, session.sessionId, {
+    switchable: [],
+    ...cached,
+    current: session.branch ?? cached?.current ?? '',
+    currentPr: pullRequest?.number ?? null,
+    pullRequest,
+  });
+}
+
 /** Capture identity before awaiting the network; authentication may rotate meanwhile. */
 export function branchesSnapshotWriter(
   client: VerityClient,
@@ -78,6 +103,7 @@ export function branchesSnapshotWriter(
 export function invalidateBranches(client: VerityClient, sessionId: string): void {
   const cache = cacheFor(client);
   cache.snapshots.delete(sessionId);
+  cache.pending.get(sessionId)?.controller.abort();
   cache.pending.delete(sessionId);
   cache.versions.delete(sessionId);
 }
@@ -96,18 +122,28 @@ function freshPrefetch(cache: BranchesCache, sessionId: string): PendingBranches
 /** Start branch/PR loading before navigation; the screen consumes this request. */
 export function prefetchBranches(client: VerityClient, sessionId: string): void {
   const cache = cacheFor(client);
+  for (const [id, pending] of cache.pending) {
+    if (id !== sessionId) {
+      pending.controller.abort();
+      cache.pending.delete(id);
+    }
+  }
   if (freshPrefetch(cache, sessionId)) return;
   const publish = branchesSnapshotWriter(client, sessionId);
+  const controller = new AbortController();
   const entry: PendingBranches = {
-    promise: client.getBranches(sessionId).then((value) => {
+    controller,
+    promise: client.getBranches(sessionId, controller.signal).then((value) => {
       entry.settledAt = Date.now();
-      publish(value);
+      if (!controller.signal.aborted) publish(value);
       return value;
     }),
   };
   cache.pending.set(sessionId, entry);
   if (cache.pending.size > MAX_SNAPSHOTS) {
-    cache.pending.delete(cache.pending.keys().next().value!);
+    const oldest = cache.pending.keys().next().value!;
+    cache.pending.get(oldest)?.controller.abort();
+    cache.pending.delete(oldest);
   }
   void entry.promise.catch(() => {
     if (cache.pending.get(sessionId) === entry) cache.pending.delete(sessionId);
@@ -118,11 +154,27 @@ export function prefetchBranches(client: VerityClient, sessionId: string): void 
 export function takePrefetchedBranches(
   client: VerityClient,
   sessionId: string,
+  signal?: AbortSignal,
 ): Promise<BranchList> | undefined {
   const cache = cacheFor(client);
   const entry = freshPrefetch(cache, sessionId);
   if (!entry) return undefined;
   cache.pending.delete(sessionId);
   // A transient speculative failure must not postpone the PR bar until the next poll.
-  return entry.promise.catch(() => client.getBranches(sessionId));
+  const abort = () => entry.controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  return entry.promise
+    .catch((error: unknown) => {
+      if (signal?.aborted || entry.controller.signal.aborted) throw error;
+      return client.getBranches(sessionId, signal);
+    })
+    .finally(() => signal?.removeEventListener('abort', abort));
+}
+
+/** Release speculative network work when navigation no longer selects this session. */
+export function cancelPrefetchedBranches(client: VerityClient, sessionId: string): void {
+  const cache = cacheFor(client);
+  cache.pending.get(sessionId)?.controller.abort();
+  cache.pending.delete(sessionId);
 }

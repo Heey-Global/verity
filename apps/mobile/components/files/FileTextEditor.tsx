@@ -244,14 +244,14 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   error: {
-    color: theme.colors.tone.danger,
+    color: theme.colors.attention,
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.sm,
   },
   input: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     padding: theme.spacing.lg,
   },

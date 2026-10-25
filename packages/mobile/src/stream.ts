@@ -1,3 +1,13 @@
+import {
+  beginRuntimeSubscription,
+  recordRuntimeSessionEvent,
+  recordSessionStreamCreated,
+} from './runtimeDiagnostics.js';
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
 import type { LiveEndedReason } from '@verity/events';
 import type { LiveSessionHandle, LiveSessionTransport } from './live/connection.js';
 import { type AgentEvent, type StreamEventFrame } from './wire.js';
@@ -43,6 +53,13 @@ export type SessionStreamConnectionState =
  * events after the cursor, so the reducer keeps accumulating with no gap or
  * duplication. {@link stop} ends the subscription.
  */
+interface OutputFreeze {
+  sequences: Set<number>;
+  pending: number;
+  succeeded: boolean;
+  atSeq: number;
+}
+
 export class SessionStream {
   // Reassigned (not readonly) when older history is prepended: the reducer is
   // forward-only, so prepending means rebuilding it over the full event list.
@@ -51,12 +68,14 @@ export class SessionStream {
   // prepended (scroll-up) and the transcript rebuilt deterministically.
   private eventFrames: StreamEventFrame[] = [];
   private handle: LiveSessionHandle | null = null;
+  private finishRuntimeSubscription: (() => void) | undefined;
   private view: boolean;
   private lastSeq: number;
   private rateLimitClearedThroughSeq: number | undefined;
   // tool_use_ids whose permission prompt the server has already settled. Kept so
   // neither a reducer rebuild nor an older history page can resurrect the card.
   private readonly resolvedPermissions = new Set<string>();
+  private timing: SwitchTiming | undefined;
   private started = false;
   private stopped = false;
   private paused = false;
@@ -65,8 +84,46 @@ export class SessionStream {
   // then we apply events but suppress `onUpdate`, batching the backlog into one
   // render (see onMessage) so opening a session doesn't scroll wildly.
   private caughtUp = false;
+  private readonly suppressedOutput = new Set<number>();
+  private outputFreeze: OutputFreeze | undefined;
+  private outputFrozen = false;
+
+  get outputSuppressed(): boolean {
+    return this.outputFrozen;
+  }
+
+  freezeOutput(): OutputFreeze {
+    if (!this.outputFrozen || this.outputFreeze === undefined) {
+      this.outputFreeze = {
+        sequences: new Set(),
+        pending: 0,
+        succeeded: false,
+        atSeq: this.lastSeq,
+      };
+    }
+    this.outputFreeze.pending += 1;
+    this.outputFrozen = true;
+    return this.outputFreeze;
+  }
+
+  settleOutput(freeze: OutputFreeze, success: boolean): boolean {
+    freeze.succeeded ||= success;
+    freeze.pending -= 1;
+    if (freeze.pending > 0 || freeze.succeeded) return false;
+    for (const seq of freeze.sequences) this.suppressedOutput.delete(seq);
+    const restoredCurrent = this.outputFreeze === freeze;
+    if (restoredCurrent) this.outputFrozen = false;
+    this.reducer = new SessionReducer();
+    for (const frame of this.eventFrames) {
+      if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
+    }
+    for (const id of this.resolvedPermissions) this.reducer.resolvePermission(id);
+    return restoredCurrent;
+  }
 
   constructor(private readonly opts: SessionStreamOptions) {
+    recordSessionStreamCreated();
+    this.timing = sessionSwitchTiming(opts.sessionId);
     this.lastSeq = opts.sinceSeq ?? 0;
     this.view = opts.view ?? false;
   }
@@ -208,7 +265,9 @@ export class SessionStream {
     const previousMessages = this.reducer.messages;
     this.eventFrames = [...fresh, ...this.eventFrames];
     this.reducer = new SessionReducer();
-    for (const frame of this.eventFrames) this.reducer.applyFrame(frame);
+    for (const frame of this.eventFrames) {
+      if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
+    }
     // Replaying the frames re-raises every `permission` in them. Re-settle the ones
     // the server already answered so scroll-up can't resurrect a dismissed card.
     for (const toolUseId of this.resolvedPermissions) this.reducer.resolvePermission(toolUseId);
@@ -231,6 +290,7 @@ export class SessionStream {
     this.setConnectionState('paused');
     const handle = this.handle;
     this.handle = null;
+    this.finishRuntimeSubscription?.();
     handle?.close();
   }
 
@@ -248,6 +308,7 @@ export class SessionStream {
     this.paused = false;
     const handle = this.handle;
     this.handle = null;
+    this.finishRuntimeSubscription?.();
     handle?.close();
   }
 
@@ -255,46 +316,57 @@ export class SessionStream {
     // Every subscription has its own replay watermark. Keeping the previous
     // one would publish replay frames as live updates before this one confirms
     // it has caught up.
+    markSessionSwitch(this.timing, 'replay-subscribe');
     this.caughtUp = false;
     this.setConnectionState('connecting');
     let handle: LiveSessionHandle | null = null;
     const current = (): boolean => !this.stopped && !this.paused && this.handle === handle;
-    handle = this.opts.transport.subscribeSession(
-      this.opts.sessionId,
-      {
-        cursor: () => this.lastSeq,
-        event: (frame) => {
-          if (current()) this.onEvent(frame);
+    const finishRuntimeSubscription = beginRuntimeSubscription();
+    this.finishRuntimeSubscription = finishRuntimeSubscription;
+    try {
+      handle = this.opts.transport.subscribeSession(
+        this.opts.sessionId,
+        {
+          cursor: () => this.lastSeq,
+          event: (frame) => {
+            if (current()) this.onEvent(frame);
+          },
+          caughtUp: () => {
+            if (!current()) return;
+            markSessionSwitch(this.timing, 'replay-caught-up');
+            this.caughtUp = true;
+            this.setConnectionState('connected');
+            this.opts.onUpdate?.(this.reducer.state);
+          },
+          ended: (reason) => {
+            if (!current()) return;
+            finishRuntimeSubscription();
+            this.handle = null;
+            this.setConnectionState('stopped');
+            this.opts.onError?.(endedMessage(reason));
+          },
+          disconnected: (message) => {
+            if (!current()) return;
+            // The connection resubscribes from the cursor once it is back; the
+            // replay that follows waits for its own `caught_up` again.
+            this.caughtUp = false;
+            this.setConnectionState('reconnecting');
+            if (message !== undefined) this.opts.onError?.(message);
+          },
         },
-        caughtUp: () => {
-          if (!current()) return;
-          this.caughtUp = true;
-          this.setConnectionState('connected');
-          this.opts.onUpdate?.(this.reducer.state);
-        },
-        ended: (reason) => {
-          if (!current()) return;
-          this.handle = null;
-          this.setConnectionState('stopped');
-          this.opts.onError?.(endedMessage(reason));
-        },
-        disconnected: (message) => {
-          if (!current()) return;
-          // The connection resubscribes from the cursor once it is back; the
-          // replay that follows waits for its own `caught_up` again.
-          this.caughtUp = false;
-          this.setConnectionState('reconnecting');
-          if (message !== undefined) this.opts.onError?.(message);
-        },
-      },
-      this.view,
-    );
-    this.handle = handle;
+        this.view,
+      );
+      this.handle = handle;
+    } catch (error) {
+      finishRuntimeSubscription();
+      throw error;
+    }
   }
 
   private onEvent(frame: { seq: number; ts?: number | undefined; event: AgentEvent }): void {
     // Replays can overlap after a reconnect. Never apply an already-seen frame
     // or let an out-of-order frame move the resume cursor backwards.
+    recordRuntimeSessionEvent(frame.seq > this.lastSeq);
     if (frame.seq <= this.lastSeq) return;
     const eventFrame: StreamEventFrame = {
       k: 'event',
@@ -302,7 +374,24 @@ export class SessionStream {
       ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
       event: frame.event,
     };
-    this.reducer.applyFrame(eventFrame);
+    if (
+      frame.event.t === 'prompt' &&
+      !frame.event.steered &&
+      this.reducer.settledSeq > (this.outputFreeze?.atSeq ?? 0)
+    )
+      this.outputFrozen = false;
+    if (
+      this.outputFrozen &&
+      ['text', 'thinking', 'tool_call', 'permission', 'choices', 'automation_proposal'].includes(
+        frame.event.t,
+      )
+    ) {
+      // Keep the cursor and retained history, but never replay stopped generation.
+      this.outputFreeze?.sequences.add(frame.seq);
+      this.suppressedOutput.add(frame.seq);
+    } else {
+      this.reducer.applyFrame(eventFrame);
+    }
     this.eventFrames.push(eventFrame);
     this.lastSeq = frame.seq;
     // Batch the initial backlog: apply its events silently and emit ONCE at

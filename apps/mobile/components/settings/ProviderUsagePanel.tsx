@@ -100,9 +100,9 @@ function UsageMeter({
         : 0;
   const fillColor =
     level === 'spent'
-      ? theme.colors.accent
+      ? theme.colors.signature
       : level === 'low'
-        ? theme.colors.primary
+        ? theme.colors.action
         : theme.colors.textMuted;
   const percentText =
     reported !== undefined && Number.isFinite(reported) ? `${Math.round(percent)}% used` : null;
@@ -154,35 +154,29 @@ const styles = StyleSheet.create((theme) => ({
   },
   meterTitle: {
     flexShrink: 1,
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
   },
   meterPercent: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
   meterSpent: {
-    color: theme.colors.accent,
+    color: theme.colors.signature,
   },
   track: {
     height: 8,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.setup.surfaceAlt,
+    backgroundColor: theme.colors.surfaceAlt,
     overflow: 'hidden',
   },
   fill: {
     height: '100%',
     borderRadius: theme.radius.pill,
   },
-  reset: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-  },
-  empty: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-  },
+  reset: { ...theme.typography.footnote, color: theme.colors.textMuted },
+  empty: { ...theme.typography.body, color: theme.colors.textMuted },
 }));

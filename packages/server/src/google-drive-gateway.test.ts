@@ -33,6 +33,7 @@ async function harness(
   }) => Promise<void>,
   onApproval?: (store: EventStore) => Promise<void>,
   allow = true,
+  toolName: 'verity_google_drive' | 'verity_google_docs' = 'verity_google_drive',
 ) {
   const cipher = createSealableSecretCipher();
   cipher.unlock('ab'.repeat(32));
@@ -62,18 +63,47 @@ async function harness(
     googleDriveRefreshToken: 'refresh',
     googleDriveAccountEmail: 'me@example.test',
   });
+  const account = await store.googleAccounts.save({
+    email: 'me@example.test',
+    clientId: 'client',
+    refreshToken: 'refresh',
+    scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents'],
+  });
+  const link = await store.googleAccounts.linkFolder({
+    projectId: 'p1',
+    accountId: account.id,
+    folderId: 'root',
+    name: 'Root',
+    accessMode: 'read-write',
+  });
+  if (toolName === 'verity_google_docs')
+    await store.setSessionWorkspaceFile({
+      sessionId: 's1',
+      accountId: account.id,
+      folderLinkId: link.id,
+      kind: 'docs',
+      fileId: 'doc',
+      name: 'Doc',
+      revisionId: 'r1',
+      webViewLink: 'https://docs.google.com/document/d/doc/edit',
+    });
   const mutate = vi.fn().mockResolvedValue({ id: 'file', trashed: true });
   const drive: GoogleDriveAgentApi = {
     get: vi.fn(async (_token, id) => ({
       id,
       name: id === 'root' ? 'Root' : 'Note',
-      mimeType: id === 'root' ? 'application/vnd.google-apps.folder' : 'text/plain',
-      parents: id === 'root' ? [] : ['root'],
+      mimeType:
+        id === 'root'
+          ? 'application/vnd.google-apps.folder'
+          : id === 'shared' || id === 'outside-doc'
+            ? 'application/vnd.google-apps.document'
+            : 'text/plain',
+      parents: id === 'root' || id === 'outside-doc' ? [] : ['root'],
       version: 'v1',
     })),
     list: vi.fn().mockResolvedValue({ files: [] }),
     download: vi.fn().mockResolvedValue(new Uint8Array()),
-    export: vi.fn(),
+    export: vi.fn().mockResolvedValue(new TextEncoder().encode('# Shared document')),
     create: vi.fn(),
     mutate,
   };
@@ -89,13 +119,20 @@ async function harness(
   const tokens = createMcpGatewayTokens();
   const app = buildServer({
     eventStore: store,
+    googleDriveDocumentIsWithinProject: (input) => tool.canReadDocumentWithoutApproval(input),
     bus: new InMemoryEventBus(),
     secretCipher: cipher,
     conductor: { requestExternalPermission: approvals } as unknown as Conductor,
     mcpGateway: {
-      servedTools: ['verity_google_drive'],
+      servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
-      invokeTool: (input) => tool.invoke(input),
+      invokeTool: async (input) => {
+        if (toolName === 'verity_google_docs') {
+          await mutate(input);
+          return { edited: true };
+        }
+        return tool.invoke(input);
+      },
       recordCall: async () => {},
       requestMac: async ({ request: input }) => ({
         requestMac: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
@@ -123,7 +160,7 @@ async function harness(
           jsonrpc: '2.0',
           id: ++id,
           method: 'tools/call',
-          params: { name: 'verity_google_drive', arguments: args },
+          params: { name: toolName, arguments: args },
         });
         return new Promise((resolve, reject) => {
           const req = request(
@@ -162,6 +199,26 @@ async function harness(
   }
 }
 
+it('authorizes a writable folder-bound Workspace edit through the production gateway', async () => {
+  await harness(
+    async ({ call, mutate }) => {
+      expect(
+        (
+          await call({
+            action: 'edit',
+            revisionId: 'r1',
+            requests: [{ insertText: { text: 'x', location: { index: 1 } } }],
+          })
+        ).result?.isError,
+      ).not.toBe(true);
+      expect(mutate).toHaveBeenCalledOnce();
+    },
+    undefined,
+    true,
+    'verity_google_docs',
+  );
+});
+
 it('requires a card for every destructive Drive action, but not reads', async () => {
   await harness(async ({ call, approvals, mutate }) => {
     expect((await call({ action: 'read', fileId: 'file' })).result?.isError).not.toBe(true);
@@ -185,7 +242,8 @@ it('does not mutate after access is revoked while approval is pending', async ()
       expect(mutate).not.toHaveBeenCalled();
     },
     async (store) => {
-      await store.updateProjectSettings('p1', { googleDriveAccessMode: 'read-only' });
+      const link = (await store.googleAccounts.folders('p1'))[0]!;
+      await store.googleAccounts.linkFolder({ ...link, accessMode: 'read-only' });
     },
   );
 });
@@ -200,3 +258,81 @@ it('does not treat a denied card as permission to trash a file', async () => {
     false,
   );
 });
+
+it('requires approval for a document URL read without a project folder', async () => {
+  await harness(async ({ store, call, approvals, mutate }) => {
+    await store.googleAccounts.unlinkFolder(
+      'p1',
+      (await store.googleAccounts.folders('p1'))[0]!.id,
+    );
+    const result = await call({
+      action: 'read_document_url',
+      url: 'https://docs.google.com/document/d/shared/edit',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBeDefined();
+    expect(result.result?.isError).not.toBe(true);
+    expect(approvals).toHaveBeenCalledOnce();
+    expect(approvals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          googleAccount: {
+            id: (await store.googleAccounts.list())[0]!.id,
+            email: 'me@example.test',
+          },
+        }),
+      }),
+    );
+    expect(mutate).not.toHaveBeenCalled();
+    const denied = await call({ action: 'list' });
+    expect(denied.error !== undefined || denied.result?.isError === true).toBe(true);
+  });
+});
+
+it('reads document URLs inside the linked folder without approval', async () => {
+  await harness(async ({ call, approvals }) => {
+    const result = await call({
+      action: 'read_document_url',
+      url: 'https://docs.google.com/document/d/shared/edit',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.result?.isError).not.toBe(true);
+    expect(approvals).not.toHaveBeenCalled();
+  });
+});
+it('does not export a document when external read approval is denied', async () => {
+  await harness(
+    async ({ store, call, approvals }) => {
+      await store.googleAccounts.unlinkFolder(
+        'p1',
+        (await store.googleAccounts.folders('p1'))[0]!.id,
+      );
+      const result = await call({
+        action: 'read_document_url',
+        url: 'https://docs.google.com/document/d/shared/edit',
+      });
+      expect(result.error !== undefined || result.result?.isError === true).toBe(true);
+      expect(approvals).toHaveBeenCalledOnce();
+    },
+    undefined,
+    false,
+  );
+});
+
+it.each([true, false])(
+  'requires approval for documents outside a linked folder (allow=%s)',
+  async (allow) => {
+    await harness(
+      async ({ call, approvals }) => {
+        const result = await call({
+          action: 'read_document_url',
+          url: 'https://docs.google.com/document/d/outside-doc/edit',
+        });
+        expect(approvals).toHaveBeenCalledOnce();
+        expect(result.error !== undefined || result.result?.isError === true).toBe(!allow);
+      },
+      undefined,
+      allow,
+    );
+  },
+);

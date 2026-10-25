@@ -29,7 +29,7 @@ does not replace GitHub issues and stays private to the user who owns it.
 In the first version:
 
 - One kind of entry. No types, tags, priorities, due dates, or AI rewriting.
-- Tasks belong to a project or to a fixed **General** bucket (no project).
+- New tasks require a project. Legacy tasks without a project remain visible under **Assign to project** until their owner chooses a project.
 - Tasks are private to their owner, also inside shared projects.
 - Attachments: images and files captured with the task, reused when the task is
   sent to a session.
@@ -44,7 +44,6 @@ Deliberately out of scope for the first version, kept as a later list:
 - Automatic status feedback from merged pull requests.
 - Reminders for stale tasks, weekly digests.
 - Creating GitHub issues from tasks.
-- A project picker for General tasks (see §4.5).
 
 ## 3. Relationship to native agent checklists
 
@@ -105,7 +104,7 @@ The fast path is tap, speak, carry on. No further tap is required.
 ![Confirm](assets/tasks/04-capture-confirm.png)
 
 4. After recording the card shows the text, attachments, and one row of
-   **project chips**: the current project preselected, then **General**, then
+   **project chips**: the current project preselected, then
    the two or three most recently used projects, then "Other…". A thin
    **3 s countdown** runs underneath.
    - Do nothing: the task is saved to the preselected target.
@@ -125,20 +124,28 @@ The fast path is tap, speak, carry on. No further tap is required.
 
 - iPhone: a bottom sheet (~70 %). iPad / wide layout (`width >= 900`): a
   floating panel anchored next to the bubble, so the session stays visible.
-- Sections, top to bottom:
-  1. **This session** — tasks assigned to the open session (only in a session).
-     Shows done/total, e.g. `3/8`.
-  2. **Current project** — open tasks of the project not assigned to a session.
-  3. **General**.
-  4. **Other projects**, collapsed, each with its count.
-  Outside any project context only General is expanded.
-- Each row: a **check circle** (tap = done, with Undo in the row), title, age,
-  attachment count, an origin marker (microphone for operator, agent icon for
-  agent-created), and the implement buttons from §4.5.
-- Swipe reveals **Done**, **Move** (to another project or General), and
-  **Delete**. Long-press opens an edit sheet for the text.
+- A segmented control switches between **Mine**, **Agent**, and **Issues**;
+  exactly one list is visible. The last selected view is stored on the device.
+  Issues includes a GitHub icon and appears only for a project with a connected
+  GitHub repository. If unavailable, the panel displays Mine.
+- **Mine** groups personal tasks by project. The current project is expanded; other projects are collapsed. Outside a project, a project selector remembers the last selection. Legacy tasks have a separate assignment section.
+  Empty groups have no placeholder copy. The footer toggles completed tasks.
+- **Agent** groups steps by session, with the current session expanded first.
+  Completed steps remain visible, with done/total counts and a progress bar.
+  Other sessions are collapsed. Steps without a session are not displayed.
+- **Issues** shows open repository issues, excluding pull requests, with number,
+  labels and assignees. All and Bugs filter the list. Assigned to me requires
+  a personal GitHub identity and is disabled for installation-only connections.
+  Initially three rows are shown; Show all expands the filtered list.
+- All three views share the same title size, row spacing, metadata colors and
+  action-button styling, using the app's theme tokens.
+- A personal task's check circle toggles completion with Undo. Tap its title to
+  edit in place; leaving the field saves. The anchored actions menu offers
+  completion, Move and Delete. Agent steps have their own anchored actions menu.
+- Issues offer This Session (in a project session) and New Session. If a
+  resumable session already has the issue's branch, Open session replaces both.
+  Selecting an issue title opens it on GitHub.
 - A microphone button at the top captures from inside the panel.
-- Footer: "Show done (n)".
 
 ![Panel on home](assets/tasks/07-panel-home.png)
 ![Panel on iPad](assets/tasks/08-panel-ipad.png)
@@ -154,7 +161,7 @@ ordering. It is derived from the router state the root layout already reads
 | `session/[id]` | that session and its project |
 | `project/[id]/*` | that project |
 | wide layout with a selected session (`params.selected`) | that session and its project |
-| anything else | General |
+| anything else | last selected project, or explicit project selection |
 
 The derivation is a pure, tested helper in `packages/mobile`.
 
@@ -163,7 +170,7 @@ The derivation is a pure, tested helper in `packages/mobile`.
 | Task | In a session of the task's project | Elsewhere |
 |---|---|---|
 | Project task | **↳ This Session** and **+ New Session** | **+ New Session** |
-| General task | no button | no button |
+| Legacy task awaiting project assignment | no button | no button |
 
 - **↳ This Session** assigns the task to the open session (`session_id`) and
   sends a turn (§6.4). The agent now sees the task on every turn and checks it
@@ -172,8 +179,7 @@ The derivation is a pure, tested helper in `packages/mobile`.
   create flow (`apps/mobile/app/new.tsx`, `lib/startSession.ts`) with the task
   assigned before the first turn. The first prompt is the task text plus its
   attachments.
-- A General task has no project to run in. To implement it, move it to a project
-  first (swipe → Move). A project picker on the button is a later refinement.
+- A legacy task without a project must be moved to a project before implementation. New tasks cannot be created without a project or moved back to a projectless bucket.
 - Multi-select in the panel sends several tasks in one turn.
 - A task sent to a session moves to `in_progress`; the row links to the session.
 
@@ -187,7 +193,7 @@ New table `tasks` in `packages/store` (migration after the current latest,
 |---|---|
 | `id` | uuid, minted by the client so that saves are idempotent |
 | `owner_user_id` | the user; every read and write is owner-scoped |
-| `project_id` | nullable; null is General. `ON DELETE SET NULL`, so a deleted project turns its tasks into General instead of losing them |
+| `project_id` | nullable for legacy records and deleted projects. `ON DELETE SET NULL` preserves tasks for explicit reassignment instead of losing them |
 | `session_id` | nullable; the session the task is assigned to. `ON DELETE SET NULL` |
 | `source_session_id` | nullable; where it was captured, for display only |
 | `origin` | `user` or `agent` |
@@ -243,7 +249,7 @@ Open tasks for this session. Update their status with verity_tasks as you work.
 ```
 
 Only tasks with `session_id = this session` are injected; project backlog and
-General stay out of the prompt and are available through `list`. The section is
+legacy unassigned tasks stay out of the prompt and are available through `list`. The section is
 capped (titles and ids only, at most 30 rows, then "… n more"). Because the
 section is rebuilt from the database each turn, compaction or a backend switch
 cannot lose it. The approach mirrors how `PLANNING_ACTIVE_SYSTEM_PROMPT` is
@@ -395,7 +401,7 @@ agent side can be built in parallel:
   check without reloading.
 - "New Session": the new session starts with the task injected from its first
   turn.
-- General tasks show no implement button; Move to a project enables it.
+- Legacy tasks show no implement button; Move to a project enables it. New captures require a project.
 - An agent `add` of five tasks shows "Agent added 5 tasks" in the chat and five
   rows under **This session**.
 - After context compaction or a backend switch the agent still sees its open

@@ -9,11 +9,6 @@ export function isLinkableSession(
     candidate.sessionId !== sessionId &&
     candidate.projectId !== null &&
     candidate.resumable !== false &&
-    projects.some(
-      (project) =>
-        project.id === candidate.projectId &&
-        project.state === 'active' &&
-        project.kind !== 'control_plane',
-    )
+    projects.some((project) => project.id === candidate.projectId && project.state === 'active')
   );
 }

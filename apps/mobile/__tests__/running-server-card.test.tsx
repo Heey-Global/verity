@@ -54,6 +54,7 @@ it('shows the managed recipe and never announces its internal port to screen rea
         name: server.name,
         command: server.command,
         workdir: '.',
+        secretBindings: [],
         approved: false,
         instance: null,
         elsewhere: [],

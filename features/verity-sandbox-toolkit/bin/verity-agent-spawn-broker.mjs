@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import {
+  createManagedSecretServers,
+  stopTaggedManagedPids,
+} from './verity-managed-secret-servers.mjs';
+import { createHash, randomUUID } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import {
   chmod,
@@ -11,14 +15,16 @@ import {
   mkdtemp,
   open,
   readdir,
+  rename,
   readFile,
   realpath,
   rm,
+  rmdir,
   symlink,
   truncate,
   writeFile,
 } from 'node:fs/promises';
-import { constants, readdirSync, readFileSync, statSync } from 'node:fs';
+import { constants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
@@ -196,6 +202,148 @@ function validateIdentity(options) {
     throw new Error('agent spawn broker requires non-root agent uid/gid');
   }
   return { uid, gid };
+}
+
+// Keep workspace reads under the same identity as the eventual interpreter.
+// Dropping the broker itself would race concurrent requests and remove its ability
+// to create immutable snapshots in the protected runtime directory.
+const AGENT_FILE_READER = `
+const fs = require('node:fs/promises');
+const { constants } = require('node:fs');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', async () => {
+  try {
+    const { operation, path } = JSON.parse(input);
+    let value;
+    if (operation === 'managedStop') {
+      const { stopTaggedManagedPids } = await import('/usr/local/bin/verity-managed-secret-servers.mjs');
+      const [id, signal] = path.split(':');
+      value = await stopTaggedManagedPids(id, signal);
+    } else if (operation === 'realpath' || operation === 'readdir') value = await fs[operation](path);
+    else if (operation === 'lstat') {
+      const stat = await fs.lstat(path);
+      value = { uid: stat.uid, mode: stat.mode, size: stat.size,
+        file: stat.isFile(), directory: stat.isDirectory(), socket: stat.isSocket() };
+    } else if (operation === 'readEntry') {
+      const handle = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!(await handle.stat()).isFile()) throw new Error('trusted CLI entry script must be a regular file');
+        value = (await handle.readFile()).toString('base64');
+      } finally { await handle.close(); }
+    } else throw new Error('invalid workspace read operation');
+    process.stdout.write(JSON.stringify({ value }));
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: { code: error.code,
+      message: error.code ? 'workspace read failed' : error.message } }));
+  }
+});
+`;
+
+async function agentWorkspaceRead(operation, path, options) {
+  // Non-root broker fixtures deliberately use synthetic agent identities.
+  const { uid, gid } =
+    options.enforceRoot === false
+      ? { uid: process.getuid?.(), gid: process.getgid?.() }
+      : validateIdentity(options);
+  let value;
+  if (options.enforceRoot === false || (process.getuid?.() === uid && process.getgid?.() === gid)) {
+    if (operation === 'managedStop') {
+      const [id, signal] = path.split(':');
+      return await stopTaggedManagedPids(id, signal);
+    }
+    if (operation === 'readEntry') {
+      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!(await handle.stat()).isFile())
+          throw new Error('trusted CLI entry script must be a regular file');
+        return await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+    }
+    if (operation === 'realpath') return await realpath(path);
+    if (operation === 'readdir') return await readdir(path);
+    return await lstat(path);
+  }
+  const response = await new Promise((resolveResponse, reject) => {
+    const child = spawn(
+      options.setprivPath ?? '/usr/bin/setpriv',
+      [
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        ...PRIVILEGE_DROP_FLAGS,
+        process.execPath,
+        '--input-type=commonjs',
+        '-e',
+        AGENT_FILE_READER,
+      ],
+      { env: {}, cwd: '/', stdio: ['pipe', 'pipe', 'ignore'] },
+    );
+    const chunks = [];
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('workspace reader timed out'));
+    }, 10000);
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.once('error', reject);
+    child.stdin.on('error', reject);
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error('workspace reader failed'));
+      try {
+        resolveResponse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject(new Error('invalid workspace reader response'));
+      }
+    });
+    child.stdin.end(JSON.stringify({ operation, path }));
+  });
+  if (response.error) {
+    const error = new Error(response.error.message);
+    error.code = response.error.code;
+    throw error;
+  }
+  value = response.value;
+  // A process running as the agent cannot supply path components for privileged
+  // snapshot writes. Validate the transport even though the reader is fixed code.
+  if (
+    operation === 'readdir' &&
+    (!Array.isArray(value) ||
+      value.some(
+        (name) =>
+          typeof name !== 'string' ||
+          name === '' ||
+          name === '.' ||
+          name === '..' ||
+          name.includes('/') ||
+          name.includes('\0'),
+      ))
+  ) {
+    throw new Error('invalid workspace directory response');
+  }
+  if (
+    operation === 'realpath' &&
+    (typeof value !== 'string' ||
+      !value.startsWith('/') ||
+      value.includes('\0') ||
+      resolve(value) !== value)
+  ) {
+    throw new Error('invalid workspace path response');
+  }
+  if (operation === 'readEntry') {
+    if (typeof value !== 'string') throw new Error('invalid workspace entry response');
+    return Buffer.from(value, 'base64');
+  }
+  if (operation === 'lstat')
+    return {
+      ...value,
+      isFile: () => value.file,
+      isDirectory: () => value.directory,
+      isSocket: () => value.socket,
+    };
+  return value;
 }
 
 function isSafeTrustedCliEnvName(name) {
@@ -384,7 +532,7 @@ async function validateSpawnRequest(raw, options) {
     }
     const [worktreeRoots, cwd] = await Promise.all([
       resolveAgentWorktreeRoots(options),
-      realpath(resolve(raw.cwd)),
+      agentWorkspaceRead('realpath', resolve(raw.cwd), options),
     ]);
     if (!withinAgentWorktreeRoots(cwd, worktreeRoots)) {
       throw new Error('trusted CLI cwd escaped the worktree root');
@@ -407,14 +555,16 @@ async function validateSpawnRequest(raw, options) {
       ) {
         throw new Error('invalid trusted CLI entry-script attestation');
       }
-      const canonical = await realpath(raw.entryScript.path).catch(() => undefined);
-      if (canonical === undefined || !withinAgentWorktreeRoots(canonical, worktreeRoots)) {
+      // Preserve filesystem errors so missing or inaccessible entries are not
+      // misreported as resolved paths outside the allowed worktrees.
+      const canonical = await agentWorkspaceRead('realpath', raw.entryScript.path, options);
+      if (!withinAgentWorktreeRoots(canonical, worktreeRoots)) {
         throw new Error('trusted CLI entry script escaped the worktree root');
       }
-      const entry = await lstat(canonical);
+      const entry = await agentWorkspaceRead('lstat', canonical, options);
       if (!entry.isFile()) throw new Error('trusted CLI entry script must be a regular file');
       const digest = createHash('sha256')
-        .update(await readFile(canonical))
+        .update(await agentWorkspaceRead('readEntry', canonical, options))
         .digest('hex');
       if (digest !== raw.entryScript.sha256) {
         throw new Error('trusted CLI entry script content hash changed after approval');
@@ -454,6 +604,7 @@ async function validateSpawnRequest(raw, options) {
         // reject the very path the command is about to be handed.
         .map((secret) => trustedCliSecretPath(secret.name, options, raw.correlationId)),
       approvedEntryScript,
+      options,
     );
     return {
       kind: 'trusted-cli',
@@ -503,25 +654,10 @@ async function validateSpawnRequest(raw, options) {
   if (Buffer.byteLength(JSON.stringify(raw.args)) > MAX_ARGS_BYTES) {
     throw new Error('agent argv exceeds broker limit');
   }
-  // `opencode-acp` takes no argv at all, and the reason is the `cwd` check below.
-  // That check resolves the requested directory and refuses anything outside the
-  // worktree roots — but `opencode acp` accepts `--cwd`, so a request could satisfy
-  // the check with a legal `cwd` and then hand the agent a different working
-  // directory in its argv, while still receiving the broker-supplied child
-  // environment. Neither of the other two adapters has a flag that can do that, so
-  // this is not a general argv policy; it is the one place where argv would walk
-  // past a boundary this function enforces. Verity's OpenCode profile passes no
-  // arguments (`acp-opencode-backend.ts`), so nothing legitimate is refused: if a
-  // future turn needs one, add it to an allowlist here rather than reopening argv.
-  //
-  // Two flags in particular are not allowlist material. `--cwd` is the one above.
-  // The other is any flag that makes the agent LISTEN — `opencode serve` grew
-  // `--port`, `--hostname`, `--cors` and `--mdns`, and admitting one here would put a
-  // network-reachable agent back inside the Sandbox holding the turn's credentials,
-  // which is exactly the shared-server exposure ADR 0010 O3 was closed by removing
-  // (ADR 0012 Amendment 4). Admitting one reopens it and needs that decision retaken.
-  if (raw.command === 'opencode-acp' && raw.args.length > 0) {
-    throw new Error('opencode-acp takes no argv');
+  // ACP adapters take no caller-selected argv. Their CLI entry points can select
+  // another command or unmanaged configuration before the session policy applies.
+  if (raw.args.length > 0) {
+    throw new Error(`${raw.command} takes no argv`);
   }
   const [worktreeRoots, cwd] = await Promise.all([
     resolveAgentWorktreeRoots(options),
@@ -532,6 +668,8 @@ async function validateSpawnRequest(raw, options) {
   }
   if (raw.knowledgeIsolation !== undefined && typeof raw.knowledgeIsolation !== 'boolean')
     throw new Error('Invalid knowledge isolation policy');
+  if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
+    throw new Error('Invalid planning isolation policy');
   return {
     kind: 'agent',
     command: raw.command,
@@ -539,6 +677,7 @@ async function validateSpawnRequest(raw, options) {
     cwd,
     sessionEnv: raw.sessionEnv,
     knowledgeIsolation: raw.knowledgeIsolation === true,
+    planning: raw.planning === true,
   };
 }
 
@@ -573,7 +712,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
   return {
     // First, so every fixed key below wins over anything a request supplied.
     ...runtimeContext,
-    PATH: source.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    PATH: `/opt/verity/package-managers:${source.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
     HOME: source.VERITY_AGENT_HOME ?? '/home/dev',
     USER: source.VERITY_AGENT_USER ?? 'dev',
     LOGNAME: source.VERITY_AGENT_USER ?? 'dev',
@@ -640,6 +779,12 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
       ? {
           ...copy('XDG_CONFIG_HOME'),
           ...copy('OPENCODE_CONFIG'),
+          // Repository config is executable policy: it can redefine the plan
+          // agent, replace providers/MCP servers and load local tools. These
+          // flags must be fixed here, never inherited from the container or turn.
+          OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+          OPENCODE_DISABLE_AUTOUPDATE: '1',
+          OPENCODE_DISABLE_MODELS_FETCH: '1',
           XDG_DATA_HOME: `${OPENCODE_STATE_DIR}/data`,
           XDG_STATE_HOME: `${OPENCODE_STATE_DIR}/state`,
           XDG_CACHE_HOME: `${OPENCODE_STATE_DIR}/cache`,
@@ -647,6 +792,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
       : {}),
     ...copy('IS_SANDBOX'),
     ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_AUTHORITY'),
     ...copy('VERITY_FORGE_PROXY_URL'),
     ...copy('VERITY_FORGE_PROXY_CA_FILE'),
     ...copy('GIT_TERMINAL_PROMPT'),
@@ -658,6 +804,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     ...copy('VERITY_SIGNING_TOKEN_FILE'),
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
     ...copy('VERITY_PROJECT_MEMORY_URL'),
+    ...copy('VERITY_PROJECT_REPO_URL'),
   };
 }
 
@@ -790,6 +937,230 @@ export function resolveDockerGid(env, statSocketGid) {
   return String(declared);
 }
 
+/** One writer may refresh policy or use native databases for a session at a time. */
+const activeSessionHomes = new Set();
+const sessionHomeLocks = new Map();
+const SESSION_HOME_WAIT_MS = 2_000;
+const SESSION_HOME_BUSY =
+  'session home is already in use; the previous agent is still shutting down. Wait a moment and try again.';
+
+async function waitForSessionHome(home) {
+  const deadline = Date.now() + SESSION_HOME_WAIT_MS;
+  while (activeSessionHomes.has(home)) {
+    if (Date.now() >= deadline) throw new Error(SESSION_HOME_BUSY);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+}
+
+export function sessionHomePath(runtimeDir, sessionId) {
+  if (
+    typeof sessionId !== 'string' ||
+    !sessionId ||
+    sessionId.length > 256 ||
+    hasControlCharacter(sessionId)
+  )
+    throw new Error('invalid session id');
+  return join(runtimeDir, 'session-homes', createHash('sha256').update(sessionId).digest('hex'));
+}
+
+async function policyWrite(path, content, options = {}) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, content, { mode: options.mode ?? 0o644, flag: 'wx' });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function managedDirectory(path, owner, group) {
+  try {
+    await mkdir(path, { mode: 0o755 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const metadata = await lstat(path);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+    throw new Error('invalid session home directory');
+  await chown(path, owner, group);
+  await chmod(path, 0o755);
+}
+
+async function lockSessionHome(home, options) {
+  await managedDirectory(
+    join(options.runtimeDir, 'session-homes'),
+    process.getuid(),
+    process.getgid(),
+  );
+  const handle = await open(
+    `${home}.lock`,
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await new Promise((resolveLock, rejectLock) => {
+      const child = spawn('/usr/bin/flock', ['--wait', String(SESSION_HOME_WAIT_MS / 1000), '3'], {
+        stdio: ['ignore', 'ignore', 'ignore', handle.fd],
+      });
+      child.once('error', rejectLock);
+      child.once('exit', (code) =>
+        code === 0 ? resolveLock() : rejectLock(new Error(SESSION_HOME_BUSY)),
+      );
+    });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function claimSessionHome(request, options) {
+  const sessionId = request.sessionEnv?.VERITY_SESSION_ID;
+  if (request.knowledgeIsolation || typeof sessionId !== 'string') return undefined;
+  const home = sessionHomePath(options.runtimeDir, sessionId);
+  await waitForSessionHome(home);
+  // Recheck after the await: concurrent waiters must not share a broker claim.
+  if (activeSessionHomes.has(home)) throw new Error(SESSION_HOME_BUSY);
+  activeSessionHomes.add(home);
+  try {
+    sessionHomeLocks.set(home, await lockSessionHome(home, options));
+    await prepareSessionHome(sessionId, options);
+    return home;
+  } catch (error) {
+    activeSessionHomes.delete(home);
+    await sessionHomeLocks.get(home)?.close();
+    sessionHomeLocks.delete(home);
+    throw error;
+  }
+}
+
+async function nativeStateRequest(request, options) {
+  const { uid, gid } = validateIdentity(options);
+  return await new Promise((resolveNative, rejectNative) => {
+    const sameIdentity = process.getuid() === uid && process.getgid() === gid;
+    const helper =
+      options.enforceRoot === false
+        ? fileURLToPath(new URL('./verity-session-state.mjs', import.meta.url))
+        : '/usr/local/bin/verity-session-state.mjs';
+    const args = [process.execPath, helper];
+    const child = spawn(
+      sameIdentity ? args[0] : (options.setprivPath ?? '/usr/bin/setpriv'),
+      sameIdentity
+        ? args.slice(1)
+        : [`--reuid=${uid}`, `--regid=${gid}`, '--clear-groups', ...args],
+      { stdio: ['pipe', 'pipe', 'ignore'], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } },
+    );
+    let output = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+      if (output.length > 65536) child.kill('SIGKILL');
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      rejectNative(error);
+    });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || output.length > 65536)
+        return rejectNative(new Error('Native session migration or cleanup could not be verified'));
+      try {
+        resolveNative(JSON.parse(output));
+      } catch {
+        rejectNative(new Error('Invalid native session migration result'));
+      }
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+
+export async function prepareSessionHome(sessionId, options, migration) {
+  const home = sessionHomePath(options.runtimeDir, sessionId);
+  const marker = `${home}.deleted`;
+  const lease = sessionHomeLocks.has(home) ? undefined : await lockSessionHome(home, options);
+  try {
+    if (
+      await lstat(marker).then(
+        () => true,
+        (error) => {
+          if (error.code === 'ENOENT') return false;
+          throw error;
+        },
+      )
+    )
+      throw new Error('session home has been deleted');
+    const { uid, gid } = validateIdentity(options);
+    await managedDirectory(
+      join(options.runtimeDir, 'session-homes'),
+      process.getuid(),
+      process.getgid(),
+    );
+    await managedDirectory(home, process.getuid(), process.getgid());
+    for (const name of ['claude', 'codex', 'config'])
+      await managedDirectory(join(home, name), process.getuid(), process.getgid());
+    for (const relative of [
+      'claude/projects',
+      'codex/sessions',
+      'codex/thread-writer-locks',
+      'codex-state',
+      'data',
+      'state',
+      'cache',
+      'tmp',
+    ]) {
+      const path = join(home, relative);
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error('invalid session storage');
+      await chown(path, uid, gid);
+    }
+    if (migration?.backend === 'opencode-acp' && migration.sessionId !== undefined) {
+      if (
+        typeof migration.sessionId !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(migration.sessionId)
+      )
+        throw new Error('invalid legacy native session id');
+      const source = join(
+        options.enforceRoot === false
+          ? join(options.runtimeDir, 'opencode-state')
+          : OPENCODE_STATE_DIR,
+        'data',
+        'opencode',
+        'opencode.db',
+      );
+      const result = await nativeStateRequest(
+        {
+          source,
+          target: join(home, 'data', 'opencode', 'opencode.db'),
+          rootId: migration.sessionId,
+        },
+        options,
+      );
+      if (Array.isArray(result.sessionIds) && result.sessionIds.length) {
+        if (
+          !result.sessionIds.every(
+            (id) => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id),
+          )
+        )
+          throw new Error('Invalid migrated native session identity');
+        await policyWrite(
+          join(home, '.legacy-opencode.json'),
+          JSON.stringify({ source, sessionIds: result.sessionIds }),
+        );
+      }
+    }
+    return home;
+  } finally {
+    await lease?.close();
+  }
+}
+
 /** Create only transport configuration; no transcript, user instructions or project config crosses this boundary. */
 async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   if (!isLocalConnectorUrl(connectorUrl))
@@ -805,7 +1176,7 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   // left at 0700 still lets the broker create a correctly owned job home, but
   // the dropped agent uid cannot traverse the parent to reach it.
   await chmod(parent, 0o711);
-  const home = await mkdtemp(join(parent, 'job-'));
+  const home = (await claimSessionHome(request, options)) ?? (await mkdtemp(join(parent, 'job-')));
   try {
     // Build the complete tree while the broker still owns its root. In
     // rootless/user-namespace deployments, changing ownership of this 0700
@@ -815,12 +1186,12 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
     const directories = [];
     for (const relative of ['claude', 'codex', 'config', 'data', 'state', 'cache', 'tmp']) {
       const directory = join(home, relative);
-      await mkdir(directory, { mode: 0o700 });
+      await managedDirectory(directory, process.getuid(), process.getgid());
       directories.push(directory);
     }
     const files = [];
     const writeConfig = async (path, content) => {
-      await writeFile(path, content, { mode: 0o600 });
+      await policyWrite(path, content, { mode: 0o600 });
       files.push(path);
     };
     const gateway = new URL(connectorUrl);
@@ -851,7 +1222,7 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
           autoupdate: false,
           provider: {
             verity: {
-              npm: '@ai-sdk/openai-compatible',
+              npm: '@opencode/ai/providers/openai-compatible',
               name: 'Verity',
               options: {
                 baseURL: `${gateway.origin}/opencode`,
@@ -867,12 +1238,24 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
     }
     // Transfer children before their 0700 parent, and the home itself last. No
     // broker filesystem operation may follow this handoff.
-    for (const file of files) await chown(file, uid, gid);
-    for (const directory of directories) await chown(directory, uid, gid);
-    await chown(home, uid, gid);
+    if (!activeSessionHomes.has(home)) {
+      for (const file of files) await chown(file, uid, gid);
+      for (const directory of directories) await chown(directory, uid, gid);
+      await chown(home, uid, gid);
+    } else {
+      for (const directory of directories.slice(3)) {
+        // Without CAP_FOWNER, chmod must precede the ownership handoff.
+        await chmod(directory, 0o700);
+        await chown(directory, uid, gid);
+      }
+    }
     return home;
   } catch (error) {
-    await removeKnowledgeIsolation(home, uid, gid, options.setprivPath);
+    if (!activeSessionHomes.has(home))
+      await removeKnowledgeIsolation(home, uid, gid, options.setprivPath);
+    activeSessionHomes.delete(home);
+    await sessionHomeLocks.get(home)?.close();
+    sessionHomeLocks.delete(home);
     throw error;
   }
 }
@@ -882,46 +1265,389 @@ async function removeKnowledgeIsolation(home, uid, gid, setprivPath = '/usr/bin/
     await rm(home, { recursive: true, force: true });
     return;
   } catch {
-    // A rootless namespace can stop the broker traversing a 0700 tree after it
-    // hands that tree to the agent uid. Let that same unprivileged identity
-    // remove its descendants. GNU find does not follow encountered symlinks;
-    // even if the agent races this walk, it has no privilege beyond its own uid.
-    await new Promise((resolveCleanup, rejectCleanup) => {
-      const cleanup = spawn(
-        setprivPath,
-        [
-          `--reuid=${String(uid)}`,
-          `--regid=${String(gid)}`,
-          '--clear-groups',
-          '/usr/bin/find',
-          home,
-          '-mindepth',
-          '1',
-          '-delete',
-        ],
-        { stdio: 'ignore' },
-      );
-      cleanup.once('error', rejectCleanup);
-      cleanup.once('close', resolveCleanup);
-    });
-    // Removing the now-empty home only needs write access to its broker-owned
-    // parent; it does not require traversing the agent-owned 0700 directory.
-    await rm(home, { recursive: true, force: true });
+    // Return only the broker-owned policy directories to the child. Its identity
+    // can then unlink root-owned policy files without traversing private data as root.
+    for (const name of ['config/opencode', 'config', 'codex', 'claude', '.']) {
+      const path = join(home, name);
+      try {
+        const metadata = await lstat(path);
+        if (metadata.isDirectory() && metadata.uid === process.getuid()) {
+          await chmod(path, 0o700);
+          await chown(path, uid, gid);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error;
+      }
+    }
+    const asAgent = async (args) => {
+      await new Promise((resolveCleanup, rejectCleanup) => {
+        const sameIdentity = process.getuid() === uid && process.getgid() === gid;
+        const child = spawn(
+          sameIdentity ? '/usr/bin/find' : setprivPath,
+          sameIdentity
+            ? args
+            : [
+                `--reuid=${String(uid)}`,
+                `--regid=${String(gid)}`,
+                '--clear-groups',
+                '/usr/bin/find',
+                ...args,
+              ],
+          { stdio: 'ignore' },
+        );
+        child.once('error', rejectCleanup);
+        child.once('close', (code) =>
+          code === 0 ? resolveCleanup() : rejectCleanup(new Error('Agent home cleanup failed')),
+        );
+      });
+    };
+    // Preorder chmod restores traversal even if the child left a mode-000 directory.
+    // Neither walk follows symlinks; both run with the unprivileged child identity.
+    await asAgent([home, '-type', 'd', '-exec', '/bin/chmod', 'u+rwx', '{}', ';']);
+    await asAgent([home, '-mindepth', '1', '-delete']);
+    // rmdir needs access to the broker-owned parent, not the private empty home.
+    await rmdir(home);
   }
 }
 
 export async function materializeKnowledgeIsolation(request, options, connectorUrl) {
   const { uid, gid } = validateIdentity(options);
   const home = await prepareKnowledgeIsolation(request, options, connectorUrl);
+  const persistent = activeSessionHomes.has(home);
+  let cleaned = false;
   return {
     home,
-    cleanup: () => removeKnowledgeIsolation(home, uid, gid, options.setprivPath),
+    lockFd: sessionHomeLocks.get(home)?.fd,
+    cleanup: async () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (persistent) {
+        // Native databases, rollouts and auxiliary files belong to the session.
+        // Only the explicitly temporary subtree is disposable at turn exit.
+        try {
+          await removeKnowledgeIsolation(join(home, 'tmp'), uid, gid, options.setprivPath);
+        } finally {
+          activeSessionHomes.delete(home);
+          await sessionHomeLocks.get(home)?.close();
+          sessionHomeLocks.delete(home);
+        }
+      } else await removeKnowledgeIsolation(home, uid, gid, options.setprivPath);
+    },
   };
+}
+
+function planningRuntimeRoots(request, options) {
+  if (!request.planning || request.knowledgeIsolation || request.sessionEnv?.VERITY_SESSION_ID)
+    return [];
+  if (request.command === 'codex-acp' && options.runtimeDir)
+    return [join(options.runtimeDir, 'codex-sessions'), join(options.runtimeDir, 'codex-state')];
+  if (request.command === 'claude-agent-acp' && options.env?.CLAUDE_CONFIG_DIR)
+    return [join(options.env.CLAUDE_CONFIG_DIR, 'projects')];
+  if (request.command === 'opencode-acp')
+    return [
+      options.enforceRoot === false
+        ? join(options.runtimeDir, 'opencode-state')
+        : OPENCODE_STATE_DIR,
+    ];
+  return [];
+}
+
+/** Build a broker-owned configuration tree, separate from writable runtime data. */
+export async function materializeManagedAgentHome(request, options, connectorUrl) {
+  const { uid, gid } = validateIdentity(options);
+  const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+  const home = isolated.home;
+  try {
+    // Hand ownership back before installing policy. Production runs as root;
+    // rootless tests use their own identity and exercise the generated content.
+    await chown(home, process.getuid(), process.getgid());
+    await chmod(home, 0o755);
+    for (const name of ['claude', 'codex', 'config']) {
+      const directory = join(home, name);
+      await chown(directory, process.getuid(), process.getgid());
+      await chmod(directory, 0o755);
+    }
+    // Import only the image-owned template, never the previous mutable user home.
+    let gitPolicy = '';
+    try {
+      const template = await open(
+        '/etc/verity-agent.gitconfig',
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const metadata = await template.stat();
+        if (
+          !metadata.isFile() ||
+          metadata.uid !== 0 ||
+          (metadata.mode & 0o022) !== 0 ||
+          metadata.size > 65536
+        )
+          throw new Error('Untrusted managed Git configuration');
+        gitPolicy = await template.readFile('utf8');
+      } finally {
+        await template.close();
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT' || options.enforceRoot !== false) throw error;
+    }
+    const gitValue = (value) => JSON.stringify(value);
+    const gitIgnore = join(home, 'config', 'git-ignore');
+    await policyWrite(gitIgnore, '.gh-token\n.env\n.agents/.last-code-review-sha\n', {
+      mode: 0o644,
+    });
+    const gitIdentity = options.env ?? {};
+    await policyWrite(
+      join(home, '.gitconfig'),
+      [
+        gitPolicy,
+        '[core]',
+        `excludesFile = ${gitValue(gitIgnore)}`,
+        '[user]',
+        ...(gitIdentity.GIT_USER_NAME ? [`name = ${gitValue(gitIdentity.GIT_USER_NAME)}`] : []),
+        ...(gitIdentity.GIT_USER_EMAIL ? [`email = ${gitValue(gitIdentity.GIT_USER_EMAIL)}`] : []),
+      ].join('\n'),
+      { mode: 0o644 },
+    );
+    const configFile = join(home, 'codex', 'config.toml');
+    await chown(configFile, process.getuid(), process.getgid());
+    const codexConfig = await readFile(configFile, 'utf8');
+    await policyWrite(
+      configFile,
+      [
+        `sqlite_home = ${JSON.stringify(join(home, 'codex-state'))}`,
+        `log_dir = ${JSON.stringify(join(home, 'state'))}`,
+        'skills.include_instructions = false',
+        codexConfig,
+        '[features]',
+        'multi_agent = false',
+        'plugins = false',
+        '[hooks]',
+        // No trusted projects are imported from the former user home. Codex's
+        // loader disables project-local config, hooks and exec policies by default.
+      ].join('\n'),
+    );
+    await chmod(configFile, 0o644);
+    const writable = async (path) => {
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error('invalid writable session directory');
+      await chown(path, uid, gid);
+    };
+    // Codex opens its installation id read-write at startup and exits with EACCES
+    // when it cannot (codex 0.163). It cannot create one in the broker-owned
+    // CODEX_HOME either, so pre-create it owned by the agent. It is a random
+    // identifier, not policy. Created exclusively and changed through its own
+    // handle, so the broker never writes or hands over a path it did not create.
+    try {
+      const installationId = await open(
+        join(home, 'codex', 'installation_id'),
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        await installationId.writeFile(randomUUID());
+        await installationId.chown(uid, gid);
+      } finally {
+        await installationId.close();
+      }
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    await writable(join(home, 'codex-state'));
+    for (const name of ['tmp', '.tmp', 'skills', 'log', 'shell_snapshots'])
+      await writable(join(home, 'codex', name));
+    for (const name of [
+      'todos',
+      'tasks',
+      'debug',
+      'session-env',
+      'shell-snapshots',
+      'plans',
+      'telemetry',
+    ])
+      await writable(join(home, 'claude', name));
+    if (activeSessionHomes.has(home)) {
+      await writable(join(home, 'claude', 'projects'));
+      await writable(join(home, 'codex', 'sessions'));
+      await writable(join(home, 'codex', 'thread-writer-locks'));
+    } else {
+      if (options.env?.CLAUDE_CONFIG_DIR)
+        await symlink(
+          join(options.env.CLAUDE_CONFIG_DIR, 'projects'),
+          join(home, 'claude', 'projects'),
+        );
+      else await writable(join(home, 'claude', 'projects'));
+      if (options.runtimeDir) {
+        await symlink(
+          join(options.runtimeDir, 'codex-state', 'thread-writer-locks'),
+          join(home, 'codex', 'thread-writer-locks'),
+        );
+        await symlink(join(options.runtimeDir, 'codex-sessions'), join(home, 'codex', 'sessions'));
+      } else {
+        await writable(join(home, 'codex', 'sessions'));
+        await writable(join(home, 'codex', 'thread-writer-locks'));
+      }
+    }
+    await policyWrite(
+      join(home, '.claude.json'),
+      JSON.stringify({ hasCompletedOnboarding: true }),
+      {
+        mode: 0o644,
+      },
+    );
+    const openCodeDir = join(home, 'config', 'opencode');
+    await managedDirectory(openCodeDir, process.getuid(), process.getgid());
+    await policyWrite(join(openCodeDir, '.gitignore'), '*\n', { mode: 0o644 });
+    if (request.command === 'opencode-acp') {
+      const path = join(home, 'config', 'opencode.json');
+      await chown(path, process.getuid(), process.getgid());
+      await chmod(path, 0o644);
+    }
+    for (const path of [
+      join(home, '.gitconfig'),
+      gitIgnore,
+      join(home, '.claude.json'),
+      join(openCodeDir, '.gitignore'),
+    ])
+      await chmod(path, 0o644);
+    await chmod(openCodeDir, 0o755);
+    return isolated;
+  } catch (error) {
+    await isolated.cleanup();
+    throw error;
+  }
+}
+
+/** A root-issued lease cannot be supplied through the agent spawn protocol. */
+export async function agentSignalTraceSeconds(controlDir, request, now = Date.now()) {
+  if (
+    request.command !== 'codex-acp' ||
+    request.knowledgeIsolation ||
+    typeof request.sessionEnv?.VERITY_SESSION_ID !== 'string'
+  )
+    return undefined;
+  let handle;
+  try {
+    handle = await open(
+      join(controlDir, 'signal-trace.json'),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 || stat.size > 4096)
+      return undefined;
+    const buffer = Buffer.alloc(4097);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 4096) return undefined;
+    return validateAgentSignalTraceLease(
+      buffer.subarray(0, bytesRead).toString('utf8'),
+      request,
+      now,
+    );
+  } catch {
+    // Missing, malformed, or untrusted leases leave normal launches unchanged.
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
+  if (request.command !== 'codex-acp' || request.knowledgeIsolation || text.length > 4096)
+    return undefined;
+  try {
+    const lease = JSON.parse(text);
+    if (
+      !isObject(lease) ||
+      Object.keys(lease).sort().join(',') !== 'expiresAt,sessionId' ||
+      typeof lease.sessionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(lease.sessionId) ||
+      lease.sessionId !== request.sessionEnv?.VERITY_SESSION_ID ||
+      !Number.isSafeInteger(lease.expiresAt) ||
+      lease.expiresAt <= now ||
+      lease.expiresAt > now + 600_000
+    )
+      return undefined;
+    const seconds = Math.floor((lease.expiresAt - now) / 1000);
+    return seconds > 0 ? seconds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalSessionRoots(options, agentPath) {
+  const roots = [];
+  for (const [flag, path] of [
+    // Image-owned hooks and wrapper targets must remain executable under confinement.
+    ['--read-root', '/opt/agent-seed'],
+    ['--read-root', '/opt/verity/package-managers'],
+    ['--read-root', '/knowledge'],
+    ['--write-root', '/knowledge/insights'],
+  ]) {
+    try {
+      const metadata = lstatSync(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error('Invalid session access root');
+      roots.push(flag, path);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  // The installer links existing npm CLIs into /usr/local/bin. Grant their
+  // module installation tree, never the enclosing nvm user home.
+  const moduleRoots = new Set();
+  for (const executable of [
+    agentPath,
+    '/usr/local/bin/codex',
+    '/usr/local/bin/claude',
+    '/usr/local/bin/opencode',
+  ]) {
+    try {
+      const target = realpathSync(executable);
+      const index = target.indexOf('/node_modules/');
+      if (index >= 0) moduleRoots.add(target.slice(0, index + '/node_modules'.length));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  for (const path of moduleRoots) roots.push('--read-root', path);
+  // Node reads this configuration before starting the ACP adapter.
+  // Keep the sibling TLS private-key directory outside the policy.
+  if (lstatSync('/etc/ssl/openssl.cnf', { throwIfNoEntry: false }))
+    roots.push('--secret', '/etc/ssl/openssl.cnf');
+  // These files are selected by trusted container configuration, never turn input.
+  for (const key of [
+    'VERITY_FORGE_PROXY_CA_FILE',
+    'VERITY_SIGNING_TOKEN_FILE',
+    'VERITY_GH_BROKER_CAPABILITY_FILE',
+  ]) {
+    const path =
+      options.env?.[key] ??
+      {
+        VERITY_SIGNING_TOKEN_FILE: '/run/verity/ssh/signing_broker_token',
+        VERITY_GH_BROKER_CAPABILITY_FILE: '/run/verity/gh-token-capability',
+      }[key];
+    if (
+      path !== undefined &&
+      (options.env?.[key] !== undefined || lstatSync(path, { throwIfNoEntry: false }))
+    )
+      roots.push('--secret', path);
+  }
+  return roots;
 }
 
 export function agentLaunchSpec(request, options) {
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
+  const normalConfinement =
+    !!request.managedHome &&
+    !request.planning &&
+    !request.knowledgeIsolation &&
+    options.dockerGid === undefined;
   // One entry per accepted `command`, and no fallback: the chain this replaces ended
   // in a default that resolved anything unrecognized to the native `claude` binary,
   // which is exactly the transport ADR 0012 retired. An unmapped command must fail
@@ -944,7 +1670,7 @@ export function agentLaunchSpec(request, options) {
   if (typeof agentPath !== 'string') {
     throw new Error(`unsupported agent command '${String(request.command)}'`);
   }
-  if (request.knowledgeIsolation && typeof request.knowledgeHome !== 'string')
+  if ((request.knowledgeIsolation || request.planning) && typeof request.knowledgeHome !== 'string')
     throw new Error('Wiki isolation home was not prepared');
   return {
     command: setprivPath,
@@ -959,24 +1685,43 @@ export function agentLaunchSpec(request, options) {
       // `options.dockerGid` is that one sanctioned variation, and it swaps
       // `--clear-groups` for `--groups=<docker>` — never the runtime GID.
       ...privilegeDropFlags(
-        request.knowledgeIsolation ? undefined : options.dockerGid,
+        request.knowledgeIsolation || request.planning ? undefined : options.dockerGid,
         options.runnerGid,
       ),
-      ...(request.knowledgeIsolation
+      ...(request.knowledgeIsolation || request.planning || normalConfinement
         ? [
             options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
             '--root',
-            request.cwd,
+            request.planning || normalConfinement
+              ? request.cwd === (options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT) ||
+                request.cwd.startsWith(`${options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT}/`)
+                ? (options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT)
+                : (options.sharedSessionRoot ?? request.cwd)
+              : request.cwd,
             '--cwd',
             request.cwd,
             '--loading',
             'dynamic',
             '--dynamic-root',
-            request.knowledgeHome,
-            '--write-isolated',
+            normalConfinement ? request.managedHome : request.knowledgeHome,
+            request.planning ? '--read-only-root' : '--write-isolated',
+            ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
+            ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
+            ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
             '--',
           ]
         : []),
+      ...(options.signalTraceSeconds === undefined ||
+      request.command !== 'codex-acp' ||
+      request.knowledgeIsolation
+        ? []
+        : [
+            '/usr/bin/python3',
+            '/usr/local/bin/verity-agent-signal-trace',
+            '--seconds',
+            String(options.signalTraceSeconds),
+            '--launch',
+          ]),
       agentPath,
       ...request.args,
     ],
@@ -991,21 +1736,79 @@ export function agentLaunchSpec(request, options) {
           },
           request.sessionEnv,
         ),
-        ...(request.knowledgeIsolation
+        VERITY_SESSION_WORKTREE: request.cwd,
+        // Disabling project config also disables automatic AGENTS.md discovery.
+        // Keep repository guidance as text, without allowing repository JSON to
+        // configure providers, permissions or executable extensions. Wiki turns
+        // deliberately receive no project instructions.
+        ...(request.command === 'opencode-acp'
+          ? {
+              OPENCODE_CONFIG_CONTENT: JSON.stringify({
+                instructions: request.knowledgeIsolation ? [] : [join(request.cwd, 'AGENTS.md')],
+                websearch: { provider: 'exa' },
+                policies: [
+                  { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+                  { action: 'provider.use', resource: '*', effect: 'deny' },
+                  { action: 'provider.use', resource: 'verity', effect: 'allow' },
+                ],
+                permissions: [
+                  { action: 'external_directory', resource: '*', effect: 'ask' },
+                  { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+                ],
+              }),
+            }
+          : {}),
+        ...(request.managedHome
+          ? {
+              HOME: request.managedHome,
+              ...(request.command === 'claude-agent-acp'
+                ? { CLAUDE_CONFIG_DIR: join(request.managedHome, 'claude') }
+                : {}),
+              ...(request.command === 'codex-acp'
+                ? { CODEX_HOME: join(request.managedHome, 'codex') }
+                : {}),
+              XDG_CONFIG_HOME: join(request.managedHome, 'config'),
+              OPENCODE_CONFIG: join(request.managedHome, 'config', 'opencode.json'),
+              XDG_DATA_HOME: join(request.managedHome, 'data'),
+              XDG_STATE_HOME: join(request.managedHome, 'state'),
+              XDG_CACHE_HOME: join(request.managedHome, 'cache'),
+              npm_config_cache: join(request.managedHome, 'cache'),
+              TMPDIR: join(request.managedHome, 'tmp'),
+            }
+          : {}),
+        ...(request.knowledgeIsolation || request.planning
           ? {
               HOME: request.knowledgeHome,
               CLAUDE_CONFIG_DIR: join(request.knowledgeHome, 'claude'),
               CODEX_HOME: join(request.knowledgeHome, 'codex'),
               XDG_CONFIG_HOME: join(request.knowledgeHome, 'config'),
               OPENCODE_CONFIG: join(request.knowledgeHome, 'config', 'opencode.json'),
-              XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
-              XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
-              XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+              ...(request.command === 'opencode-acp' &&
+              request.planning &&
+              !request.knowledgeIsolation &&
+              !request.sessionEnv?.VERITY_SESSION_ID
+                ? Object.fromEntries(
+                    ['data', 'state', 'cache'].map((name) => [
+                      `XDG_${name.toUpperCase()}_HOME`,
+                      join(planningRuntimeRoots(request, options)[0], name),
+                    ]),
+                  )
+                : {
+                    XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
+                    XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
+                    XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+                  }),
+              npm_config_cache: join(request.knowledgeHome, 'cache'),
               TMPDIR: join(request.knowledgeHome, 'tmp'),
             }
           : {}),
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: [
+        'pipe',
+        'pipe',
+        'pipe',
+        ...(request.sessionLockFd === undefined ? [] : [request.sessionLockFd]),
+      ],
       // Give every agent invocation its own process group. Codex can leave tool
       // and sub-agent descendants running after its direct process receives a
       // signal; those descendants inherit stdout and keep the broker/turn open.
@@ -1189,6 +1992,14 @@ export async function validateTrustedCliArguments(
   approvedEntryScript,
   options = {},
 ) {
+  const workspaceRealpath =
+    approvedEntryScript === undefined || options.agentUid === undefined
+      ? realpath
+      : (path) => agentWorkspaceRead('realpath', path, options);
+  const workspaceLstat =
+    approvedEntryScript === undefined || options.agentUid === undefined
+      ? lstat
+      : (path) => agentWorkspaceRead('lstat', path, options);
   // Production reaches this only after validateTrustedCliExecutable; retain the
   // basename fallback for direct validator callers and focused unit fixtures.
   const resolvedCommand = await realpath(command).catch(() => command);
@@ -1414,9 +2225,9 @@ export async function validateTrustedCliArguments(
       let stat;
       for (const path of group.locations) {
         try {
-          const canonical = await realpath(path);
+          const canonical = await workspaceRealpath(path);
           found = path;
-          stat = await lstat(canonical);
+          stat = await workspaceLstat(canonical);
           break;
         } catch {
           // Keep searching the effective PATH.
@@ -1443,7 +2254,7 @@ export async function validateTrustedCliArguments(
         !interpreter &&
         !bareExecutableOperand &&
         approvedDynamicScriptSeen &&
-        withinAgentWorktreeRoots(await realpath(found), [approvedEntryScript.worktreeRoot])
+        withinAgentWorktreeRoots(await workspaceRealpath(found), [approvedEntryScript.worktreeRoot])
       )
         continue;
       // A socket names an endpoint the command talks to, and is judged by whose
@@ -1466,7 +2277,7 @@ export async function validateTrustedCliArguments(
         else if (!(
           interpreter &&
           approvedEntryScript !== undefined &&
-          (await realpath(found)) === approvedEntryScript.path
+          (await workspaceRealpath(found)) === approvedEntryScript.path
         ))
           await validateTrustedCliFileIntegrity(found);
         continue;
@@ -1492,7 +2303,7 @@ export async function validateTrustedCliArguments(
       if (
         approvedEntryScript?.loading === 'dynamic' &&
         typeof approvedEntryScript.worktreeRoot === 'string' &&
-        (await realpath(candidate)) === approvedEntryScript.path
+        (await workspaceRealpath(candidate)) === approvedEntryScript.path
       )
         approvedDynamicScriptSeen = true;
       interpreter = false;
@@ -1524,11 +2335,27 @@ const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 export async function probeScriptSandbox(
   helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
   timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+  launchOptions,
 ) {
   return await new Promise((resolveProbe) => {
     let child;
     try {
-      child = spawn(helperPath, ['--probe'], {
+      const spec =
+        launchOptions === undefined
+          ? { command: helperPath, args: ['--probe'], spawnOptions: {} }
+          : trustedCliLaunchSpec(
+              {
+                kind: 'trusted-cli',
+                command: helperPath,
+                args: ['--probe'],
+                cwd: '/',
+                secrets: [],
+              },
+              launchOptions,
+            );
+      child = spawn(spec.command, spec.args, {
+        ...spec.spawnOptions,
+        detached: false,
         stdio: ['ignore', 'ignore', 'pipe'],
         timeout: timeoutMs,
       });
@@ -1610,10 +2437,14 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
 
 function trustedCliFailureCode(phase, error) {
   if (phase === 'validation') {
-    return (
-      TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '') ??
-      'validation_failed'
-    );
+    const rule = TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '');
+    if (rule !== undefined) return rule;
+    // Filesystem exceptions carry paths in their messages; expose only the errno class.
+    const code = error && typeof error === 'object' ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'validation_path_missing';
+    if (code === 'EACCES' || code === 'EPERM') return 'validation_path_permissions';
+    if (code === 'ELOOP') return 'validation_path_symlink_loop';
+    return 'validation_failed';
   }
   if (phase !== 'materialization') return `${phase.replace('-', '_')}_failed`;
   const code = error && typeof error === 'object' ? error.code : undefined;
@@ -1768,15 +2599,7 @@ export async function materializeTrustedCliEntryScript(request, options) {
   if (request.entryScript === undefined) {
     return { args: request.args, cleanup: async () => true };
   }
-  const handle = await open(request.entryScript.path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let bytes;
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile()) throw new Error('trusted CLI entry script must be a regular file');
-    bytes = await handle.readFile();
-  } finally {
-    await handle.close();
-  }
+  const bytes = await agentWorkspaceRead('readEntry', request.entryScript.path, options);
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (digest !== request.entryScript.sha256) {
     throw new Error('trusted CLI entry script content hash changed after approval');
@@ -1796,11 +2619,30 @@ export async function materializeTrustedCliEntryScript(request, options) {
     );
     const snapshot = join(snapshotRoot, relativeScript);
     const snapshotScriptDir = snapshot.slice(0, snapshot.lastIndexOf('/'));
-    await mkdir(snapshotScriptDir, { recursive: true, mode: 0o755 });
+    // The broker starts with umask 0077. mkdir's mode alone leaves root-owned
+    // snapshot directories at 0700, hiding the approved entry after setpriv.
+    const makeSnapshotDirectory = async (path) => {
+      await mkdir(snapshotRoot, { mode: 0o755 }).catch((error) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+      await chmod(snapshotRoot, 0o755);
+      let current = snapshotRoot;
+      for (const component of path
+        .slice(snapshotRoot.length + 1)
+        .split('/')
+        .filter(Boolean)) {
+        current = join(current, component);
+        await mkdir(current, { mode: 0o755 }).catch((error) => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+        await chmod(current, 0o755);
+      }
+    };
+    await makeSnapshotDirectory(snapshotScriptDir);
     const relativeCwd = request.cwd.slice(request.entryScript.worktreeRoot.length + 1);
     const snapshotCwd = join(snapshotRoot, relativeCwd);
     if (request.entryScript.loading === 'isolated') {
-      await mkdir(snapshotCwd, { recursive: true, mode: 0o755 });
+      await makeSnapshotDirectory(snapshotCwd);
     }
     await writeFile(snapshot, bytes, { mode: 0o444, flag: 'wx' });
     await chmod(snapshot, 0o444);
@@ -1815,7 +2657,7 @@ export async function materializeTrustedCliEntryScript(request, options) {
       let sourceDir = request.entryScript.worktreeRoot;
       let targetDir = snapshotRoot;
       for (const component of components) {
-        for (const entry of await readdir(sourceDir)) {
+        for (const entry of await agentWorkspaceRead('readdir', sourceDir, options)) {
           if (entry === component) continue;
           await symlink(join(sourceDir, entry), join(targetDir, entry));
         }
@@ -2285,12 +3127,20 @@ export async function runAgentSpawnBroker(options = {}) {
   validateRunnerRuntimeStats(stats, options);
   const scriptIsolation =
     options.scriptIsolation ??
-    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
+    // A root probe can fail user-namespace mapping even when the agent can
+    // enforce isolation. Probe with the same privilege drop as actual launches.
+    (await probeScriptSandbox(
+      options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
+      SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+      options.enforceRoot === false ? undefined : options,
+    ));
   if (!scriptIsolation.available) {
     process.stderr.write(
       `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
     );
   }
+  const identity = validateIdentity(options);
+  const managedRoots = await resolveAgentWorktreeRoots(options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
@@ -2323,6 +3173,17 @@ export async function runAgentSpawnBroker(options = {}) {
       releaseSlot();
     };
   };
+  const managedSecrets = createManagedSecretServers({
+    uid: identity.uid,
+    gid: identity.gid,
+    privilegeDropFlags: privilegeDropFlags(options.dockerGid, options.runnerGid),
+    setprivPath: options.setprivPath,
+    env: options.env,
+    spawnChild,
+    realpath: (path) => agentWorkspaceRead('realpath', path, options),
+    stopTagged: (id, signal) => agentWorkspaceRead('managedStop', id + ':' + signal, options),
+    allowedPath: (path) => withinAgentWorktreeRoots(path, managedRoots),
+  });
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -2371,6 +3232,9 @@ export async function runAgentSpawnBroker(options = {}) {
           send(socket, {
             ok: true,
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
+            managedAgentConfig: true,
+            persistentSessionHomes: true,
+            planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
           });
@@ -2378,6 +3242,66 @@ export async function runAgentSpawnBroker(options = {}) {
           return;
         }
         if (closing) throw new Error('agent spawn broker is shutting down');
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          ['prepare-session-home', 'delete-session-home'].includes(raw.kind)
+        ) {
+          const home = sessionHomePath(options.runtimeDir, raw.sessionId);
+          if (raw.kind === 'delete-session-home') {
+            // The durable marker fences late starts after an interrupted deletion.
+            await managedDirectory(
+              join(options.runtimeDir, 'session-homes'),
+              process.getuid(),
+              process.getgid(),
+            );
+            await policyWrite(`${home}.deleted`, '{}');
+            const owned = [...children.values()].filter(
+              (record) => record.sessionId === raw.sessionId,
+            );
+            for (const record of owned) record.stop('SIGKILL');
+            await Promise.all(owned.map((record) => record.closed));
+            if (activeSessionHomes.has(home)) throw new Error('session storage is still in use');
+            const lease = await lockSessionHome(home, options);
+            try {
+              const manifest = await readFile(join(home, '.legacy-opencode.json'), 'utf8').catch(
+                (error) => {
+                  if (error.code === 'ENOENT') return undefined;
+                  throw error;
+                },
+              );
+              if (manifest)
+                await nativeStateRequest({ operation: 'purge', ...JSON.parse(manifest) }, options);
+              await removeKnowledgeIsolation(home, identity.uid, identity.gid, options.setprivPath);
+            } finally {
+              await lease.close();
+            }
+          } else {
+            await waitForSessionHome(home);
+            await prepareSessionHome(raw.sessionId, options, {
+              backend: raw.legacyBackend,
+              sessionId: raw.legacySessionId,
+            });
+          }
+          send(socket, { ok: true });
+          socket.end();
+          return;
+        }
+
+        if (
+          isObject(raw) &&
+          typeof raw.kind === 'string' &&
+          raw.kind.startsWith('managed-secret-')
+        ) {
+          protocolFailed = true;
+          try {
+            send(socket, { ok: true, ...(await managedSecrets.handle(raw)) });
+          } catch {
+            send(socket, { ok: false, error: 'Managed secret server request failed.' });
+          }
+          socket.end();
+          return;
+        }
         if (isObject(raw) && raw.kind === 'spawn-trusted-cli') {
           trustedCliFailurePhase = 'validation';
         }
@@ -2389,7 +3313,7 @@ export async function runAgentSpawnBroker(options = {}) {
         if (
           !scriptIsolation.available &&
           ((request.kind === 'trusted-cli' && request.entryScript !== undefined) ||
-            (request.kind === 'agent' && request.knowledgeIsolation))
+            (request.kind === 'agent' && (request.knowledgeIsolation || request.planning)))
         ) {
           throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
         }
@@ -2442,9 +3366,30 @@ export async function runAgentSpawnBroker(options = {}) {
           // They are maintained separately on purpose — one guards the socket, one
           // guards the exported function — so they can disagree, and the day they do
           // is the day this matters. Cheap enough to hold the guard open for.
-          if (request.kind === 'agent' && request.knowledgeIsolation) {
-            const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+          if (request.kind === 'agent' && (request.knowledgeIsolation || request.planning)) {
+            const isolated = await (request.planning && !request.knowledgeIsolation
+              ? materializeManagedAgentHome(request, options, connectorUrl)
+              : materializeKnowledgeIsolation(request, options, connectorUrl));
             request.knowledgeHome = isolated.home;
+            request.sessionLockFd = isolated.lockFd;
+            const cleanup = materialized.cleanup;
+            materialized.cleanup = async () => {
+              try {
+                return await cleanup();
+              } finally {
+                await isolated.cleanup();
+              }
+            };
+          }
+          if (
+            request.kind === 'agent' &&
+            !request.knowledgeIsolation &&
+            !request.planning &&
+            (options.enforceRoot !== false || connectorUrl !== undefined)
+          ) {
+            const isolated = await materializeManagedAgentHome(request, options, connectorUrl);
+            request.managedHome = isolated.home;
+            request.sessionLockFd = isolated.lockFd;
             const cleanup = materialized.cleanup;
             materialized.cleanup = async () => {
               try {
@@ -2455,11 +3400,18 @@ export async function runAgentSpawnBroker(options = {}) {
             };
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
+          if (request.kind === 'agent' && request.command === 'codex-acp') {
+            releaseCodexStartup = await acquireCodexStartup();
+          }
           const spec =
             request.kind === 'agent'
               ? agentLaunchSpec(
                   { ...request, args: materialized.args },
-                  { ...options, connectorUrl },
+                  {
+                    ...options,
+                    connectorUrl,
+                    signalTraceSeconds: await agentSignalTraceSeconds(controlDir, request),
+                  },
                 )
               : trustedCliLaunchSpec(
                   {
@@ -2472,9 +3424,6 @@ export async function runAgentSpawnBroker(options = {}) {
                   options,
                 );
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'spawn';
-          if (request.kind === 'agent' && request.command === 'codex-acp') {
-            releaseCodexStartup = await acquireCodexStartup();
-          }
           child = spawnChild(spec.command, spec.args, spec.spawnOptions);
         } catch (error) {
           releaseCodexStartup();
@@ -2489,7 +3438,7 @@ export async function runAgentSpawnBroker(options = {}) {
           pendingSignal = signal;
           stopAgentProcessGroup(child, signal);
         };
-        childRecord = { child, closed, stop };
+        childRecord = { child, closed, stop, sessionId: request.sessionEnv?.VERITY_SESSION_ID };
         children.set(child, childRecord);
         child.once('spawn', () => {
           if (pendingSignal !== undefined) child.kill(pendingSignal);
@@ -2512,9 +3461,10 @@ export async function runAgentSpawnBroker(options = {}) {
         };
         child.stdout?.on('data', (chunk) => relay('stdout', chunk));
         child.stderr?.on('data', (chunk) => relay('stderr', chunk));
-        if (request.kind === 'trusted-cli') {
-          child.once('exit', () => killExitedTrustedCliProcessGroup(child));
-        }
+        // `close` waits for inherited pipes, so a surviving descendant can hold
+        // the broker's home claim forever even though the direct agent is dead.
+        // Reap the remaining group at exit before waiting for pipe drain/cleanup.
+        child.once('exit', () => killExitedTrustedCliProcessGroup(child));
         child.once('close', (code, signal) => {
           releaseCodexStartup();
           childClosed = true;
@@ -2552,11 +3502,14 @@ export async function runAgentSpawnBroker(options = {}) {
                     { ok: false, error: TRUSTED_CLI_SECRET_LEAK_ERROR },
               ),
             );
-          } else if (request.knowledgeIsolation) {
+          } else if (request.knowledgeIsolation || request.kind === 'agent') {
+            // Release the stable home before the caller can start its next turn.
+            // Otherwise that sequential turn sees an active claim and falls back
+            // to a disposable path that Codex persists in its thread database.
             void materialized.cleanup().then(
               () => deliver(exitFrame),
               () =>
-                deliver({ ok: false, error: 'Could not remove the isolated Wiki runtime home' }),
+                deliver({ ok: false, error: 'Could not remove the managed agent runtime home' }),
             );
           } else {
             deliver(exitFrame);
@@ -2639,6 +3592,7 @@ export async function runAgentSpawnBroker(options = {}) {
     socketPath,
     async close() {
       closing = true;
+      await managedSecrets.close();
       const running = [...children.values()];
       for (const record of running) record.stop('SIGTERM');
       const escalation = setTimeout(() => {

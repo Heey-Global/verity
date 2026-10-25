@@ -106,10 +106,10 @@ export function ApplyPendingBanner() {
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel="Apply saved settings to running containers"
-        style={running || saving > 0 ? styles.buttonDisabled : null}
+        style={running || saving > 0 ? styles.buttonDisabled : undefined}
       >
         {running ? (
-          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <ActivityIndicator size="small" color={theme.colors.action} />
         ) : (
           <Text style={styles.bannerAction}>{repro.phase === 'done' ? 'Retry' : 'Apply'}</Text>
         )}

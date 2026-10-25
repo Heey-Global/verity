@@ -117,6 +117,29 @@ describe('PushFirePoints', () => {
     await firePoints.close();
   });
 
+  it('opens package setup in the session instead of exposing a generic approval', async () => {
+    const sender = fakeSender();
+    const firePoints = createPushFirePoints({ router: routerFor(sender), debounceMs: 10 });
+    firePoints.observe(
+      'session-1',
+      event({
+        t: 'permission',
+        id: 'package-1',
+        tool: 'verity_package_install',
+        input: { supported: true },
+        riskClass: 'ask',
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sender.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        categoryId: 'SESSION_STATUS',
+        data: { sessionId: 'session-1', kind: 'permission', toolUseId: 'package-1' },
+      }),
+    );
+    await firePoints.close();
+  });
+
   it('adds project and session context without exposing tool input', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({

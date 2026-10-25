@@ -2,7 +2,7 @@ import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.j
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { DeletedProjectError, type ProjectRecord } from '@verity/store';
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { parseOwnerRepo } from './canonical.js';
 import {
   CONTROL_PLANE_PROJECT_OWNER,
@@ -10,6 +10,12 @@ import {
 } from './control-plane-project.js';
 import { createGitWorktreeProvisioner, type WorktreeProvisioner } from './worktree.js';
 import { projectClonePath } from './provisioner.js';
+import {
+  isModelAllowedForProject,
+  NoAllowedAgentError,
+  ProjectAgentNotAllowedError,
+  resolveProjectDefaultModel,
+} from './project-agent-policy.js';
 import type {
   ServerDeps,
   SpawnResult,
@@ -53,10 +59,25 @@ export interface SessionCreateRouteDeps extends Pick<
   defaultModel: string;
 }
 
+/** What the spawn logic needs from an HTTP request: only its logger. */
+interface SpawnRequest {
+  log: Pick<FastifyBaseLogger, 'error'>;
+}
+/** What the spawn logic needs from an HTTP reply: only the status code. */
+interface SpawnReply {
+  code(statusCode: number): unknown;
+}
+
+/** Creates a session the way `POST /sessions` does, for server-internal callers. */
+export type SpawnSession = (
+  body: SpawnBody,
+  log: SpawnRequest['log'],
+) => Promise<{ statusCode: number; result: SpawnResult }>;
+
 export function registerSessionCreateRoute(
   app: FastifyInstance,
   deps: SessionCreateRouteDeps,
-): void {
+): { spawn: SpawnSession } {
   // Create a NEW session (concept §7 "Parallel-Agent-Spawn", §8): provision a
   // worktree and persist the Verity session row immediately so the client can
   // open `/session/:id`. No agent process starts until the first turn is sent.
@@ -65,8 +86,8 @@ export function registerSessionCreateRoute(
   // path — a project delete that starts mid-spawn waits for this to settle
   // before it purges the clone root out from under the worktree being created.
   const spawnSession = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
+    request: SpawnRequest,
+    reply: SpawnReply,
     body: SpawnBody,
   ): Promise<SpawnResult> => {
     const admitted: { release?: () => void } = {};
@@ -78,8 +99,8 @@ export function registerSessionCreateRoute(
   };
 
   const spawnSessionAdmitted = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
+    request: SpawnRequest,
+    reply: SpawnReply,
     body: SpawnBody,
     admitted: { release?: () => void },
   ): Promise<SpawnResult> => {
@@ -126,12 +147,35 @@ export function registerSessionCreateRoute(
           return { error: `project ${body.project} is not in the fleet registry` };
         }
         const project = await deps.ensureVerityControlProject();
+        projectSettings = await deps.projectSettingsStore().getProjectSettings(project.id);
+        effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
+        if (body.model !== undefined && !isModelAllowedForProject(body.model, projectSettings)) {
+          reply.code(400);
+          return { error: new ProjectAgentNotAllowedError(body.model).message };
+        }
+        const allowedAgents = projectSettings?.allowedAgents ?? null;
+        if (allowedAgents !== null) {
+          effectiveModel =
+            body.model ??
+            resolveProjectDefaultModel(
+              await deps.availableModels({ allowLegacyCodexFallback: true }),
+              projectSettings,
+              deps.isProjectSessionModel,
+            );
+          if (effectiveModel === undefined) {
+            reply.code(400);
+            return { error: new NoAllowedAgentError(allowedAgents).message };
+          }
+        }
+        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
+          reply.code(400);
+          return { error: deps.PROJECT_MODEL_ERROR };
+        }
         projectId = project.id;
         projectWorktrees = deps.worktrees;
         projectWorktree = await projectWorktrees.add(
           deps.makeBranch(body.name ?? 'verity-control'),
         );
-        effectiveModel = body.model;
       } else {
         if (!deps.provisioner || !deps.projectCloneRoot || !deps.projectBackend) {
           reply.code(503);
@@ -170,10 +214,43 @@ export function registerSessionCreateRoute(
         admitted.release = deps.beginProjectSpawn(project.id);
         const projectStore = deps.projectSettingsStore();
         projectSettings = await projectStore.getProjectSettings(project.id);
-        effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
+        // A stored default the project's agent rule excludes falls through to the
+        // resolver below rather than failing every spawn.
+        const storedDefault = projectSettings?.defaultModel ?? undefined;
+        effectiveModel =
+          body.model ??
+          (storedDefault !== undefined && isModelAllowedForProject(storedDefault, projectSettings)
+            ? storedDefault
+            : undefined);
         if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
           reply.code(400);
           return { error: deps.PROJECT_MODEL_ERROR };
+        }
+        if (
+          effectiveModel !== undefined &&
+          !isModelAllowedForProject(effectiveModel, projectSettings)
+        ) {
+          reply.code(400);
+          return { error: new ProjectAgentNotAllowedError(effectiveModel).message };
+        }
+        // A restricted project resolves its model before any worktree exists, so a
+        // project whose allowed agents are all disconnected fails cleanly instead of
+        // silently starting on an agent the operator excluded.
+        const allowedAgents = projectSettings?.allowedAgents ?? null;
+        if (effectiveModel === undefined && allowedAgents !== null) {
+          const available = await deps.availableModels({ allowLegacyCodexFallback: true });
+          const remembered = await deps.eventStore.getLastCreatedSessionModel(project.id);
+          effectiveModel =
+            remembered !== undefined &&
+            available.models.includes(remembered) &&
+            deps.isProjectSessionModel(remembered) &&
+            isModelAllowedForProject(remembered, projectSettings)
+              ? remembered
+              : resolveProjectDefaultModel(available, projectSettings, deps.isProjectSessionModel);
+          if (effectiveModel === undefined) {
+            reply.code(400);
+            return { error: new NoAllowedAgentError(allowedAgents).message };
+          }
         }
         // A Sandbox in a sleep lifecycle state is provisioned, not missing: its
         // clone and deps.worktrees sit on the host, and the first turn brings the
@@ -367,4 +444,20 @@ export function registerSessionCreateRoute(
     spawnsInFlight.set(requestedId, tracked);
     return await run;
   });
+
+  return {
+    spawn: async (body, log) => {
+      let statusCode = 200;
+      const result = await spawnSession(
+        { log },
+        {
+          code: (code) => {
+            statusCode = code;
+          },
+        },
+        body,
+      );
+      return { statusCode, result };
+    },
+  };
 }

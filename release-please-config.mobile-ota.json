@@ -3,6 +3,7 @@
   "plugins": ["mobile-ota-sources"],
   "label": "autorelease: pending-mobile-ota",
   "release-label": "autorelease: tagged-mobile-ota",
+  "extra-label": "staging",
   "packages": {
     ".": {
       "release-type": "simple",

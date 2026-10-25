@@ -2,6 +2,20 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
+  it('copies Python artifacts matching the pinned source image', () => {
+    const source = readFileSync('deploy/verity-sandbox.Dockerfile', 'utf8');
+    const version = source.match(/^ARG PYTHON_VERSION=(\d+\.\d+)-/mu)?.[1];
+    expect(version).toBeDefined();
+    // Updating only the image tag leaves COPY paths pointing at absent artifacts.
+    const paths = [
+      ...source.matchAll(
+        /\/usr\/local\/(?:bin\/(?:python|pip)|lib\/(?:libpython|python)|include\/python)(\d+\.\d+)/gu,
+      ),
+    ];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const match of paths) expect(match[1]).toBe(version);
+  });
+
   it('ships the browser export at the configured server path', () => {
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
     const webStage = dockerfile.split('FROM builder-deps AS web-builder\n')[1]?.split('FROM ')[0];
@@ -109,13 +123,33 @@ describe('selective Docker build contexts', () => {
     }
   });
 
-  it('packages a PNG logo into the public preview edge', () => {
-    const dockerfile = readFileSync('deploy/preview-edge.Dockerfile', 'utf8');
-    const asset = dockerfile.match(
-      /^COPY (packages\/preview-tunnel\/assets\/\S+) \.\/assets\/verity-mark\.png$/mu,
-    )?.[1];
-    expect(asset).toBeDefined();
-    expect([...readFileSync(asset!).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  it.each(['deploy/preview-edge.Dockerfile', 'deploy/preview-connector.Dockerfile'])(
+    'packages a PNG logo into %s',
+    (dockerfilePath) => {
+      const dockerfile = readFileSync(dockerfilePath, 'utf8');
+      const asset = dockerfile.match(
+        /^COPY (packages\/preview-tunnel\/assets\/\S+) \.\/assets\/verity-mark\.png$/mu,
+      )?.[1];
+      expect(asset).toBeDefined();
+      expect([...readFileSync(asset!).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    },
+  );
+
+  it('ships preview branding beside the compiled module in the server runtime', () => {
+    const module = readFileSync('packages/preview-tunnel/src/static-server.ts', 'utf8');
+    const assetPath = module.match(/new URL\('([^']+)', import\.meta\.url\)/u)?.[1];
+    expect(assetPath).toBeDefined();
+    const asset = new URL(
+      assetPath!,
+      new URL('../packages/preview-tunnel/dist/static-server.js', import.meta.url),
+    );
+    const relativeAsset = asset.pathname.slice(new URL('../', import.meta.url).pathname.length);
+    const runtime = readFileSync('deploy/Dockerfile', 'utf8').split(' AS runtime\n')[1]!;
+    // Local previews run in the server image, which does not inherit connector assets.
+    expect(runtime).toContain(
+      `COPY --from=builder --chown=node:node /app/${relativeAsset} ./${relativeAsset}`,
+    );
+    expect([...readFileSync(asset).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
   });
 
   it('installs and probes the shared libraries required by copied Python', () => {

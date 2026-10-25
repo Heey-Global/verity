@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { TaskTitleJobs, TASK_TITLE_RECOVERY_MS } from './task-titles.js';
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -56,6 +57,7 @@ const putBody = z
     projectId: z.string().trim().min(1).max(128).nullable().optional(),
     sessionId: sessionIdSchema.nullable().optional(),
     sourceSessionId: sessionIdSchema.nullable().optional(),
+    generateTitle: z.boolean().optional(),
     title: z.string().trim().min(1).max(TASK_TITLE_MAX),
     detail: z.string().trim().max(TASK_DETAIL_MAX).nullable().optional(),
     uploads: z
@@ -73,7 +75,15 @@ const putBody = z
     status: taskStatus.optional(),
     sort: z.number().int().min(0).max(1_000_000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (body) =>
+      !body.generateTitle ||
+      (!!body.detail?.trim() &&
+        !body.sessionId &&
+        (body.status === undefined || body.status === 'open')),
+    { message: 'title generation requires an open, unassigned task with a description' },
+  );
 
 const patchBody = z
   .object({
@@ -96,6 +106,12 @@ const patchBody = z
 
 export interface TasksRouteDeps {
   eventStore: EventStore;
+  queryTitle?: (
+    task: TaskRecord,
+    prompt: string,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
+  tasksChanged?: () => void;
   /** Fan a {@link AgentEvent} out to a session's live stream after it is stored. */
   publish: (sessionId: string, event: AgentEvent) => Promise<void>;
 }
@@ -108,6 +124,7 @@ function taskResponse(task: TaskRecord): Record<string, unknown> {
     sourceSessionId: task.sourceSessionId,
     origin: task.origin,
     title: task.title,
+    titleGenerationStatus: task.titleGenerationStatus,
     detail: task.detail,
     attachments: task.attachments,
     status: task.status,
@@ -129,6 +146,43 @@ function taskResponse(task: TaskRecord): Record<string, unknown> {
  */
 export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps): void {
   const tasks = deps.eventStore.tasks;
+  const titles = deps.queryTitle
+    ? new TaskTitleJobs({
+        query: deps.queryTitle,
+        save: async (snapshot, title) => {
+          const task = await tasks.setGeneratedTitle(snapshot, title);
+          if (!task) return;
+          deps.tasksChanged?.();
+          await notify(task, null, 'updated');
+        },
+      })
+    : undefined;
+  let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+  let recovering: Promise<void> | undefined;
+  const recover = (): Promise<void> => {
+    if (recovering) return recovering;
+    recovering = (async () => {
+      const expired = await tasks.expirePendingTitles(
+        new Date(Date.now() - TASK_TITLE_RECOVERY_MS),
+      );
+      if (expired.length) deps.tasksChanged?.();
+    })().finally(() => {
+      recovering = undefined;
+    });
+    return recovering;
+  };
+  app.addHook('onReady', async () => {
+    await recover();
+    recoveryTimer = setInterval(() => {
+      void recover().catch(() => undefined);
+    }, 30_000);
+    recoveryTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    clearInterval(recoveryTimer);
+    await titles?.close();
+    await recovering;
+  });
 
   async function canUseProject(
     userId: string | null,
@@ -246,6 +300,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     // PUT is capture creation/retry. Edits use PATCH with a revision.
     if (previous !== undefined) return { task: taskResponse(previous) };
     const projectId = body.projectId ?? null;
+    if (projectId === null)
+      return reply.code(400).send({ error: 'choose a project for this task' });
     const sessionId = body.sessionId ?? null;
     if (
       !(await canUseProject(
@@ -260,6 +316,17 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     if (!(await sessionFits(sessionId, projectId))) {
       reply.code(400);
       return { error: 'session is not in the task project' };
+    }
+    if (
+      body.generateTitle &&
+      !body.sourceSessionId &&
+      !(await canUseProject(request.localUserId, projectId, 'execute'))
+    )
+      return reply.code(404).send({ error: 'project not found' });
+    if (body.generateTitle && body.sourceSessionId) {
+      const source = await deps.eventStore.getSession(body.sourceSessionId);
+      if (!source || !(await canUseProject(request.localUserId, source.projectId, 'execute')))
+        return reply.code(404).send({ error: 'source session not found' });
     }
     try {
       const attachments = [...(body.attachments ?? [])];
@@ -287,6 +354,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
           sessionId,
           sourceSessionId: body.sourceSessionId ?? null,
           origin: 'user',
+          generateTitle: body.generateTitle,
           title: body.title,
           detail: body.detail ?? null,
           attachments,
@@ -296,6 +364,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
         0,
       );
       await notify(task, null, 'added');
+      if (body.generateTitle) titles?.enqueue(task);
       reply.code(201);
       return { task: taskResponse(task) };
     } catch (error) {
@@ -326,6 +395,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       reply.code(404);
       return { error: 'task not found' };
     }
+    if (body.projectId === null)
+      return reply.code(400).send({ error: 'choose a project for this task' });
     const projectId = body.projectId === undefined ? previous.projectId : body.projectId;
     const sessionId = body.sessionId === undefined ? previous.sessionId : body.sessionId;
     if (
@@ -352,7 +423,16 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     }
     const { expectedRevision, ...patch } = body;
     try {
-      if (expectedRevision !== undefined && expectedRevision !== previous.revision)
+      // Only a generated title advanced this revision; a queued manual edit still wins.
+      const generatedOnly =
+        previous.generatedTitleRevision === previous.revision &&
+        expectedRevision !== undefined &&
+        expectedRevision + 1 === previous.revision;
+      if (
+        expectedRevision !== undefined &&
+        expectedRevision !== previous.revision &&
+        !generatedOnly
+      )
         throw new TaskRevisionConflictError(id, previous.revision);
       const task = await tasks.patch(
         id,
@@ -465,6 +545,7 @@ export async function executeTasksTool(input: {
     });
   };
   if (input.request.action === 'add') {
+    if (input.projectId === null) throw new Error('choose a project before adding tasks');
     const existing = await tasks.listAssigned(input.sessionId);
     let sort = existing.reduce((max, task) => Math.max(max, task.sort), 0);
     const added: TaskRecord[] = [];

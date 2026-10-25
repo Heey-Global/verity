@@ -1,3 +1,4 @@
+export { mobileRuntimeSnapshot, type MobileRuntimeSnapshot } from './runtimeDiagnostics.js';
 export {
   decodeStreamMessage,
   parseStreamFrame,
@@ -78,6 +79,15 @@ export {
   type AgentEventTone,
 } from './ui/agentEvent.js';
 export {
+  APP_LINK_PROJECT_SETTINGS_PAGES,
+  APP_LINK_SCHEME,
+  APP_LINK_SETTINGS_ROUTES,
+  parseAppLink,
+  type AppLinkProjectSettingsPage,
+  type AppLinkSettingsRoute,
+  type AppLinkTarget,
+} from './ui/appLink.js';
+export {
   markdownSectionTitle,
   isSessionImageFilePath,
   parseInline,
@@ -105,6 +115,10 @@ export {
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  isPlanImplementationPermission,
+  planProposalHeadline,
+  planProposalContent,
+  planProposalFullyRepresented,
   planView,
   type PlanEntry,
   type PlanEntryStatus,
@@ -138,7 +152,20 @@ export {
   type AttentionNotice,
 } from './ui/attentionNotice.js';
 export { sessionLabel } from './ui/sessionLabel.js';
-export { parseBranchIssue, githubRefUrl, type RepoIdentity } from './ui/branchRef.js';
+export { parseBranchIssue, forgeRefUrl, type RefHost, type RepoIdentity } from './ui/branchRef.js';
+export {
+  LEGACY_GITHUB_CONNECTION_ID,
+  codeHostForProject,
+  codeHostFromConnection,
+  connectedCodeHosts,
+  forgejoConnection,
+  preferredCodeHost,
+  providerName,
+  repositoryWebUrl,
+  type CodeHost,
+  type CodeHostProvider,
+  type CodeHostState,
+} from './ui/codeHosts.js';
 export { usesDevcontainerImage, DEVCONTAINER_IMAGE_PREFIX } from './ui/devcontainerImage.js';
 export { splitSearchHighlights, type SearchHighlightSegment } from './ui/searchHighlight.js';
 export {
@@ -148,6 +175,10 @@ export {
   defaultModel,
   modelDisplayName,
   engineLabel,
+  modelAgent,
+  agentLabel,
+  allowedAgentsSummary,
+  excludedAgentsNote,
 } from './ui/modelPicker.js';
 export { secretGrantScopes, type StandingSecretGrantScope } from './ui/secretGrantScopes.js';
 export {
@@ -166,7 +197,9 @@ export {
 } from './ui/knowledgePublishSummary.js';
 export {
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
+  type GmailSendAttachment,
   type GmailSendSummary,
 } from './ui/gmailSendSummary.js';
 export {
@@ -190,10 +223,24 @@ export {
   type TrustedCliSummary,
 } from './ui/trustedCliSummary.js';
 export {
+  appStoreUpdate,
+  describeAppUpdate,
+  parseAppStoreLookup,
+  type AppStoreRelease,
+  type AppUpdateAction,
+  type AppUpdateBlock,
+  type AppUpdateBox,
+  type AppUpdateFacts,
+} from './ui/appUpdate.js';
+export {
   describeServerUpdate,
+  describeServerUpdatePanel,
   serverUpdateAwaitsAttention,
   serverUpdatePollMs,
   showsServerUpdatePanel,
+  type ServerUpdateCard,
+  type ServerUpdateCardAction,
+  type ServerUpdatePanel,
   type ServerUpdateView,
 } from './ui/serverUpdate.js';
 export {
@@ -205,6 +252,7 @@ export {
 export {
   serverUpdateOperationSchema,
   serverUpdateStatusSchema,
+  type ServerUpdateAttempt,
   type ServerUpdateOperation,
   type ServerUpdateStatus,
 } from './api.js';
@@ -237,7 +285,10 @@ export {
 export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
+  pullRequestMergeButton,
   pullRequestStatusText,
+  type PullRequestBlockReason,
+  type PullRequestMergeButton,
   type PullRequestStatusView,
 } from './ui/pullRequest.js';
 export {
@@ -292,6 +343,7 @@ export {
   projectRuntimeLogsSchema,
   projectRuntimeStartedSchema,
   projectSettingsSchema,
+  PROJECT_AGENTS,
   projectStateSchema,
   automationScheduleSchema,
   sessionAutomationSchema,
@@ -309,6 +361,10 @@ export {
   type ProjectMcpBinding,
   type MeetingTranscriptionBackendStatus,
   type CreateProjectRequest,
+  type ConnectionRepository,
+  type ForgeConnection,
+  type ForgeConnectionList,
+  type ForgejoConnectionRequest,
   type DevicePushTokenRequest,
   type DevicePushTokenRegistered,
   type MeetingTranscriptCreated,
@@ -336,6 +392,7 @@ export {
   type ProjectRuntimeStarted,
   type ProjectSettings,
   type ProjectSettingsPatch,
+  type ProjectAgent,
   type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,
@@ -435,6 +492,14 @@ export {
 } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export {
+  connectionRecordingStatusSchema,
+  selectedConnectionRecordingStatusSchema,
+  type SelectedConnectionRecordingStatus,
+  connectionRecordingExportSchema,
+  type ConnectionRecordingStatus,
+  type ConnectionRecordingExport,
+  returnPathStatusSchema,
+  type ReturnPathStatus,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
@@ -444,7 +509,12 @@ export {
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
 export { type PairedDevice, type PairingInvitation } from './api.js';
-export { onboardingStatusSchema, type OnboardingStatus } from './api.js';
+export {
+  onboardingStatusSchema,
+  welcomeSessionSchema,
+  type OnboardingStatus,
+  type WelcomeSession,
+} from './api.js';
 export { githubAppValidateSchema, type GithubAppValidateResult } from './api.js';
 export { dopplerValidateSchema, type DopplerValidateResult } from './api.js';
 export {
@@ -488,6 +558,7 @@ export {
   SERVER_UPDATE_PUSH_KIND,
   parsePushPayload,
   parseServerUpdatePush,
+  parseVulnerabilityPush,
   pushPayloadSchema,
   serverUpdatePushSchema,
   type PushKind,
@@ -541,7 +612,9 @@ export {
   taskSchema,
   bubbleRestingPlace,
   taskAge,
+  provisionalTaskTitle,
   taskContext,
+  projectsByRecentCapture,
   TASK_SILENCE_MS,
   type Task,
   type TaskCapture,
@@ -550,3 +623,40 @@ export {
   type BubbleRest,
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
+
+export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export {
+  cancelSessionSwitch,
+  exportSessionSwitchTimings,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
+  beginSessionSwitch,
+  sessionSwitchTiming,
+  markSessionSwitch,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
+
+export { packageInstallSummary, packageInstallDecision } from './ui/packageInstallSummary.js';
+export type { TransportLane, TransportRequestInit } from './api.js';
+
+export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';
+
+export { matrixSendSummary, type MatrixSendSummary } from './ui/matrixSendSummary.js';
+
+export type {
+  GoogleAccount,
+  GoogleService,
+  GoogleSessionAccess,
+  GoogleSessionAccessStatus,
+  ProjectDriveFolder,
+} from './api.js';
+
+export {
+  groupVulnerabilityFindings,
+  findingCategory,
+  vulnerabilityCounts,
+  type FindingGroup,
+  vulnerabilityFixPrompt,
+  type VulnerabilityFinding,
+  type VulnerabilitySettings,
+} from './vulnerability.js';
