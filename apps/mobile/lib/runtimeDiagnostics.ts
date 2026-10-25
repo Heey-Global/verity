@@ -102,6 +102,12 @@ export function startRuntimeDiagnostics(): () => void {
 function cloneSample(sample: Sample): Sample {
   return {
     ...sample,
+    apiOtherRequestGroups: sample.apiOtherRequestGroups && {
+      google: { ...sample.apiOtherRequestGroups.google },
+      links: { ...sample.apiOtherRequestGroups.links },
+      models: { ...sample.apiOtherRequestGroups.models },
+      remaining: { ...sample.apiOtherRequestGroups.remaining },
+    },
     apiRequestGroups: sample.apiRequestGroups && {
       overview: { ...sample.apiRequestGroups.overview },
       preview: { ...sample.apiRequestGroups.preview },

@@ -308,21 +308,23 @@ function ProjectSettingsIndexView({
         </SettingsListPanel>
       </SettingsGroup>
 
-      <SettingsGroup title="Security">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="shield"
-            title="Vulnerability scan"
-            subtitle="Main branch and session findings"
-            onPress={() =>
-              router.push({
-                pathname: '/project/[id]/vulnerability-scan',
-                params: { id: projectId },
-              })
-            }
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {project.kind === 'github' || project.kind === 'forgejo' ? (
+        <SettingsGroup title="Security">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="shield"
+              title="Vulnerability scan"
+              subtitle="Main branch and session findings"
+              onPress={() =>
+                router.push({
+                  pathname: '/project/[id]/vulnerability-scan',
+                  params: { id: projectId },
+                })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup title="Sandbox">
         <SettingsListPanel>
           <SettingsNavRow

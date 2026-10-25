@@ -3835,6 +3835,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const vulnerabilityService = createVulnerabilityScanService({
+    logFailure: (data) => app.log.warn(data, 'verity: vulnerability scan job failed'),
     store: deps.eventStore.vulnerabilityScans,
     getProject: (id) => deps.eventStore.getProject(id),
     getSession: (id) => deps.eventStore.getSession(id),
@@ -3878,6 +3879,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   const vulnerabilitySessions = createVulnerabilitySessionMonitor({
+    getProject: (id) => deps.eventStore.getProject(id),
     store: deps.eventStore.vulnerabilityScans,
     service: vulnerabilityService,
     getSession: (id) => deps.eventStore.getSession(id),

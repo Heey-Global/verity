@@ -10,7 +10,11 @@ import {
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
 } from '@verity/events';
-import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
+import {
+  beginRuntimeApiRequest,
+  runtimeRequestGroup,
+  runtimeOtherRequestGroup,
+} from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
   selectedEvidenceMetadataSchema,
@@ -458,6 +462,8 @@ export const projectRecordSchema = z.object({
   // rendered; the rest are carried for a follow-up detail view / link-out.
   vulnerabilitySummary: z
     .object({
+      maintenance: z.number().optional(),
+      unclassified: z.number().optional(),
       count: z.number().int().nonnegative(),
       critical: z.number().int().nonnegative(),
       high: z.number().int().nonnegative(),
@@ -5536,6 +5542,7 @@ export class VerityClient {
     let res: Response;
     const finishRuntimeRequest = beginRuntimeApiRequest(
       runtimeRequestGroup(path, init.method ?? 'GET'),
+      runtimeOtherRequestGroup(path),
     );
     try {
       res = await fetchImpl(`${this.baseUrl}${path}`, init);

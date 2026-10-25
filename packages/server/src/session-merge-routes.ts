@@ -141,7 +141,12 @@ export function registerSessionMergeRoutes(
         if (
           current?.number !== number ||
           current.phase !== 'open' ||
-          current.pipeline !== 'success' ||
+          // Match the app: absent CI is allowed only with an affirmative provider
+          // verdict; running checks and required failures still block the merge.
+          current.mergeState === 'dirty' ||
+          current.pipeline === 'pending' ||
+          current.pipeline === 'running' ||
+          (current.pipeline === 'failure' && current.mergeState !== 'unstable') ||
           current.mergeable !== true
         ) {
           applyPrSummaryAction(session, compactPr(current));

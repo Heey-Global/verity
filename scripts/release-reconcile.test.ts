@@ -13,6 +13,13 @@ type Run = {
   event: string;
   created_at: string;
   display_title?: string;
+  head_sha?: string;
+  updated_at?: string;
+  receipt?: string;
+  receiptConclusion?: string;
+  run_attempt?: number;
+  attemptReceipts?: string[];
+  attemptCompletedAt?: string[];
 };
 type Fixture = {
   pending?: Partial<Record<'server' | 'mobile' | 'website', number[]>>;
@@ -31,6 +38,17 @@ type Fixture = {
   serverPromoteRuns?: Run[];
   invalidServerPromotion?: boolean;
   backend?: boolean;
+  pipelineFix?: boolean;
+  pipelineKind?: 'ota' | 'server' | 'native';
+  productChange?: boolean;
+  runsBeforeFix?: boolean;
+  promotionMainMoved?: boolean;
+  releaseAfterRun?: string;
+  releaseApiFails?: boolean;
+  releaseApiFailsAfterRun?: boolean;
+  runtimePublishedAt?: string;
+  paginatedJobs?: boolean;
+  nativeVersion?: string;
   website?: { path?: string; open?: boolean };
   openOta?: boolean;
   otaRuns?: Run[];
@@ -107,6 +125,25 @@ function sweep(fixture: Fixture) {
       readFileSync(resolve('release-please-config.backend.json')),
     );
   }
+  mkdirSync(join(cwd, '.github/workflows'), { recursive: true });
+  for (const workflow of [
+    'mobile-ota-promote',
+    'mobile-production-promote',
+    'server-production-promote',
+  ]) {
+    writeFileSync(join(cwd, `.github/workflows/${workflow}.yml`), 'name: fixture\n');
+  }
+  if (fixture.nativePromoteRuns?.length && !fixture.nativePromotion) {
+    mkdirSync(join(cwd, 'releases'), { recursive: true });
+    writeFileSync(
+      join(cwd, 'releases/mobile-production.json'),
+      JSON.stringify({
+        schema: 2,
+        product: 'mobile-native',
+        version: fixture.nativeVersion ?? '1.32.0',
+      }),
+    );
+  }
   git('add', '.');
   const commitDate = fixture.approvedAt ?? approvedAt;
   execFileSync('git', ['commit', '-qm', 'chore(mobile): promote OTA 1.33.1'], {
@@ -157,6 +194,20 @@ function sweep(fixture: Fixture) {
       env: { ...process.env, GIT_AUTHOR_DATE: commitDate, GIT_COMMITTER_DATE: commitDate },
     });
   }
+  const originalHead = git('rev-parse', 'HEAD');
+  if (fixture.pipelineFix || fixture.productChange) {
+    writeFileSync(
+      join(
+        cwd,
+        fixture.pipelineFix
+          ? `.github/workflows/${fixture.pipelineKind === 'server' ? 'server-production' : fixture.pipelineKind === 'native' ? 'mobile-production' : 'mobile-ota'}-promote.yml`
+          : 'product.txt',
+      ),
+      'changed execution input',
+    );
+    git('add', '.');
+    git('commit', '-qm', 'fix fixture');
+  }
   const head = git('rev-parse', 'HEAD');
   mkdirSync(join(cwd, 'bin'));
   writeFileSync(join(cwd, 'bin/npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -177,7 +228,7 @@ if (joined.includes('/runs?') && (!args.includes('--slurp') || !/created=>=\\d{4
 if (joined.includes('/git/ref/heads/main')) {
   const { existsSync, writeFileSync } = require('node:fs');
   const seen = process.env.RECONCILE_LOG + '.main';
-  const moved = fixture.native?.oldHead || (fixture.native?.mainMoved && existsSync(seen));
+  const moved = fixture.promotionMainMoved || fixture.native?.oldHead || (fixture.native?.mainMoved && existsSync(seen));
   writeFileSync(seen, '1');
   process.stdout.write(JSON.stringify({object:{sha:moved ? 'f'.repeat(40) : process.env.RECONCILE_HEAD}}));
 } else if (joined.includes('/pulls?state=open')) {
@@ -186,9 +237,22 @@ if (joined.includes('/git/ref/heads/main')) {
   process.stdout.write(JSON.stringify({state:'open',user:{login:'github-actions[bot]'},head:{sha:'a'.repeat(40)}}));
 } else if (joined.includes('/compare/')) {
   process.stdout.write(JSON.stringify({ahead_by:fixture.native?.stale ? 1 : 0}));
+} else if (/\\/actions\\/runs\\/\\d+(?:\\/attempts\\/\\d+)?\\/jobs/.test(joined)) {
+  const id = Number(/runs\\/(\\d+)/.exec(joined)[1]);
+  const runs = id >= 300 ? fixture.serverPromoteRuns : id >= 200 ? fixture.nativePromoteRuns : fixture.promoteRuns;
+  const run = runs?.[id % 100];
+  const attempt = Number(/attempts\\/(\\d+)/.exec(joined)?.[1] ?? run?.run_attempt ?? 1);
+  let receipt = run?.attemptReceipts?.[attempt-1] ?? run?.receipt;
+  if (['deferred','failure','success'].includes(receipt)) {
+    const helper = process.env.RECONCILE_HELPER;
+    const identity = JSON.parse(require('node:child_process').execFileSync(process.execPath, ['--input-type=module','-e', 'import {promotionIdentity} from '+JSON.stringify(helper)+';console.log(JSON.stringify(promotionIdentity('+JSON.stringify(id >= 300 ? 'server' : id >= 200 ? 'native' : 'ota')+')));'], {encoding:'utf8'}));
+    receipt = 'recovery-v1:'+identity.candidate+':'+identity.pipeline+':'+receipt;
+  }
+  process.stdout.write(JSON.stringify([...(fixture.paginatedJobs ? [{jobs:[{steps:[]}]}] : []),{jobs:[{steps:receipt ? [{name:receipt,conclusion:run?.receiptConclusion ?? 'success',completed_at:run?.attemptCompletedAt?.[attempt-1]}] : []}]}]));
 } else if (joined.includes('/releases?')) {
+  if (fixture.releaseApiFails || (fixture.releaseApiFailsAfterRun && require('node:fs').existsSync(process.env.RECONCILE_LOG+'.published'))) process.exit(1);
   const runtime = fixture.otaRuntime ?? 'production';
-  const rows = [...(fixture.releases ?? []), ...(runtime === 'missing' ? [] : [{ tag_name: 'mobile-v1.32.0', prerelease: runtime === 'staging', published_at: '2026-09-01T00:00:00Z' }])];
+  const rows = [...(fixture.releases ?? []), ...(fixture.releaseAfterRun && require('node:fs').existsSync(process.env.RECONCILE_LOG+'.published') ? [{tag_name:fixture.releaseAfterRun}] : []), ...(runtime === 'missing' ? [] : [{ tag_name: 'mobile-v1.32.0', prerelease: runtime === 'staging', published_at: fixture.runtimePublishedAt ?? '2026-09-01T00:00:00Z' }])];
   process.stdout.write(rows.map((r) => JSON.stringify({ tag_name: r.tag_name, draft: !!r.draft, prerelease: !!r.prerelease, published_at: r.published_at ?? null })).join('\\n') + '\\n');
 } else if (joined.includes('/pulls?')) {
   const rows = [];
@@ -201,13 +265,14 @@ if (joined.includes('/git/ref/heads/main')) {
 } else if (joined.includes('/actions/workflows/mobile-ota.yml/runs?')) {
   process.stdout.write(JSON.stringify([{workflow_runs:(fixture.otaRuns ?? []).map((run) => ({...run,head_sha:process.env.RECONCILE_HEAD,html_url:'https://runs.invalid/ota'}))}]));
 } else if (joined.includes('/actions/workflows/server-production-promote.yml/runs?')) {
-  const runs = (fixture.serverPromoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/server-promote/' + index }));
+  const runs = (fixture.serverPromoteRuns ?? []).map((run, index) => ({ head_sha: process.env.RECONCILE_RUN_HEAD, ...run, html_url: 'https://github.com/fixture/repo/actions/runs/' + (300 + index) }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-production-promote.yml/runs?')) {
-  const runs = (fixture.nativePromoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/native-promote/' + index }));
+  const runs = (fixture.nativePromoteRuns ?? []).map((run, index) => ({ head_sha: process.env.RECONCILE_RUN_HEAD, ...run, html_url: 'https://github.com/fixture/repo/actions/runs/' + (200 + index) }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-ota-promote.yml/runs?')) {
-  const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/promote/' + index }));
+  if(fixture.releaseAfterRun || fixture.releaseApiFailsAfterRun) require('node:fs').writeFileSync(process.env.RECONCILE_LOG+'.published','1');
+  const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ head_sha: process.env.RECONCILE_RUN_HEAD, ...run, html_url: 'https://github.com/fixture/repo/actions/runs/' + (100 + index) }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else throw new Error('unexpected gh invocation: ' + joined);
 `,
@@ -221,16 +286,23 @@ if (joined.includes('/git/ref/heads/main')) {
       ...process.env,
       PATH: `${join(cwd, 'bin')}:${process.env.PATH}`,
       GITHUB_REPOSITORY: 'fixture/repo',
+      RECONCILE_HELPER: resolve('scripts/promotion-recovery.mjs'),
       GITHUB_STEP_SUMMARY: summary,
       RECONCILE_FIXTURE: JSON.stringify(fixture),
       RECONCILE_LOG: log,
       RECONCILE_HEAD: head,
+      RECONCILE_RUN_HEAD: fixture.runsBeforeFix ? originalHead : head,
     },
   });
   const calls = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
   return {
     ...result,
-    dispatches: calls.filter((call) => call.startsWith('workflow run')),
+    requests: calls.filter((call) => call.startsWith('workflow run')),
+    dispatches: calls
+      .filter((call) => call.startsWith('workflow run'))
+      .map((call) =>
+        call.replace(/ -f recovery-candidate=[a-f0-9]{64} -f recovery-pipeline=[a-f0-9]{64}$/, ''),
+      ),
     summary: existsSync(summary) ? readFileSync(summary, 'utf8') : '',
   };
 }
@@ -471,16 +543,9 @@ describe('release reconciliation sweep', () => {
     expect(result.dispatches).toEqual([promote]);
   });
 
-  it('counts OTA attempts only after the native runtime reached production', () => {
+  it('excludes explicit waiting outcomes from the genuine attempt budget', () => {
     const result = sweep({
-      promoteRuns: [
-        run({
-          conclusion: 'failure',
-          event: 'workflow_dispatch',
-          created_at: '2026-09-28T22:00:00Z',
-        }),
-        run({ conclusion: 'failure', event: 'push', created_at: '2026-09-28T21:40:00Z' }),
-      ],
+      promoteRuns: [run({ receipt: 'deferred' }), run({ receipt: 'deferred' })],
       nativePromoteRuns: [run({ created_at: '2026-09-28T23:00:00Z' })],
     });
     expect(result.status, result.stderr).toBe(0);
@@ -872,4 +937,233 @@ describe('missing website planning', () => {
     expect(result.dispatches).toEqual([]);
     expect(result.stdout).toContain('no Website Staging PR exists');
   });
+});
+
+describe('Production recovery across consecutive states', () => {
+  const failures = () => [run({ conclusion: 'failure' }), run({ conclusion: 'failure' })];
+  it('opens a new bounded budget only after a relevant fix, then stops again', () => {
+    const stalled = sweep({ promoteRuns: failures() });
+    expect(stalled.status).toBe(1);
+    expect(stalled.dispatches).toEqual([]);
+    const unrelated = sweep({ productChange: true, runsBeforeFix: true, promoteRuns: failures() });
+    expect(unrelated.status).toBe(1);
+    expect(unrelated.dispatches).toEqual([]);
+    const fixed = sweep({ pipelineFix: true, runsBeforeFix: true, promoteRuns: failures() });
+    expect(fixed.status, fixed.stderr).toBe(0);
+    expect(fixed.dispatches).toEqual([promote]);
+    expect(fixed.requests[0]).toMatch(
+      /-f recovery-candidate=[a-f0-9]{64} -f recovery-pipeline=[a-f0-9]{64}$/,
+    );
+    const failedAgain = sweep({ pipelineFix: true, promoteRuns: failures() });
+    expect(failedAgain.status).toBe(1);
+    expect(failedAgain.dispatches).toEqual([]);
+  });
+  it('recovers when the native run started before OTA approval and finished afterwards', () => {
+    const result = sweep({
+      promoteRuns: [run({})],
+      runtimePublishedAt: '2026-09-28T22:30:00Z',
+      nativePromoteRuns: [
+        run({ created_at: '2026-09-28T21:30:00Z', updated_at: '2026-09-28T22:30:00Z' }),
+      ],
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([promote]);
+  });
+  it('does not use another native runtime to erase OTA attempts', () => {
+    const result = sweep({
+      nativeVersion: '1.34.0',
+      promoteRuns: failures(),
+      nativePromoteRuns: [run({ created_at: '2026-09-28T23:00:00Z' })],
+      releases: [{ tag_name: 'mobile-v1.34.0' }],
+    });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('refreshes publication before alarming on a green run', () => {
+    const result = sweep({ promoteRuns: [run({})], releaseAfterRun: 'mobile-v1.33.1' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('does not dispatch after Main advanced', () => {
+    const result = sweep({ promotionMainMoved: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([]);
+    expect(result.stdout).toContain('Main advanced');
+  });
+  it('keeps unverifiable historical receipts closed to automatic dispatch', () => {
+    const result = sweep({ promoteRuns: [run({ receipt: 'recovery-v1:invalid' })] });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+    expect(result.stdout).toContain('could not be verified');
+  });
+});
+
+describe('Production recovery evidence boundaries', () => {
+  it('resumes an explicitly deferred green run without treating it as publication', () => {
+    const result = sweep({
+      promoteRuns: [run({ receipt: 'deferred' }), run({ receipt: 'deferred' })],
+      paginatedJobs: true,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([promote]);
+  });
+  it('reports a decision-time API failure without dispatching or declaring delivery', () => {
+    const result = sweep({ promoteRuns: [run({})], releaseApiFailsAfterRun: true });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+    expect(result.stdout).toContain('could not be verified');
+  });
+  it('does not infer a new budget from inaccessible historical Git objects', () => {
+    const result = sweep({
+      promoteRuns: [run({ head_sha: 'a'.repeat(40), conclusion: 'failure' })],
+    });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('keeps real failed attempts counted after a later native success', () => {
+    const result = sweep({
+      promoteRuns: [run({ conclusion: 'failure' }), run({ conclusion: 'failure' })],
+      nativePromoteRuns: [run({ updated_at: '2026-09-28T23:00:00Z' })],
+    });
+    expect(result.status).toBe(1);
+    expect(result.dispatches).toEqual([]);
+  });
+});
+
+describe('shared Production attempt policy', () => {
+  it.each(['server', 'native'] as const)('bounds %s recovery across a relevant fix', (kind) => {
+    const failures = [run({ conclusion: 'failure' }), run({ conclusion: 'failure' })];
+    const candidate = {
+      ota: false,
+      ...(kind === 'server'
+        ? { serverPromotion: true, serverPromoteRuns: failures }
+        : { nativePromotion: true, nativePromoteRuns: failures }),
+    };
+    const exhausted = sweep(candidate);
+    expect(exhausted.status).toBe(1);
+    expect(exhausted.dispatches).toEqual([]);
+    const fixed = sweep({
+      ...candidate,
+      pipelineFix: true,
+      pipelineKind: kind,
+      runsBeforeFix: true,
+    });
+    expect(fixed.status, fixed.stderr).toBe(0);
+    expect(fixed.dispatches).toHaveLength(1);
+    expect(fixed.requests[0]).toContain('-f recovery-candidate=');
+    const exhaustedAgain = sweep({ ...candidate, pipelineFix: true, pipelineKind: kind });
+    expect(exhaustedAgain.status).toBe(1);
+    expect(exhaustedAgain.dispatches).toEqual([]);
+  });
+});
+
+it('counts persisted rerun attempts instead of buying another automatic retry', () => {
+  const result = sweep({
+    promoteRuns: [run({ conclusion: 'failure', run_attempt: 2, receipt: 'failure' })],
+  });
+  expect(result.status).toBe(1);
+  expect(result.dispatches).toEqual([]);
+  expect(result.stdout).toContain('after an automatic retry');
+});
+
+it('does not mistake a green OTA run for a wait after an unrelated runtime publication', () => {
+  const result = sweep({
+    nativeVersion: '1.34.0',
+    promoteRuns: [run({})],
+    nativePromoteRuns: [run({ created_at: '2026-09-28T23:00:00Z' })],
+    releases: [{ tag_name: 'mobile-v1.34.0' }],
+  });
+  expect(result.status).toBe(1);
+  expect(result.dispatches).toEqual([]);
+  expect(result.stdout).toContain('ended green');
+});
+
+it('resumes one recovery lifecycle without dispatching through waits, queues or delivery', () => {
+  const waiting = sweep({ otaRuntime: 'missing' });
+  expect(waiting.status).toBe(0);
+  expect(waiting.dispatches).toEqual([]);
+  const ready = sweep({
+    promoteRuns: [run({ receipt: 'deferred' }), run({ receipt: 'deferred' })],
+  });
+  expect(ready.status, ready.stderr).toBe(0);
+  expect(ready.dispatches).toEqual([promote]);
+  const queued = sweep({ promoteRuns: [run({ status: 'queued', conclusion: null })] });
+  expect(queued.status).toBe(0);
+  expect(queued.dispatches).toEqual([]);
+  const deliveredCandidate = sweep({ releases: delivered, promoteRuns: [run({})] });
+  expect(deliveredCandidate.status).toBe(0);
+  expect(deliveredCandidate.dispatches).toEqual([]);
+});
+
+it('compares historical rerun Git objects before granting a post-fix budget', () => {
+  const fixed = sweep({
+    pipelineFix: true,
+    runsBeforeFix: true,
+    promoteRuns: [run({ conclusion: 'failure', run_attempt: 2 })],
+  });
+  expect(fixed.status, fixed.stderr).toBe(0);
+  expect(fixed.dispatches).toEqual([promote]);
+  const unchanged = sweep({ promoteRuns: [run({ conclusion: 'failure', run_attempt: 2 })] });
+  expect(unchanged.status).toBe(1);
+  expect(unchanged.dispatches).toEqual([]);
+  expect(unchanged.stdout).toContain('Historical rerun has no explicit delivery outcome');
+});
+
+it.each([
+  ['deferred', 'failure'],
+  ['failure', 'deferred'],
+])('counts only genuine attempts in a mixed rerun history: %s then %s', (first, last) => {
+  const result = sweep({
+    promoteRuns: [
+      run({
+        conclusion: last === 'deferred' ? 'success' : 'failure',
+        run_attempt: 2,
+        attemptReceipts: [first, last],
+      }),
+    ],
+  });
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.dispatches).toEqual([promote]);
+});
+
+it('does not move the exact runtime transition when an old native promotion is rerun', () => {
+  const result = sweep({
+    promoteRuns: [run({})],
+    nativePromoteRuns: [
+      run({
+        created_at: '2026-09-28T21:30:00Z',
+        updated_at: '2026-09-28T23:00:00Z',
+        run_attempt: 2,
+        attemptReceipts: ['success', 'success'],
+        attemptCompletedAt: ['2026-09-28T21:35:00Z', '2026-09-28T23:00:00Z'],
+      }),
+    ],
+  });
+  expect(result.status, result.stderr).toBe(1);
+  expect(result.dispatches).toEqual([]);
+  expect(result.stdout).toContain('ended green');
+});
+
+it('keeps historical native reruns with unknown completion evidence closed', () => {
+  const result = sweep({ promoteRuns: [run({})], nativePromoteRuns: [run({ run_attempt: 2 })] });
+  expect(result.status).toBe(1);
+  expect(result.dispatches).toEqual([]);
+  expect(result.stdout).toContain('no verifiable publication completion time');
+});
+
+it('recovers setup failures whose GitHub receipt step was skipped without outputs', () => {
+  const failure = run({
+    conclusion: 'failure',
+    receipt: 'recovery-v1:::failure',
+    receiptConclusion: 'skipped',
+  });
+  const retry = sweep({ promoteRuns: [failure] });
+  expect(retry.status, retry.stdout + retry.stderr).toBe(0);
+  expect(retry.dispatches).toEqual([promote]);
+  const exhausted = sweep({ promoteRuns: [failure, failure] });
+  expect(exhausted.status).toBe(1);
+  expect(exhausted.dispatches).toEqual([]);
+  const fixed = sweep({ pipelineFix: true, runsBeforeFix: true, promoteRuns: [failure, failure] });
+  expect(fixed.status, fixed.stdout + fixed.stderr).toBe(0);
+  expect(fixed.dispatches).toEqual([promote]);
 });

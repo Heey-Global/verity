@@ -62,9 +62,44 @@ it('keeps SAN verification and connection trust isolation on brokered upstream r
   // Trusting the upstream CA must not allow an IP absent from its DNS-only SAN.
   await expect(
     brokeredHttpStreamTransport({ ...input, hostname: '127.0.0.1', ca }),
-  ).rejects.toThrow();
+  ).rejects.toMatchObject({ code: 'ERR_TLS_CERT_ALTNAME_INVALID' });
   const response = await brokeredHttpStreamTransport({ ...input, ca });
   let body = '';
   for await (const chunk of response) body += String(chunk);
   expect(body).toBe('trusted');
+});
+
+it('connects to an IP SAN using the connection CA without sending an IP servername', async () => {
+  const authority = await createProjectEgressCa();
+  const certificate = await issueGatewayServerCertificate(authority, { serverName: '127.0.0.1' });
+  let servername: string | false | null | undefined;
+  const server = createServer(
+    { key: certificate.keyPem, cert: certificate.certPem },
+    (request, response) => {
+      servername = (request.socket as import('node:tls').TLSSocket).servername;
+      response.end('ip-trusted');
+    },
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('fixture missing address');
+    const response = await brokeredHttpStreamTransport({
+      hostname: '127.0.0.1',
+      port: address.port,
+      ca: authority.caCertPem,
+      allowPrivateAddress: true,
+      path: '/',
+      method: 'GET',
+      headers: {},
+      body: Buffer.alloc(0),
+      signal: new AbortController().signal,
+    });
+    let body = '';
+    for await (const chunk of response) body += String(chunk);
+    expect(body).toBe('ip-trusted');
+    expect(servername).toBe(false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

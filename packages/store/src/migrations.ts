@@ -4594,6 +4594,17 @@ migrations['0164_vulnerability_session_base'] = {
   },
 };
 
+migrations['0165_vulnerability_classification'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results add column classification_version integer not null default 0`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results drop column classification_version`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

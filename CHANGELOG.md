@@ -6,6 +6,41 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.58.0](https://github.com/Heey-Global/verity/compare/v4.57.3...v4.58.0) (2026-10-24)
+
+
+### Features
+
+* **mobile:** prototype Apple Watch quick capture with iPhone transcription ([#1387](https://github.com/Heey-Global/verity/issues/1387)) ([0f06d68](https://github.com/Heey-Global/verity/commit/0f06d68fc72a4826ba10261b33f8f3a6a7e5918a))
+
+
+### Bug Fixes
+
+* **release:** bound production recovery by candidate and pipeline ([#1881](https://github.com/Heey-Global/verity/issues/1881)) ([cc6b7e8](https://github.com/Heey-Global/verity/commit/cc6b7e820b32eaa246056636a7370a5799fb46c8))
+
+## [4.57.3](https://github.com/Heey-Global/verity/compare/v4.57.2...v4.57.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **merge:** allow mergeable pull requests without CI checks ([#1879](https://github.com/Heey-Global/verity/issues/1879)) ([a6730b1](https://github.com/Heey-Global/verity/commit/a6730b168974b3a2834f0ac95ada94c7873c28e6))
+
+## [4.57.2](https://github.com/Heey-Global/verity/compare/v4.57.1...v4.57.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **release:** recover missing OTA candidate PR associations ([#1873](https://github.com/Heey-Global/verity/issues/1873)) ([5b29863](https://github.com/Heey-Global/verity/commit/5b29863bc764607f8b6d0badfb039eb009dc4169))
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
+## [4.57.1](https://github.com/Heey-Global/verity/compare/v4.57.0...v4.57.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** patch body-parser and ctutils vulnerabilities ([#1866](https://github.com/Heey-Global/verity/issues/1866)) ([3cf1c65](https://github.com/Heey-Global/verity/commit/3cf1c65e20978b8035f00d66767f68e7394c7b8e))
+* **forgejo:** support brokered TLS connections to IP addresses ([#1869](https://github.com/Heey-Global/verity/issues/1869)) ([67cf874](https://github.com/Heey-Global/verity/commit/67cf8743b591b96773aa162b97d2eec876bdd901))
+
 ## [4.57.0](https://github.com/Heey-Global/verity/compare/v4.56.1...v4.57.0) (2026-10-24)
 
 
