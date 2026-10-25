@@ -97,27 +97,32 @@ with their own access and retention rules; links to them may expire earlier.
 
 Fail-closed applies to four groups only: Devcontainer builds, the existing
 secret paths, admin-agent reads and administrator exports of the trail, and
-changes to the trail's own policy or integrity state, which include the
-resolution of an unverified stream. Retention and overrun changes and the
-one-time legacy-prune confirmation are database transitions that delete history,
-so they co-commit with their audit event and are refused when it cannot be
-written. Interactive administrator reads in the app are deliberately neither
-recorded nor fail-closed in this first stage; they are limited to
-administrators, and recording them would add volume without a question the trail
-could newly answer. New Devcontainer builds require a committed audit intent
-before the build is started, whatever triggered them: initial provisioning, the
-explicit rebuild action, fleet replacement after an update, or a wake that finds
-no image for the current configuration hash. Every such build executes
-repository and Feature code, so the trigger does not change the rule. The rule
-is about image builds Verity mediates, not about the Devcontainer path as such:
-agent-requested builds through the Docker policy gateway stay denied under [ADR
-0017](0017-docker-policy-gateway.md) D5 today, and if a build-worker design
-later admits them they join this fail-closed group rather than the best-effort
-Resources domain. Image resolution is content-addressed and a wake that finds
-its image does not build; a wake that would build, and whose intent cannot be
-committed, fails with an explicit audit-health error instead of running
-unrecorded. Secret approvals, grant issuance and gateway-served secret calls
-keep the fail-closed behavior that [ADR
+relaxing changes to the trail's own policy or integrity state: retention and
+overrun changes, the legacy-prune confirmation, head advancement and the
+resolution of an unverified stream. Tightening transitions, such as marking a
+stream unverified and freezing its pruning, always apply even when their audit
+event cannot be written, with the event recorded as soon as possible, so an
+induced outage can never suppress detection. The write-gap append is
+additionally fail-closed for the recovering process alone, as described below.
+Retention and overrun changes and the one-time legacy-prune confirmation are
+database transitions that delete history, so they co-commit with their audit
+event and are refused when it cannot be written. Interactive administrator reads
+in the app are deliberately neither recorded nor fail-closed in this first
+stage; they are limited to administrators, and recording them would add volume
+without a question the trail could newly answer. New Devcontainer builds require
+a committed audit intent before the build is started, whatever triggered them:
+initial provisioning, the explicit rebuild action, fleet replacement after an
+update, or a wake that finds no image for the current configuration hash. Every
+such build executes repository and Feature code, so the trigger does not change
+the rule. The rule is about image builds Verity mediates, not about the
+Devcontainer path as such: agent-requested builds through the Docker policy
+gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
+and if a build-worker design later admits them they join this fail-closed group
+rather than the best-effort Resources domain. Image resolution is
+content-addressed and a wake that finds its image does not build; a wake that
+would build, and whose intent cannot be committed, fails with an explicit
+audit-health error instead of running unrecorded. Secret approvals, grant
+issuance and gateway-served secret calls keep the fail-closed behavior that [ADR
 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already require;
 this ADR does not weaken it. Admin-agent reads and administrator exports are
 denied when their own audit event cannot be written, as the Access section
@@ -164,20 +169,22 @@ for example during generation replacement, so no cross-process gate is
 attempted: the write-gap event is ordered only relative to its own process's
 later events, and its failure window, not its stream position, says which period
 it covers. Readers correlate gap events with other processes' events by
-server-recorded time. For the recovering process the gap event is effectively
-fail-closed: while it cannot be written, that process's fail-closed intents on
-the stream are refused too, and other processes are unaffected. A stream marked
-unverified still accepts appends, since the mark concerns retained history and
-not new events; those appends are verified from the declared boundary once the
-stream is resolved. Write-gap tracking applies to the new streams only. The
-legacy secret chain does not participate in it: its post-commit lifecycle events
-keep their existing best-effort behavior, no new event kind is added to its
-format, and a co-committed secret approval never waits on write-gap bookkeeping.
-Recovery may add reconciliation events describing only what is known. The
-audit-health diagnostic is a live process signal, not durable storage: when the
-process dies before recovery, the gap can go completely unevidenced. That is an
-accepted limitation of the local-only first stage and one reason external copies
-remain a later decision.
+server-recorded time, which is the database-assigned time of each stored event;
+the failure window inside a gap event is necessarily measured on the process
+clock and is labelled as such. For the recovering process the gap event is
+effectively fail-closed: while it cannot be written, that process's fail-closed
+intents on the stream are refused too, and other processes are unaffected. A
+stream marked unverified still accepts appends, since the mark concerns retained
+history and not new events; those appends are verified from the declared
+boundary once the stream is resolved. Write-gap tracking applies to the new
+streams only. The legacy secret chain does not participate in it: its
+post-commit lifecycle events keep their existing best-effort behavior, no new
+event kind is added to its format, and a co-committed secret approval never
+waits on write-gap bookkeeping. Recovery may add reconciliation events
+describing only what is known. The audit-health diagnostic is a live process
+signal, not durable storage: when the process dies before recovery, the gap can
+go completely unevidenced. That is an accepted limitation of the local-only
+first stage and one reason external copies remain a later decision.
 
 ### Access
 
@@ -230,18 +237,21 @@ the installation-scoped stream when the credential belongs to the installation
 rather than a project, so that the retention rules below for the legacy secret
 chain never pin build, image or sandbox events. Events without a project, such
 as updates, Server-generation replacement and audit-policy changes, form one
-installation-scoped stream with its own sequence and chain head. Two records
-accompany each stream and must not be confused. The *head record* holds the hash
-last confirmed by a verification run; it advances only when a scheduled,
-administrator-triggered or restore-triggered verification completes, never on
-append, because a head that follows the tail detects nothing. A run first
-confirms that the stored head's sequence and hash are still present in the
+installation-scoped stream with its own sequence and chain head.
+
+Two records accompany each stream and must not be confused. The *head record*
+holds the hash last confirmed by a verification run; it advances only when a
+scheduled, administrator-triggered or restore-triggered verification completes,
+never on append, because a head that follows the tail detects nothing. A run
+first confirms that the stored head's sequence and hash are still present in the
 chain. If they are not, or the chain does not re-derive, the run fails without
 moving the head, the stream is marked unverified, its pruning freezes, its reads
 carry the mark and hide rows that are expired under the policy in force, which
 after a restore is the snapshot's, audit health reports the failure, and an
 administrator must resolve the stream explicitly; the restore path below reuses
-this handling. Resolution is itself a fail-closed, co-committed audit event on
+this handling.
+
+Resolution is itself a fail-closed, co-committed audit event on
 the installation stream that names the stream and the chosen outcome; the
 declared boundary is always the failure point recorded by the failed run, the
 resolution event follows every append made since then, and the re-derived head
@@ -249,33 +259,36 @@ covers those appends, so an installation-stream failure, whose stream keeps
 receiving read, export and policy events meanwhile, has the same defined way out
 as any other: either a fresh full re-derivation succeeds and re-anchors the
 head, or the administrator declares the mismatch as an accepted gap and the head
-is re-anchored at the current tail with that declaration attached. After any
-resolution the head takes the sequence of the current tail, which includes every
-append made since the failure. When that sequence is lower than the previous
-head, as after a truncated tail on a quiet stream, the head has moved backward;
-that is the one permitted case, and the resolution event records both sequences
-so the check is deterministic; sequence numbers are never reused within one
-restore lineage. The implementation design must therefore keep a per-stream
-allocation counter that is separate from the verified-head hash, advances on
-every append and is seeded at migration for live and deleted projects, and it
-must teach the legacy chain's verification that a declared boundary, not only
-the previous sequence, may precede an event. Those are required changes to the
-legacy append and verify paths; the legacy event format and kinds stay as they
-are, and any extra locking the counter needs is measured against the fail-closed
-latency of ADR 0014 before rollout. Every later position is attributable to its
-restore lineage, for legacy rows as well; whether that is a column or a side
-table keyed by sequence range is an implementation choice, but the attribution
-is required, so a citation made before a restore names a position in the earlier
-lineage rather than colliding with a later one. The declaration is a recognized
-verification boundary like a prune checkpoint, but it does not skip history:
-later runs still re-derive every retained segment between consecutive boundaries
-against that segment's own anchor, and only the declared mismatch point itself
-is exempt, so an accepted gap stays verified without opening an unverified hole
-and never re-freezes the stream by itself. The detection claim below excludes
-the declared point and nothing else. Resolution applies to the streams of
-deleted projects as well, so one broken chain cannot block legacy pruning
-indefinitely. While resolving, the administrator sees the hidden expired rows;
-only ordinary reads hide them. The first head of every stream is set only by a
+is re-anchored at the current tail with that declaration attached.
+
+After any resolution the head takes the sequence of the current tail, which
+includes every append made since the failure. When that sequence is lower than
+the previous head, as after a truncated tail on a quiet stream, the head has
+moved backward; that is the one permitted case, and the resolution event records
+both sequences so the check is deterministic; sequence numbers are never reused
+within one restore lineage. The implementation design must therefore keep a
+per-stream allocation counter that is separate from the verified-head hash,
+advances on every append and is seeded at migration for live and deleted
+projects, and it must teach the legacy chain's verification that a declared
+boundary, not only the previous sequence, may precede an event. Those are
+required changes to the legacy append and verify paths; the legacy event format
+and kinds stay as they are, and any extra locking the counter needs is measured
+against the fail-closed latency of ADR 0014 before rollout. Every later position
+is attributable to its restore lineage, for legacy rows as well; whether that is
+a column or a side table keyed by sequence range is an implementation choice,
+but the attribution is required, so a citation made before a restore names a
+position in the earlier lineage rather than colliding with a later one. The
+declaration is a recognized verification boundary like a prune checkpoint, but
+it does not skip history: later runs still re-derive every retained segment
+between consecutive boundaries against that segment's own anchor, and only the
+declared mismatch point itself is exempt, so an accepted gap stays verified
+without opening an unverified hole and never re-freezes the stream by itself.
+The detection claim below excludes the declared point and nothing else.
+Resolution applies to the streams of deleted projects as well, so one broken
+chain cannot block legacy pruning indefinitely. While resolving, the
+administrator sees the hidden expired rows; only ordinary reads hide them.
+
+The first head of every stream is set only by a
 successful verification from sequence zero or from the prune checkpoint: an
 upgrade seeds no head from a tail it has not verified, a pre-existing chain that
 fails is marked unverified at upgrade, and a new or empty stream starts with a
@@ -288,19 +301,21 @@ undetectable truncation window; the run cadence is part of the audit policy. The
 *prune checkpoint*, introduced below, marks the removed prefix. Both live in the
 same database and share its limits. Head records and scheduled verification
 apply to every stream, the legacy secret chain included; "by age alone" below
-refers only to the absence of operation-expired events there. A project-scoped
-event caused by an installation operation references that operation's ID;
-streams are not interleaved into a single global order. The streams are pruned
-independently, so a reference may outlive its target, and within one stream a
-later event may reference an operation or grant whose start was pruned; so every
-cross-stream and parent reference carries the target's stream identity, sequence
-and restore lineage in addition to its operation or approval ID. An unresolved
-reference renders as expired only when the target stream's prune checkpoint
-covers that sequence; otherwise it is flagged as unresolved, because a reference
-to an event that was never written or was removed out of band is exactly what
-verification exists to surface. Deletion must leave enough safe target
-identification to interpret old events. Use bounded fields and pagination;
-repository-controlled strings are untrusted input and must be safely rendered.
+refers only to the absence of operation-expired events there.
+
+A project-scoped event caused by an installation operation references that
+operation's ID; streams are not interleaved into a single global order. The
+streams are pruned independently, so a reference may outlive its target, and
+within one stream a later event may reference an operation or grant whose start
+was pruned; so every cross-stream and parent reference carries the target's
+stream identity, sequence and restore lineage in addition to its operation or
+approval ID. An unresolved reference renders as expired only when the target
+stream's prune checkpoint covers that sequence; otherwise it is flagged as
+unresolved, because a reference to an event that was never written or was
+removed out of band is exactly what verification exists to surface. Deletion
+must leave enough safe target identification to interpret old events. Use
+bounded fields and pagination; repository-controlled strings are untrusted input
+and must be safely rendered.
 
 ### Local storage and retention
 
