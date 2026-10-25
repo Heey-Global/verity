@@ -46,23 +46,30 @@ describe('knowledge folder layout (ADR 0022 D1/D2)', () => {
     }
     writeFileSync(
       join(dir, 'sources/documents/matrix/room/day.md'),
-      'Attachment: sources/documents/matrix/room/receipt.pdf',
+      '> Attachment: sources/documents/matrix/room/receipt.pdf',
     );
     writeFileSync(join(dir, 'sources/documents/matrix/room/receipt.pdf'), Buffer.from([0, 255, 1]));
     writeFileSync(
       join(dir, '.text/sources/documents/matrix/room/receipt.pdf.md'),
       'Source: sources/documents/matrix/room/receipt.pdf',
     );
+    mkdirSync(join(dir, 'sources/documents/matrix/room/attachments'), { recursive: true });
+    const attachment =
+      'Source: sources/documents/matrix/original.md\n> Attachment: sources/documents/matrix/example.pdf';
+    writeFileSync(join(dir, 'sources/documents/matrix/room/attachments/notes.md'), attachment);
     await ensureProjectKnowledge(dataRoot, 'matrix-project');
     await ensureProjectKnowledge(dataRoot, 'matrix-project');
     expect(readFileSync(join(dir, 'sources/matrix/room/day.md'), 'utf8')).toBe(
-      'Attachment: sources/matrix/room/receipt.pdf',
+      '> Attachment: sources/matrix/room/receipt.pdf',
     );
     expect(readFileSync(join(dir, 'sources/matrix/room/receipt.pdf'))).toEqual(
       Buffer.from([0, 255, 1]),
     );
     expect(readFileSync(join(dir, '.text/sources/matrix/room/receipt.pdf.md'), 'utf8')).toBe(
       'Source: sources/matrix/room/receipt.pdf',
+    );
+    expect(readFileSync(join(dir, 'sources/matrix/room/attachments/notes.md'), 'utf8')).toBe(
+      attachment,
     );
     expect(readdirSync(join(dir, 'sources/documents'))).not.toContain('matrix');
   });

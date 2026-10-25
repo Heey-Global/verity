@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 
@@ -375,7 +375,7 @@ async function renameAfterConcurrentCheck(from: string, to: string): Promise<voi
 
 /** Preserve stable room/attachment names: collisions require explicit recovery. */
 async function migrateMatrixSources(root: string): Promise<void> {
-  async function moveTree(from: string, to: string): Promise<void> {
+  async function moveTree(from: string, to: string, extracted = false): Promise<void> {
     const source = await lstat(from).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return undefined;
       throw error;
@@ -390,7 +390,8 @@ async function migrateMatrixSources(root: string): Promise<void> {
       if (destination && (!destination.isDirectory() || destination.isSymbolicLink()))
         throw new Error(`Matrix migration destination conflict: ${to}`);
       await mkdir(to, { recursive: true, mode: 0o755 });
-      for (const entry of await readdir(from)) await moveTree(join(from, entry), join(to, entry));
+      for (const entry of await readdir(from))
+        await moveTree(join(from, entry), join(to, entry), extracted);
       await rmdir(from);
       return;
     }
@@ -400,9 +401,18 @@ async function migrateMatrixSources(root: string): Promise<void> {
       throw error;
     });
     if (destination) throw new Error(`Matrix migration destination conflict: ${to}`);
-    if (from.endsWith('.md')) {
+    const isProjection = relative(join(root, LEGACY_MATRIX_DIR), from).split('/').length === 2;
+    if (from.endsWith('.md') && (extracted || isProjection)) {
       const content = await readFile(from, 'utf8');
-      const updated = content.replaceAll(`${LEGACY_MATRIX_DIR}/`, `${KNOWLEDGE_MATRIX_DIR}/`);
+      const updated = extracted
+        ? content.replace(
+            /^Source: sources\/documents\/matrix\//mu,
+            `Source: ${KNOWLEDGE_MATRIX_DIR}/`,
+          )
+        : content.replace(
+            /^> Attachment: sources\/documents\/matrix\//gmu,
+            `> Attachment: ${KNOWLEDGE_MATRIX_DIR}/`,
+          );
       if (content !== updated) {
         const temporary = `${from}.${randomUUID()}.tmp`;
         await writeFile(temporary, updated, { mode: source.mode & 0o777 });
@@ -415,5 +425,6 @@ async function migrateMatrixSources(root: string): Promise<void> {
   await moveTree(
     join(root, EXTRACTED_TEXT_DIR, LEGACY_MATRIX_DIR),
     join(root, EXTRACTED_TEXT_DIR, KNOWLEDGE_MATRIX_DIR),
+    true,
   );
 }
