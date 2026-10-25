@@ -103,14 +103,18 @@ verification covers the streams of deleted projects as well, so their prefixes
 can still be pruned. Events appended after the last verification run are the
 undetectable truncation window; the run cadence is part of the audit policy. The
 *prune checkpoint*, introduced below, marks the removed prefix. Both live in the
-same database and share its limits. A project-scoped event caused by an
-installation operation references that operation's ID; streams are not
-interleaved into a single global order. The streams are pruned independently, so
-a reference may outlive its target; verification and rendering must tolerate a
-dangling operation reference and show it as expired rather than as corruption.
-Deletion must leave enough safe target identification to interpret old events.
-Use bounded fields and pagination; repository-controlled strings are untrusted
-input and must be safely rendered.
+same database and share its limits. Head records and scheduled verification
+apply to every stream, the legacy secret chain included; "by age alone" below
+refers only to the absence of operation-expired events there. A project-scoped
+event caused by an installation operation references that operation's ID;
+streams are not interleaved into a single global order. The streams are pruned
+independently, so a reference may outlive its target, and within one stream a
+later event may reference an operation or grant whose start was pruned;
+verification and rendering must tolerate both kinds of dangling reference and
+show them as expired rather than as corruption. Deletion must leave enough safe
+target identification to interpret old events. Use bounded fields and
+pagination; repository-controlled strings are untrusted input and must be safely
+rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -265,7 +269,7 @@ today it already leaves secret-audit rows untouched. Policy changes are audited;
 shortening the window must explicitly disclose that older history will be
 removed. Retention uses server-recorded time, not a caller-supplied timestamp.
 On the new streams it must not split an operation that is still active; the
-legacy secret chain is pruned by age alone, as stated below. An operation
+legacy secret chain is pruned by age alone, as stated above. An operation
 without a terminal result cannot pin its stream forever: after a bounded,
 configurable overrun past the window, reconciliation appends an
 *operation-expired* event that closes it as indeterminate, and the prefix
@@ -302,8 +306,11 @@ operational lineage when possible, and never replay recorded actions. Because
 head records are restored with the snapshot, events written after it vanish
 without detectable truncation; the trail cannot disclose what was lost, only
 where its coverage ends. Where pruning is enabled, a restore first runs
-verification on every stream, advancing head records to the restored tails, then
-prunes data expired under the retention policy contained in the snapshot before
+verification on every stream, advancing head records to the restored tails. A
+stream whose verification fails is marked unverified: its head and pruning stay
+frozen and its reads carry that mark, while every other stream proceeds, so a
+damaged backup never turns into an audit-wide outage. The restore then prunes
+data expired under the retention policy contained in the snapshot before
 ordinary audit reads resume; before pruning exists, restored data is simply
 readable. Backup copies and exported files have independent lifetimes; deleting
 live rows does not erase older backups or exports.
