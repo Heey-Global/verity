@@ -1,5 +1,9 @@
 import type { VerityClient } from '@verity/mobile';
-import { connectSessionGoogleService, disconnectSessionGoogleService } from './sessionGoogleAccess';
+import {
+  chatAccountPickAction,
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+} from './sessionGoogleAccess';
 const mockAuth = jest.fn();
 jest.mock('./googleDrive', () => ({
   runGoogleAccountAuth: (...args: unknown[]) => mockAuth(...args),
@@ -108,4 +112,40 @@ it('refuses to bind a new account that declined the requested service', async ()
     'Google did not grant access to Gmail',
   );
   expect(access).not.toHaveBeenCalled();
+});
+
+describe('chatAccountPickAction', () => {
+  const pick = (overrides: Partial<Parameters<typeof chatAccountPickAction>[0]>) =>
+    chatAccountPickAction({
+      accountId: 'work',
+      supportingAccounts: 2,
+      currentId: null,
+      projectAccountId: null,
+      inheriting: false,
+      ...overrides,
+    });
+  it('does nothing when the sheet is dismissed', () => {
+    expect(pick({ accountId: null })).toBe('none');
+  });
+  it('signs an account in when none supports the service', () => {
+    expect(pick({ accountId: null, supportingAccounts: 0 })).toBe('connect');
+  });
+  // With the "Use project default" row gone, picking the project's account is
+  // the only way a pinned chat follows the project again; pinning it instead
+  // would leave the chat on a stale account after the project switches.
+  it('returns a pinned chat to the project default', () => {
+    expect(pick({ accountId: 'work', currentId: 'work', projectAccountId: 'work' })).toBe(
+      'inherit',
+    );
+    expect(pick({ accountId: 'work', currentId: 'private', projectAccountId: 'work' })).toBe(
+      'inherit',
+    );
+  });
+  it('keeps a chat that already follows the project', () => {
+    expect(pick({ projectAccountId: 'work', currentId: 'work', inheriting: true })).toBe('none');
+  });
+  it('pins another account and ignores re-picking the pinned one', () => {
+    expect(pick({ currentId: 'private', projectAccountId: 'private' })).toBe('connect');
+    expect(pick({ currentId: 'work' })).toBe('none');
+  });
 });
