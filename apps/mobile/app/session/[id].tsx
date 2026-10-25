@@ -3237,8 +3237,14 @@ export const SessionChat = memo(function SessionChat({
         const accounts = (await client.listGoogleAccounts()).filter((account) =>
           googleAccountSupports(account, service),
         );
-        const status = await client.getSessionGoogleAccess(sessionId, service);
+        const [status, project] = await Promise.all([
+          client.getSessionGoogleAccess(sessionId, service),
+          projectId
+            ? client.getProjectGoogleConnection(projectId, service).catch(() => null)
+            : null,
+        ]);
         const currentId = status.enabled ? status.accountId : null;
+        const projectAccountId = project?.enabled ? (project.accountId ?? null) : null;
         const accountId = await chooseGoogleAccount({
           accounts,
           title: `${GOOGLE_SERVICE_NAMES[service]} account`,
@@ -3246,8 +3252,21 @@ export const SessionChat = memo(function SessionChat({
         });
         // No supporting account yet: the connect flow below signs one in.
         if (accountId === null && accounts.length > 0) return;
-        // Re-picking the account in use keeps the grant as is, including
-        // following the project default.
+        // Picking the project's account follows the project default again, so
+        // a later project change reaches this chat instead of a stale pin.
+        if (accountId !== null && accountId === projectAccountId) {
+          if (status.mode === 'inherit') return;
+          await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
+          const [gmail, calendar, contacts] = await Promise.all([
+            client.getSessionGmailConnection(sessionId),
+            client.getSessionCalendarConnection(sessionId),
+            client.getSessionContactsConnection(sessionId),
+          ]);
+          setGmailConnection(gmail);
+          setCalendarConnection(calendar);
+          setContactsConnection(contacts);
+          return;
+        }
         if (accountId !== null && accountId === currentId) return;
         const result = await connectSessionGoogleService(client, sessionId, service, accountId);
         if (result.kind === 'session') {
@@ -3262,7 +3281,7 @@ export const SessionChat = memo(function SessionChat({
         ),
       );
     },
-    [client, sessionId, chooseGoogleAccount],
+    [client, projectId, sessionId, chooseGoogleAccount],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),

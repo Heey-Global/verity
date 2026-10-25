@@ -26,9 +26,7 @@ it('asks only which account to use and marks the one in use', async () => {
   await screen.findByText('Gmail account');
   // Scope, disable and add-account actions crowded this sheet before; they
   // live on the chip and in Settings now, so only accounts may be offered.
-  expect(screen.getAllByRole('button').map((row) => row.props.accessibilityLabel)).toEqual(
-    expect.not.arrayContaining([expect.stringMatching(/project default|disable|connect another/i)]),
-  );
+  expect(screen.queryByText(/project default|disable|connect another/i)).toBeNull();
   expect(screen.getByLabelText('Business')).toHaveProperty(
     'props.accessibilityState.checked',
     true,
