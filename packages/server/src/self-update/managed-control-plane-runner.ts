@@ -308,7 +308,7 @@ function prepareSpec(
     ],
     restartPolicy: 'no',
     platform: `linux/${architecture}`,
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
   };
 }
 
@@ -467,7 +467,7 @@ export function desiredSpec(
     platform: `linux/${architecture}`,
     capDrop: ['ALL'],
     capAdd: ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'],
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
     pidsLimit: 512,
     memoryBytes: 4 * 1024 * 1024 * 1024,
     // Match the ceiling, which disables swap — the Compose service this replaces

@@ -10,7 +10,11 @@ import {
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
 } from '@verity/events';
-import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
+import {
+  beginRuntimeApiRequest,
+  runtimeRequestGroup,
+  runtimeOtherRequestGroup,
+} from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
   selectedEvidenceMetadataSchema,
@@ -114,6 +118,7 @@ const pullRequestSchema = z
       pending: z.number().int().nonnegative(),
     }),
     // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
+    viewerCanMerge: z.boolean().optional(),
     mergeable: z.boolean().nullable().catch(null),
     // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
     mergeState: mergeStateSchema,
@@ -128,6 +133,7 @@ const sessionPrSchema = z.object({
   // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
   // not green yet, or GitHub still computing mergeability just after a push).
   // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
+  viewerCanMerge: z.boolean().optional(),
   mergeable: z.boolean().nullable().catch(null),
   // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
   // also means GitHub started no `pull_request` checks — the one state that must read
@@ -311,7 +317,44 @@ const sessionPlanningSchema = z
   .catch(undefined);
 export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
 
+const gmailSessionConnectionSchema = z.object({
+  accountId: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  source: z.enum(['project', 'session']).nullable().optional(),
+  mode: z.enum(['inherit', 'disabled', 'account']).optional(),
+  enabled: z.boolean(),
+  accountEmail: z.string().nullable(),
+  clientId: z.string().nullable(),
+  connected: z.boolean(),
+});
+export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
+export type CalendarSessionConnection = GmailSessionConnection;
+export type ContactsSessionConnection = GmailSessionConnection;
+
+const sessionGoogleWorkspaceFileSchema = z.object({
+  accountEmail: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  accountId: z.string().nullable().optional(),
+  folderLinkId: z.string().nullable().optional(),
+  assignmentId: z.string(),
+  kind: z.enum(['slides', 'docs', 'sheets']),
+  fileId: z.string(),
+  name: z.string(),
+  webViewLink: z.string().url(),
+  revisionId: z.string().nullable(),
+});
+export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
+
+const sessionGoogleStatusSchema = z.object({
+  gmail: gmailSessionConnectionSchema,
+  calendar: gmailSessionConnectionSchema,
+  contacts: gmailSessionConnectionSchema,
+  workspaceFile: sessionGoogleWorkspaceFileSchema.nullable(),
+});
+export type SessionGoogleStatus = z.infer<typeof sessionGoogleStatusSchema>;
+
 export const sessionDetailSchema = sessionSummarySchema.safeExtend({
+  googleStatus: sessionGoogleStatusSchema.optional(),
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
@@ -458,6 +501,8 @@ export const projectRecordSchema = z.object({
   // rendered; the rest are carried for a follow-up detail view / link-out.
   vulnerabilitySummary: z
     .object({
+      maintenance: z.number().optional(),
+      unclassified: z.number().optional(),
       count: z.number().int().nonnegative(),
       critical: z.number().int().nonnegative(),
       high: z.number().int().nonnegative(),
@@ -1040,40 +1085,12 @@ const googleConnectResultSchema = z.object({
   scopes: z.array(z.string()),
 });
 
-const gmailSessionConnectionSchema = z.object({
-  accountId: z.string().nullable().optional(),
-  accountName: z.string().nullable().optional(),
-  source: z.enum(['project', 'session']).nullable().optional(),
-  mode: z.enum(['inherit', 'disabled', 'account']).optional(),
-  enabled: z.boolean(),
-  accountEmail: z.string().nullable(),
-  clientId: z.string().nullable(),
-  connected: z.boolean(),
-});
-export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
-export type CalendarSessionConnection = GmailSessionConnection;
-export type ContactsSessionConnection = GmailSessionConnection;
-
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
   path: z.string(),
   name: z.string(),
 });
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
-
-const sessionGoogleWorkspaceFileSchema = z.object({
-  accountEmail: z.string().nullable().optional(),
-  accountName: z.string().nullable().optional(),
-  accountId: z.string().nullable().optional(),
-  folderLinkId: z.string().nullable().optional(),
-  assignmentId: z.string(),
-  kind: z.enum(['slides', 'docs', 'sheets']),
-  fileId: z.string(),
-  name: z.string(),
-  webViewLink: z.string().url(),
-  revisionId: z.string().nullable(),
-});
-export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
@@ -2920,7 +2937,10 @@ export class VerityClient {
     return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
   }
 
-  async listSessionLinks(id: string): Promise<
+  async listSessionLinks(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<
     Array<{
       sessionId: string;
       name: string | null;
@@ -2928,7 +2948,10 @@ export class VerityClient {
       projectName: string;
     }>
   > {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/links`, { method: 'GET' });
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return z
       .object({
         links: z.array(
@@ -2943,7 +2966,10 @@ export class VerityClient {
       .parse(await res.json()).links;
   }
 
-  async listPendingLinkedMessages(id: string): Promise<
+  async listPendingLinkedMessages(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<
     Array<{
       id: string;
       targetSessionId: string;
@@ -2954,6 +2980,7 @@ export class VerityClient {
   > {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/linked-message-approvals`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({
@@ -3341,8 +3368,11 @@ export class VerityClient {
       .parse(await response.json());
   }
 
-  async listGoogleAccounts(): Promise<GoogleAccount[]> {
-    const response = await this.request('/google/accounts', { method: 'GET' });
+  async listGoogleAccounts(signal?: AbortSignal): Promise<GoogleAccount[]> {
+    const response = await this.request('/google/accounts', {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return z.object({ accounts: z.array(googleAccountSchema) }).parse(await response.json())
       .accounts;
   }
@@ -3442,9 +3472,24 @@ export class VerityClient {
     });
   }
 
-  async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
+  async getSessionGoogleStatus(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionGoogleStatus> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/google-status`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
+    return sessionGoogleStatusSchema.parse(await res.json());
+  }
+
+  async getSessionGmailConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3460,9 +3505,13 @@ export class VerityClient {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
   }
 
-  async getSessionCalendarConnection(sessionId: string): Promise<CalendarSessionConnection> {
+  async getSessionCalendarConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<CalendarSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3478,9 +3527,13 @@ export class VerityClient {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, { method: 'DELETE' });
   }
 
-  async getSessionContactsConnection(sessionId: string): Promise<ContactsSessionConnection> {
+  async getSessionContactsConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ContactsSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/contacts`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3587,10 +3640,11 @@ export class VerityClient {
 
   async getSessionGoogleWorkspaceFile(
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<SessionGoogleWorkspaceFile | null> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`,
-      { method: 'GET' },
+      { method: 'GET', ...(signal ? { signal } : {}) },
     );
     const parsed = z
       .object({ file: sessionGoogleWorkspaceFileSchema.nullable() })
@@ -4678,12 +4732,12 @@ export class VerityClient {
 
   async getSession(
     id: string,
-    timingContext?: { trace: SwitchTiming | undefined },
+    timingContext?: { trace: SwitchTiming | undefined; signal?: AbortSignal },
   ): Promise<SessionDetail> {
     const timing = timingContext ? timingContext.trace : sessionSwitchTiming(id);
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}`,
-      { method: 'GET' },
+      { method: 'GET', ...(timingContext?.signal ? { signal: timingContext.signal } : {}) },
       this.fetchImpl,
       { trace: timing },
     );
@@ -5116,10 +5170,13 @@ export class VerityClient {
 
   /** The routable models for the new-session picker (#143): the Claude ids plus any
    * OpenCode provider-qualified ids the server enumerates, and the spawn default. */
-  async listModels(projectId?: string): Promise<ModelList> {
+  async listModels(projectId?: string, signal?: AbortSignal): Promise<ModelList> {
     // A project narrows the list to its allowed agents and resolves its default.
     const query = projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`;
-    const res = await this.request(`/models${query}`, { method: 'GET' });
+    const res = await this.request(`/models${query}`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return modelListSchema.parse(await res.json());
   }
 
@@ -5539,6 +5596,7 @@ export class VerityClient {
     let res: Response;
     const finishRuntimeRequest = beginRuntimeApiRequest(
       runtimeRequestGroup(path, init.method ?? 'GET'),
+      runtimeOtherRequestGroup(path),
     );
     try {
       res = await fetchImpl(`${this.baseUrl}${path}`, init);

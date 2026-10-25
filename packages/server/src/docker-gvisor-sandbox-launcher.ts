@@ -289,7 +289,7 @@ export function createDockerGvisorSandboxLauncher(
         tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=67108864' },
         restartPolicy: 'no',
         capDrop: ['ALL'],
-        securityOpt: ['no-new-privileges:true'],
+        securityOpt: ['no-new-privileges=true'],
         pidsLimit: options.pidsLimit ?? DEFAULT_PIDS_LIMIT,
         memoryBytes: options.memoryBytes ?? DEFAULT_MEMORY_BYTES,
         nanoCpus: options.nanoCpus ?? DEFAULT_NANO_CPUS,

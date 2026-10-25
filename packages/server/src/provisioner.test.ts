@@ -877,7 +877,7 @@ describe('ProvisionerImpl (#174)', () => {
       ],
       capDrop: ['ALL'],
       capAdd: [...RUNNER_BROKER_CAPABILITIES],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
     };
     await ctx.store.updateProjectSleepState(id, 'sleeping', {
       sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({

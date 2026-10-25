@@ -21,12 +21,19 @@ import type {
   ContainerReplacementConfig,
 } from '../docker.js';
 import {
-  reconcileManagedCompanions,
+  reconcileManagedCompanions as reconcileWithCleanup,
   publishAgentSeedAtomically,
   runManagedCompanionHandoff,
 } from './managed-companion-reconcile.js';
 import * as gatewayControl from './managed-gateway-control.js';
 import type { UpdateJournal } from './update-journal.js';
+
+// Existing reconciliation cases isolate cleanup; dedicated cases below exercise it.
+const reconcileManagedCompanions = (options: Parameters<typeof reconcileWithCleanup>[0]) =>
+  reconcileWithCleanup({
+    ...options,
+    cleanupSeeds: options.cleanupSeeds ?? (async () => undefined),
+  });
 
 const oldImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const targetImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
@@ -189,6 +196,93 @@ function withoutCapability<T extends object, K extends keyof T>(value: T, key: K
 }
 
 describe('managed companion reconciliation', () => {
+  it('runs seed cleanup only after companion reconciliation and tolerates its failure', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const order: string[] = [];
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await reconcileWithCleanup({
+        managedRoot: '/managed',
+        docker: state.docker,
+        journal,
+        reconcileRunner: async () => {
+          order.push('companions');
+        },
+        cleanupSeeds: async () => {
+          order.push('cleanup');
+          throw new Error('inventory unavailable');
+        },
+      });
+      expect(order).toEqual(['companions', 'cleanup']);
+      expect(warning).toHaveBeenCalledWith('agent-seed cleanup skipped:', 'inventory unavailable');
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('does not clean seeds when companion reconciliation fails', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const cleanupSeeds = vi.fn(async () => undefined);
+    await expect(
+      reconcileWithCleanup({
+        managedRoot: '/managed',
+        docker: state.docker,
+        journal,
+        reconcileRunner: async () => {
+          throw new Error('runner failed');
+        },
+        cleanupSeeds,
+      }),
+    ).rejects.toThrow('runner failed');
+    expect(cleanupSeeds).not.toHaveBeenCalled();
+  });
+
+  it('uses a disposable target-image helper without making the Updater seed mount writable', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    await reconcileWithCleanup({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+    });
+    expect(state.specs).toEqual([
+      expect.objectContaining({
+        image: targetImage,
+        command: ['cleanup-agent-seed'],
+        user: '0:0',
+        network: 'none',
+        readOnlyRootfs: true,
+        capDrop: ['ALL'],
+        securityOpt: ['no-new-privileges=true'],
+        binds: [
+          '/var/run/docker.sock:/var/run/docker.sock',
+          '/opt/agent-seed:/opt/agent-seed-cleanup',
+        ],
+        env: ['VERITY_AGENT_SEED_CLEANUP_HOST_ROOT=/opt/agent-seed'],
+      }),
+    ]);
+    expect(state.removed).toEqual(['c'.repeat(64)]);
+  });
+
+  it('records the prior selection only after successful publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-seed-previous-'));
+    const source = await seedSource(root);
+    const target = join(root, 'seed');
+    await publishAgentSeedAtomically(source, target, oldImage, '13.1.4');
+    await publishAgentSeedAtomically(source, target, targetImage, '13.1.5');
+    expect(await readlink(join(target, '.previous'))).toBe(`.versions/${'a'.repeat(64)}`);
+    await publishAgentSeedAtomically(source, target, targetImage, '13.1.5');
+    expect(await readlink(join(target, '.previous'))).toBe(`.versions/${'a'.repeat(64)}`);
+    await expect(
+      publishAgentSeedAtomically(source, target, oldImage, '13.1.4', undefined, async () => {
+        throw new Error('verification failed');
+      }),
+    ).rejects.toThrow('verification failed');
+    expect(await readlink(join(target, '.previous'))).toBe(`.versions/${'a'.repeat(64)}`);
+    expect(await readlink(join(target, '.current'))).toBe(`.versions/${'b'.repeat(64)}`);
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('repairs legacy Gateway ingress even when its image already matches the target', async () => {
     const state = fake({ gateway: targetImage, updater: targetImage });
     const id = 'a'.repeat(64);

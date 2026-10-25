@@ -165,3 +165,74 @@ it('attributes actual API reads and their failures to their group', async () => 
   );
   expect(sample.apiRequestGroups.preview.inFlight).toBe(baseline.apiRequestGroups.preview.inFlight);
 });
+
+it('attributes real API calls to fixed other families, including failures and peaks', async () => {
+  const baseline = mobileRuntimeSnapshot(true);
+  const pending: Array<(response: Response) => void> = [];
+  const client = new VerityClient({
+    baseUrl: 'https://private.invalid',
+    fetch: () => new Promise<Response>((resolve) => pending.push(resolve)),
+  });
+  const reads = [
+    client.listGoogleAccounts(),
+    client.listSessionLinks('private'),
+    client.listModels('private'),
+  ].map((read) => read.catch(() => undefined));
+  const during = mobileRuntimeSnapshot(true);
+  for (const key of ['google', 'links', 'models'] as const) {
+    expect(during.apiOtherRequestGroups[key].started).toBe(
+      baseline.apiOtherRequestGroups[key].started + 1,
+    );
+    expect(during.apiOtherRequestGroups[key].inFlight).toBe(
+      baseline.apiOtherRequestGroups[key].inFlight + 1,
+    );
+    expect(during.apiOtherRequestGroups[key].peakInFlight).toBeGreaterThanOrEqual(1);
+  }
+  pending.forEach((resolve) => resolve(new Response('{}', { status: 500 })));
+  await Promise.all(reads);
+  const after = mobileRuntimeSnapshot();
+  for (const key of ['google', 'links', 'models'] as const) {
+    expect(after.apiOtherRequestGroups[key].failures).toBe(
+      baseline.apiOtherRequestGroups[key].failures + 1,
+    );
+    expect(after.apiOtherRequestGroups[key].inFlight).toBe(
+      baseline.apiOtherRequestGroups[key].inFlight,
+    );
+  }
+  during.apiOtherRequestGroups.google.started = -999;
+  expect(mobileRuntimeSnapshot().apiOtherRequestGroups.google.started).not.toBe(-999);
+  expect(JSON.stringify(after)).not.toContain('private');
+});
+
+it('keeps classifications bounded for paths, query values and mutations', async () => {
+  const { runtimeOtherRequestGroup, beginRuntimeApiRequest } =
+    await import('./runtimeDiagnostics.js');
+  for (const path of [
+    '/google/accounts?secret=x',
+    '/sessions/id/gmail',
+    '/sessions/id/calendar',
+    '/sessions/id/contacts',
+    '/sessions/id/google-workspace/file',
+  ])
+    expect(runtimeOtherRequestGroup(path)).toBe('google');
+  expect(runtimeOtherRequestGroup('/sessions/id/linked-message-approvals')).toBe('links');
+  expect(runtimeOtherRequestGroup('/models?projectId=secret')).toBe('models');
+  expect(runtimeOtherRequestGroup('/unknown/secret')).toBe('remaining');
+  const before = mobileRuntimeSnapshot(true);
+  const finish = beginRuntimeApiRequest('other', 'remaining');
+  finish(false);
+  finish(true);
+  const after = mobileRuntimeSnapshot(true);
+  expect(after.apiOtherRequestGroups.remaining.settled).toBe(
+    before.apiOtherRequestGroups.remaining.settled + 1,
+  );
+  expect(after.apiOtherRequestGroups.remaining.failures).toBe(
+    before.apiOtherRequestGroups.remaining.failures,
+  );
+  expect(after.apiOtherRequestGroups.remaining.peakInFlight).toBe(
+    before.apiOtherRequestGroups.remaining.inFlight + 1,
+  );
+  expect(mobileRuntimeSnapshot().apiOtherRequestGroups.remaining.peakInFlight).toBe(
+    after.apiOtherRequestGroups.remaining.inFlight,
+  );
+});

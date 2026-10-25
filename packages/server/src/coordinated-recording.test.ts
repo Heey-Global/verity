@@ -292,6 +292,10 @@ it('rejects ambiguous selection, stale status and target changes without fallbac
   uplink.status.mockResolvedValue(selectedMetadata('recording'));
   await manager.start(id, 30000, 3, 'selected-session');
   expect(await manager.refreshStatus(id)).toMatchObject({ uplink: { state: 'recording' } });
+  expect(await manager.refreshStatus(id)).toMatchObject({ uplink: { state: 'recording' } });
+  const regressed = selectedMetadata('recording');
+  regressed.readiness.monotonicMs--;
+  uplink.status.mockResolvedValue(regressed);
   expect(await manager.refreshStatus(id)).toMatchObject({ uplink: { state: 'unavailable' } });
   await expect(manager.start(id, 30000, 3, 'other-session')).rejects.toThrow('recording_conflict');
   uplink.status.mockResolvedValue(selectedMetadata());

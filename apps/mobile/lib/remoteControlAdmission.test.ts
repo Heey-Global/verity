@@ -14,9 +14,12 @@ import {
 class FakeSocket {
   readonly sent: string[] = [];
   closed = false;
-  private listeners = new Map<string, ((event: { data?: unknown }) => void)[]>();
+  private listeners = new Map<string, ((event: { data?: unknown; code?: number }) => void)[]>();
 
-  addEventListener(type: string, listener: (event: { data?: unknown }) => void): void {
+  addEventListener(
+    type: string,
+    listener: (event: { data?: unknown; code?: number }) => void,
+  ): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
 
@@ -28,8 +31,8 @@ class FakeSocket {
     this.closed = true;
   }
 
-  emit(type: string, data?: unknown): void {
-    for (const listener of this.listeners.get(type) ?? []) listener({ data });
+  emit(type: string, data?: unknown, code?: number): void {
+    for (const listener of this.listeners.get(type) ?? []) listener({ data, code });
   }
 }
 
@@ -206,6 +209,62 @@ describe('selected recording admission hold', () => {
     expect(attached).toHaveBeenCalledTimes(1);
     admission.finish();
   });
+  it.each(['before-arm', 'during-arm'])(
+    'accepts normal broker completion %s without releasing the ticket early',
+    async (timing) => {
+      let release!: (value: unknown) => void;
+      let armSignal!: AbortSignal;
+      const arm = jest.fn(async (_session, signal: AbortSignal) => {
+        armSignal = signal;
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      });
+      const f = start(undefined, { runId, installationFingerprint, arm });
+      const settled = jest.fn();
+      void f.pending.then(settled, settled);
+      deliver(f);
+      if (timing === 'during-arm') {
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+      f.socket.emit('close', undefined, 1000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(arm).toHaveBeenCalledTimes(1);
+      expect(armSignal.aborted).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      release(confirmation());
+      const admission = await f.pending;
+      expect(admission.ticket).toBe('private-ticket');
+      admission.finish();
+      expect(f.socket.sent).toHaveLength(1);
+    },
+  );
+  it('rejects normal close before a validated ready reply', async () => {
+    const arm = jest.fn();
+    const f = start(undefined, { runId, installationFingerprint, arm });
+    f.socket.emit('close', undefined, 1000);
+    await expect(f.pending).rejects.toThrow('connection closed');
+    expect(arm).not.toHaveBeenCalled();
+  });
+  it('rejects abnormal broker close during arming', async () => {
+    let signal!: AbortSignal;
+    const f = start(undefined, {
+      runId,
+      installationFingerprint,
+      arm: async (_id, abort) => {
+        signal = abort;
+        return new Promise(() => {});
+      },
+    });
+    deliver(f);
+    await Promise.resolve();
+    await Promise.resolve();
+    f.socket.emit('close', undefined, 1006);
+    await expect(f.pending).rejects.toThrow('connection closed');
+    expect(signal.aborted).toBe(true);
+  });
   it.each([
     'foreign_session',
     'foreign_installation',
@@ -225,53 +284,61 @@ describe('selected recording admission hold', () => {
     expect(f.socket.closed).toBe(true);
     expect(JSON.parse(f.socket.sent.at(-1)!)).toMatchObject({ type: 'connect.cancel' });
   });
-  it('bounds lost ACKs and ignores a successful callback arriving after timeout', async () => {
-    jest.useFakeTimers();
-    let release!: (value: unknown) => void;
-    let signal!: AbortSignal;
-    const f = start(undefined, {
-      runId,
-      installationFingerprint,
-      arm: async (_id, abort) => {
-        signal = abort;
-        return new Promise((resolve) => {
-          release = resolve;
-        });
-      },
-    });
-    const assertion = expect(f.pending).rejects.toThrow('arming timed out');
-    deliver(f);
-    await Promise.resolve();
-    await Promise.resolve();
-    await jest.advanceTimersByTimeAsync(15000);
-    await assertion;
-    expect(signal.aborted).toBe(true);
-    release(confirmation());
-    await Promise.resolve();
-    expect(f.socket.closed).toBe(true);
-  });
-  it('cancels an arming request on Stop and ignores late confirmation', async () => {
-    const controller = new AbortController();
-    let release!: (value: unknown) => void;
-    let signal!: AbortSignal;
-    const f = start(controller.signal, {
-      runId,
-      installationFingerprint,
-      arm: async (_id, abort) => {
-        signal = abort;
-        return new Promise((resolve) => {
-          release = resolve;
-        });
-      },
-    });
-    deliver(f);
-    await Promise.resolve();
-    await Promise.resolve();
-    controller.abort();
-    await expect(f.pending).rejects.toThrow('cancelled');
-    expect(signal.aborted).toBe(true);
-    release(confirmation());
-    await Promise.resolve();
-    expect(f.socket.closed).toBe(true);
-  });
+  it.each([false, true])(
+    'bounds lost ACKs and ignores late confirmation (broker closed: %s)',
+    async (brokerClosed) => {
+      jest.useFakeTimers();
+      let release!: (value: unknown) => void;
+      let signal!: AbortSignal;
+      const f = start(undefined, {
+        runId,
+        installationFingerprint,
+        arm: async (_id, abort) => {
+          signal = abort;
+          return new Promise((resolve) => {
+            release = resolve;
+          });
+        },
+      });
+      const assertion = expect(f.pending).rejects.toThrow('arming timed out');
+      deliver(f);
+      await Promise.resolve();
+      await Promise.resolve();
+      if (brokerClosed) f.socket.emit('close', undefined, 1000);
+      await jest.advanceTimersByTimeAsync(15000);
+      await assertion;
+      expect(signal.aborted).toBe(true);
+      release(confirmation());
+      await Promise.resolve();
+      expect(f.socket.closed).toBe(true);
+    },
+  );
+  it.each([false, true])(
+    'cancels arming on Stop and ignores late confirmation (broker closed: %s)',
+    async (brokerClosed) => {
+      const controller = new AbortController();
+      let release!: (value: unknown) => void;
+      let signal!: AbortSignal;
+      const f = start(controller.signal, {
+        runId,
+        installationFingerprint,
+        arm: async (_id, abort) => {
+          signal = abort;
+          return new Promise((resolve) => {
+            release = resolve;
+          });
+        },
+      });
+      deliver(f);
+      await Promise.resolve();
+      await Promise.resolve();
+      if (brokerClosed) f.socket.emit('close', undefined, 1000);
+      controller.abort();
+      await expect(f.pending).rejects.toThrow('cancelled');
+      expect(signal.aborted).toBe(true);
+      release(confirmation());
+      await Promise.resolve();
+      expect(f.socket.closed).toBe(true);
+    },
+  );
 });

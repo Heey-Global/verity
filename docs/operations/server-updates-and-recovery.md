@@ -117,6 +117,16 @@ the successor reconciles the managed Control Plane Runner and marks the operatio
 complete. An interrupted or invalid copy never changes `.current`, and the same
 journal phase retries deterministically.
 
+After successful companion reconciliation in a managed update, automatic seed
+cleanup keeps the selected version, the previous published version, and every
+version referenced by a running or stopped container. Staging directories and
+foreign directories are not cleanup targets. Cleanup is skipped if container
+inventory is incomplete or a mount refers through `.current` instead of an
+immutable version directory: Docker may preserve the old mount while the symlink
+points elsewhere, so the referenced version cannot be identified safely. A
+skipped cleanup does not fail the update; do not delete old versions manually
+without resolving those references.
+
 `verity-install` remains the topology recovery path. Seed recovery for an
 interrupted managed update belongs to the Updater: it resumes the persisted
 `reconciling-companions` journal and reruns the target-digest helper. Re-running

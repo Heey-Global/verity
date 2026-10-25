@@ -1,20 +1,18 @@
 {
   "schema": 1,
-  "version": "1.77.2",
+  "version": "1.77.6",
   "runtime": "1.77.0",
   "channel": "production",
-  "commit": "48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
-  "tag": "mobile-v1.77.2",
-  "branch": "staging-mobile-v1.77.2-48b6c71e47a62666b0e8ebd319ceb7ca2404c43b",
-  "baseline": "mobile-v1.77.0",
-  "group": "23713617-8dde-4b49-955d-5437ba1c0078",
+  "commit": "f643c0fa49ab486a76ee44f7e47a1b05366588c0",
+  "tag": "mobile-v1.77.6",
+  "branch": "staging-mobile-v1.77.6-f643c0fa49ab486a76ee44f7e47a1b05366588c0",
+  "baseline": "mobile-v1.77.3",
+  "group": "6d04133d-26e6-4ec0-83c4-3f9efac05dfe",
   "notes": [
-    "improve vulnerability indicators and scan lifecycle (#1828)",
-    "expose bounded selected connection test (#1840)",
-    "isolate session credentials and authenticate worktree fetches (#1839)",
-    "add selected recording admission and bounded attempt (#1831)",
-    "compact meters and session rows in narrow split views (#1827)",
-    "integrate scan UI and harden release handoff (#1824)",
-    "calmer update progress and channel settings in the header (#1823)"
+    "classify and group vulnerability scan findings (#1870)",
+    "attribute auxiliary requests and native invocation timing (#1871)",
+    "preserve recording arming after admission completes (#1865)",
+    "expose local connection test failure receipts (#1860)",
+    "expose scoped vulnerability scans to agents (#1854)"
   ]
 }

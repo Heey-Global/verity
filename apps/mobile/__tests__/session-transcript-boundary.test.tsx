@@ -94,7 +94,9 @@ it.each(['web', 'ios', 'android'])(
 );
 
 it('keeps explicit model and automation access independent of deferred admission', () => {
-  expect(source).toMatch(/refreshModels\(\);\s*setEnginePickerOpen\(true\)/);
+  // Explicit selection must load even before deferred background work is admitted.
+  expect(source).toContain('useModels(client, enginePickerOpen, projectId)');
+  expect(source).toMatch(/onEnginePress=\{\(\) => setEnginePickerOpen\(true\)\}/);
   expect(source).toMatch(/setAutomationSheetOpen\(true\);\s*void loadAutomation\(\)/);
   expect(source).toContain('enabled: optionalWorkReady || staticPreviewOpen');
 });

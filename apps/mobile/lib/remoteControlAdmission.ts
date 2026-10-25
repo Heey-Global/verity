@@ -17,7 +17,7 @@ export interface RemoteAdmission {
   readonly sessionId: string;
   readonly ticket: string;
   readonly expiresAt: number;
-  /** Close the admission socket after /data reports `attached`. */
+  /** Release local admission ownership after /data reports `attached`. */
   finish(): void;
   /** Cancel admission or an attachment that has not yet become active. */
   cancel(): void;
@@ -66,7 +66,7 @@ function fields(value: Record<string, unknown>, expected: string[]): boolean {
   );
 }
 
-/** One ticket request; the caller keeps admission open until the data barrier completes. */
+/** One ticket request; selected callers confirm Core arming before receiving the ticket. */
 export function requestRemoteControlAdmission(
   options: RemoteAdmissionOptions,
 ): Promise<RemoteAdmission> {
@@ -80,13 +80,14 @@ export function requestRemoteControlAdmission(
   let state: 'pending' | 'arming' | 'ready' | 'done' = 'pending';
   const armingController = new AbortController();
   let opened = false;
+  let peerClosed = false;
 
   return new Promise<RemoteAdmission>((resolve, reject) => {
     let armingTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => fail(new Error('Remote admission timed out.')), 20_000);
     const close = (cancel: boolean): void => {
       if (state === 'done') return;
-      if (cancel && opened) {
+      if (cancel && opened && !peerClosed) {
         try {
           socket.send(JSON.stringify({ type: 'connect.cancel', requestId: id }));
         } catch {
@@ -256,6 +257,12 @@ export function requestRemoteControlAdmission(
       })();
     });
     socket.addEventListener('error', () => fail(new Error('Remote admission connection failed.')));
-    socket.addEventListener('close', () => fail(new Error('Remote admission connection closed.')));
+    socket.addEventListener('close', (event) => {
+      peerClosed = true;
+      // The broker completes admission after connect.ready. Core arming remains
+      // mandatory even when its asynchronous work outlives that normal close.
+      if (state === 'arming' && event.code === 1000) return;
+      fail(new Error('Remote admission connection closed.'));
+    });
   });
 }

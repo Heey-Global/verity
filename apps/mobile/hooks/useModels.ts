@@ -19,6 +19,7 @@ export interface UseModels {
   error: string | undefined;
   /** Re-fetch the model list. */
   refresh: () => void;
+  cancel: () => void;
 }
 
 /**
@@ -48,41 +49,81 @@ export function useModels(
   // nothing writes after unmount.
   const mounted = useRef(true);
   const reqId = useRef(0);
+  const pending = useRef<{ controller: AbortController; promise: Promise<void> } | null>(null);
+  const cancel = useCallback(() => {
+    reqId.current++;
+    pending.current?.controller.abort();
+    pending.current = null;
+  }, []);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      cancel();
     };
   }, []);
 
-  const load = useCallback(async () => {
-    const id = ++reqId.current;
-    const fresh = (): boolean => mounted.current && id === reqId.current;
-    setLoading(true);
-    try {
-      const res = await client.listModels(projectId ?? undefined);
-      if (!fresh()) return;
-      setModels(res.models);
-      setModelOrder(res.modelOrder ?? res.models);
-      setMoreModels(res.moreModels ?? []);
-      setDefaultModel(res.default);
-      setAllowedAgents(res.allowedAgents);
-      setError(undefined);
-    } catch (caught) {
-      if (!fresh()) return;
-      setError(caught instanceof VerityApiError ? caught.message : 'Could not load models');
-    } finally {
-      if (fresh()) setLoading(false);
-    }
+  const load = useCallback(() => {
+    if (pending.current) return pending.current.promise;
+    const controller = new AbortController();
+    const promise = (async () => {
+      const id = ++reqId.current;
+      const fresh = (): boolean =>
+        mounted.current && id === reqId.current && !controller.signal.aborted;
+      setLoading(true);
+      try {
+        const res = await client.listModels(projectId ?? undefined, controller.signal);
+        if (!fresh()) return;
+        setModels(res.models);
+        setModelOrder(res.modelOrder ?? res.models);
+        setMoreModels(res.moreModels ?? []);
+        setDefaultModel(res.default);
+        setAllowedAgents(res.allowedAgents);
+        setError(undefined);
+      } catch (caught) {
+        if (!fresh()) return;
+        setError(caught instanceof VerityApiError ? caught.message : 'Could not load models');
+      } finally {
+        if (fresh()) setLoading(false);
+      }
+    })().finally(() => {
+      if (pending.current?.controller === controller) pending.current = null;
+    });
+    pending.current = { controller, promise };
+    return promise;
   }, [client, projectId]);
 
   useEffect(() => {
-    if (enabled) void load();
-  }, [load, enabled]);
+    cancel();
+    setModels([]);
+    setModelOrder([]);
+    setMoreModels([]);
+    setAllowedAgents(undefined);
+    setDefaultModel(undefined);
+    setError(undefined);
+    setLoading(false);
+    return cancel;
+  }, [client, projectId, cancel]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    void load();
+    return cancel;
+  }, [load, enabled, cancel]);
 
   const refresh = useCallback(() => {
     void load();
   }, [load]);
 
-  return { models, modelOrder, moreModels, defaultModel, allowedAgents, loading, error, refresh };
+  return {
+    models,
+    modelOrder,
+    moreModels,
+    defaultModel,
+    allowedAgents,
+    loading,
+    error,
+    refresh,
+    cancel,
+  };
 }

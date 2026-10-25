@@ -144,7 +144,7 @@ async function sendVoiceRequest(
               questionId,
               questionTitle,
             );
-      const model = await meetingResearchModel(client, meeting.sessionId);
+      const model = await meetingResearchModel(client, meeting.sessionId, meeting.id);
       if (!stillWanted()) {
         failed('Recording paused before the spoken request was sent.');
         return;

@@ -168,16 +168,45 @@ Ordering is waiting, not failure: an OTA promotion whose native runtime is not
 yet production, and a Staging OTA whose native runtime has not reached Staging,
 are left alone, and only attempts after that runtime arrived count.
 
-Failed attempts are retried once. Every recovered stage is idempotent: moving
-an EAS channel, copying signed Server image tags, staging an OTA, and the
-native promotion, which reuses a build Apple already holds instead of
-uploading it again. One failed attempt is therefore dispatched again before a
-human is asked. Everything else still stops: a pending
-release PR whose draft already exists, a published tag whose PR still carries
-the pending label, a promotion that ended green without publishing, or a
-second failed attempt each name the exact state for a human to finish.
-Recovery paths are unchanged: the draft recovery inputs on
-`release-dispatch.yml` and a manual run of the promotion workflow.
+Production recovery allows at most two genuine attempts per approved manifest and
+promotion pipeline version: an initial attempt and one retry. The pipeline
+fingerprint hashes the immutable Git tree entries for the relevant workflow,
+publisher and helper scripts, dependency manifests and mobile configuration;
+`scripts/promotion-recovery.mjs` maintains the per-stage input list. Only OTA
+includes npm lock/config files and workspace lifecycle manifests, since Server
+and native promotion do not install npm dependencies. An ordinary
+product merge does not reset this budget. A relevant pipeline fix permits two
+new attempts for the same approved candidate, without granting a new approval.
+
+Promotion workflows persist candidate, pipeline and delivery outcome in a
+`recovery-v1` job step name. Explicit deferrals and stale-checkout skips consume
+no attempt. Reruns under the same GitHub run ID are counted separately through
+their attempt-specific job receipts. Historical runs without receipts are
+associated through the manifest
+and pipeline contents at their run commit; inaccessible or ambiguous evidence
+stops automatic recovery. A green historical run is not assumed to have waited:
+only evidence preceding the exact runtime's successful native promotion can
+exclude it as an old wait. Unexplained green runs without publication require
+human inspection. Failed attempts remain counted even after another native run.
+
+The sweep refreshes the candidate release before dispatch and before reporting
+completed-run stalls, and checks the exact OTA runtime's production release.
+Native completion evidence is matched by runtime, including runs begun before
+OTA approval; unrelated runtime publications cannot move the readiness boundary.
+For rerun native promotions, attempt-specific delivery timestamps establish the
+original transition; the run's latest update time cannot move it forward.
+Historical native reruns without that timing evidence require human inspection.
+API failures report an unverifiable state rather than assuming publication or
+closing a stall. Reads occur at decision points, without continuous polling.
+Before dispatch, Main must still match the inspected checkout; the workflow
+then verifies the expected candidate and pipeline before any publication effect.
+Queued and running workflows still prevent duplicate dispatches. All existing
+artifact, review, CI and production approval gates remain mandatory.
+
+Every recovered stage remains idempotent: moving an EAS channel, copying signed
+Server image tags, staging an OTA, or reusing a native build Apple already holds.
+Staging and planning retain their existing retry rules. Recovery paths remain
+the draft recovery inputs on `release-dispatch.yml` and a manual promotion run.
 
 A red cron run notifies nobody, so the sweep's `alarm` job turns its verdict
 into one issue labelled `release-stall` (`scripts/release-alarm.mjs`). The issue

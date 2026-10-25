@@ -46,7 +46,7 @@ two apart.
 ## Runtime responsiveness
 
 The same switch also enables `runtimeDiagnostics` in the existing app-update
-export (report schema 5). Enable it while the app is responsive, use the app
+export (report schema 6). Enable it while the app is responsive, use the app
 normally, then export while it feels slow, before restarting. Switching recording
 off discards the samples; restarting starts with recording off.
 
@@ -102,3 +102,55 @@ the delivered app/update identity, then compare request-group deltas and peaks,
 JS timer lateness and deferred-pane phases. Device latency and the cause of a
 slow interval require this comparison; local lifecycle tests establish only that
 unnecessary requests and updates have been removed.
+
+
+## Request families and native invocation (schema 6)
+
+`apiOtherRequestGroups` partitions the existing `other` group into fixed
+`google`, `links`, `models`, and `remaining` counters. Google covers `/google`
+and session/project Gmail, Calendar, Contacts and Google Workspace routes;
+links covers session links and linked-message approvals; models covers `/models`.
+Classification applies to mutations too, but only requests classified as `other`
+contribute to these subgroups. They use the same cumulative totals, in-flight
+counts and interval peak reset as the parent groups. Subgroup peaks cannot be
+summed to obtain simultaneous concurrency. No paths, queries, IDs or contents
+are retained. Google here describes Verity API routes, not evidence of a direct
+request from the app to Google. Request behavior is unchanged.
+
+`native-dispatch` precedes the native method invocation;
+`native-promise-returned` records when that invocation returns its promise,
+before awaiting it; `native-return` records JS resumption after settlement.
+The latter two include a device wall-clock value for correlation with the same
+request ID's existing `nativeEntryWallMs` and `nativeResponseReadyWallMs`.
+Elapsed phase times use the switch's monotonic clock. A synchronous throw has
+no promise-returned phase. Missing records (including bounded-export omissions)
+must not be interpreted as zero-duration intervals.
+
+The dispatch-to-promise interval includes synchronous invocation and any thread
+scheduling interruption. Promise-return to native entry describes a scheduling
+interval, not proof of continuous JavaScript execution or a specific blocking
+callback; native execution may begin before JS records promise return. Wall-clock
+adjustments can invalidate cross-clock comparisons. Native entry through response
+ready includes native processing and network time, while response ready through
+JS return includes result conversion and delivery scheduling. These measurements
+do not establish physical touch-to-paint latency.
+
+After separately delivering this JavaScript update, verify the loaded commit and
+update ID, enable recording while responsive, and repeat the same session/Settings
+sequence shortly after launch and after prolonged use. Export while slow before
+restart. Compare subgroup deltas and peaks with timer lateness and correlated
+transport phases. This instrumentation needs no new native API; native timings
+are available only on builds that already expose them. Do not infer a leak or
+choose a scheduling rewrite from request totals alone.
+
+
+## Scroll diagnostic traffic
+
+Session scroll reports (`POST /sessions/:id/debug/scroll`) are sent only while
+interaction diagnostic recording is enabled. Outside recording, no scroll report
+payload is built and no scroll diagnostic request is started. While recording,
+reports share an app-wide limit of one start per second and one request in flight.
+Extra events are dropped, never queued or retried, so server scroll logs are a
+sample rather than a complete event sequence. Turning recording off prevents new
+reports; an already dispatched request may finish. History loading and scroll
+position behavior do not depend on report delivery.

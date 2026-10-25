@@ -190,7 +190,7 @@ describe('Docker gVisor sandbox launcher', () => {
       readOnlyRootfs: true,
       restartPolicy: 'no',
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 4096,
       memoryBytes: 512 * 1024 * 1024,
       nanoCpus: 1_000_000_000,

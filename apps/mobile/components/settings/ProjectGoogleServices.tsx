@@ -57,14 +57,13 @@ export function ProjectGoogleServices({
         const accounts = (await client.listGoogleAccounts()).filter((account) =>
           googleAccountSupports(account, service),
         );
-        const choice = await chooseAccount({ accounts });
-        if (!choice) return;
-        if (choice.kind === 'add') {
+        if (accounts.length === 0) {
           router.push('/settings/google');
           return;
         }
-        if (choice.kind !== 'account') return;
-        await client.enableProjectGoogleConnection(projectId, service, choice.accountId);
+        const accountId = await chooseAccount({ accounts, title: `${labels[service]} account` });
+        if (!accountId) return;
+        await client.enableProjectGoogleConnection(projectId, service, accountId);
       } else await client.disableProjectGoogleConnection(projectId, service);
       await reload();
     } catch {

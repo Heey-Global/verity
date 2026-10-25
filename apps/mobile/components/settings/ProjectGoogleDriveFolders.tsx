@@ -43,15 +43,15 @@ export function ProjectGoogleDriveFolders({
     const accounts = (await client.listGoogleAccounts()).filter((account) =>
       googleAccountSupports(account, 'drive'),
     );
-    const choice = await chooseAccount({ accounts });
-    if (choice?.kind === 'add') {
+    if (accounts.length === 0) {
       router.push('/settings/google');
       return;
     }
-    if (choice?.kind !== 'account') return;
+    const accountId = await chooseAccount({ accounts, title: 'Google Drive account' });
+    if (!accountId) return;
     router.push({
       pathname: '/google-drive/[sessionId]',
-      params: { sessionId: projectId, accountId: choice.accountId },
+      params: { sessionId: projectId, accountId },
     });
   };
   return (

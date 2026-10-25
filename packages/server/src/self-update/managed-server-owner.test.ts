@@ -132,7 +132,7 @@ function owned(running: boolean): ContainerInspect {
     networkMode: 'verity-net',
     readOnlyRootfs: false,
     restartPolicy: 'unless-stopped',
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
     capAdd: ['CHOWN'],
     groupAdd: ['999', '1101'],
     env: [
@@ -564,6 +564,17 @@ describe('managed Server ownership', () => {
       reconcileManagedServer(runtimeOptions(await authority(), client)),
     ).resolves.toEqual({ containerId: 'existing', action: 'unchanged' });
   });
+
+  it.each(['no-new-privileges:true', 'no-new-privileges'])(
+    'reuses an existing container with %s',
+    async (option) => {
+      const running = docker({ ...owned(true), securityOpt: [option] });
+      await expect(
+        reconcileManagedServer(runtimeOptions(await authority(), running)),
+      ).resolves.toEqual({ containerId: 'existing', action: 'unchanged' });
+      expect(running.createContainer).not.toHaveBeenCalled();
+    },
+  );
 
   it('leaves a matching running container unchanged and restarts a stopped one', async () => {
     const running = docker(owned(true));
@@ -1018,7 +1029,7 @@ describe('managed Server environment drift', () => {
       ['no no-new-privileges', { securityOpt: [] }],
       [
         'an extra security relaxation',
-        { securityOpt: ['no-new-privileges:true', 'seccomp=unconfined'] },
+        { securityOpt: ['no-new-privileges=true', 'seccomp=unconfined'] },
       ],
       ['another entrypoint', { entrypoint: ['/bin/sh'] }],
       ['another command', { command: ['--unexpected'] }],

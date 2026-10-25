@@ -183,6 +183,29 @@ describe('createGitBranchService', () => {
       expect(git).not.toHaveBeenCalled();
     });
 
+    it('shares one isolated context across detached HEAD lookups', async () => {
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'HEAD\n',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () => '',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/heads': () => '',
+        'rev-parse --short HEAD': () => 'abc123\n',
+      });
+      const scoped = vi.fn();
+      const svc = createGitBranchService({
+        git: async () => {
+          throw new Error('unscoped read');
+        },
+        withGit: async (worktree, operation) => {
+          scoped(worktree);
+          return operation(git);
+        },
+      });
+
+      await expect(svc.current('/wt')).resolves.toBe('abc123');
+      expect(scoped).toHaveBeenCalledExactlyOnceWith('/wt');
+      expect(calls).toHaveLength(4);
+    });
+
     it('returns the trimmed branch name', async () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feature/x\n',
@@ -194,6 +217,30 @@ describe('createGitBranchService', () => {
   });
 
   describe('sessionBranches', () => {
+    it('shares one isolated context across detached HEAD, reflog and branch probes', async () => {
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'HEAD\n',
+        'for-each-ref --points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
+          'origin/feature\n',
+        'reflog show --format=%gs HEAD': () => 'checkout: moving from earlier to feature\n',
+        'show-ref --verify --quiet refs/heads/earlier': () => '',
+      });
+      const scoped = vi.fn();
+      const svc = createGitBranchService({
+        git: async () => {
+          throw new Error('unscoped read');
+        },
+        withGit: async (worktree, operation) => {
+          scoped(worktree);
+          return operation(git);
+        },
+      });
+
+      await expect(svc.sessionBranches('/wt')).resolves.toEqual(['feature', 'earlier']);
+      expect(scoped).toHaveBeenCalledExactlyOnceWith('/wt');
+      expect(calls).toHaveLength(4);
+    });
+
     it('returns the worktree HEAD plus the other branches from its reflog, recency-first', async () => {
       // A multi-phase session: HEAD is agent/ad858d4e (no PR), but it also created
       // several security/audit branches (some carrying their own PR). The worktree's

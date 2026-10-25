@@ -134,7 +134,7 @@ docker run -d --name "$container" \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
   --cap-drop ALL \
-  --security-opt no-new-privileges \
+  --security-opt no-new-privileges=true \
   --pids-limit 32 \
   --memory 64m \
   --cpus 0.25 \
@@ -168,7 +168,7 @@ const host = info.HostConfig;
 if (!host.ReadonlyRootfs) throw new Error('root filesystem is writable');
 if (host.Privileged) throw new Error('relay is privileged');
 if (host.CapDrop?.join(',') !== 'ALL') throw new Error('CapDrop is not ALL');
-if (!host.SecurityOpt?.includes('no-new-privileges')) throw new Error('NNP missing');
+if (!host.SecurityOpt?.some((option) => ['no-new-privileges', 'no-new-privileges:true', 'no-new-privileges=true'].includes(option))) throw new Error('NNP missing');
 if (host.PidsLimit !== 32) throw new Error('PID limit mismatch');
 if (host.Memory !== 67108864) throw new Error('memory limit mismatch');
 if (host.NanoCpus !== 250000000) throw new Error('CPU limit mismatch');

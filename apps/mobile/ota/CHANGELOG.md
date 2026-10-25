@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.77.6](https://github.com/Heey-Global/verity/compare/mobile-v1.77.5...mobile-v1.77.6) (2026-10-24)
+
+
+### Features
+
+* **mobile:** attribute auxiliary requests and native invocation timing ([#1871](https://github.com/Heey-Global/verity/issues/1871)) ([d636f3c](https://github.com/Heey-Global/verity/commit/d636f3cec564d343337db3d720dc79caa3e7ba76))
+
+
+### Bug Fixes
+
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
+## [1.77.5](https://github.com/Heey-Global/verity/compare/mobile-v1.77.4...mobile-v1.77.5) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** patch body-parser and ctutils vulnerabilities ([#1866](https://github.com/Heey-Global/verity/issues/1866)) ([3cf1c65](https://github.com/Heey-Global/verity/commit/3cf1c65e20978b8035f00d66767f68e7394c7b8e))
+* **mobile:** preserve recording arming after admission completes ([#1865](https://github.com/Heey-Global/verity/issues/1865)) ([d2d9814](https://github.com/Heey-Global/verity/commit/d2d98140930e4b48cc3b1f733720953bcc2529b4))
+
+## [1.77.4](https://github.com/Heey-Global/verity/compare/mobile-v1.77.3...mobile-v1.77.4) (2026-10-24)
+
+
+### Features
+
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+
+
+### Bug Fixes
+
+* **mobile:** expose local connection test failure receipts ([#1860](https://github.com/Heey-Global/verity/issues/1860)) ([8d6cbe2](https://github.com/Heey-Global/verity/commit/8d6cbe24d871efa7250bab6518d10a0344b2b272))
+
 ## [1.77.3](https://github.com/Heey-Global/verity/compare/mobile-v1.77.2...mobile-v1.77.3) (2026-10-24)
 
 

@@ -321,7 +321,7 @@ export class LocalPreviewManager {
         readOnlyRootfs: true,
         tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
         capDrop: ['ALL'],
-        securityOpt: ['no-new-privileges:true'],
+        securityOpt: ['no-new-privileges=true'],
         pidsLimit: 64,
         memoryBytes: 384 * 1024 * 1024,
         nanoCpus: 500_000_000,

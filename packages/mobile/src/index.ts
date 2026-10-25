@@ -410,6 +410,7 @@ export {
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
+  type SessionGoogleStatus,
   type GmailSessionConnection,
   type CalendarSessionConnection,
   type ContactsSessionConnection,
@@ -652,6 +653,10 @@ export type {
 } from './api.js';
 
 export {
+  groupVulnerabilityFindings,
+  findingCategory,
+  vulnerabilityCounts,
+  type FindingGroup,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,

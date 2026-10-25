@@ -48,6 +48,21 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'packages-read',
 ]);
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
+// Never log upstream messages, URLs, headers or error objects: they can contain credentials.
+const SAFE_TRANSPORT_CODES = new Set([
+  'ERR_INVALID_ARG_VALUE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'CERT_HAS_EXPIRED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ABORT_ERR',
+]);
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
 
 function capability(request: IncomingMessage): string | undefined {
@@ -276,9 +291,16 @@ export function createBrokeredForgeProxy(options: {
               abort.signal,
             );
           })()
-            .catch((error: unknown) =>
-              fail(response, error instanceof ForgePolicyError ? 403 : 502),
-            )
+            .catch((error: unknown) => {
+              if (!(error instanceof ForgePolicyError)) {
+                const code = error instanceof Error && 'code' in error ? error.code : undefined;
+                console.warn('Forge broker upstream request failed', {
+                  code:
+                    typeof code === 'string' && SAFE_TRANSPORT_CODES.has(code) ? code : 'UNKNOWN',
+                });
+              }
+              fail(response, error instanceof ForgePolicyError ? 403 : 502);
+            })
             .finally(() => clearTimeout(timeout));
         });
         server.maxRequestsPerSocket = 1;

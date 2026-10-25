@@ -1191,7 +1191,10 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('export VERITY_IOS_BUILD_NUMBER="$next_build"');
     expect(commands).toContain('config.fetch("cli")["appVersionSource"] = "local"');
     expect(commands).toContain('["autoIncrement"] = false');
-    expect(commands).toContain('Print :CFBundleVersion');
+    // Archive parsing is exercised by staging-delivery-regression.test.ts.
+    // Both variants must reject a build number that would publish the wrong IPA.
+    expect(commands).toContain('"$next_build" != "$VERITY_IOS_BUILD_NUMBER"');
+    expect(commands).toContain('"$next_build" -le "$latest_build"');
     expect(commands).toContain('filter[version]=$next_build');
     expect(commands).toContain('processingState');
     expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
@@ -5398,6 +5401,7 @@ describe('changed-area detector', () => {
       expect.arrayContaining([
         'apps/mobile/app.config.ts',
         'apps/mobile/native/**',
+        'apps/mobile/targets/**',
         'apps/mobile/package.json',
         'package-lock.json',
         'scripts/mobile-native-lock-changes.mjs',

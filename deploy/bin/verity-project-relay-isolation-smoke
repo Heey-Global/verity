@@ -162,7 +162,7 @@ start_relay() {
   local name="$1" network="$2" binding="$3" project="$4" generation="$5"
   docker run -d --name "$name" --network "$network" \
     --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
-    --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 \
+    --cap-drop ALL --security-opt no-new-privileges=true --pids-limit 32 \
     --memory 64m --cpus 0.25 --ulimit nofile=64:64 --restart no \
     --user 65532:65532 \
     --label verity.component=project-relay \
