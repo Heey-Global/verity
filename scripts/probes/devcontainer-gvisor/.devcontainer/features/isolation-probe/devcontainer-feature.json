@@ -1,0 +1,6 @@
+{
+  "id": "isolation-probe",
+  "version": "1.0.0",
+  "name": "Build isolation probe",
+  "description": "Emits runtime evidence from a Feature installation without installing packages."
+}
