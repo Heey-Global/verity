@@ -106,30 +106,32 @@ fail-closed, co-committed audit event on the installation stream that names the
 stream and the chosen outcome: either a fresh full re-derivation succeeds and
 re-anchors the head, or the administrator declares the mismatch as an accepted
 gap and the head is re-anchored at the current tail with that declaration
-attached. While resolving, the administrator sees the hidden expired rows; only
-ordinary reads hide them. The first head of every stream is set only by a
-successful verification from sequence zero or from the prune checkpoint: an
-upgrade seeds no head from a tail it has not verified, a pre-existing chain that
-fails is marked unverified at upgrade, and a new or empty stream starts with a
-genesis head. The legacy-prune confirmation is unavailable while any legacy
-chain is unverified. Otherwise the head never moves backward, and the restore
-path applies the same rule before advancing heads to restored tails. Scheduled
-verification covers the streams of deleted projects as well, so their prefixes
-can still be pruned. Events appended after the last verification run are the
-undetectable truncation window; the run cadence is part of the audit policy. The
-*prune checkpoint*, introduced below, marks the removed prefix. Both live in the
-same database and share its limits. Head records and scheduled verification
-apply to every stream, the legacy secret chain included; "by age alone" below
-refers only to the absence of operation-expired events there. A project-scoped
-event caused by an installation operation references that operation's ID;
-streams are not interleaved into a single global order. The streams are pruned
-independently, so a reference may outlive its target, and within one stream a
-later event may reference an operation or grant whose start was pruned;
-verification and rendering must tolerate both kinds of dangling reference and
-show them as expired rather than as corruption. Deletion must leave enough safe
-target identification to interpret old events. Use bounded fields and
-pagination; repository-controlled strings are untrusted input and must be safely
-rendered.
+attached. The declaration is a recognized verification boundary like a prune
+checkpoint: later runs re-derive from the latest boundary, so an accepted gap
+stays verified and never re-freezes the stream by itself. While resolving, the
+administrator sees the hidden expired rows; only ordinary reads hide them. The
+first head of every stream is set only by a successful verification from
+sequence zero or from the prune checkpoint: an upgrade seeds no head from a tail
+it has not verified, a pre-existing chain that fails is marked unverified at
+upgrade, and a new or empty stream starts with a genesis head. The legacy-prune
+confirmation is unavailable while any legacy chain is unverified. Otherwise the
+head never moves backward, and the restore path applies the same rule before
+advancing heads to restored tails. Scheduled verification covers the streams of
+deleted projects as well, so their prefixes can still be pruned. Events appended
+after the last verification run are the undetectable truncation window; the run
+cadence is part of the audit policy. The *prune checkpoint*, introduced below,
+marks the removed prefix. Both live in the same database and share its limits.
+Head records and scheduled verification apply to every stream, the legacy secret
+chain included; "by age alone" below refers only to the absence of
+operation-expired events there. A project-scoped event caused by an installation
+operation references that operation's ID; streams are not interleaved into a
+single global order. The streams are pruned independently, so a reference may
+outlive its target, and within one stream a later event may reference an
+operation or grant whose start was pruned; verification and rendering must
+tolerate both kinds of dangling reference and show them as expired rather than
+as corruption. Deletion must leave enough safe target identification to
+interpret old events. Use bounded fields and pagination; repository-controlled
+strings are untrusted input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -147,7 +149,8 @@ with their own access and retention rules; links to them may expire earlier.
 
 Fail-closed applies to four groups only: Devcontainer builds, the existing
 secret paths, admin-agent reads and administrator exports of the trail, and
-changes to the trail's own policy. Retention and overrun changes and the
+changes to the trail's own policy or integrity state, which include the
+resolution of an unverified stream. Retention and overrun changes and the
 one-time legacy-prune confirmation are database transitions that delete history,
 so they co-commit with their audit event and are refused when it cannot be
 written. Interactive administrator reads in the app are deliberately neither
@@ -281,17 +284,22 @@ pruned once prune-checkpoint support exists, by age alone: the legacy chain gets
 no operation-expired event kind, so an unterminated grant or job older than the
 window is removed with its prefix and stays indeterminate under the recorder's
 existing semantics. Verification treats that as a declared expired prefix, not
-as corruption. Retired request-MAC keys are kept at least until every event
-signed under them has expired, so retained events stay verifiable. Project
-deletion does not shorten retention; today it already leaves secret-audit rows
-untouched. Policy changes are audited; shortening the window must explicitly
-disclose that older history will be removed. Retention uses server-recorded
-time, not a caller-supplied timestamp. On the new streams it must not split an
-operation that is still active; the legacy secret chain is pruned by age alone,
-as stated above. An operation without a terminal result cannot pin its stream
-forever: after a bounded, configurable overrun past the window, reconciliation
-appends an *operation-expired* event that closes it as indeterminate, and the
-prefix advances; this is a distinct event kind from the write-gap event above. A
+as corruption. Grants are not bounded below the window, since pre-existing
+native-path grants may be permanent, so the issuance and approval evidence of a
+long-lived grant can expire while it is still redeemed; later redemption events
+keep the grant identifier but lose the recoverable approver. This loss is
+accepted and is named in the disclosure shown at the legacy-prune confirmation.
+Retired request-MAC keys are kept at least until every event signed under them
+has expired, so retained events stay verifiable. Project deletion does not
+shorten retention; today it already leaves secret-audit rows untouched. Policy
+changes are audited; shortening the window must explicitly disclose that older
+history will be removed. Retention uses server-recorded time, not a
+caller-supplied timestamp. On the new streams it must not split an operation
+that is still active; the legacy secret chain is pruned by age alone, as stated
+above. An operation without a terminal result cannot pin its stream forever:
+after a bounded, configurable overrun past the window, reconciliation appends an
+*operation-expired* event that closes it as indeterminate, and the prefix
+advances; this is a distinct event kind from the write-gap event above. A
 terminal result observed after that closure is appended as reconciliation
 evidence under the same operation ID and supersedes the expired marker in
 rendering; it is never rejected and never invented. If the prefix holding that
@@ -388,7 +396,8 @@ Before enabling each domain, verify:
   history is deleted during an audit outage.
 - An upgrade establishes head records only through a successful verification;
   a pre-existing broken chain is marked unverified and blocks the legacy-prune
-  confirmation.
+  confirmation. A stream resolved with an accepted gap stays verified on the
+  next scheduled run.
 - An operation without a terminal result is closed as indeterminate after the
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
