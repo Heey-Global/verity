@@ -3,11 +3,11 @@
 **Status:** Proposed · **Date:** 2026-10-25
 
 **Related:** [ADR 0009](0009-brokered-secrets-and-secret-job-executor.md),
-[ADR 0014](0014-acp-secret-tools-approval-gated.md),
-[ADR 0017](0017-docker-policy-gateway.md),
-[ADR 0020](0020-project-sandbox-sleep-and-automatic-wake.md),
-[ADR 0023](0023-multi-user-projects-and-turn-identity.md),
-[ADR 0025](0025-encrypted-backup-and-installer-recovery.md)
+[ADR 0014](0014-acp-secret-tools-approval-gated.md), [ADR
+0017](0017-docker-policy-gateway.md), [ADR
+0020](0020-project-sandbox-sleep-and-automatic-wake.md), [ADR
+0023](0023-multi-user-projects-and-turn-identity.md), [ADR
+0025](0025-encrypted-backup-and-installer-recovery.md)
 
 This document proposes architecture, not implemented functionality. Acceptance
 of this ADR and authorization to implement its rollout are separate decisions.
@@ -57,17 +57,17 @@ actions.
 | --- | --- |
 | Resources | Project creation/deletion, project-sandbox start/stop (sleep-initiated stops and wake-initiated starts excluded until a volume bound exists), image creation/removal and cleanup results |
 | Builds | Request accepted/refused, execution started, success/failure/cancellation and produced image identity |
-| Authorization | Approval decisions, grant issuance/use/revocation, denied sensitive requests and external actions such as push, PR creation, merge or deployment |
+| Authorization | Approval decisions and grant issuance/use/revocation (legacy chain, by reference), denied sensitive requests and external actions such as push, PR creation, merge or deployment |
 | Security configuration | Permission, pairing/device-access, network-exposure and isolation-policy changes; credential creation/replacement/removal by identifier only |
 | System operations | Update attempts and results, Server-generation replacement, maintenance and audit-policy changes |
 | Automation | Job trigger and lifecycle, linked to the resource or external action it initiates; secret jobs stay in the legacy chain and are linked by reference only |
 
 Resource events cover the long-lived project sandbox only. Disposable query
 sandboxes created for Git status reads, and similar per-command helper
-containers, are not audit events: at the observed rates of tens of thousands
-per day they would move container churn into the database without adding
-attribution. Sleep and automatic wake under
-[ADR 0020](0020-project-sandbox-sleep-and-automatic-wake.md) are a further
+containers, are not audit events: at the observed rates of tens of thousands per
+day they would move container churn into the database without adding
+attribution. Sleep and automatic wake under [ADR
+0020](0020-project-sandbox-sleep-and-automatic-wake.md) are a further
 high-frequency source; record them as sandbox lifecycle events only with an
 explicit volume estimate and bound before enabling that event kind.
 
@@ -212,13 +212,12 @@ membership alone grants no access, including to that project's events.
 Server-authorized agent contexts acting for a currently authorized administrator
 may read through a bounded, read-only API/tool. Authenticate the current turn's
 principal and re-check authority on every read; session ownership, a prompt's
-claim or a reusable project token is insufficient. This depends on the
-per-turn identity of [ADR 0023](0023-multi-user-projects-and-turn-identity.md);
-the `users` role table exists, but until turn identity is in place agent reads
-stay disabled rather than falling back to session ownership. If reliable
-admin attribution
-is unavailable, deny the agent read. Revocation or a subsequent non-admin turn
-must remove access without waiting for the session to end.
+claim or a reusable project token is insufficient. This depends on the per-turn
+identity of [ADR 0023](0023-multi-user-projects-and-turn-identity.md); the
+`users` role table exists, but until turn identity is in place agent reads stay
+disabled rather than falling back to session ownership. If reliable admin
+attribution is unavailable, deny the agent read. Revocation or a subsequent
+non-admin turn must remove access without waiting for the session to end.
 
 Do not expose database credentials or audit mounts to project containers.
 Agent access grants no event editing, deletion or retention-policy authority.
@@ -254,26 +253,27 @@ secret-audit chain is never pruned today and its verification re-derives every
 event from sequence zero. Rows recorded before this ADR's rollout therefore keep
 unbounded retention until an administrator explicitly confirms the window, once
 and installation-wide, after a disclosure of how many pre-existing events it
-removes across all projects; the upgrade itself must not prune them. Because
-pruning removes a contiguous prefix, the whole per-project secret chain,
-including rows written after rollout, stays pinned until that confirmation; the
-180-day default applies to secret-audit chains only from then on. From that
-confirmation on, secret-audit events are pruned once prune-checkpoint support
-exists, by age alone: the legacy chain gets no operation-expired event kind, so
-an unterminated grant or job older than the window is removed with its prefix
-and stays indeterminate under the recorder's existing semantics. Verification
-treats that as a declared expired prefix, not as corruption. Retired request-MAC
-keys are kept at least until every event signed under them has expired, so
-retained events stay verifiable. Project deletion does not shorten retention;
-today it already leaves secret-audit rows untouched. Policy changes are audited;
-shortening the window must explicitly disclose that older history will be
-removed. Retention uses server-recorded time, not a caller-supplied timestamp.
-On the new streams it must not split an operation that is still active; the
-legacy secret chain is pruned by age alone, as stated above. An operation
-without a terminal result cannot pin its stream forever: after a bounded,
-configurable overrun past the window, reconciliation appends an
-*operation-expired* event that closes it as indeterminate, and the prefix
-advances; this is a distinct event kind from the write-gap event above. A
+removes across all projects; the upgrade itself must not prune them. An
+installation with no pre-rollout secret events needs no confirmation and applies
+the default from the start. Because pruning removes a contiguous prefix, the
+whole per-project secret chain, including rows written after rollout, stays
+pinned until that confirmation; the 180-day default applies to secret-audit
+chains only from then on. From that confirmation on, secret-audit events are
+pruned once prune-checkpoint support exists, by age alone: the legacy chain gets
+no operation-expired event kind, so an unterminated grant or job older than the
+window is removed with its prefix and stays indeterminate under the recorder's
+existing semantics. Verification treats that as a declared expired prefix, not
+as corruption. Retired request-MAC keys are kept at least until every event
+signed under them has expired, so retained events stay verifiable. Project
+deletion does not shorten retention; today it already leaves secret-audit rows
+untouched. Policy changes are audited; shortening the window must explicitly
+disclose that older history will be removed. Retention uses server-recorded
+time, not a caller-supplied timestamp. On the new streams it must not split an
+operation that is still active; the legacy secret chain is pruned by age alone,
+as stated above. An operation without a terminal result cannot pin its stream
+forever: after a bounded, configurable overrun past the window, reconciliation
+appends an *operation-expired* event that closes it as indeterminate, and the
+prefix advances; this is a distinct event kind from the write-gap event above. A
 terminal result observed after that closure is appended as reconciliation
 evidence under the same operation ID and supersedes the expired marker in
 rendering; it is never rejected and never invented. If the prefix holding that
@@ -349,17 +349,17 @@ screen.
 
 Before enabling each domain, verify:
 
-- A Server-generation replacement preserves events and correlates build/image IDs;
-  project deletion leaves the history readable until retention expires.
+- A Server-generation replacement preserves events and correlates build/image
+  IDs; project deletion leaves the history readable until retention expires.
 - Failed intent writes prevent new builds and keep the existing secret-audit
-  paths fail-closed; best-effort events let the action proceed and raise degraded
-  audit health. Fail-closed database transitions co-commit with their audit
-  entries; best-effort transitions do not roll back on an audit write failure.
-  Emergency stop/cancel/cleanup remains usable.
+  paths fail-closed; best-effort events let the action proceed and raise
+  degraded audit health. Fail-closed database transitions co-commit with their
+  audit entries; best-effort transitions do not roll back on an audit write
+  failure. Emergency stop/cancel/cleanup remains usable.
 - Disposable query sandboxes produce no audit events; a day of status polling
   adds no rows.
-- An admin-agent read or administrator export is denied when its own audit
-  event cannot be written; scope widening beyond the per-turn bound is denied.
+- An admin-agent read or administrator export is denied when its own audit event
+  cannot be written; scope widening beyond the per-turn bound is denied.
 - An operation without a terminal result is closed as indeterminate after the
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
@@ -368,24 +368,24 @@ Before enabling each domain, verify:
 - After audit storage recovers from failed best-effort writes, the recovering
   process appends its write-gap event to each affected stream before any other
   event of its own; other processes and streams are unaffected.
-- Crash windows and uncertain external outcomes remain indeterminate; retries and
-  reconciliation never duplicate the external effect or invent attribution.
+- Crash windows and uncertain external outcomes remain indeterminate; retries
+  and reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;
   role revocation and turn identity changes immediately remove that access.
 - Secret-bearing, malformed and oversized inputs never leak through payloads,
   fingerprints, errors or exports; audit data cannot become agent instructions.
 - Concurrent append/prune, policy changes and interrupted retention preserve
   verifiable suffixes and accurately declared expired coverage.
-- Backups/restores preserve keys, head records and prune checkpoints, display the
-  snapshot coverage boundary and do not execute historical work. Records expired under the restored
-  snapshot's own retention policy are not resurfaced, by pruning on verified
-  streams and by hiding on unverified ones; a policy change made after the
-  snapshot is itself lost with it.
-- Tampering with, removal of, or truncation of events up to the last verified head
-  record is detected; the window after that run is documented as undetectable. A
-  write-gap event covers best-effort writes that failed while the process
-  survived. No protection is claimed against replacement of
-  all local state or against events that were never written.
+- Backups/restores preserve keys, head records and prune checkpoints, display
+  the snapshot coverage boundary and do not execute historical work. Records
+  expired under the restored snapshot's own retention policy are not resurfaced,
+  by pruning on verified streams and by hiding on unverified ones; a policy
+  change made after the snapshot is itself lost with it.
+- Tampering with, removal of, or truncation of events up to the last verified
+  head record is detected; the window after that run is documented as
+  undetectable. A write-gap event covers best-effort writes that failed while
+  the process survived. No protection is claimed against replacement of all
+  local state or against events that were never written.
 
 Runtime schemas, migrations, routes/tools, UI and retention workers require a
 separately reviewed implementation. This ADR alone enables none of them.
