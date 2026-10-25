@@ -48,7 +48,11 @@ grep -Fx 'TasksMax=512' "$PROBE_EVIDENCE/limits.txt"
 main_pid=$(sudo systemctl show verity-buildkit -p MainPID --value)
 [[ $main_pid =~ ^[1-9][0-9]*$ ]]
 sudo systemctl is-active --quiet verity-buildkit
-sudo nsenter --target "$main_pid" --mount -- test ! -S /var/run/docker.sock
+# InaccessiblePaths may mask a socket with a non-listening socket inode. Test
+# connectivity from the service root rather than inferring authority from stat.
+sudo nsenter --target "$main_pid" --mount --root --wdns=/ -- "$(command -v node)" --input-type=module - \
+    /run/docker.sock /var/run/docker.sock /run/containerd/containerd.sock \
+    < scripts/probes/devcontainer-gvisor/verify-worker-sockets.mjs
 cp -R scripts/probes/devcontainer-gvisor/.devcontainer "$work/"
 PROBE_CONFIG="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';

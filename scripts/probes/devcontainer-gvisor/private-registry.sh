@@ -35,12 +35,25 @@ registry_start() {
     done
     [[ $registry_ready == true ]] || return 1
     export NODE_EXTRA_CA_CERTS="$work/registry/cert.pem"
-    printf '%s\n' "$registry_password" | docker --config "$work/publisher" login \
-        "$registry_address" --username probe --password-stdin > "$work/login.log" 2>&1
+    registry_login
     cp -R "$probe_dir/.devcontainer/features" "$work/registry-features"
     DOCKER_CONFIG="$work/publisher" "$DEVCONTAINER_CLI" features publish \
         "$work/registry-features" --registry "$registry_address" --namespace probe \
         > "$work/publish.log" 2>&1
+}
+
+# dockerd can briefly retain its hosts-file cache after the fixture adds its name.
+# Retry only that DNS miss; TLS and authentication failures stay immediate failures.
+registry_login() {
+    local attempt
+    for attempt in $(seq 1 10); do
+        if printf '%s\n' "$registry_password" | timeout 10 docker --config "$work/publisher" login \
+            "$registry_address" --username probe --password-stdin > "$work/login.log" 2>&1; then return 0; fi
+        if ! grep -F "lookup ${registry_address%:*}" "$work/login.log" > /dev/null || \
+            ! grep -F 'no such host' "$work/login.log" > /dev/null; then return 1; fi
+        sleep 1
+    done
+    return 1
 }
 
 registry_seed_base() {
