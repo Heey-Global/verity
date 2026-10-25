@@ -305,7 +305,7 @@ function sandboxInspect() {
     deviceCount: 0,
     capAdd: [],
     capDrop: ['ALL'],
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
     readOnlyRootfs: true,
     runtime: PROJECT_RUNSC_RUNTIME,
     user: 'dev',

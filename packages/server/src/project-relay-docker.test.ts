@@ -120,7 +120,7 @@ describe('Docker project relay adapter', () => {
       // The capability-less relay binds the DNS port its gVisor Sandbox resolves through.
       sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 32,
       memoryBytes: 201_326_592,
       nanoCpus: 250_000_000,
