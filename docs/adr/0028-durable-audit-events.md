@@ -2,6 +2,12 @@
 
 **Status:** Proposed · **Date:** 2026-10-25
 
+**Related:** [ADR 0009](0009-brokered-secrets-and-secret-job-executor.md),
+[ADR 0014](0014-acp-secret-tools-approval-gated.md),
+[ADR 0020](0020-project-sandbox-sleep-and-automatic-wake.md),
+[ADR 0023](0023-multi-user-projects-and-turn-identity.md),
+[ADR 0025](0025-encrypted-backup-and-installer-recovery.md)
+
 This document proposes architecture, not implemented functionality. Acceptance
 of this ADR and authorization to implement its rollout are separate decisions.
 
@@ -46,12 +52,21 @@ arbitrary shell commands or independently performed external actions.
 
 | Domain | Events to cover |
 | --- | --- |
-| Resources | Project creation/deletion, sandbox start/stop, image creation/removal and cleanup results |
+| Resources | Project creation/deletion, project-sandbox start/stop, image creation/removal and cleanup results |
 | Builds | Request accepted/refused, execution started, success/failure/cancellation and produced image identity |
 | Authorization | Approval decisions, grant issuance/use/revocation, denied sensitive requests and external actions such as push, PR creation, merge or deployment |
 | Security configuration | Permission, pairing/device-access, network-exposure and isolation-policy changes; credential creation/replacement/removal by identifier only |
 | System operations | Update attempts and results, Server-generation replacement, maintenance and audit-policy changes |
 | Automation | Job trigger and lifecycle, linked to the resource or external action it initiates |
+
+Resource events cover the long-lived project sandbox only. Disposable query
+sandboxes created for Git status reads, and similar per-command helper
+containers, are not audit events: at the observed rates of tens of thousands
+per day they would move container churn into the database without adding
+attribution. Sleep and automatic wake under
+[ADR 0020](0020-project-sandbox-sleep-and-automatic-wake.md) are a further
+high-frequency source; record them as sandbox lifecycle events only with an
+explicit volume estimate and bound before enabling that event kind.
 
 Each event carries a stable event ID, schema version, server-recorded UTC time,
 ordered stream position, operation ID, event kind, phase and observed outcome.
@@ -62,6 +77,11 @@ never accept identity claims from request text as authority.
 
 Include installation/deployment identity, Server release and generation, stable
 target/project IDs, and parent operation or approval IDs where applicable.
+The existing chain is keyed per project. Events without a project, such as
+updates, Server-generation replacement and audit-policy changes, form one
+separate installation-scoped stream with its own sequence and chain head.
+A project-scoped event caused by an installation operation references that
+operation's ID; streams are not interleaved into a single global order.
 Deletion must leave enough safe target identification to interpret old events.
 Use bounded fields and pagination; repository-controlled strings are untrusted
 input and must be safely rendered.
@@ -80,12 +100,23 @@ with their own access and retention rules; links to them may expire earlier.
 
 ### Persistence and failures
 
-New builds and sensitive actions require a committed audit start/intent before
-execution. Sensitive actions include authorizations, credential use, permission
-or exposure changes, and externally consequential writes. Where the action is a
-database transition, co-commit its audit event in the same transaction.
-For Docker or remote actions, persist intent first, then execute and append the
-observed result; do not imply a distributed atomic transaction.
+Fail-closed applies to two groups only. New Devcontainer builds require a
+committed audit intent before the build is started. Secret approvals, grant
+issuance and gateway-served secret calls keep the fail-closed behavior that
+[ADR 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already
+require; this ADR does not weaken it. All other events, including pushes,
+pull-request creation, merges, deployments, permission and exposure changes,
+are recorded best-effort: the action proceeds when the audit write fails, and
+the failure is surfaced as degraded audit health. Verity observes most of
+those actions only indirectly, through the credential helper or a connector,
+and blocking them during an audit outage would stop all agent work for a
+guarantee the trail cannot fully provide anyway. Widening the fail-closed set
+is a separate decision that amends this ADR.
+
+Where a fail-closed action is a database transition, co-commit its audit event
+in the same transaction. For Docker or remote actions, persist intent first,
+then execute and append the observed result; do not imply a distributed atomic
+transaction.
 
 Distinguish accepted intent from observed execution start. A crash between them
 must not be reported as execution. A start without a terminal result is
@@ -94,7 +125,7 @@ under the same operation ID; it must not rerun an action merely to fill a gap.
 Use idempotency keys for retries and distinguish retries from duplicate writes.
 
 Stopping, cancelling and necessary cleanup remain possible during audit-storage
-failure. Attempt to record them, visibly report degraded audit health through
+failure, including for builds and secret jobs already running. Attempt to record them, visibly report degraded audit health through
 an independent operational diagnostic, and never claim missing events were
 saved. Recovery may append a gap/reconciliation event describing only what is
 known. The exception does not authorize arbitrary new work or silent retention
@@ -108,15 +139,20 @@ membership alone grants no access, including to that project's events.
 Server-authorized agent contexts acting for a currently authorized administrator
 may read through a bounded, read-only API/tool. Authenticate the current turn's
 principal and re-check authority on every read; session ownership, a prompt's
-claim or a reusable project token is insufficient. If reliable admin attribution
+claim or a reusable project token is insufficient. This depends on the
+per-turn identity of [ADR 0023](0023-multi-user-projects-and-turn-identity.md);
+the `users` role table exists, but until turn identity is in place agent reads
+stay disabled rather than falling back to session ownership. If reliable admin attribution
 is unavailable, deny the agent read. Revocation or a subsequent non-admin turn
 must remove access without waiting for the session to end.
 
 Do not expose database credentials or audit mounts to project containers.
 Agent access grants no event editing, deletion or retention-policy authority.
 Treat returned audit strings as untrusted data, never as instructions. Record
-admin-agent reads and administrator exports with safe query scope metadata;
-avoid recursive logging of the audit recorder itself.
+administrator exports as events with safe query scope metadata. Record
+admin-agent reads aggregated per turn, not per query, so an investigating
+agent cannot inflate the trail; avoid recursive logging of the audit recorder
+itself.
 
 ### Local storage, retention and integrity
 
@@ -127,8 +163,14 @@ Use project and installation scopes without cascading deletion from live
 projects, sessions or user records. Application writes append events; there is
 no ordinary edit or selective-delete API.
 
-Default retention is 180 days, configurable by an administrator. Project deletion
-does not shorten retention. Policy changes are audited; shortening the window
+Default retention is 180 days, configurable by an administrator. This is a
+deliberate change for the existing secret-audit chain, which is never pruned
+today and whose verification re-derives every event from sequence zero: once
+checkpoint support exists, secret-audit events older than the window are
+pruned like any other event. Retired request-MAC keys are kept at least until
+every event signed under them has expired, so retained events stay verifiable.
+Project deletion does not shorten retention; today it already leaves
+secret-audit rows untouched. Policy changes are audited; shortening the window
 must explicitly disclose that older history will be removed. Retention uses
 server-recorded time, not a caller-supplied timestamp, and must not split an
 active operation; document any temporary retention overrun for linked events.
@@ -186,8 +228,12 @@ Before enabling each domain, verify:
 
 - A Server-generation replacement preserves events and correlates build/image IDs;
   project deletion leaves the history readable until retention expires.
-- Failed intent writes prevent new builds and sensitive actions; database changes
-  and their audit entries co-commit. Emergency stop/cancel/cleanup remains usable.
+- Failed intent writes prevent new builds and keep the existing secret-audit
+  paths fail-closed; best-effort events let the action proceed and raise degraded
+  audit health. Database changes and their audit entries co-commit. Emergency
+  stop/cancel/cleanup remains usable.
+- Disposable query sandboxes produce no audit events; a day of status polling
+  adds no rows.
 - Crash windows and uncertain external outcomes remain indeterminate; retries and
   reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;

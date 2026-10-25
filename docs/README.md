@@ -44,8 +44,6 @@ Pick the section that matches what you want to do.
   pull-request workflow.
 - [Architecture decision records](adr): the decisions behind the current
   design, in order. Background reading, not setup instructions.
-- [Durable audit events (proposed)](adr/0028-durable-audit-events.md): event scope,
-  administrator access, failure behavior and retention; not implemented.
 - [Protocols](protocols): the Uplink enrollment, sharing, and remote-control
   protocols.
 - Concepts and design notes, also background reading:
