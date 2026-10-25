@@ -6227,6 +6227,7 @@ export class ProvisionerImpl implements Provisioner {
       } catch (cause) {
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.
+        // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
         throw new Error(
           redactSensitive(buildFailureMessage(cause), [
             registryToken,
