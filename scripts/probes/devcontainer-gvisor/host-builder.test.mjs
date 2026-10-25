@@ -26,6 +26,7 @@ test('production worker preserves snapshots and delegates only to gVisor', () =>
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), [
+      '--root=/run/verity-buildkit/runsc',
       '--platform=systrap',
       '--network=sandbox',
       '--overlay2=none',
@@ -79,4 +80,12 @@ test('service waits for BuildKit readiness and keeps its trace socket in a writa
     writable.some((directory) => traceSocket.startsWith(`${directory}/`)),
     'Trace socket must remain within the narrow writable paths',
   );
+});
+
+test('runsc keeps runtime state within the service writable paths', () => {
+  const root = /--root=(\S+)/.exec(source('runsc'))?.[1];
+  assert(root, 'runsc defaults its state outside the writable runtime directory');
+  const writable =
+    /^ReadWritePaths=(.+)$/m.exec(source('verity-buildkit.service'))?.[1].split(/\s+/) ?? [];
+  assert(writable.some((directory) => root.startsWith(`${directory}/`)));
 });

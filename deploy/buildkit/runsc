@@ -3,4 +3,4 @@
 set -eu
 exec /usr/local/libexec/verity-buildkit/runsc-buildkit-args.sh \
     /usr/local/libexec/verity-buildkit/runsc-real \
-    --platform=systrap --network=sandbox --overlay2=none "$@"
+    --root=/run/verity-buildkit/runsc --platform=systrap --network=sandbox --overlay2=none "$@"
