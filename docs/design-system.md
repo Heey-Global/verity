@@ -122,7 +122,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
 | Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
-| Glow     | Colored halo                                            | Three uses only: brand moments in `signature` (success check), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
+| Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 **Website.** `docs/website/site/index.html` uses the same roles, Inter, the
 `control` radius for buttons and the tonal primary button. It has two brand moments
@@ -243,6 +243,26 @@ Confirmations use a compact Verity sheet instead of the platform alert:
 - While the action runs, its button shows a spinner and is locked.
 - Only for decisions. Information without a decision belongs in the screen as a row or hint
   box.
+
+### 5.8 Verity presence
+
+The live meeting gives Verity its own place, so what it contributes reads as a participant
+speaking up rather than as another list. It appears in the wide (iPad) meeting layout only
+and nowhere else in the app.
+
+- **Pane:** a `surface` panel with a 2 px edge running from `signature` to `action` and a
+  `signature` glow. It is the one surface on the screen with a gradient; everything around
+  it stays flat, and the edge never marks something tappable.
+- **Header:** the Verity V mark on a `signature` halo, followed by `Verity` in `Title`. No
+  status line: what Verity is doing is shown on its cards.
+- **Cards:** the meeting card (`components/meeting/MeetingUI.tsx`). The title says what the
+  card is about, followed by who it responds to and the time of day, then a close control.
+  A card still in progress shows a spinner with what Verity is doing and pulsing placeholder
+  lines (still when Reduce Motion is on). The newest answer has a `signature` border. A
+  source is one `action` link; actions are text buttons.
+- **Ask field:** a text field with the V mark, the model meeting answers use as a muted
+  chip, and a tonal send button. The model picked here applies to that meeting only.
+- People and notes beside the pane use no `signature`, so pink stays Verity's.
 
 ## 6. Patterns
 

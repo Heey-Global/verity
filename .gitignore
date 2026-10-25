@@ -22,6 +22,8 @@ dist
 .expo
 apps/*/android
 apps/*/ios
+# Asset catalogs @bacons/apple-targets generates from each expo-target.config.js
+apps/mobile/targets/*/Assets.xcassets
 
 # Test/coverage
 .cache

@@ -2336,6 +2336,7 @@ describe('VerityClient.getBranches', () => {
       pipeline: 'running',
       checks: { completed: 2, total: 3, successful: 2, failed: 0, pending: 1 },
       mergeable: false,
+      viewerCanMerge: false,
     };
     const { fetch } = fakeFetch(json({ current: 'feat/119-x', switchable: [], pullRequest }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

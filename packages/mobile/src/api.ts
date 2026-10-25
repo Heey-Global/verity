@@ -118,6 +118,7 @@ const pullRequestSchema = z
       pending: z.number().int().nonnegative(),
     }),
     // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
+    viewerCanMerge: z.boolean().optional(),
     mergeable: z.boolean().nullable().catch(null),
     // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
     mergeState: mergeStateSchema,
@@ -132,6 +133,7 @@ const sessionPrSchema = z.object({
   // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
   // not green yet, or GitHub still computing mergeability just after a push).
   // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
+  viewerCanMerge: z.boolean().optional(),
   mergeable: z.boolean().nullable().catch(null),
   // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
   // also means GitHub started no `pull_request` checks — the one state that must read
@@ -462,6 +464,8 @@ export const projectRecordSchema = z.object({
   // rendered; the rest are carried for a follow-up detail view / link-out.
   vulnerabilitySummary: z
     .object({
+      maintenance: z.number().optional(),
+      unclassified: z.number().optional(),
       count: z.number().int().nonnegative(),
       critical: z.number().int().nonnegative(),
       high: z.number().int().nonnegative(),
