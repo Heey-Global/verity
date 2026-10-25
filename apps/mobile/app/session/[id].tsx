@@ -1,3 +1,4 @@
+import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
@@ -1405,9 +1406,9 @@ export const SessionChat = memo(function SessionChat({
   }, [messages.length]);
   const reportScrollDebug = useCallback(
     (event: string, data: Record<string, unknown> = {}) => {
-      const seq = (scrollDebugSeqRef.current += 1);
-      void client
-        .reportScrollDiagnostic(sessionId, {
+      reportRecordedScrollDiagnostic(() => {
+        const seq = (scrollDebugSeqRef.current += 1);
+        return client.reportScrollDiagnostic(sessionId, {
           event,
           seq,
           at: Date.now(),
@@ -1422,8 +1423,8 @@ export const SessionChat = memo(function SessionChat({
             userScrollActive: userScrollActiveRef.current,
             ...data,
           },
-        })
-        .catch(() => undefined);
+        });
+      });
     },
     [client, sessionId],
   );
