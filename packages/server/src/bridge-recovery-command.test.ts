@@ -235,7 +235,7 @@ describe('bridge recovery host command', () => {
         'none',
         '--read-only',
         '--cap-drop=ALL',
-        '--security-opt=no-new-privileges',
+        '--security-opt=no-new-privileges=true',
         '--user=1000:1000',
         'bridge-image-id',
       ]),

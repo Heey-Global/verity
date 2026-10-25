@@ -623,7 +623,7 @@ function createPostgresProbe(
       network: options.network,
       platform: options.platform,
       readOnlyRootfs: true,
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       capDrop: ['ALL'],
       capAdd: [],
     };
