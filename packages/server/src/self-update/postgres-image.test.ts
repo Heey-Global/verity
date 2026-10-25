@@ -269,7 +269,7 @@ describe('reconciling the control-plane PostgreSQL image', () => {
     expect(proof.network).toBe(NETWORK);
     expect(proof.readOnlyRootfs).toBe(true);
     expect(proof.capDrop).toEqual(['ALL']);
-    expect(proof.securityOpt).toEqual(['no-new-privileges:true']);
+    expect(proof.securityOpt).toEqual(['no-new-privileges=true']);
     expect(proof.binds).toEqual([]);
     expect(proof.volumeMounts).toEqual([]);
   });

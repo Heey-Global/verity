@@ -127,7 +127,7 @@ start_gateway() {
     --read-only \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m \
     --cap-drop ALL \
-    --security-opt no-new-privileges \
+    --security-opt no-new-privileges=true \
     --pids-limit 128 \
     --memory 512m \
     --cpus 1 \
@@ -333,7 +333,7 @@ docker inspect "$gateway" | docker run --rm -i --network none \
       const host = info.HostConfig;
       if (!host.ReadonlyRootfs || host.Privileged) process.exit(1);
       if (host.CapDrop?.join(',') !== 'ALL') process.exit(1);
-      if (!host.SecurityOpt?.includes('no-new-privileges')) process.exit(1);
+      if (!host.SecurityOpt?.some((option) => ['no-new-privileges', 'no-new-privileges:true', 'no-new-privileges=true'].includes(option))) process.exit(1);
       if (info.Config.User !== 'node') process.exit(1);
       if ((info.Config.Env ?? []).some(value => value.includes('$fixture_token'))) process.exit(1);
       const destinations = (info.Mounts ?? []).map(mount => mount.Destination).sort();
