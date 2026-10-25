@@ -4,7 +4,7 @@ import { missingGoogleServices, type GoogleServiceName } from './googleServices'
 
 export type GoogleService = 'gmail' | 'calendar' | 'contacts';
 
-const serviceNames: Record<GoogleService, GoogleServiceName> = {
+export const GOOGLE_SERVICE_NAMES: Record<GoogleService, GoogleServiceName> = {
   gmail: 'Gmail',
   calendar: 'Calendar',
   contacts: 'Contacts',
@@ -29,7 +29,7 @@ export async function connectSessionGoogleService(
       connections: Record<GoogleService, GmailSessionConnection | null>;
     }
 > {
-  const name = serviceNames[service];
+  const name = GOOGLE_SERVICE_NAMES[service];
   let selectedId = accountId;
   if (selectedId === undefined) {
     const accounts = (await client.listGoogleAccounts()).filter(

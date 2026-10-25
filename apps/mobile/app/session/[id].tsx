@@ -291,6 +291,7 @@ import {
   hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
+  GOOGLE_SERVICE_NAMES,
   type GoogleService,
 } from '../../lib/sessionGoogleAccess';
 import {
@@ -3237,29 +3238,18 @@ export const SessionChat = memo(function SessionChat({
           googleAccountSupports(account, service),
         );
         const status = await client.getSessionGoogleAccess(sessionId, service);
-        const choice = await chooseGoogleAccount({
+        const currentId = status.enabled ? status.accountId : null;
+        const accountId = await chooseGoogleAccount({
           accounts,
-          sessionOptions: status.enabled || status.mode !== 'inherit',
+          title: `${GOOGLE_SERVICE_NAMES[service]} account`,
+          selectedId: currentId,
         });
-        if (!choice) return;
-        if (choice.kind === 'inherit' || choice.kind === 'disabled') {
-          await client.setSessionGoogleAccess(sessionId, service, { mode: choice.kind });
-          const [gmail, calendar, contacts] = await Promise.all([
-            client.getSessionGmailConnection(sessionId),
-            client.getSessionCalendarConnection(sessionId),
-            client.getSessionContactsConnection(sessionId),
-          ]);
-          setGmailConnection(gmail);
-          setCalendarConnection(calendar);
-          setContactsConnection(contacts);
-          return;
-        }
-        const result = await connectSessionGoogleService(
-          client,
-          sessionId,
-          service,
-          choice.kind === 'account' ? choice.accountId : null,
-        );
+        // No supporting account yet: the connect flow below signs one in.
+        if (accountId === null && accounts.length > 0) return;
+        // Re-picking the account in use keeps the grant as is, including
+        // following the project default.
+        if (accountId !== null && accountId === currentId) return;
+        const result = await connectSessionGoogleService(client, sessionId, service, accountId);
         if (result.kind === 'session') {
           setGmailConnection(result.connections.gmail);
           setCalendarConnection(result.connections.calendar);
