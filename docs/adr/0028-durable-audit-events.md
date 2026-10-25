@@ -101,24 +101,35 @@ chain. If they are not, or the chain does not re-derive, the run fails without
 moving the head, the stream is marked unverified, its pruning freezes, its reads
 carry the mark and hide rows that are expired under the current policy, audit
 health reports the failure, and an administrator must resolve the stream
-explicitly; the restore path below reuses this handling. Otherwise the head
-never moves backward, and the restore path applies the same rule before
-advancing heads to restored tails. Scheduled verification covers the streams of
-deleted projects as well, so their prefixes can still be pruned. Events appended
-after the last verification run are the undetectable truncation window; the run
-cadence is part of the audit policy. The *prune checkpoint*, introduced below,
-marks the removed prefix. Both live in the same database and share its limits.
-Head records and scheduled verification apply to every stream, the legacy secret
-chain included; "by age alone" below refers only to the absence of
-operation-expired events there. A project-scoped event caused by an installation
-operation references that operation's ID; streams are not interleaved into a
-single global order. The streams are pruned independently, so a reference may
-outlive its target, and within one stream a later event may reference an
-operation or grant whose start was pruned; verification and rendering must
-tolerate both kinds of dangling reference and show them as expired rather than
-as corruption. Deletion must leave enough safe target identification to
-interpret old events. Use bounded fields and pagination; repository-controlled
-strings are untrusted input and must be safely rendered.
+explicitly; the restore path below reuses this handling. Resolution is itself a
+fail-closed, co-committed audit event on the installation stream that names the
+stream and the chosen outcome: either a fresh full re-derivation succeeds and
+re-anchors the head, or the administrator declares the mismatch as an accepted
+gap and the head is re-anchored at the current tail with that declaration
+attached. While resolving, the administrator sees the hidden expired rows; only
+ordinary reads hide them. The first head of every stream is set only by a
+successful verification from sequence zero or from the prune checkpoint: an
+upgrade seeds no head from a tail it has not verified, a pre-existing chain that
+fails is marked unverified at upgrade, and a new or empty stream starts with a
+genesis head. The legacy-prune confirmation is unavailable while any legacy
+chain is unverified. Otherwise the head never moves backward, and the restore
+path applies the same rule before advancing heads to restored tails. Scheduled
+verification covers the streams of deleted projects as well, so their prefixes
+can still be pruned. Events appended after the last verification run are the
+undetectable truncation window; the run cadence is part of the audit policy. The
+*prune checkpoint*, introduced below, marks the removed prefix. Both live in the
+same database and share its limits. Head records and scheduled verification
+apply to every stream, the legacy secret chain included; "by age alone" below
+refers only to the absence of operation-expired events there. A project-scoped
+event caused by an installation operation references that operation's ID;
+streams are not interleaved into a single global order. The streams are pruned
+independently, so a reference may outlive its target, and within one stream a
+later event may reference an operation or grant whose start was pruned;
+verification and rendering must tolerate both kinds of dangling reference and
+show them as expired rather than as corruption. Deletion must leave enough safe
+target identification to interpret old events. Use bounded fields and
+pagination; repository-controlled strings are untrusted input and must be safely
+rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -372,9 +383,12 @@ Before enabling each domain, verify:
   adds no rows.
 - An admin-agent read or administrator export is denied when its own audit
   event cannot be written; scope widening beyond the per-turn bound is denied.
-- A retention or overrun change and the legacy-prune confirmation are refused
-  when their audit event cannot co-commit; no history is deleted during an
-  audit outage.
+- A retention or overrun change, the legacy-prune confirmation and an unverified
+  stream resolution are refused when their audit event cannot co-commit; no
+  history is deleted during an audit outage.
+- An upgrade establishes head records only through a successful verification;
+  a pre-existing broken chain is marked unverified and blocks the legacy-prune
+  confirmation.
 - An operation without a terminal result is closed as indeterminate after the
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
