@@ -96,25 +96,28 @@ accompany each stream and must not be confused. The *head record* holds the hash
 last confirmed by a verification run; it advances only when a scheduled,
 administrator-triggered or restore-triggered verification completes, never on
 append, because a head that follows the tail detects nothing. A run first
-confirms that the stored head's sequence and hash are still present in the chain
-and fails without moving the head if they are not; the head never moves
-backward, and the restore path applies the same rule before advancing heads to
-restored tails. Scheduled verification covers the streams of deleted projects as
-well, so their prefixes can still be pruned. Events appended after the last
-verification run are the undetectable truncation window; the run cadence is part
-of the audit policy. The *prune checkpoint*, introduced below, marks the removed
-prefix. Both live in the same database and share its limits. Head records and
-scheduled verification apply to every stream, the legacy secret chain included;
-"by age alone" below refers only to the absence of operation-expired events
-there. A project-scoped event caused by an installation operation references
-that operation's ID; streams are not interleaved into a single global order. The
-streams are pruned independently, so a reference may outlive its target, and
-within one stream a later event may reference an operation or grant whose start
-was pruned; verification and rendering must tolerate both kinds of dangling
-reference and show them as expired rather than as corruption. Deletion must
-leave enough safe target identification to interpret old events. Use bounded
-fields and pagination; repository-controlled strings are untrusted input and
-must be safely rendered.
+confirms that the stored head's sequence and hash are still present in the
+chain. If they are not, or the chain does not re-derive, the run fails without
+moving the head, the stream is marked unverified, its pruning freezes, its reads
+carry the mark, audit health reports the failure, and an administrator must
+resolve the stream explicitly; the restore path below reuses this handling.
+Otherwise the head never moves backward, and the restore path applies the same
+rule before advancing heads to restored tails. Scheduled verification covers the
+streams of deleted projects as well, so their prefixes can still be pruned.
+Events appended after the last verification run are the undetectable truncation
+window; the run cadence is part of the audit policy. The *prune checkpoint*,
+introduced below, marks the removed prefix. Both live in the same database and
+share its limits. Head records and scheduled verification apply to every stream,
+the legacy secret chain included; "by age alone" below refers only to the
+absence of operation-expired events there. A project-scoped event caused by an
+installation operation references that operation's ID; streams are not
+interleaved into a single global order. The streams are pruned independently, so
+a reference may outlive its target, and within one stream a later event may
+reference an operation or grant whose start was pruned; verification and
+rendering must tolerate both kinds of dangling reference and show them as
+expired rather than as corruption. Deletion must leave enough safe target
+identification to interpret old events. Use bounded fields and pagination;
+repository-controlled strings are untrusted input and must be safely rendered.
 
 Build payloads include the repository commit when known, a non-secret build
 configuration fingerprint, builder/isolation mode, resolved base-image and
@@ -364,7 +367,9 @@ Before enabling each domain, verify:
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
 - A verification run fails, and the head record stays put, when the stored head
-  is missing or its hash differs; the head never moves backward.
+  is missing or its hash differs; the head never moves backward. The failing
+  stream is marked unverified on reads, its pruning freezes, audit health
+  reports it, and only explicit administrator resolution clears the mark.
 - An upgrade prunes no pre-rollout secret-audit row. Pruning the legacy chain
   starts only after the one-time installation-wide confirmation, whose dialog
   shows the number of events it removes; an installation with no pre-rollout
