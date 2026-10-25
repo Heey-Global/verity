@@ -91,7 +91,7 @@ production daemon. It expects the workflow's CLI path and artifact directory.
 ## Private registry follow-up
 
 `devcontainer-gvisor-auth` adds a separate CI-only mode to this harness. It starts
-Distribution on loopback with a one-day TLS certificate, bcrypt authentication
+Distribution on loopback under a temporary hostname with a one-day TLS certificate, bcrypt authentication
 and randomly generated credentials; no GitHub or deployment credential is used.
 The fixture base and OCI Feature are published into that registry. Two anonymous
 CLI attempts must fail independently (private Feature/public base and private
@@ -100,7 +100,7 @@ runtime evidence and image-marker checks. Unavailable-worker tests still run.
 
 Only this CI worker uses host networking to reach the loopback registry. The
 certificate trust directory must not preexist and is removed with the named
-registry container. Publisher configuration and output stay outside artifacts;
+registry container. Publisher configuration stays outside artifacts; setup logs are scrubbed before upload;
 artifact files are scrubbed of the generated password and Docker auth value.
 This tests TLS/basic-auth forwarding, not GitHub App token scope or production
 registry availability. It does not approve the CI worker's host privileges for

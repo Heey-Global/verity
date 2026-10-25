@@ -98,7 +98,7 @@ if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true ]]; then
     source "$probe_dir/private-registry.sh"
     registry_start
     # CI only: the loopback TLS registry is reachable from the worker, never published externally.
-    worker_options+=(--network host --mount "type=bind,src=$work/registry/cert.pem,dst=/etc/ssl/certs/probe-registry.pem,readonly")
+    worker_options+=(--network host --add-host registry.verity.test:127.0.0.1 --mount "type=bind,src=$work/registry/cert.pem,dst=/etc/ssl/certs/probe-registry.pem,readonly")
 fi
 docker run -d "${worker_options[@]}" --privileged --memory "$memory_bytes" --memory-swap "$memory_bytes" \
     --cpus 1 --pids-limit 512 --name "$name" \
@@ -147,8 +147,8 @@ if [[ ${PROBE_PRIVATE_REGISTRY:-false} == true ]]; then
 import { readFileSync, writeFileSync } from 'node:fs';
 const path = process.env.PROBE_CONFIG;
 const config = JSON.parse(readFileSync(path, 'utf8'));
-config.build.args.PROBE_BASE_IMAGE = 'localhost:5443/probe/base:fixture';
-config.features = { 'localhost:5443/probe/isolation-probe:1': {} };
+config.build.args.PROBE_BASE_IMAGE = 'registry.verity.test:5443/probe/base:fixture';
+config.features = { 'registry.verity.test:5443/probe/isolation-probe:1': {} };
 writeFileSync(path, JSON.stringify(config));
 NODE
     # Feature denial is tested with the public base; image denial with the local Feature.
@@ -160,7 +160,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
 if (process.env.DENIED_RESOURCE === 'feature') config.build.args.PROBE_BASE_IMAGE = process.env.PUBLIC_BASE;
 else {
-  config.build.args.PROBE_BASE_IMAGE = 'localhost:5443/probe/base:fixture';
+  config.build.args.PROBE_BASE_IMAGE = 'registry.verity.test:5443/probe/base:fixture';
   config.features = { './features/isolation-probe': {} };
 }
 writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));

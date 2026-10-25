@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Sourced by the CI harness. Synthetic credentials exist only for this run.
 registry_start() {
-    registry_address=localhost:5443
+    registry_address=registry.verity.test:5443
     registry_container="$name-registry"
     registry_cert_dir="/etc/docker/certs.d/$registry_address"
     [[ ! -e $registry_cert_dir ]] || { echo 'Registry trust directory already exists' >&2; return 1; }
+    if getent hosts registry.verity.test > /dev/null; then echo 'Probe registry hostname already resolves' >&2; return 1; fi
+    printf '127.0.0.1 registry.verity.test # %s\n' "$name" | sudo tee -a /etc/hosts > /dev/null
+    registry_host_owned=true
     mkdir -p "$work/registry" "$work/publisher"
     registry_password=$(openssl rand -hex 32)
     printf '::add-mask::%s\n' "$registry_password"
     printf '%s\n' "$registry_password" | htpasswd -Bni probe > "$work/registry/htpasswd"
-    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
-        -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
+    openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=registry.verity.test \
+        -addext subjectAltName=DNS:registry.verity.test,IP:127.0.0.1 \
         -keyout "$work/registry/key.pem" -out "$work/registry/cert.pem" 2>/dev/null
     sudo mkdir -p "$registry_cert_dir"
     registry_trust_owned=true
@@ -80,6 +83,9 @@ registry_cleanup() {
     if [[ ${registry_trust_owned:-false} == true ]]; then
         sudo rm -f "$registry_cert_dir/ca.crt"
         sudo rmdir "$registry_cert_dir"
+    fi
+    if [[ ${registry_host_owned:-false} == true ]]; then
+        sudo sed -i "/^127\.0\.0\.1 registry\.verity\.test # $name\$/d" /etc/hosts
     fi
     # Preserve diagnostics for redaction before upload; never retain config or keys.
     for diagnostic in login publish pull push; do
