@@ -206,7 +206,7 @@ export async function runDirectRecoveryCommand(args: readonly string[]): Promise
             'none',
             '--read-only',
             '--cap-drop=ALL',
-            '--security-opt=no-new-privileges',
+            '--security-opt=no-new-privileges=true',
             '--pids-limit=64',
             '--user=1000:1000',
             '--entrypoint=node',

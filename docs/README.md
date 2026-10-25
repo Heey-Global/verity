@@ -26,6 +26,8 @@ Pick the section that matches what you want to do.
 - [Server updates and recovery](operations/server-updates-and-recovery.md):
   managed updates, companion handoff, failed updates, and a crash-looping
   Updater.
+- [Docker address pools](runbooks/docker-address-pools.md): avoid LAN/VPN subnet
+  conflicts and plan migration of existing networks while preserving data.
 - [Security policy](../SECURITY.md): the security model, verifying a release,
   and known limitations.
 - [Runbooks](runbooks): step-by-step procedures for specific recovery and

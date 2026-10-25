@@ -5788,7 +5788,7 @@ export class ProvisionerImpl implements Provisioner {
       // devcontainer that happens to install it is the wrong default for adversarial
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
-        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
+        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived

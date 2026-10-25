@@ -323,6 +323,11 @@ users.
 
 ## Hardening an internet-reachable host
 
+For Docker subnets that overlap a LAN or VPN, see the
+[Docker address-pool runbook](../docs/runbooks/docker-address-pools.md). It covers
+host configuration and migration of existing networks without deleting data
+volumes; Verity does not automatically renumber networks.
+
 The reference deployment is designed for a trusted network segment. Everything
 below is what changes when the host is reachable from the public internet.
 

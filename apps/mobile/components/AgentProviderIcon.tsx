@@ -1,15 +1,24 @@
 import Svg, { Path } from 'react-native-svg';
 
-// Product glyphs adapted from the MIT-licensed LobeHub Icons collection.
+// Claude and Codex glyphs adapted from the MIT-licensed LobeHub Icons collection.
+// OpenCode geometry: https://opencode.ai/brand (opencode-logo-dark.svg).
 export function AgentProviderIcon({
   provider,
   size = 18,
   color,
 }: {
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'opencode';
   size?: number;
   color: string;
 }) {
+  if (provider === 'opencode') {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 240 300" fill={color} accessible={false}>
+        <Path d="M180 240H60V120H180V240Z" opacity={0.32} />
+        <Path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" />
+      </Svg>
+    );
+  }
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill={color} accessible={false}>
       <Path

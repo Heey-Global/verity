@@ -98,7 +98,7 @@ function fixture(
     deviceCount: 0,
     capAdd: [...RUNNER_BROKER_CAPABILITIES],
     capDrop: ['ALL'],
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
     readOnlyRootfs: false,
     runtime: 'runsc-project',
     user: 'dev',
@@ -415,7 +415,7 @@ describe('PreviewShareManager', () => {
         network: projectNetworkName('p1'),
         readOnlyRootfs: true,
         capDrop: ['ALL'],
-        securityOpt: ['no-new-privileges:true'],
+        securityOpt: ['no-new-privileges=true'],
         env: expect.arrayContaining([
           'VERITY_PREVIEW_SHARE_ID=share-id',
           'VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000',
@@ -710,6 +710,17 @@ describe('PreviewShareManager', () => {
     ).rejects.toThrow(/security metadata is incomplete/);
     expect(edge.create).not.toHaveBeenCalled();
   });
+
+  it.each(['no-new-privileges:true', 'no-new-privileges'])(
+    'accepts existing hardening spelling %s',
+    async (option) => {
+      const { manager, docker, inspect } = fixture();
+      docker.inspectContainer.mockResolvedValueOnce({ ...inspect, securityOpt: [option] });
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toBeDefined();
+    },
+  );
 
   it('blocks a sandbox without the complete public-preview hardening contract', async () => {
     const { manager, docker, edge, inspect } = fixture();

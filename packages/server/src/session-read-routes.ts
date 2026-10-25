@@ -14,6 +14,7 @@ export interface SessionReadRouteDeps {
   /** Every usable model, narrowed to a project's allowed agents when one is named. */
   listModels: (projectId?: string) => Promise<unknown>;
   getSession: (sessionId: string) => Promise<unknown>;
+  getGoogleStatus?: (sessionId: string) => Promise<unknown>;
 }
 
 /** Registers model discovery and the lightweight session-detail read. */
@@ -22,6 +23,15 @@ export function registerSessionReadRoutes(app: FastifyInstance, deps: SessionRea
     const { projectId } = modelsQuery.parse(request.query);
     return deps.listModels(projectId);
   });
+
+  if (deps.getGoogleStatus)
+    app.get('/sessions/:id/google-status', async (request, reply) => {
+      const { id } = sessionParams.parse(request.params);
+      const status = await deps.getGoogleStatus!(id);
+      if (status === undefined)
+        return reply.code(404).send({ error: 'Session status unavailable' });
+      return status;
+    });
 
   app.get('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);

@@ -48,7 +48,11 @@ beforeAll(async () => {
     (request, response) => {
       requests.push({ path: request.url ?? '', auth: request.headers.authorization });
       response.setHeader('content-type', 'application/json');
-      if (request.url === '/forge/api/v1/user') {
+      if (request.url === '/forge/api/v1/protected-merge') {
+        response
+          .writeHead(405)
+          .end(JSON.stringify({ message: `Not allowed to push into protected branch: ${token}` }));
+      } else if (request.url === '/forge/api/v1/user') {
         response.writeHead(403).end();
       } else if (request.url?.startsWith('/forge/api/v1/repos/search')) {
         if (
@@ -292,4 +296,13 @@ it('refuses validation when a public search endpoint ignores invalid credentials
   } finally {
     bypassAuthentication = false;
   }
+});
+
+it('classifies a protected-branch refusal without retaining upstream credentials', async () => {
+  const transport = new ForgejoTransport(baseUrl, async () => token, ca);
+  const error = await transport.json('/protected-merge').catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(ForgejoRequestError);
+  expect(error).toMatchObject({ status: 405, mergePermissionDenied: true });
+  expect(String(error)).not.toContain(token);
+  expect(JSON.stringify(error)).not.toContain(token);
 });

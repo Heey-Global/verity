@@ -1,3 +1,4 @@
+import { normalizeSecurityOptions } from './docker-security-options.js';
 import { randomUUID } from 'node:crypto';
 import { relative, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -243,7 +244,10 @@ export async function withSleepingSessionGit<T>(
     readOnlyRootfs: true,
     capDrop: ['ALL'],
     ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
-    securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
+    securityOpt: normalizeSecurityOptions([
+      ...(parent.securityOpt ?? []),
+      'no-new-privileges=true',
+    ]),
     ...(parent.runtime ? { runtime: parent.runtime } : {}),
     ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),
     ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.3](https://github.com/Heey-Global/verity/compare/website-v2.5.2...website-v2.5.3) (2026-10-25)
+
+
+### Bug Fixes
+
+* **server:** reduce query churn and safely maintain host containers ([#1906](https://github.com/Heey-Global/verity/issues/1906)) ([1947cdb](https://github.com/Heey-Global/verity/commit/1947cdb00cbfdbfb5c33f4eba129f71c5e90701a))
+
 ## [2.5.2](https://github.com/Heey-Global/verity/compare/website-v2.5.1...website-v2.5.2) (2026-10-21)
 
 

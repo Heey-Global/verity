@@ -235,3 +235,52 @@ it('propagates repository-list failures so credentials never look like an empty 
   await expect(provider.listRepositories()).rejects.toThrow('403');
   spy.mockRestore();
 });
+
+it.each([false, true])(
+  'reports credential merge permission independently of mergeability: %s',
+  async (allowed) => {
+    const { provider, json } = fixture();
+    const implementation = json.getMockImplementation()!;
+    json.mockImplementation((path, ...args) =>
+      path.includes('/branches/')
+        ? Promise.resolve({ user_can_merge: allowed })
+        : implementation(path, ...args),
+    );
+    expect(await provider.prServiceFor('/checkout').prStatusForBranch('feature')).toMatchObject({
+      mergeable: true,
+      viewerCanMerge: allowed,
+    });
+  },
+);
+it.each([403, 405])('does not disguise a refusal as a successful merge (%s)', async (status) => {
+  const { provider, json } = fixture();
+  const implementation = json.getMockImplementation()!;
+  json.mockImplementation((path, ...args) =>
+    path.endsWith('/merge')
+      ? Promise.reject(new ForgejoRequestError(status))
+      : implementation(path, ...args),
+  );
+  const result = provider.prServiceFor('/checkout').mergePr(7);
+  if (status === 403)
+    await expect(result).rejects.toMatchObject({ name: 'ForgeMergePermissionError' });
+  else await expect(result).resolves.toBe(false);
+});
+
+it('rechecks the base branch permission before a merge, bypassing the status cache', async () => {
+  const { provider, json } = fixture();
+  const implementation = json.getMockImplementation()!;
+  json.mockImplementation((path, ...args) =>
+    path === '/repos/owner/repo/pulls/7'
+      ? Promise.resolve({ base: { ref: 'release/main' } })
+      : path.includes('/branches/')
+        ? Promise.resolve({ user_can_merge: false })
+        : implementation(path, ...args),
+  );
+  await expect(provider.prServiceFor('/checkout').mergePr(7)).rejects.toMatchObject({
+    name: 'ForgeMergePermissionError',
+  });
+  expect(json).toHaveBeenCalledWith('/repos/owner/repo/branches/release%2Fmain');
+  expect(
+    json.mock.calls.some(([path, method]) => path.endsWith('/merge') && method === 'POST'),
+  ).toBe(false);
+});

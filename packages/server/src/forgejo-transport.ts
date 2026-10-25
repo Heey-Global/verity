@@ -1,3 +1,4 @@
+import { isForgeMergePermissionDenied } from './forge-provider.js';
 import { randomBytes, X509Certificate } from 'node:crypto';
 import { request } from 'node:https';
 
@@ -20,7 +21,10 @@ export function validateForgejoCa(pem: string | null | undefined): void {
 }
 
 export class ForgejoRequestError extends Error {
-  constructor(readonly status: number) {
+  constructor(
+    readonly status: number,
+    readonly mergePermissionDenied = status === 403,
+  ) {
     super(`Forgejo request failed (${status})`);
   }
 }
@@ -70,8 +74,25 @@ export class ForgejoTransport {
         (response) => {
           const status = response.statusCode ?? 502;
           if (status < 200 || status >= 300) {
-            response.resume();
-            reject(new ForgejoRequestError(status));
+            // Keep only a bounded diagnostic for classification, never the raw
+            // body on the error: upstream messages can echo credentials.
+            const diagnostic: Buffer[] = [];
+            let bytes = 0;
+            response.on('data', (chunk: Buffer) => {
+              bytes += chunk.length;
+              if (bytes <= 8192) diagnostic.push(chunk);
+            });
+            const refuse = (): void => {
+              let body: unknown;
+              try {
+                body = JSON.parse(Buffer.concat(diagnostic).toString('utf8'));
+              } catch {
+                /* Unknown body. */
+              }
+              reject(new ForgejoRequestError(status, isForgeMergePermissionDenied(status, body)));
+            };
+            response.on('error', refuse);
+            response.on('end', refuse);
             return;
           }
           const chunks: Buffer[] = [];

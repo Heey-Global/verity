@@ -66,6 +66,13 @@ export class ResourceObserver {
       else if (parts[1] === 'server') affected = watched[1] === 'server';
       else if (['settings', 'secret', 'github', 'onboarding'].includes(parts[1] ?? ''))
         affected = ['settings', 'onboarding'].includes(watched[1] ?? '');
+      // Account and inherited project grants also change focused session badges.
+      if (
+        watched[1] === 'sessions' &&
+        watched[3] === 'google-status' &&
+        (parts[1] === 'google' || (parts[1] === 'projects' && parts[3] === 'google'))
+      )
+        affected = true;
       if (!affected) continue;
       entry.next = 0;
       if (entry.running) entry.pending = true;
