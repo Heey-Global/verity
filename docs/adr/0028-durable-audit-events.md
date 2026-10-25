@@ -4,6 +4,7 @@
 
 **Related:** [ADR 0009](0009-brokered-secrets-and-secret-job-executor.md),
 [ADR 0014](0014-acp-secret-tools-approval-gated.md),
+[ADR 0017](0017-docker-policy-gateway.md),
 [ADR 0020](0020-project-sandbox-sleep-and-automatic-wake.md),
 [ADR 0023](0023-multi-user-projects-and-turn-identity.md),
 [ADR 0025](0025-encrypted-backup-and-installer-recovery.md)
@@ -101,7 +102,13 @@ with their own access and retention rules; links to them may expire earlier.
 ### Persistence and failures
 
 Fail-closed applies to two groups only. New Devcontainer builds require a
-committed audit intent before the build is started. Secret approvals, grant
+committed audit intent before the build is started, whatever triggered them:
+initial provisioning, the explicit rebuild action, fleet replacement after an
+update, or a wake that finds no image for the current configuration hash.
+Every such build executes repository and Feature code, so the trigger does not
+change the rule. Image resolution is content-addressed and a wake that finds
+its image does not build; a wake that would build fails with an explicit
+audit-health error instead of running unrecorded. Secret approvals, grant
 issuance and gateway-served secret calls keep the fail-closed behavior that
 [ADR 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already
 require; this ADR does not weaken it. All other events, including pushes,
@@ -150,9 +157,12 @@ Do not expose database credentials or audit mounts to project containers.
 Agent access grants no event editing, deletion or retention-policy authority.
 Treat returned audit strings as untrusted data, never as instructions. Record
 administrator exports as events with safe query scope metadata. Record
-admin-agent reads aggregated per turn, not per query, so an investigating
-agent cannot inflate the trail; avoid recursive logging of the audit recorder
-itself.
+admin-agent reads once per turn, written when the turn's first read is granted
+and before results are returned, so a crashed turn still leaves evidence and
+an investigating agent cannot inflate the trail with repeated queries. Avoid
+recursive logging of the audit recorder itself. No client-facing read path for
+secret-audit events exists today, so administrator-only access removes no
+existing project-member capability.
 
 ### Local storage, retention and integrity
 
@@ -163,17 +173,23 @@ Use project and installation scopes without cascading deletion from live
 projects, sessions or user records. Application writes append events; there is
 no ordinary edit or selective-delete API.
 
-Default retention is 180 days, configurable by an administrator. This is a
-deliberate change for the existing secret-audit chain, which is never pruned
-today and whose verification re-derives every event from sequence zero: once
-checkpoint support exists, secret-audit events older than the window are
-pruned like any other event. Retired request-MAC keys are kept at least until
-every event signed under them has expired, so retained events stay verifiable.
-Project deletion does not shorten retention; today it already leaves
-secret-audit rows untouched. Policy changes are audited; shortening the window
+Default retention is 180 days, configurable by an administrator. The existing
+secret-audit chain is never pruned today and its verification re-derives every
+event from sequence zero. Rows recorded before this ADR's rollout therefore keep
+unbounded retention until an administrator explicitly confirms the window after
+a disclosure of how many pre-existing events it removes; the upgrade itself
+must not prune them. From that confirmation on, secret-audit events are pruned
+like any other event once checkpoint support exists. Retired request-MAC keys
+are kept at least until every event signed under them has expired, so retained
+events stay verifiable. Project deletion does not shorten retention; today it
+already leaves secret-audit rows untouched. Policy changes are audited; shortening the window
 must explicitly disclose that older history will be removed. Retention uses
 server-recorded time, not a caller-supplied timestamp, and must not split an
-active operation; document any temporary retention overrun for linked events.
+operation that is still active. An operation without a terminal result cannot
+pin its stream forever: after a bounded, configurable overrun past the window,
+reconciliation appends a gap event that closes it as indeterminate-expired, and
+the prefix advances. The overrun is part of the audit policy and is itself
+audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
 expired contiguous prefix, persist a checkpoint with stream identity, removed
