@@ -1,3 +1,4 @@
+import { ForgeMergePermissionError } from './forge-provider.js';
 import {
   createCachedProjectTokenMint,
   createGitHubAppProjectTokenMint,
@@ -9895,7 +9896,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it('returns 409 and asks the agent to fix the PR when GitHub rejects the merge', async () => {
+  it('returns 409 without an agent turn when merge rejection has no confirmed repairable cause', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const withMerge = buildServer({
       eventStore: ctx.store,
@@ -9914,13 +9915,116 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('#119') });
     // A rejected merge posts no marker (nothing landed).
     expect(emitMerged).not.toHaveBeenCalled();
-    expect(dispatchTurn).toHaveBeenCalledWith(
-      's1',
-      expect.stringContaining('GitHub rejected the merge for pull request #119'),
-      undefined,
-      { displayPrompt: 'Fix merge for PR #119' },
-    );
+    expect(dispatchTurn).not.toHaveBeenCalled();
     await withMerge.close();
+  });
+
+  it.each([true, false])(
+    'never dispatches an agent for permission or unknown thrown errors: %s',
+    async (permission) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        mergePr: vi
+          .fn()
+          .mockRejectedValue(
+            permission ? new ForgeMergePermissionError() : new Error('network failed'),
+          ),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(permission ? 403 : 409);
+        if (permission) expect(response.json().error).toContain('maintainer');
+        expect(dispatchTurn).not.toHaveBeenCalled();
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it.each([
+    { mergeState: 'dirty', pipeline: 'unknown', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'clean', pipeline: 'failure', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'unstable', pipeline: 'failure', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'clean', pipeline: 'unknown', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'dirty', pipeline: 'failure', viewerCanMerge: false, repair: false },
+  ] as const)(
+    'only dispatches a repair for confirmed fixable rejection: %j',
+    async ({ repair, viewerCanMerge, ...status }) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feature');
+      let calls = 0;
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<
+          Parameters<typeof buildServer>[0]['branches']
+        >,
+        branchPrStatus: vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(
+              prStatus(
+                ++calls === 1
+                  ? { pipeline: 'success', mergeable: true }
+                  : { ...status, ...(viewerCanMerge === undefined ? {} : { viewerCanMerge }) },
+              ),
+            ),
+          ),
+        mergePr: vi.fn().mockResolvedValue(false),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(409);
+        expect(dispatchTurn).toHaveBeenCalledTimes(repair ? 1 : 0);
+        if (repair)
+          expect(dispatchTurn.mock.calls[0]?.[1]).toContain('Do not change repository permissions');
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it('does not call the merge provider when its credential explicitly lacks permission', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feature');
+    const mergePr = vi.fn().mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi
+        .fn()
+        .mockResolvedValue(
+          prStatus({ pipeline: 'unknown', mergeable: true, viewerCanMerge: false }),
+        ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe('merge_permission_denied');
+      expect(mergePr).not.toHaveBeenCalled();
+      expect(dispatchTurn).not.toHaveBeenCalled();
+    } finally {
+      await withMerge.close();
+    }
   });
 
   it.each([

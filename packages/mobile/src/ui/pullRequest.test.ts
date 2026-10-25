@@ -203,3 +203,12 @@ describe('pullRequestMergeButton', () => {
     ).toEqual({ kind: 'merging' });
   });
 });
+
+it('requires a maintainer when the credential cannot merge, even with green checks', () => {
+  expect(
+    pullRequestMergeButton(pr({ pipeline: 'success', mergeable: true, viewerCanMerge: false }), {
+      merging: false,
+      mergeRejected: false,
+    }),
+  ).toEqual({ kind: 'blocked', reason: 'permission', label: 'Maintainer merge' });
+});
