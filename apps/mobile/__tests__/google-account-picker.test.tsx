@@ -41,7 +41,13 @@ it('asks only which account to use and marks the one in use', async () => {
 
 it('skips the sheet when there is nothing to choose', async () => {
   render(<Harness />);
-  await expect(choose({ accounts: [account('only')] })).resolves.toBe('only');
-  await expect(choose({ accounts: [] })).resolves.toBeNull();
+  let single!: Promise<string | null>;
+  let none!: Promise<string | null>;
+  act(() => {
+    single = choose({ accounts: [account('only')] });
+    none = choose({ accounts: [] });
+  });
+  await expect(single).resolves.toBe('only');
+  await expect(none).resolves.toBeNull();
   expect(screen.queryByText('Choose Google account')).toBeNull();
 });

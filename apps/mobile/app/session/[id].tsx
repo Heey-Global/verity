@@ -3240,7 +3240,11 @@ export const SessionChat = memo(function SessionChat({
         );
         const [status, project] = await Promise.all([
           client.getSessionGoogleAccess(sessionId, service),
-          projectId ? client.getProjectGoogleConnection(projectId, service) : null,
+          // The project grant only decides inherit versus pin, so an unreadable
+          // one must not block choosing an account for this chat.
+          projectId
+            ? client.getProjectGoogleConnection(projectId, service).catch(() => null)
+            : null,
         ]);
         const currentId = status.enabled ? status.accountId : null;
         const projectAccountId = project?.enabled ? (project.accountId ?? null) : null;
