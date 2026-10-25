@@ -103,17 +103,26 @@ carry the mark and hide rows that are expired under the current policy, audit
 health reports the failure, and an administrator must resolve the stream
 explicitly; the restore path below reuses this handling. Resolution is itself a
 fail-closed, co-committed audit event on the installation stream that names the
-stream and the chosen outcome: either a fresh full re-derivation succeeds and
+stream and the chosen outcome; when the installation stream is the one being
+resolved, the resolution event is the first event after the declared boundary
+and that boundary anchors the re-derived head, so an installation-stream failure
+always has a defined way out: either a fresh full re-derivation succeeds and
 re-anchors the head, or the administrator declares the mismatch as an accepted
 gap and the head is re-anchored at the current tail with that declaration
 attached. Resolving a truncated tail is the one case in which the head moves to
-a lower sequence, and it is recorded as such; sequence numbers are never reused:
-each stream's high-water mark lives in its head record, every append on every
-stream, the legacy secret chain included, takes the next sequence from that mark
-rather than from the current tail, and so the next append continues past the
-lost range and every position cited by exports, references or write-gap windows
-stays unambiguous. This is the one change to the legacy chain's append path; its
-event format and kinds stay as they are. The declaration is a recognized
+a lower sequence, and it is recorded as such; sequence numbers are never reused
+within one restore lineage: each stream keeps an allocation counter that is
+separate from the verified-head hash and has its own update rule, advancing on
+every append under the same row lock the existing per-project append already
+takes, while the verified head changes only through verification or resolution.
+Every append on every stream, the legacy secret chain included, takes the next
+sequence from that counter rather than from the current tail, so the next append
+continues past the lost range and every position cited by exports, references or
+write-gap windows stays unambiguous within the lineage. This is the one change
+to the legacy chain's append path, adds no lock it does not already take, and
+leaves its event format and kinds as they are. Positions carry the restore
+lineage, so a citation made before a restore names a position in the earlier
+lineage rather than colliding with a later one. The declaration is a recognized
 verification boundary like a prune checkpoint, but it does not skip history:
 later runs still re-derive every retained segment between consecutive boundaries
 against that segment's own anchor, and only the declared mismatch point itself
@@ -348,21 +357,21 @@ forgery. This ADR does not assert that the proposed backup system in [ADR
 0025](0025-encrypted-backup-and-installer-recovery.md) is implemented. Document
 how an installation's actual backup procedure covers these records. A restore
 only contains history through its snapshot: display the snapshot time as the
-trail's coverage boundary, record the restore as a new operational lineage when
-possible, and never replay recorded actions. Because head records are restored
-with the snapshot, events written after it vanish without detectable truncation;
-the trail cannot disclose what was lost, only where its coverage ends. A restore
-always runs verification on every stream first, whether or not pruning is
-enabled, advancing head records to the restored tails. A stream whose
-verification fails is marked unverified: its head and pruning stay frozen, its
-reads carry that mark and hide rows that are expired under the snapshot's policy
-until an administrator resolves the stream, while every other stream proceeds,
-so a damaged backup never turns into an audit-wide outage. Where pruning is
-enabled, the restore then prunes data expired under the retention policy
-contained in the snapshot before ordinary audit reads resume; before pruning
-exists, restored data is simply readable. Backup copies and exported files have
-independent lifetimes; deleting live rows does not erase older backups or
-exports.
+trail's coverage boundary, record the restore as a new operational lineage that
+every later position carries, and never replay recorded actions. Because head
+records are restored with the snapshot, events written after it vanish without
+detectable truncation; the trail cannot disclose what was lost, only where its
+coverage ends. A restore always runs verification on every stream first, whether
+or not pruning is enabled, advancing head records to the restored tails. A
+stream whose verification fails is marked unverified: its head and pruning stay
+frozen, its reads carry that mark and hide rows that are expired under the
+snapshot's policy until an administrator resolves the stream, while every other
+stream proceeds, so a damaged backup never turns into an audit-wide outage.
+Where pruning is enabled, the restore then prunes data expired under the
+retention policy contained in the snapshot before ordinary audit reads resume;
+before pruning exists, restored data is simply readable. Backup copies and
+exported files have independent lifetimes; deleting live rows does not erase
+older backups or exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
