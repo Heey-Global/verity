@@ -81,6 +81,9 @@ expect_rejection() {
     [[ $code -ne 0 && $code -ne 124 && $code -ne 137 ]]
     if docker image inspect "$tag" > /dev/null 2>&1; then return 1; fi
 }
+socket_directory_inode=$(stat -c '%d:%i' /run/verity-buildkit)
+sudo systemctl restart verity-buildkit
+[[ $(stat -c '%d:%i' /run/verity-buildkit) == "$socket_directory_inode" ]]
 sudo mv /usr/local/libexec/verity-buildkit/runsc-real /usr/local/libexec/verity-buildkit/runsc-disabled
 expect_rejection "$name:missing" "$PROBE_EVIDENCE/missing-runtime.log"
 grep -F runsc-real "$PROBE_EVIDENCE/missing-runtime.log" > /dev/null

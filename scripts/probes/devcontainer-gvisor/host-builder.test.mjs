@@ -58,6 +58,7 @@ test('host configuration restricts worker authority and bounds service resources
     'CPUQuota=100%',
     'TasksMax=512',
     'ProtectSystem=strict',
+    'RuntimeDirectoryPreserve=yes',
     'NoNewPrivileges=yes',
   ])
     assert(unit.includes(constraint), constraint);
