@@ -110,3 +110,51 @@ expect_auth_failure probe:test "$2"
     }
   });
 }
+
+for (const scenario of ['dns-recovers', 'dns-persists', 'tls-failure', 'auth-failure']) {
+  test(`registry login readiness: ${scenario}`, () => {
+    const root = mkdtempSync(join(tmpdir(), 'registry-login-'));
+    try {
+      mkdirSync(join(root, 'publisher'));
+      // A fake daemon has the same first-read host cache miss as the CI daemon.
+      writeFileSync(
+        join(root, 'docker'),
+        `#!/usr/bin/env node
+const fs = require('node:fs');
+const file = process.env.COUNTER;
+const count = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) + 1 : 1;
+fs.writeFileSync(file, String(count));
+const scenario = process.env.SCENARIO;
+if (scenario === 'dns-recovers' && count > 1) process.exit(0);
+console.error(scenario.startsWith('dns-') ? 'lookup registry.verity.test on 127.0.0.53:53: no such host' : scenario === 'tls-failure' ? 'x509: unknown authority' : '401 Unauthorized');
+process.exit(1);
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(root, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const result = spawnSync(
+        'bash',
+        ['-c', 'set -euo pipefail; source "$1"; registry_login', 'test', helperPath],
+        {
+          env: {
+            ...process.env,
+            PATH: `${root}:${process.env.PATH}`,
+            work: root,
+            registry_password: 'synthetic-test-value',
+            registry_address: 'registry.verity.test:5443',
+            COUNTER: join(root, 'count'),
+            SCENARIO: scenario,
+          },
+          encoding: 'utf8',
+        },
+      );
+      assert.equal(result.status === 0, scenario === 'dns-recovers', result.stderr);
+      assert.equal(
+        Number(readFileSync(join(root, 'count'), 'utf8')),
+        scenario === 'dns-recovers' ? 2 : scenario === 'dns-persists' ? 10 : 1,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

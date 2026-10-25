@@ -705,6 +705,7 @@ type PublicVeritySettingsRecord = Omit<
 };
 
 export interface ProjectSettingsRecord {
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -725,6 +726,7 @@ export interface ProjectSettingsRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'
@@ -1115,6 +1117,7 @@ function publicProjectSettings(
     'dopplerTokenRef' | 'dopplerToken' | 'dopplerMintedToken' | 'dopplerMintedTokenSlug'
   > = {
     projectId: settings.projectId,
+    devcontainerEnabled: settings.devcontainerEnabled ?? true,
     // Binding is operator-set, non-secret config — safe to expose plaintext.
     dopplerProject: settings.dopplerProject,
     dopplerConfig: settings.dopplerConfig,

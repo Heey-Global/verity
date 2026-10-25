@@ -422,6 +422,8 @@ export interface SessionAutomationInput {
 }
 
 export interface ProjectSettingsRecord {
+  /** Absent on older clients; defaults to enabled. Changing it affects the next recreation. */
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -486,6 +488,7 @@ export interface ProjectMcpBindingRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'
@@ -6640,6 +6643,7 @@ export class EventStore implements EventSink {
   private projectSettingsRowToRecord(
     row: {
       project_id: string;
+      devcontainer_enabled: boolean;
       doppler_token_ref: string | null;
       doppler_token: string | null;
       doppler_project: string | null;
@@ -6661,6 +6665,7 @@ export class EventStore implements EventSink {
   ): ProjectSettingsRecord {
     return {
       projectId: row.project_id,
+      devcontainerEnabled: row.devcontainer_enabled,
       dopplerTokenRef: row.doppler_token_ref,
       dopplerToken: decrypt ? this.decryptSecret(row.doppler_token) : row.doppler_token,
       dopplerProject: row.doppler_project,
@@ -6682,6 +6687,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly projectSettingsColumns = [
+    'devcontainer_enabled',
     'project_id',
     'doppler_token_ref',
     'doppler_token',
@@ -7822,6 +7828,7 @@ export class EventStore implements EventSink {
 
     const values = {
       project_id: projectId,
+      devcontainer_enabled: patch.devcontainerEnabled ?? true,
       doppler_token_ref: normalizeSetting(patch.dopplerTokenRef),
       doppler_token: this.encryptSecret(normalizeSetting(patch.dopplerToken)),
       doppler_project: normalizeSetting(patch.dopplerProject),
@@ -7877,6 +7884,9 @@ export class EventStore implements EventSink {
         .values(values)
         .onConflict((oc) =>
           oc.column('project_id').doUpdateSet({
+            ...(patch.devcontainerEnabled !== undefined
+              ? { devcontainer_enabled: patch.devcontainerEnabled }
+              : {}),
             ...(patch.dopplerTokenRef !== undefined
               ? { doppler_token_ref: normalizeSetting(patch.dopplerTokenRef) }
               : {}),

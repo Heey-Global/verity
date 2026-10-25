@@ -4605,6 +4605,18 @@ migrations['0165_vulnerability_classification'] = {
   },
 };
 
+migrations['0166_devcontainer_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await db.schema
+      .alterTable('project_settings')
+      .addColumn('devcontainer_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+      .execute();
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.alterTable('project_settings').dropColumn('devcontainer_enabled').execute();
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

@@ -6176,6 +6176,7 @@ describe('PATCH /projects/:id/settings', () => {
       method: 'PATCH',
       url: '/projects/p-settings/settings',
       payload: {
+        devcontainerEnabled: false,
         dopplerProject: ' verity ',
         dopplerConfig: ' prod ',
         defaultBranch: ' main ',
@@ -6187,6 +6188,7 @@ describe('PATCH /projects/:id/settings', () => {
     expect(res.json()).toMatchObject({
       settings: {
         projectId: 'p-settings',
+        devcontainerEnabled: false,
         dopplerProject: 'verity',
         dopplerConfig: 'prod',
         defaultBranch: 'main',
