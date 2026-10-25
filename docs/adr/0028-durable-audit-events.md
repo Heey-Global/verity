@@ -365,6 +365,15 @@ Before enabling each domain, verify:
   being rejected or duplicated.
 - A verification run fails, and the head record stays put, when the stored head
   is missing or its hash differs; the head never moves backward.
+- An upgrade prunes no pre-rollout secret-audit row. Pruning the legacy chain
+  starts only after the one-time installation-wide confirmation, whose dialog
+  shows the number of events it removes; an installation with no pre-rollout
+  secret events applies the default without that gate.
+- A prune never removes the event the verified head points to, and it cannot
+  advance past the last verification run; the next run's presence check passes
+  after every prune.
+- A retired request-MAC key is deleted only after every event signed under it
+  has expired, and verification of retained events still succeeds.
 - After audit storage recovers from failed best-effort writes, the recovering
   process appends its write-gap event to each affected stream before any other
   event of its own; other processes and streams are unaffected.
