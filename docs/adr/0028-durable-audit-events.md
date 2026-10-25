@@ -83,9 +83,14 @@ events. New domains write to a separate per-project stream so that the retention
 rules below for the legacy secret chain never pin build, image or sandbox
 events. Events without a project, such as updates, Server-generation
 replacement and audit-policy changes, form one installation-scoped stream with
-its own sequence and chain head. Every stream's last verified head is stored as
-a checkpoint record in the same database; truncation is detected only relative
-to that stored head, with the same limits as the existing project chains.
+its own sequence and chain head. Two records accompany each stream and must
+not be confused. The *head record* holds the hash last confirmed by a
+verification run; it advances only when a scheduled or administrator-triggered
+verification completes, never on append, because a head that follows the tail
+detects nothing. Events appended after the last verification run are the
+undetectable truncation window; the run cadence is part of the audit policy.
+The *prune checkpoint*, introduced below, marks the removed prefix. Both live
+in the same database and share its limits.
 A project-scoped event caused by an installation operation references that
 operation's ID; streams are not interleaved into a single global order. The
 streams are pruned independently, so a reference may outlive its target;
@@ -118,10 +123,9 @@ Every such build executes repository and Feature code, so the trigger does not
 change the rule. Image resolution is content-addressed and a wake that finds
 its image does not build; a wake that would build, and whose intent cannot be
 committed, fails with an explicit audit-health error instead of running
-unrecorded. Secret approvals, grant
-issuance and gateway-served secret calls keep the fail-closed behavior that
-[ADR 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already
-require; this ADR does not weaken it. Admin-agent reads and administrator
+unrecorded. Secret approvals, grant issuance and gateway-served secret calls
+keep the fail-closed behavior that [ADR 0014](0014-acp-secret-tools-approval-gated.md)
+and the recorder already require; this ADR does not weaken it. Admin-agent reads and administrator
 exports are denied when their own audit event cannot be written, as the Access
 section specifies. All other events, including pushes,
 pull-request creation, merges, deployments, permission and exposure changes,
@@ -150,21 +154,22 @@ under the same operation ID; it must not rerun an action merely to fill a gap.
 Use idempotency keys for retries and distinguish retries from duplicate writes.
 
 Stopping, cancelling and necessary cleanup remain possible during audit-storage
-failure, including for builds and secret jobs already running. Attempt to
-record them, visibly report degraded audit health through
-an independent operational diagnostic, and never claim missing events were
-saved. A best-effort write that fails leaves no row, and no chain can detect an
-event that was never appended. The recorder therefore counts failed writes
-per stream and domain in memory and, once storage recovers, must append a
-gap event with those counts and the failure window before accepting further
-events. The audit-health diagnostic is a live process signal, not durable
-storage: when the process dies before recovery, the gap can go completely
-unevidenced. That is an accepted limitation of the local-only first stage and
-one reason external copies remain a later decision. Recovery may add reconciliation events
-describing only what is known. The exception does not authorize arbitrary
-new work or silent retention
-shortening. Completed external effects cannot be rolled back merely because
-writing their outcome failed.
+failure, including for builds and secret jobs already running. This exception
+does not authorize arbitrary new work or silent retention shortening. Attempt
+to record these actions, visibly report degraded audit health through an
+independent operational diagnostic, and never claim missing events were saved.
+Completed external effects cannot be rolled back merely because writing their
+outcome failed.
+
+A best-effort write that fails leaves no row, and no chain can detect an event
+that was never appended. The recorder therefore counts failed writes per stream
+and domain in memory and, once storage recovers, must append a gap event with
+those counts and the failure window before accepting further events. Recovery
+may add reconciliation events describing only what is known. The audit-health
+diagnostic is a live process signal, not durable storage: when the process dies
+before recovery, the gap can go completely unevidenced. That is an accepted
+limitation of the local-only first stage and one reason external copies remain
+a later decision.
 
 ### Access
 
@@ -230,25 +235,28 @@ the prefix advances. The overrun is part of the audit policy and is itself
 audited.
 
 Retention is a controlled exception to append-only storage. Before deleting an
-expired contiguous prefix, persist a checkpoint with stream identity, removed
-sequence range and boundary hash; preserve the retained suffix's original
-sequence and hashes. Commit deletion and checkpoint advancement atomically and
-serialize them with appends. Verification must distinguish a declared expired
-prefix from corruption and report its available coverage. Keep only bounded
-checkpoint metadata, not expired payloads. Do not reset chains silently.
-Existing verification APIs need explicit checkpoint support before pruning is
-enabled. Exact schema/index/batching choices belong to implementation design.
+expired contiguous prefix, persist a prune checkpoint with stream identity,
+removed sequence range and boundary hash; preserve the retained suffix's
+original sequence and hashes. Commit deletion and checkpoint advancement
+atomically and serialize them with appends. Verification must distinguish a
+declared expired prefix from corruption and report its available coverage.
+Keep only bounded checkpoint metadata, not expired payloads. Do not reset
+chains silently. Existing verification APIs need explicit prune-checkpoint
+support before pruning is enabled; head records exist from rollout. Exact schema/index/batching choices belong to implementation design.
 
-Database backups must include events, checkpoints and required verification/key
-metadata. This ADR does not assert that the proposed backup system in
-[ADR 0025](0025-encrypted-backup-and-installer-recovery.md) is implemented.
-Document how an installation's actual backup procedure covers these records.
-A restore only contains history through its snapshot: display that coverage,
-record the restore as a new operational lineage when possible, and never replay
-recorded actions. Where pruning is enabled, prune expired restored data before ordinary audit
-reads resume; before that, restored data is simply readable.
-Backup copies and exported files have independent lifetimes; deleting live rows
-does not erase older backups or exports.
+Database backups must include events, head records, prune checkpoints and
+required verification/key metadata. This ADR does not assert that the proposed
+backup system in [ADR 0025](0025-encrypted-backup-and-installer-recovery.md) is
+implemented. Document how an installation's actual backup procedure covers
+these records. A restore only contains history through its snapshot: display
+the snapshot time as the trail's coverage boundary, record the restore as a new
+operational lineage when possible, and never replay recorded actions. Because
+head records are restored with the snapshot, events written after it vanish
+without detectable truncation; the trail cannot disclose what was lost, only
+where its coverage ends. Where pruning is enabled, prune expired restored data
+before ordinary audit reads resume; before that, restored data is simply
+readable. Backup copies and exported files have independent lifetimes; deleting
+live rows does not erase older backups or exports.
 
 Local hash chains detect inconsistent edits against a trusted boundary. They do
 not prevent a host/database administrator from rewriting history, replacing all
@@ -302,11 +310,12 @@ Before enabling each domain, verify:
   fingerprints, errors or exports; audit data cannot become agent instructions.
 - Concurrent append/prune, policy changes and interrupted retention preserve
   verifiable suffixes and accurately declared expired coverage.
-- Backups/restores preserve keys and checkpoints, disclose lost coverage and do
-  not execute historical work. Expired restored records are not resurfaced.
-- Tampering with, removal of, or truncation of persisted events is detected within
-  the stated trusted boundary; a gap event covers best-effort writes that failed
-  while the process survived. No protection is claimed against replacement of
+- Backups/restores preserve keys, head records and prune checkpoints, display the
+  snapshot coverage boundary and do not execute historical work. Expired restored
+  records are not resurfaced.
+- Tampering with, removal of, or truncation of events up to the last verified head
+  record is detected; the window after that run is documented as undetectable. A
+  gap event covers best-effort writes that failed while the process survived. No protection is claimed against replacement of
   all local state or against events that were never written.
 
 Runtime schemas, migrations, routes/tools, UI and retention workers require a
