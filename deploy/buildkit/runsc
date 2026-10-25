@@ -1,0 +1,6 @@
+#!/bin/sh
+# BuildKit owns snapshots; runsc's private root overlay would discard RUN writes.
+set -eu
+exec /usr/local/libexec/verity-buildkit/runsc-buildkit-args.sh \
+    /usr/local/libexec/verity-buildkit/runsc-real \
+    --platform=systrap --network=sandbox --overlay2=none "$@"

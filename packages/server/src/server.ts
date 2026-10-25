@@ -705,6 +705,7 @@ type PublicVeritySettingsRecord = Omit<
 };
 
 export interface ProjectSettingsRecord {
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -725,6 +726,7 @@ export interface ProjectSettingsRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'

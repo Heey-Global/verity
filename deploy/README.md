@@ -1011,10 +1011,17 @@ those would mean recreating every Sandbox on any deployment that runs without
 egress projection. So turning egress on for a deployment that already has
 Sandboxes repairs nothing and logs nothing; recreate those Sandboxes yourself.
 
-Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` on
-the configured Docker daemon. Verity injects the bundled
+Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` through
+the dedicated [gVisor BuildKit service](buildkit/README.md). The resulting image is
+loaded into the configured project Docker daemon. Missing or unavailable builders
+fail the build without falling back to the Docker daemon’s default runtime. Verity injects the bundled
 `verity-sandbox-toolkit` Feature into that build so project-specific
 devcontainers still receive the shared agent tooling. Runtime-only
 `devcontainer.json` keys that Verity's Docker create path does not yet apply
 (`remoteUser`, `containerEnv`, `mounts`, `runArgs`, and related settings) fail
 closed instead of being silently ignored.
+
+Repository devcontainers can be disabled per project through
+`PATCH /projects/:id/settings` with `{"devcontainerEnabled":false}`. This skips
+repository build and lifecycle configuration and uses the configured base image
+on the next provisioning/recreation. Existing running containers are unaffected.

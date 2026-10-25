@@ -251,7 +251,9 @@ export const RUNNER_AGENT_UID = 1000;
 export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
 
-const DEVCONTAINER_NODE_FEATURE_REF = 'ghcr.io/devcontainers/features/node:1';
+// Digest verified against the public OCI manifest; mutable aliases never enter builds.
+export const DEVCONTAINER_NODE_FEATURE_REF =
+  'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
 const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
@@ -454,6 +456,13 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   registryToken,
   noCache,
 }) => {
+  const endpoint = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+  if (endpoint === undefined || !/^unix:\/\/\/[^\s\0]+$/.test(endpoint)) {
+    throw new Error(
+      'Devcontainer builds require VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT pointing to the private runsc worker Unix socket',
+    );
+  }
+  const builderName = `verity-build-${randomUUID()}`;
   // Image/feature metadata can also perform localEnv substitution. Validating
   // the repository config alone must not expose the server's environment.
   const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
@@ -462,6 +471,8 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     HOME: dockerConfigDir,
     DOCKER_HOST: dockerHost,
     DOCKER_CONFIG: dockerConfigDir,
+    DOCKER_BUILDKIT: '1',
+    BUILDX_BUILDER: builderName,
   };
   // When we have a token, point the devcontainer CLI at a throwaway docker config
   // that authenticates to ghcr.io as the GitHub App (`x-access-token:<token>`).
@@ -476,12 +487,30 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
         { mode: 0o600 },
       );
     }
+    // A private buildx record per attempt prevents global selection or concurrent-build races.
+    // Creating a remote driver cannot start a Docker/runc worker on failure.
+    await execFileAsync(
+      'docker',
+      ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
+      { env, timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+    await execFileAsync('docker', ['buildx', 'inspect', builderName, '--bootstrap'], {
+      env,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
     return await execFileAsync(
       'devcontainer',
       devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
-      { env, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
+      { env, timeout: 30 * 60_000, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
     );
   } finally {
+    // Removing a remote driver only removes this private client record, never worker state.
+    await execFileAsync('docker', ['buildx', 'rm', builderName], {
+      env,
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }).catch(() => undefined);
     rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
@@ -4075,7 +4104,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
 
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
       throw new ProvisioningWarning([warning]);
     }
@@ -4192,7 +4221,7 @@ export class ProvisionerImpl implements Provisioner {
   async provisionWarnings(projectId: string): Promise<string[]> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return [];
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     return warning === null ? [] : [warning];
   }
 
@@ -4977,7 +5006,7 @@ export class ProvisionerImpl implements Provisioner {
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
-    const preflightWarning = this.devcontainerWarningForProject(project);
+    const preflightWarning = await this.devcontainerWarningForProject(project);
     if (preflightWarning !== null && opts.confirmWarnings !== true) {
       await this.opts.store.updateProjectState(
         project.id,
@@ -6102,15 +6131,25 @@ export class ProvisionerImpl implements Provisioner {
     const overrideRef = configuredOverride?.image_override_ref ?? null;
     const usesDefaultImage = overrideRef === null;
     const baseImageRef = overrideRef ?? (await this.defaultImageRef(true));
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     const build = this.opts.devcontainerBuild;
     const dockerHost = this.opts.dockerHostForBuild;
-    if (build === undefined || dockerHost === undefined || !this.isDir(devcontainerDir)) {
+    if (policy?.devcontainer_enabled === false || !this.isDir(devcontainerDir)) {
       return {
         imageRef: baseImageRef,
         usesDevcontainerImage: false,
         usesConfiguredOverride: !usesDefaultImage,
       };
+    }
+    if (build === undefined || dockerHost === undefined) {
+      throw new Error(
+        'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
+      );
     }
     const feature = await this.devcontainerFeature();
     if (feature === undefined) {
@@ -6241,7 +6280,13 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private devcontainerWarningForProject(project: ProjectRecord): string | null {
+  private async devcontainerWarningForProject(project: ProjectRecord): Promise<string | null> {
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
+    if (policy?.devcontainer_enabled === false) return null;
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     if (!this.isDir(devcontainerDir)) return null;

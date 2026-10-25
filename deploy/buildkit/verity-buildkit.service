@@ -1,0 +1,31 @@
+[Unit]
+Description=Verity devcontainer builder (gVisor only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/verity-buildkit/buildkitd --config /etc/verity-buildkit/buildkitd.toml
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=verity-buildkit
+RuntimeDirectoryMode=0755
+StateDirectory=verity-buildkit
+StateDirectoryMode=0700
+UMask=0007
+MemoryMax=2G
+MemorySwapMax=0
+CPUQuota=100%
+TasksMax=512
+Delegate=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/verity-buildkit /run/verity-buildkit
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/run/containerd -/data
+# Root and mount/network namespace privileges are required by the OCI worker.
+# RUN processes still execute through runsc; insecure entitlements are disabled.
+
+[Install]
+WantedBy=multi-user.target

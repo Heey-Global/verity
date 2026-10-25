@@ -891,6 +891,27 @@ describe('EventStore — projects', () => {
     });
   });
 
+  it('persists devcontainer opt-out across unrelated settings patches and supports re-enabling', async () => {
+    const id = sampleProject.id();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'example',
+      repo: 'policy',
+      containerName: 'policy',
+      state: 'absent',
+    });
+    expect(
+      (await ctx.store.updateProjectSettings(id, { defaultModel: null }))?.devcontainerEnabled,
+    ).toBe(true);
+    await ctx.store.updateProjectSettings(id, { devcontainerEnabled: false });
+    await ctx.store.updateProjectSettings(id, { defaultBranch: 'main' });
+    expect((await ctx.store.getProjectSettingsRaw(id))?.devcontainerEnabled).toBe(false);
+    expect(
+      (await ctx.store.updateProjectSettings(id, { devcontainerEnabled: true }))
+        ?.devcontainerEnabled,
+    ).toBe(true);
+  });
+
   it('stores allowed agents in canonical order and treats an empty or full list as unrestricted', async () => {
     const projectId = sampleProject.id();
     await ctx.store.upsertProject({
