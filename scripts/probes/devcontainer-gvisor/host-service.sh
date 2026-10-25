@@ -62,10 +62,12 @@ const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
 config.build.args = { PROBE_BASE_IMAGE: base };
 writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
 NODE
-# sudo starts a fresh group context, including the dedicated socket group. The Server
-# remains non-root and retains the runner's existing Docker group for image loading.
+# Enter through root, then drop to the runner with the dedicated socket group.
+# Explicit sudo run-as groups are not covered by every runner sudoers policy.
+# Supplementary groups retain Docker access for image loading; the Server is non-root.
 spawn_build() {
-    sudo --preserve-env=PATH -u "$(id -un)" -g verity-buildkit \
+    sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
+        --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
         node scripts/probes/devcontainer-gvisor/server-spawner.mjs "$work" "$1"
 }
