@@ -3253,7 +3253,7 @@ export const SessionChat = memo(function SessionChat({
         // Picking the project's account follows the project default again, so
         // a later project change reaches this chat instead of a stale pin.
         if (accountId !== null && accountId === projectAccountId) {
-          if (status.mode === 'inherit') return;
+          if (status.mode === 'inherit' && status.enabled) return;
           await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
           const [gmail, calendar, contacts] = await Promise.all([
             client.getSessionGmailConnection(sessionId),
