@@ -249,21 +249,24 @@ covers those appends, so an installation-stream failure, whose stream keeps
 receiving read, export and policy events meanwhile, has the same defined way out
 as any other: either a fresh full re-derivation succeeds and re-anchors the
 head, or the administrator declares the mismatch as an accepted gap and the head
-is re-anchored at the current tail with that declaration attached. Resolving a
-truncated tail is the one case in which the head moves to a lower sequence, and
-it is recorded as such; sequence numbers are never reused within one restore
-lineage. The implementation design must therefore keep a per-stream allocation
-counter that is separate from the verified-head hash, advances on every append
-and is seeded at migration for live and deleted projects, and it must teach the
-legacy chain's verification that a declared boundary, not only the previous
-sequence, may precede an event. Those are required changes to the legacy append
-and verify paths; the legacy event format and kinds stay as they are, and any
-extra locking the counter needs is measured against the fail-closed latency of
-ADR 0014 before rollout. Every later position is attributable to its restore
-lineage, for legacy rows as well; whether that is a column or a side table keyed
-by sequence range is an implementation choice, but the attribution is required,
-so a citation made before a restore names a position in the earlier lineage
-rather than colliding with a later one. The declaration is a recognized
+is re-anchored at the current tail with that declaration attached. After any
+resolution the head takes the sequence of the current tail, which includes every
+append made since the failure. When that sequence is lower than the previous
+head, as after a truncated tail on a quiet stream, the head has moved backward;
+that is the one permitted case, and the resolution event records both sequences
+so the check is deterministic; sequence numbers are never reused within one
+restore lineage. The implementation design must therefore keep a per-stream
+allocation counter that is separate from the verified-head hash, advances on
+every append and is seeded at migration for live and deleted projects, and it
+must teach the legacy chain's verification that a declared boundary, not only
+the previous sequence, may precede an event. Those are required changes to the
+legacy append and verify paths; the legacy event format and kinds stay as they
+are, and any extra locking the counter needs is measured against the fail-closed
+latency of ADR 0014 before rollout. Every later position is attributable to its
+restore lineage, for legacy rows as well; whether that is a column or a side
+table keyed by sequence range is an implementation choice, but the attribution
+is required, so a citation made before a restore names a position in the earlier
+lineage rather than colliding with a later one. The declaration is a recognized
 verification boundary like a prune checkpoint, but it does not skip history:
 later runs still re-derive every retained segment between consecutive boundaries
 against that segment's own anchor, and only the declared mismatch point itself
@@ -450,11 +453,11 @@ Before enabling each domain, verify:
   configured overrun, and a later observed result supersedes that marker without
   being rejected or duplicated.
 - A verification run fails, and the head record stays put, when the stored head
-  is missing or its hash differs; the head never moves backward except through
-  recorded truncation resolution, after which appends continue past the lost
-  range. The failing stream is marked unverified on reads, its pruning freezes,
-  audit health reports it, and only explicit administrator resolution clears the
-  mark.
+  is missing or its hash differs; the head never moves backward except through a
+  recorded resolution whose event names the old and new sequence, after which
+  appends continue past the lost range. The failing stream is marked unverified
+  on reads, its pruning freezes, audit health reports it, and only explicit
+  administrator resolution clears the mark.
 - An upgrade prunes no pre-rollout secret-audit row. Pruning the legacy chain
   starts only after the one-time installation-wide confirmation, whose dialog
   shows the number of events it removes; an installation with no pre-rollout
@@ -475,15 +478,19 @@ Before enabling each domain, verify:
   fingerprints, errors or exports; audit data cannot become agent instructions.
 - Concurrent append/prune, policy changes and interrupted retention preserve
   verifiable suffixes and accurately declared expired coverage.
-- Backups/restores preserve keys, head records and prune checkpoints, display
-  the snapshot coverage boundary and do not execute historical work. Records
+- Backups/restores preserve head records and prune checkpoints, preserve
+  request-MAC keys only when the backup meets the protection bar and otherwise
+  omit them and surface the lost correlation, display the snapshot coverage
+  boundary and do not execute historical work. Records
   expired under the restored snapshot's own retention policy are not resurfaced,
   by pruning on verified streams and by hiding on unverified ones; a policy
   change made after the snapshot is itself lost with it.
 - Tampering with, removal of, or truncation of events up to the last verified
   head record is detected; the window after that run is documented as
-  undetectable. A write-gap event covers best-effort writes that failed on the new streams while the process survived; legacy-chain lifecycle losses stay unevidenced. No protection is claimed against replacement of all
-  local state or against events that were never written.
+  undetectable. A write-gap event covers best-effort writes that failed on the
+  new streams while the process survived; legacy-chain lifecycle losses stay
+  unevidenced. No protection is claimed against replacement of all local state
+  or against events that were never written.
 
 Runtime schemas, migrations, routes/tools, UI and retention workers require a
 separately reviewed implementation. This ADR alone enables none of them.
