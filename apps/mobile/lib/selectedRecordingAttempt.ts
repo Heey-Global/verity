@@ -191,6 +191,7 @@ export async function selectedRecordingAttempt(
     if (!Number.isInteger(port) || port < 1 || port > 65535)
       throw new Error('Invalid DATA listener');
     let revision = armed.selection.readiness?.revision ?? -1;
+    let previousReadiness = armed.selection.readiness;
     let pair: string | undefined;
     const captureDeadline = performance.now() + 30000;
     for (let i = 0; i < 2; i++) {
@@ -205,7 +206,17 @@ export async function selectedRecordingAttempt(
         status.phase !== 'recording' ||
         status.error !== null ||
         !ready?.ready ||
-        ready.revision <= revision ||
+        ready.revision < revision ||
+        (previousReadiness !== undefined &&
+          previousReadiness !== null &&
+          (ready.monotonicMs < previousReadiness.monotonicMs ||
+            (ready.revision === revision &&
+              JSON.stringify([ready.installation, ready.app, ready.ready]) !==
+                JSON.stringify([
+                  previousReadiness.installation,
+                  previousReadiness.app,
+                  previousReadiness.ready,
+                ])))) ||
         Date.parse(status.expiresAt) <= Date.now() ||
         performance.now() - armMonotonic >= 45000
       )
@@ -227,6 +238,7 @@ export async function selectedRecordingAttempt(
       if (pair !== undefined && pair !== current) throw new Error('Selected socket changed');
       pair = current;
       revision = ready.revision;
+      previousReadiness = ready;
       // Status reads never renew capture. Retain the earliest absolute deadline.
       const remaining =
         Math.min(Date.parse(status.expiresAt), Date.parse(armed.expiresAt)) - Date.now();
