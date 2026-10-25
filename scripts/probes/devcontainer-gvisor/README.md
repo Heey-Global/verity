@@ -87,3 +87,21 @@ production daemon. It expects the workflow's CLI path and artifact directory.
 - [BuildKit worker configuration](https://github.com/moby/buildkit/blob/master/docs/buildkitd.toml.md)
 - [BuildKit OCI worker runtime selection](https://github.com/moby/buildkit/blob/master/worker/runc/runc.go)
 - [Devcontainer CLI source at the pinned release](https://github.com/devcontainers/cli/tree/v0.89.0)
+
+## Private registry follow-up
+
+`devcontainer-gvisor-auth` adds a separate CI-only mode to this harness. It starts
+Distribution on loopback with a one-day TLS certificate, bcrypt authentication
+and randomly generated credentials; no GitHub or deployment credential is used.
+The fixture base and OCI Feature are published into that registry. Two anonymous
+CLI attempts must fail independently (private Feature/public base and private
+base/local Feature), then the authenticated build must pass the same worker-side
+runtime evidence and image-marker checks. Unavailable-worker tests still run.
+
+Only this CI worker uses host networking to reach the loopback registry. The
+certificate trust directory must not preexist and is removed with the named
+registry container. Publisher configuration and output stay outside artifacts;
+artifact files are scrubbed of the generated password and Docker auth value.
+This tests TLS/basic-auth forwarding, not GitHub App token scope or production
+registry availability. It does not approve the CI worker's host privileges for
+production use.
