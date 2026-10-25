@@ -6215,14 +6215,27 @@ export class ProvisionerImpl implements Provisioner {
       // After the cache check, into the private copy only: the hash above was
       // computed over the project's own configuration.
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
-      await build({
-        workspaceFolder: snapshot.workspaceFolder,
-        imageName: derivedTag,
-        dockerHost,
-        additionalFeatures: feature.ref,
-        ...(registryToken !== undefined ? { registryToken } : {}),
-        ...(forceRebuild ? { noCache: true } : {}),
-      });
+      try {
+        await build({
+          workspaceFolder: snapshot.workspaceFolder,
+          imageName: derivedTag,
+          dockerHost,
+          additionalFeatures: feature.ref,
+          ...(registryToken !== undefined ? { registryToken } : {}),
+          ...(forceRebuild ? { noCache: true } : {}),
+        });
+      } catch (cause) {
+        // The scoped registry token is not in process.env. Remove both forms
+        // before diagnostics escape into persisted project state or request logs.
+        throw new Error(
+          redactSensitive(buildFailureMessage(cause), [
+            registryToken,
+            registryToken
+              ? Buffer.from(`x-access-token:${registryToken}`).toString('base64')
+              : undefined,
+          ]),
+        );
+      }
       return {
         imageRef: derivedTag,
         usesDevcontainerImage: true,

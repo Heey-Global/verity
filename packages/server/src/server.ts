@@ -1117,6 +1117,7 @@ function publicProjectSettings(
     'dopplerTokenRef' | 'dopplerToken' | 'dopplerMintedToken' | 'dopplerMintedTokenSlug'
   > = {
     projectId: settings.projectId,
+    devcontainerEnabled: settings.devcontainerEnabled ?? true,
     // Binding is operator-set, non-secret config — safe to expose plaintext.
     dopplerProject: settings.dopplerProject,
     dopplerConfig: settings.dopplerConfig,

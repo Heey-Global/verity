@@ -7814,16 +7814,19 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('redacts an inherited GITHUB_TOKEN from failed build output', async () => {
+  it('redacts inherited and scoped registry credentials from failed build output', async () => {
     const { root } = makeCloneRoot(true);
     const previous = process.env.GITHUB_TOKEN;
     const secret = 'build-token-fixture-value';
+    const registryToken = 'scoped-registry-fixture';
+    const encoded = Buffer.from(`x-access-token:${registryToken}`).toString('base64');
     process.env.GITHUB_TOKEN = secret;
     try {
       const id = await seedProject();
       const build = vi.fn<DevcontainerBuildSpawner>(async () => {
         const error = new Error('Command failed: devcontainer build');
-        (error as Error & { stderr?: string }).stderr = `fatal: leaked ${secret} while cloning`;
+        (error as Error & { stderr?: string }).stderr =
+          `fatal: leaked ${secret} ${registryToken} ${encoded} while cloning`;
         throw error;
       });
       const provisioner = createProvisioner({
@@ -7831,6 +7834,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         db: ctx.db,
         docker: fakeDocker({ imageExists: async () => false }).client,
         projectTokenMint: async () => 'server-side-token',
+        registryTokenMint: async () => registryToken,
         defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
         hostCloneRoot: root,
         devcontainerBuild: build,
@@ -7841,6 +7845,8 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
       const row = await ctx.store.getProject(id);
       expect(row?.provisionError).not.toContain(secret);
+      expect(row?.provisionError).not.toContain(registryToken);
+      expect(row?.provisionError).not.toContain(encoded);
       expect(row?.provisionError).toContain('[redacted]');
     } finally {
       if (previous === undefined) delete process.env.GITHUB_TOKEN;
