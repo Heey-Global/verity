@@ -3205,11 +3205,13 @@ export const SessionChat = memo(function SessionChat({
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       const isCurrent = invalidateGoogleStatus();
+      if (!isCurrent()) return;
       setAttachMenuOpen(false);
       void (async () => {
         const accounts = (await client.listGoogleAccounts()).filter((account) =>
           googleAccountSupports(account, service),
         );
+        if (!isCurrent()) return;
         const [status, project] = await Promise.all([
           client.getSessionGoogleAccess(sessionId, service),
           // The project grant only decides inherit versus pin, so an unreadable
@@ -3237,6 +3239,7 @@ export const SessionChat = memo(function SessionChat({
         if (action === 'none') return;
         if (action === 'inherit') {
           await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
+          if (!isCurrent()) return;
           const [gmail, calendar, contacts] = await Promise.all([
             client.getSessionGmailConnection(sessionId),
             client.getSessionCalendarConnection(sessionId),
@@ -3249,7 +3252,13 @@ export const SessionChat = memo(function SessionChat({
           setContactsConnection(contacts);
           return;
         }
-        const result = await connectSessionGoogleService(client, sessionId, service, accountId);
+        const result = await connectSessionGoogleService(
+          client,
+          sessionId,
+          service,
+          accountId,
+          isCurrent,
+        );
         if (!isCurrent()) return;
         invalidateGoogleStatus();
         if (result.kind === 'session') {
@@ -3257,12 +3266,13 @@ export const SessionChat = memo(function SessionChat({
           setCalendarConnection(result.connections.calendar);
           setContactsConnection(result.connections.contacts);
         }
-      })().catch((error: unknown) =>
+      })().catch((error: unknown) => {
+        if (!isCurrent()) return;
         Alert.alert(
           'Could not connect Google service',
           error instanceof Error ? error.message : String(error),
-        ),
-      );
+        );
+      });
     },
     [client, projectId, sessionId, chooseGoogleAccount, invalidateGoogleStatus],
   );

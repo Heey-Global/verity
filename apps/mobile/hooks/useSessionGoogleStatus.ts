@@ -14,6 +14,7 @@ export function useSessionGoogleStatus(
   const [status, setStatus] = useState<SessionGoogleStatus | undefined>(summary);
   const [identity, setIdentity] = useState({ client, sessionId });
   const generation = useRef(0);
+  const focused = useRef(false);
   const owner = useRef({ client, sessionId });
   owner.current = { client, sessionId };
   const seeded = useRef(summary !== undefined);
@@ -23,6 +24,17 @@ export function useSessionGoogleStatus(
     setIdentity({ client, sessionId });
     setStatus(summary);
   }
+  // Actions may start before detail/history readiness, so their lifetime must
+  // follow focus independently of the deferred read subscription below.
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      return () => {
+        focused.current = false;
+        generation.current++;
+      };
+    }, [client, sessionId]),
+  );
   useEffect(() => {
     if (summary && !seeded.current) {
       seeded.current = true;
@@ -72,13 +84,17 @@ export function useSessionGoogleStatus(
     }, [client, sessionId, detailLoaded, ready, Boolean(summary), read]),
   );
   const invalidate = useCallback(() => {
-    if (owner.current.client !== client || owner.current.sessionId !== sessionId)
+    if (
+      !focused.current ||
+      owner.current.client !== client ||
+      owner.current.sessionId !== sessionId
+    )
       return () => false;
     generation.current++;
     // Local mutation results must win over the initial detail arriving late.
     seeded.current = true;
     const version = generation.current;
-    return () => version === generation.current;
+    return () => focused.current && version === generation.current;
   }, [client, sessionId]);
   return { status, invalidate };
 }

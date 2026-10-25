@@ -40,6 +40,7 @@ export async function connectSessionGoogleService(
   sessionId: string,
   service: GoogleService,
   accountId?: string | null,
+  isCurrent: () => boolean = () => true,
 ): Promise<
   | { kind: 'cancelled' }
   | {
@@ -48,25 +49,29 @@ export async function connectSessionGoogleService(
       connections: Record<GoogleService, GmailSessionConnection | null>;
     }
 > {
+  if (!isCurrent()) return { kind: 'cancelled' };
   const name = GOOGLE_SERVICE_NAMES[service];
   let selectedId = accountId;
   if (selectedId === undefined) {
     const accounts = (await client.listGoogleAccounts()).filter(
       (account) => !missingGoogleServices(account.scopes).includes(name),
     );
+    if (!isCurrent()) return { kind: 'cancelled' };
     if (accounts.length > 1) throw new Error('Choose a Google account');
     selectedId = accounts[0]?.id;
   }
   if (!selectedId) {
     const connection = await client.getGoogleDriveConnection();
+    if (!isCurrent()) return { kind: 'cancelled' };
     if (!connection.clientId) throw new Error('Google sign-in is not configured on this server.');
     const auth = await runGoogleAccountAuth(connection.clientId);
-    if (auth.kind === 'cancelled') return { kind: 'cancelled' };
+    if (!isCurrent() || auth.kind === 'cancelled') return { kind: 'cancelled' };
     const connected = await client.connectGoogleAccount({
       code: auth.code,
       codeVerifier: auth.codeVerifier,
       redirectUri: auth.redirectUri,
     });
+    if (!isCurrent()) return { kind: 'cancelled' };
     if (missingGoogleServices(connected.scopes).includes(name))
       throw new Error(`Google did not grant access to ${name}`);
     selectedId = connected.accountId;
@@ -75,6 +80,7 @@ export async function connectSessionGoogleService(
     mode: 'account',
     accountId: selectedId,
   });
+  if (!isCurrent()) return { kind: 'cancelled' };
   // Reload effective access without changing sibling service grants.
   const services = ['gmail', 'calendar', 'contacts'] as const;
   const snapshots = await Promise.all(
