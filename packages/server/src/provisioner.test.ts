@@ -1,3 +1,4 @@
+import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -7496,6 +7497,68 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
     return { root, clonePath };
   }
+
+  it.each(['build', 'cached', 'failure'] as const)(
+    'reserves images before cache lookup through container creation, then releases (%s)',
+    async (mode) => {
+      const { root } = makeCloneRoot(true);
+      const references = new DerivedImageReferences(async () => ({
+        refs: new Set(),
+        repositories: new Set(),
+      }));
+      let selected: string | undefined;
+      let observed = false;
+      try {
+        const id = await seedProject();
+        const build = vi.fn<DevcontainerBuildSpawner>(async ({ imageName }) => {
+          await references.withSnapshot(async (held) => {
+            expect(held.refs.has(imageName)).toBe(true);
+          });
+          if (mode === 'failure') throw new Error('fixture build failure');
+          return { stdout: '', stderr: '' };
+        });
+        const { client: docker } = fakeDocker({
+          imageExists: async (tag) => {
+            selected = tag;
+            await references.withSnapshot(async (held) => {
+              expect(held.refs.has(tag)).toBe(true);
+            });
+            return mode === 'cached';
+          },
+        });
+        const create = docker.createContainer.bind(docker);
+        docker.createContainer = async (spec) => {
+          await references.withSnapshot(async (held) => {
+            expect(held.refs.has(spec.image)).toBe(true);
+          });
+          observed = true;
+          return create(spec);
+        };
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          devcontainerBuild: build,
+          dockerHostForBuild: 'unix:///var/run/docker.sock',
+          devcontainerFeature: toolkitFeature,
+          imageReferences: references,
+        });
+        if (mode === 'failure')
+          await expect(provisioner.provision(id)).rejects.toThrow(/fixture build failure/);
+        else await provisioner.provision(id);
+        expect(selected).toBeDefined();
+        expect(observed).toBe(mode !== 'failure');
+        await references.withSnapshot(async (held) => {
+          expect(held.refs.size).toBe(0);
+        });
+        expect(provisioner.isProjectProvisioning(id)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('(a) no .devcontainer/ → runs the base image, no build spawned', async () => {
     const { root } = makeCloneRoot(false);

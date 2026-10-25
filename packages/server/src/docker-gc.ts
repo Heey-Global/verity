@@ -1,3 +1,4 @@
+import type { DerivedImageReferences, DerivedImageSnapshot } from './derived-image-references.js';
 /**
  * Host garbage collection for the Docker resources Verity creates.
  *
@@ -192,6 +193,10 @@ interface DockerGcLogger {
 
 export interface DockerGcDeps {
   docker: DockerClient;
+  /** Shared provisioner reservations and durable project selections. */
+  imageReferences?: DerivedImageReferences | undefined;
+  /** Post-delete pass: leave containers, volumes and builder cache to scheduled GC. */
+  imagesOnly?: boolean;
   log: DockerGcLogger;
   policy?: Partial<DockerGcPolicy>;
   /** Path whose filesystem free space drives disk-pressure escalation — the
@@ -251,7 +256,9 @@ export interface ImageSweepPlan {
  * Decide which devcontainer image tags to retire.
  *
  * Only tags under {@link DEVCONTAINER_IMAGE_PREFIX} are considered. Within each
- * repository the newest `keepPerRepo` generations survive; so does any image a
+ * visible repository the newest `keepPerRepo` generations survive; deleted
+ * repositories retain only references. Project selections and reservations are
+ * protected independently of retention, as is any image a
  * container still references, however old — a long-running sandbox pinned to an
  * older generation must never have its image pulled out from under it.
  *
@@ -263,10 +270,16 @@ export function planImageSweep(input: {
   /** Image content ids referenced by any container, running or stopped. */
   inUseImageIds: ReadonlySet<string>;
   keepPerRepo: number;
+  projectImages?: DerivedImageSnapshot | undefined;
   keepReleaseImagesPerRepo?: number;
   untaggedReleaseImageMinAgeMs?: number;
   now?: number;
 }): ImageSweepPlan[] {
+  const protectedImage = (image: DockerImageSummary): boolean =>
+    input.inUseImageIds.has(image.id) ||
+    [image.id, ...image.repoTags, ...image.repoDigests].some((ref) =>
+      input.projectImages?.refs.has(ref),
+    );
   const byRepository = new Map<string, Map<string, DockerImageSummary>>();
   for (const image of input.images) {
     for (const ref of image.repoTags) {
@@ -283,8 +296,12 @@ export function planImageSweep(input: {
     const ordered = [...group.values()].sort(
       (a, b) => b.created - a.created || a.id.localeCompare(b.id),
     );
-    for (const image of ordered.slice(Math.max(0, input.keepPerRepo))) {
-      if (input.inUseImageIds.has(image.id)) continue;
+    const keep =
+      input.projectImages !== undefined && !input.projectImages.repositories.has(repository)
+        ? 0
+        : Math.max(0, input.keepPerRepo);
+    for (const image of ordered.slice(keep)) {
+      if (protectedImage(image)) continue;
       for (const ref of image.repoTags) {
         if (repositoryOf(ref) !== repository) continue;
         plan.push({ ref, imageId: image.id, size: image.size });
@@ -307,7 +324,7 @@ export function planImageSweep(input: {
       (a, b) => b.created - a.created || a.id.localeCompare(b.id),
     );
     for (const image of ordered.slice(Math.max(0, input.keepReleaseImagesPerRepo ?? 2))) {
-      if (input.inUseImageIds.has(image.id)) continue;
+      if (protectedImage(image)) continue;
       plan.push({ ref: image.id, imageId: image.id, size: image.size });
     }
   }
@@ -322,7 +339,7 @@ export function planImageSweep(input: {
     ) {
       continue;
     }
-    if (image.created > cutoffSeconds || input.inUseImageIds.has(image.id)) continue;
+    if (image.created > cutoffSeconds || protectedImage(image)) continue;
     if (plan.some((entry) => entry.imageId === image.id)) continue;
     plan.push({ ref: image.id, imageId: image.id, size: image.size });
   }
@@ -517,34 +534,48 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
   // delete the image a live sandbox runs on, so skip the whole step rather than
   // sweep blind against a client that lacks either call.
   if (docker.listImages !== undefined && docker.listContainers !== undefined) {
+    const listImages = docker.listImages.bind(docker);
+    const listContainers = docker.listContainers.bind(docker);
     try {
-      const [images, containers] = await Promise.all([
-        docker.listImages(),
-        docker.listContainers(),
-      ]);
-      const inUseImageIds = new Set(containers.map((container) => container.imageId));
-      const plan = planImageSweep({
-        images,
-        inUseImageIds,
-        keepPerRepo,
-        keepReleaseImagesPerRepo: policy.keepReleaseImagesPerRepo,
-        untaggedReleaseImageMinAgeMs: policy.untaggedReleaseImageMinAgeMs,
-        now: now(),
-      });
-      for (const entry of plan) {
-        try {
-          await docker.removeImage?.(entry.ref);
-          report.imagesRemoved.push(entry.ref);
-          report.estimatedImageBytes += entry.size;
-        } catch (err) {
-          // Most commonly a 409: a container grabbed the image between the
-          // listing and the delete. Next pass re-evaluates.
-          errors.push({ resource: `image ${entry.ref}`, message: errorMessage(err) });
+      const sweep = async (projectImages?: DerivedImageSnapshot): Promise<void> => {
+        const [images, containers] = await Promise.all([listImages(), listContainers()]);
+        const inUseImageIds = new Set(containers.map((container) => container.imageId));
+        const plan = planImageSweep({
+          projectImages,
+          images,
+          inUseImageIds,
+          keepPerRepo,
+          keepReleaseImagesPerRepo: policy.keepReleaseImagesPerRepo,
+          untaggedReleaseImageMinAgeMs: policy.untaggedReleaseImageMinAgeMs,
+          now: now(),
+        });
+        for (const entry of plan) {
+          try {
+            // Recheck containers at deletion time; Docker's non-force removal is
+            // the final backstop for a container created after this read.
+            const current = await listContainers();
+            if (current.some((container) => container.imageId === entry.imageId)) continue;
+            if (docker.removeImage === undefined) continue;
+            await docker.removeImage(entry.ref);
+            report.imagesRemoved.push(entry.ref);
+            report.estimatedImageBytes += entry.size;
+          } catch (err) {
+            // Most commonly a 409: a container grabbed the image between the
+            // listing and the delete. Next pass re-evaluates.
+            errors.push({ resource: `image ${entry.ref}`, message: errorMessage(err) });
+          }
         }
-      }
+      };
+      if (deps.imageReferences) await deps.imageReferences.withSnapshot(sweep);
+      else await sweep();
     } catch (err) {
       errors.push({ resource: 'images', message: errorMessage(err) });
     }
+  }
+
+  if (deps.imagesOnly) {
+    for (const error of errors) log.warn(error, 'docker gc skipped a resource');
+    return report;
   }
 
   // --- Superseded project relays -------------------------------------------

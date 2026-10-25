@@ -1,3 +1,4 @@
+import type { DerivedImageReferences } from './derived-image-references.js';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import {
   createDevcontainerBuildSnapshot,
@@ -787,6 +788,8 @@ export interface ProvisionerOptions {
    *  every project runs the base image. Injectable so tests
    *  don't spawn a real build. */
   devcontainerBuild?: DevcontainerBuildSpawner | undefined;
+  /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
+  imageReferences?: DerivedImageReferences | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -4033,6 +4036,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
@@ -4078,6 +4082,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
@@ -6177,6 +6182,7 @@ export class ProvisionerImpl implements Provisioner {
           (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
       const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      await this.opts.imageReferences?.reserve(project.id, derivedTag);
       // Cache check: the derived tag on the daemon means an identical
       // (devcontainer + base) was already built — reuse it, skip the build.
       // A forced rebuild is precisely the request to not trust that conclusion,

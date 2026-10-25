@@ -80,6 +80,7 @@ mkdir -p "$PROBE_EVIDENCE/runtime"
 sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
 sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE/runtime"
 node scripts/probes/devcontainer-gvisor/verify-evidence.mjs "$PROBE_EVIDENCE"
+node scripts/probes/devcontainer-gvisor/image-lifecycle.mjs "$name:positive" > "$PROBE_EVIDENCE/image-lifecycle.log" 2>&1
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e
