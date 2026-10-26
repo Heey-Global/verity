@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, DockerClient } from '../docker.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
-import { readDevcontainerBuilderCapability } from './devcontainer-builder.js';
+import {
+  readDevcontainerBuilderCapability,
+  reconcileDevcontainerBuilder,
+} from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
   migrateManagedDevcontainerBuilder,
@@ -328,13 +331,29 @@ export async function dockerUpdatePreparation(
     runPreflight,
     reconcileHostRuntimes: async (journal) => {
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
-      if (requirements === undefined) return;
-      await reconcileHostRuntimes({
+      if (requirements !== undefined) {
+        await reconcileHostRuntimes({
+          docker,
+          requirements,
+          requestId: journal.updateId,
+          ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+        });
+      }
+      // After the runtimes: the builder runs its steps on the runsc they register.
+      // Nothing about the builder may fail the update, an unexpected error included.
+      const builder = await reconcileDevcontainerBuilder({
         docker,
-        requirements,
+        image: journal.targetDigest,
         requestId: journal.updateId,
         ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
-      });
+      }).catch((error: unknown) => ({
+        state: 'failed' as const,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+      if (builder.state === 'failed')
+        (options.log ?? console.warn)(
+          `Devcontainer builder not updated; the previous builder keeps running. ${builder.message}`,
+        );
     },
     prepareStandby: async (journal) => {
       // A legacy Server cannot be reconciled in place after gaining these
