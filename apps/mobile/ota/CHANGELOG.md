@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.79.2](https://github.com/Heey-Global/verity/compare/mobile-v1.79.1...mobile-v1.79.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.1 ([#1922](https://github.com/Heey-Global/verity/issues/1922)) ([37270b9](https://github.com/Heey-Global/verity/commit/37270b91b56b5abe17e9d26acaeeda1f6c48ddb0))
+* **deps:** update dependency expo-server-sdk to v8 ([#1925](https://github.com/Heey-Global/verity/issues/1925)) ([d792523](https://github.com/Heey-Global/verity/commit/d792523f7012482160477274d6f78e8b49880a87))
+* **vulnerabilities:** group findings and overview counts by package ([#1929](https://github.com/Heey-Global/verity/issues/1929)) ([d1fb6b4](https://github.com/Heey-Global/verity/commit/d1fb6b49accd6b727aad557651a38613ce86c557))
+
 ## [1.79.1](https://github.com/Heey-Global/verity/compare/mobile-v1.79.0...mobile-v1.79.1) (2026-10-25)
 
 
