@@ -6664,6 +6664,57 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
     }
   });
 
+  // With `--load`, BuildKit only finishes the build once buildx closes the stream it
+  // feeds into `docker load`; a stream left open kept a tagged image's build running
+  // until the timeout. The image has to arrive as a complete file, loaded afterwards.
+  it('exports the image to a file and loads it into the Engine as a separate step', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'verity-builder-load-'));
+    const calls = join(directory, 'calls.log');
+    const previousPath = process.env.PATH;
+    const previousEndpoint = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+    try {
+      writeFileSync(
+        join(directory, 'devcontainer'),
+        `#!/usr/bin/env node
+const { appendFileSync, writeFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, 'devcontainer ' + args.join(' ') + '\\n');
+const spec = args[args.indexOf('--output') + 1];
+writeFileSync(spec.replace(/^type=docker,dest=/, ''), 'archive');
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(directory, 'docker'),
+        `#!/bin/sh\nprintf 'docker %s\\n' "$*" >> ${JSON.stringify(calls)}\n` +
+          `[ "$1" = load ] && { [ "$(cat "$3")" = archive ] || exit 3; }\nexit 0\n`,
+        { mode: 0o755 },
+      );
+      process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = 'unix:///test/buildkit.sock';
+      process.env.PATH = `${directory}:${previousPath ?? ''}`;
+      await defaultDevcontainerBuildSpawner({
+        workspaceFolder: '/project',
+        imageName: 'test:1',
+        dockerHost: 'unix:///test/docker.sock',
+      });
+      const log = readFileSync(calls, 'utf8').trim().split('\n');
+      const build = log.find((line) => line.startsWith('devcontainer build'))!;
+      expect(build).not.toContain('--load');
+      const archive = /--output type=docker,dest=(\S+)/.exec(build)?.[1];
+      expect(archive).toBeDefined();
+      const load = log.findIndex((line) => line === `docker load --input ${archive}`);
+      expect(load).toBeGreaterThan(log.indexOf(build));
+      // The archive lives in the per-build directory that is removed afterwards.
+      expect(existsSync(archive!)).toBe(false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousEndpoint === undefined) delete process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+      else process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = previousEndpoint;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('omits --additional-features entirely when no feature ref is present', () => {
     expect(devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1' })).toEqual([
       'build',

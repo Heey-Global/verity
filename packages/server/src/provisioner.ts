@@ -421,6 +421,8 @@ export function devcontainerBuildArgs(args: {
   imageName: string;
   additionalFeatures?: string | undefined;
   noCache?: boolean | undefined;
+  /** A buildx `--output` spec replacing the CLI's default `--load`. */
+  output?: string | undefined;
 }): string[] {
   const argv = [
     'build',
@@ -432,6 +434,7 @@ export function devcontainerBuildArgs(args: {
     args.imageName,
   ];
   if (args.noCache === true) argv.push('--no-cache');
+  if (args.output !== undefined) argv.push('--output', args.output);
   if (args.additionalFeatures !== undefined && args.additionalFeatures.length > 0) {
     argv.push(
       '--additional-features',
@@ -534,11 +537,29 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
-    return await execFileAsync(
+    // The image goes to a file, then into the Engine as a second step, rather than
+    // `--load`. With `--load` BuildKit streams the archive through buildx into
+    // `docker load` and records the build as finished only once buildx closes that
+    // stream; on Docker Engine 29 the image was tagged while buildx and BuildKit both
+    // kept waiting until the build timeout. A complete file has no such hand-over.
+    const archive = join(dockerConfigDir, 'image.tar');
+    const built = await execFileAsync(
       'devcontainer',
-      devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
+      devcontainerBuildArgs({
+        workspaceFolder,
+        imageName,
+        additionalFeatures,
+        noCache,
+        output: `type=docker,dest=${archive}`,
+      }),
       { env, timeout: 30 * 60_000, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
     );
+    await execFileAsync('docker', ['load', '--input', archive], {
+      env,
+      timeout: 15 * 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return built;
   } finally {
     // Removing a remote driver only removes this private client record, never worker state.
     await execFileAsync('docker', ['buildx', 'rm', builderName], {
