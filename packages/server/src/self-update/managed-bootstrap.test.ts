@@ -117,13 +117,21 @@ describe('runManagedBootstrap', () => {
     const compose = parseYaml(readFileSync('deploy/docker-compose.yml', 'utf8'), {
       merge: true,
     }) as { services: Record<string, { environment: Record<string, string> }> };
-    expect(compose.services['managed-bootstrap']!.environment.VERITY_DEVCONTAINER_BUILDER_GID).toBe(
+    const bootstrapEnvironment = compose.services['managed-bootstrap']!.environment;
+    expect(bootstrapEnvironment.DEVCONTAINER_BUILDER_GID).toBe(
       '${VERITY_DEVCONTAINER_BUILDER_GID:-}',
     );
+    // Older Server images forward every VERITY_* bootstrap input into the sealed
+    // environment; the builder input must never reach them under such a name.
+    expect(
+      Object.keys(bootstrapEnvironment).filter(
+        (name) => name.startsWith('VERITY_') && name.includes('BUILDER'),
+      ),
+    ).toEqual([]);
 
     const plain = await environment();
     await runManagedBootstrap(
-      { ...plain, VERITY_DEVCONTAINER_BUILDER_GID: '' },
+      { ...plain, DEVCONTAINER_BUILDER_GID: '' },
       'x64',
       plain.VERITY_MANAGED_ROOT,
     );
@@ -133,7 +141,7 @@ describe('runManagedBootstrap', () => {
       false,
     );
 
-    const env = { ...(await environment()), VERITY_DEVCONTAINER_BUILDER_GID: '1102' };
+    const env = { ...(await environment()), DEVCONTAINER_BUILDER_GID: '1102' };
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
     const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
     if (!state.managed) throw new Error(state.reason);
@@ -141,7 +149,7 @@ describe('runManagedBootstrap', () => {
     expect(desired.binds).toContain('/run/verity-buildkit:/run/verity-buildkit:ro');
     expect(desired.groupAdd).toContain('1102');
     expect(
-      state.spec.environment.some((entry) => entry.name === 'VERITY_DEVCONTAINER_BUILDER_GID'),
+      state.spec.environment.some((entry) => entry.name.includes('DEVCONTAINER_BUILDER_GID')),
     ).toBe(false);
   });
 
@@ -150,7 +158,7 @@ describe('runManagedBootstrap', () => {
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
     const before = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
     if (!before.managed) throw new Error(before.reason);
-    const repair = { ...env, VERITY_DEVCONTAINER_BUILDER_GID: '1102' };
+    const repair = { ...env, DEVCONTAINER_BUILDER_GID: '1102' };
     await runManagedBootstrap(repair, 'x64', env.VERITY_MANAGED_ROOT);
     const migrated = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
     if (!migrated.managed) throw new Error(migrated.reason);
@@ -178,9 +186,9 @@ describe('runManagedBootstrap', () => {
   });
 
   it.each(['0', '-1', '65535', 'abc'])('rejects builder group %s', async (gid) => {
-    const env = { ...(await environment()), VERITY_DEVCONTAINER_BUILDER_GID: gid };
+    const env = { ...(await environment()), DEVCONTAINER_BUILDER_GID: gid };
     await expect(runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT)).rejects.toThrow(
-      'VERITY_DEVCONTAINER_BUILDER_GID',
+      'DEVCONTAINER_BUILDER_GID',
     );
   });
 

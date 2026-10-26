@@ -1563,6 +1563,25 @@ describe('recorded devcontainer builder migration', () => {
     });
   });
 
+  it('walks back both migrations when the builder landed first', async () => {
+    const root = await authority();
+    await migrate(root);
+    await migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+    await expect(
+      reconcileManagedServer(runtimeOptions(root, docker(owned(true)))),
+    ).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      diagnosticMountPending: true,
+      devcontainerBuilderPending: true,
+    });
+  });
+
   it('refuses other structural drift beside a pending builder', async () => {
     const root = await authority();
     await migrate(root);

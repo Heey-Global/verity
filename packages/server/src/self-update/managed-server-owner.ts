@@ -758,40 +758,59 @@ async function pendingMountAuthority(
 ): Promise<{ spec: ServerDeploymentSpec; pending: ReadonlySet<PendingMount> } | undefined> {
   let candidate = spec;
   const pending = new Set<PendingMount>();
-  for (const migration of PENDING_MOUNT_MIGRATIONS) {
-    if (
-      !candidate.mounts.some((mount) => mount.target === migration.target) ||
-      inspect.mounts?.some((mount) => mount.destination === migration.target)
-    )
-      continue;
-    const backup = await migration.readBackup(root);
-    if (backup === null) continue;
-    const previousSeal = sealDeploymentSpec({
-      schemaVersion: candidate.schemaVersion,
-      deploymentId: candidate.deploymentId,
-      image: candidate.image,
-      environment: candidate.environment,
-      mounts: candidate.mounts.filter((mount) => mount.target !== migration.target),
-      user: {
-        uid: candidate.user.uid,
-        gid: candidate.user.gid,
-        supplementaryGids: migration.addsGroups
-          ? candidate.user.supplementaryGids.filter((gid) =>
-              backup.user.supplementaryGids.includes(gid),
-            )
-          : candidate.user.supplementaryGids,
-      },
-      restart: candidate.restart,
-      network: candidate.network,
-      platform: candidate.platform,
-      security: candidate.security,
-      ...(candidate.resources === undefined ? {} : { resources: candidate.resources }),
-    });
-    if (backup.checksum !== previousSeal.checksum) continue;
-    candidate = backup;
-    pending.add(migration.key);
+  // Until nothing more applies, not one pass: the migrations can land in either
+  // order (the builder before the diagnostic bind when diagnostics were not yet
+  // available), and each backup only matches once the later one is peeled off.
+  for (let progressed = true; progressed;) {
+    progressed = false;
+    for (const migration of PENDING_MOUNT_MIGRATIONS) {
+      if (pending.has(migration.key)) continue;
+      const previous = await previousAuthority(candidate, inspect, root, migration);
+      if (previous === undefined) continue;
+      candidate = previous;
+      pending.add(migration.key);
+      progressed = true;
+    }
   }
   return pending.size === 0 ? undefined : { spec: candidate, pending };
+}
+
+/** The backup one migration replaced, when `candidate` is exactly it plus that migration. */
+async function previousAuthority(
+  candidate: ServerDeploymentSpec,
+  inspect: ContainerInspect,
+  root: string,
+  migration: (typeof PENDING_MOUNT_MIGRATIONS)[number],
+): Promise<ServerDeploymentSpec | undefined> {
+  if (
+    !candidate.mounts.some((mount) => mount.target === migration.target) ||
+    inspect.mounts?.some((mount) => mount.destination === migration.target)
+  )
+    return undefined;
+  const backup = await migration.readBackup(root);
+  if (backup === null) return undefined;
+  const previousSeal = sealDeploymentSpec({
+    schemaVersion: candidate.schemaVersion,
+    deploymentId: candidate.deploymentId,
+    image: candidate.image,
+    environment: candidate.environment,
+    mounts: candidate.mounts.filter((mount) => mount.target !== migration.target),
+    user: {
+      uid: candidate.user.uid,
+      gid: candidate.user.gid,
+      supplementaryGids: migration.addsGroups
+        ? candidate.user.supplementaryGids.filter((gid) =>
+            backup.user.supplementaryGids.includes(gid),
+          )
+        : candidate.user.supplementaryGids,
+    },
+    restart: candidate.restart,
+    network: candidate.network,
+    platform: candidate.platform,
+    security: candidate.security,
+    ...(candidate.resources === undefined ? {} : { resources: candidate.resources }),
+  });
+  return backup.checksum === previousSeal.checksum ? backup : undefined;
 }
 
 export async function managedServerContainerSpec(

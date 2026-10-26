@@ -42,7 +42,7 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_HOST_ARCHITECTURE?: string;
   readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
   readonly VERITY_HOST_DIAGNOSTIC_DIR?: string;
-  readonly VERITY_DEVCONTAINER_BUILDER_GID?: string;
+  readonly DEVCONTAINER_BUILDER_GID?: string;
   readonly VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM?: string;
 }
 
@@ -127,13 +127,15 @@ export async function runManagedBootstrap(
   // Set by the installer only after it verified the builder unit is active and
   // its socket exists. Empty means "no verified builder": the spec then carries
   // no socket bind, and the Server reports repository builds as unavailable.
-  const builderGidInput = env.VERITY_DEVCONTAINER_BUILDER_GID?.trim() ?? '';
+  //
+  // Deliberately outside the VERITY_ namespace: an older Server image forwards
+  // every VERITY_* name it does not know into the sealed environment, and a
+  // fresh install of such an image would then seal a source no Updater supplies.
+  const builderGidInput = env.DEVCONTAINER_BUILDER_GID?.trim() ?? '';
   const builderGid =
-    builderGidInput === ''
-      ? undefined
-      : uint('VERITY_DEVCONTAINER_BUILDER_GID', builderGidInput, 0);
+    builderGidInput === '' ? undefined : uint('DEVCONTAINER_BUILDER_GID', builderGidInput, 0);
   if (builderGid !== undefined && (builderGid === 0 || builderGid >= 65535))
-    throw new Error('VERITY_DEVCONTAINER_BUILDER_GID must be a positive group ID');
+    throw new Error('DEVCONTAINER_BUILDER_GID must be a positive group ID');
   const hostDiagnosticPath = env.VERITY_HOST_DIAGNOSTIC_DIR ?? '/var/lib/verity/host-diagnostics';
   if (
     !isAbsolute(hostDiagnosticPath) ||
@@ -179,7 +181,6 @@ export async function runManagedBootstrap(
             'VERITY_HOST_ARCHITECTURE',
             'VERITY_PAIRING_STATE_HOST_PATH',
             'VERITY_HOST_DIAGNOSTIC_DIR',
-            'VERITY_DEVCONTAINER_BUILDER_GID',
             'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
           ].includes(name)),
     )

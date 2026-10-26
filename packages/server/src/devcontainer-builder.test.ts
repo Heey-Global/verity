@@ -67,17 +67,6 @@ describe('secure devcontainer builder selection', () => {
     },
   );
 
-  it('reports builds unavailable without an endpoint or a mounted builder socket', async () => {
-    vi.stubEnv('VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT', undefined);
-    await expect(
-      defaultDevcontainerBuildSpawner({
-        workspaceFolder: '/unused',
-        imageName: 'probe:test',
-        dockerHost: 'unix:///unused',
-      }),
-    ).rejects.toThrow('Run the Verity installer again');
-  });
-
   // A managed Server sealed with the builder bind has no endpoint variable; the
   // socket is its only configuration. One sealed before it must not be told a
   // builder exists just because the variable is absent.
