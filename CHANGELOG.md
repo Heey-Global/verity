@@ -6,6 +6,13 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.59.2](https://github.com/Heey-Global/verity/compare/v4.59.1...v4.59.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **buildkit:** give gVisor build steps an isolated, routable network ([#1932](https://github.com/Heey-Global/verity/issues/1932)) ([8fb3556](https://github.com/Heey-Global/verity/commit/8fb3556406d0aa8176f588f343c76ad28c21a266))
+
 ## [4.59.1](https://github.com/Heey-Global/verity/compare/v4.59.0...v4.59.1) (2026-10-26)
 
 
