@@ -101,3 +101,38 @@ jobs:
           path: ${{ runner.temp }}/devcontainer-builder-upgrade-evidence
           if-no-files-found: warn
           retention-days: 7
+
+  # Docker 29 defaults new installations to the containerd image store, where `docker load`
+  # unpacks into the containerd snapshotter. Run the same real build path against it.
+  build-isolation-containerd-store:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Switch Docker to the containerd image store
+        run: |
+          docker info --format 'before: {{.ServerVersion}} {{.Driver}} {{json .DriverStatus}}'
+          sudo mkdir -p /etc/docker
+          sudo touch /etc/docker/daemon.json
+          sudo jq '. + {features: ((.features // {}) + {"containerd-snapshotter": true})}' \
+            <(sudo cat /etc/docker/daemon.json | grep . || echo '{}') | sudo tee /etc/docker/daemon.json.new > /dev/null
+          sudo mv /etc/docker/daemon.json.new /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format 'after: {{.ServerVersion}} {{.Driver}} {{json .DriverStatus}}'
+          docker buildx version
+      - name: Install the repository-pinned devcontainer CLI
+        run: npm ci --ignore-scripts
+      - name: Build the Server and dependencies
+        run: npx tsc -b packages/server
+      - name: Exercise the builds with --load into the containerd store
+        timeout-minutes: 25
+        env:
+          DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer
+          PROBE_EVIDENCE: ${{ runner.temp }}/devcontainer-gvisor-evidence
+        run: bash scripts/probes/devcontainer-gvisor/host-service.sh
