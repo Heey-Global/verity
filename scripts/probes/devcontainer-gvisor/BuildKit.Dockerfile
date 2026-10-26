@@ -2,7 +2,7 @@ ARG RUNSC_SOURCE_IMAGE
 FROM ${RUNSC_SOURCE_IMAGE} AS runtime
 
 # renovate: datasource=docker depName=moby/buildkit
-FROM moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+FROM moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
 COPY --from=runtime /opt/verity/runsc /opt/verity/runsc
 COPY deploy/gvisor/versions.env /tmp/versions.env
 RUN set -eu; \
