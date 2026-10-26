@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.60.2](https://github.com/Heey-Global/verity/compare/v4.60.1...v4.60.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **buildkit:** run a BuildKit release without the cache-export loop ([#1943](https://github.com/Heey-Global/verity/issues/1943)) ([bdb4b71](https://github.com/Heey-Global/verity/commit/bdb4b715c51654b4d5c200107ac6dfb6193aecf8))
+* **deps:** update agent clis ([#1940](https://github.com/Heey-Global/verity/issues/1940)) ([6e6280b](https://github.com/Heey-Global/verity/commit/6e6280b9997e80c7cd27e0af69d3be34672073ef))
+
 ## [4.60.1](https://github.com/Heey-Global/verity/compare/v4.60.0...v4.60.1) (2026-10-26)
 
 
