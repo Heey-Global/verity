@@ -18,9 +18,17 @@ must have the pinned devcontainer CLI and Docker buildx installed on PATH.
 BuildKit is a trusted root host daemon. It requires mount and network namespace
 privileges and cgroup delegation. It does not run in a privileged Docker
 container. The systemd unit hides Docker/containerd sockets, makes the host
-filesystem read-only except for builder state, and limits the service to 2 GiB
-memory, no swap, one CPU, and 512 tasks. The OCI worker runs one operation at a
-time and disables insecure entitlements and the containerd worker. BuildKit GC
+filesystem read-only except for builder state, and limits the service to half
+the host's CPUs (at least one), a quarter of its memory kept between 2 GiB and
+8 GiB, no swap, and 512 tasks. `resources.sh` derives those limits and the
+installer writes them into the unit, so they follow the host on every
+installation and update. The OCI worker runs one operation at a time and
+disables insecure entitlements and the containerd worker. Snapshots use
+overlayfs wherever the state directory's file system supports it: each step is
+a layer over its parent rather than a full copy of the image's file system,
+which keeps small steps fast and the cache within its limit. Elsewhere BuildKit
+falls back to the slower `native` snapshotter. An upgrade from `native` to
+overlayfs rebuilds the cache once and removes the old snapshots. BuildKit GC
 bounds its own cache independently of the Server's exported images. A build can
 use outbound networking; this service does not implement egress policy.
 

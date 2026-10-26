@@ -60,8 +60,18 @@ fi
 ln -sfn "cni-$cni_version" /usr/local/libexec/verity-buildkit/cni
 install -d -m 0755 /var/lib/cni
 sed "s/^  gid = 1102$/  gid = $builder_gid/" "$source_dir/buildkitd.toml" > /etc/verity-buildkit/buildkitd.toml
-install -m 0644 "$source_dir/verity-buildkit.service" /etc/systemd/system/verity-buildkit.service
+resources=$(bash "$source_dir/resources.sh")
+cpu_quota=$(sed -n 's/^CPU_QUOTA=//p' <<<"$resources")
+memory_max=$(sed -n 's/^MEMORY_MAX=//p' <<<"$resources")
+sed -e "s/@CPU_QUOTA@/$cpu_quota/" -e "s/@MEMORY_MAX@/$memory_max/" "$source_dir/verity-buildkit.service" \
+    > /etc/systemd/system/verity-buildkit.service.new
+chmod 0644 /etc/systemd/system/verity-buildkit.service.new
+mv /etc/systemd/system/verity-buildkit.service.new /etc/systemd/system/verity-buildkit.service
 systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
+# Once the worker runs on overlayfs, snapshots of the earlier native snapshotter
+# are unreachable and only hold disk space; the daemon never reopens them. The
+# unit is Type=notify, so the restart above returns once the worker has chosen.
+if [[ -d /var/lib/verity-buildkit/runc-overlayfs ]]; then rm -rf /var/lib/verity-buildkit/runc-native; fi
 printf 'Builder installed. Configure the Server socket mount and GID using deploy/docker-compose.buildkit.yml.\n'

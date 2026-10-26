@@ -17,7 +17,11 @@ insecure-entitlements = []
   cniConfigPath = "/etc/verity-buildkit/cni.conflist"
   cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"
   binary = "/usr/local/libexec/verity-buildkit/runsc"
-  snapshotter = "native"
+  # "auto" takes overlayfs, which layers each step on its parent, wherever the
+  # state directory's file system supports it, and "native" only where it does
+  # not. native copies the whole root file system before every step, which made
+  # even small steps take half a minute on multi-gigabyte images.
+  snapshotter = "auto"
   max-parallelism = 1
   noProcessSandbox = false
   gc = true
