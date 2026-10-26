@@ -6,6 +6,17 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.59.1](https://github.com/Heey-Global/verity/compare/v4.59.0...v4.59.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deploy:** provision the gVisor devcontainer builder on managed installations ([#1930](https://github.com/Heey-Global/verity/issues/1930)) ([e4a4de9](https://github.com/Heey-Global/verity/commit/e4a4de91004d75a774a9a13147de88c26d673a17))
+* **deps:** update agent clis ([#1921](https://github.com/Heey-Global/verity/issues/1921)) ([78817ef](https://github.com/Heey-Global/verity/commit/78817ef04190af3d20896bab63c04a22bf7cb012))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.1 ([#1922](https://github.com/Heey-Global/verity/issues/1922)) ([37270b9](https://github.com/Heey-Global/verity/commit/37270b91b56b5abe17e9d26acaeeda1f6c48ddb0))
+* **deps:** update dependency expo-server-sdk to v8 ([#1925](https://github.com/Heey-Global/verity/issues/1925)) ([d792523](https://github.com/Heey-Global/verity/commit/d792523f7012482160477274d6f78e8b49880a87))
+* **vulnerabilities:** group findings and overview counts by package ([#1929](https://github.com/Heey-Global/verity/issues/1929)) ([d1fb6b4](https://github.com/Heey-Global/verity/commit/d1fb6b49accd6b727aad557651a38613ce86c557))
+
 ## [4.59.0](https://github.com/Heey-Global/verity/compare/v4.58.1...v4.59.0) (2026-10-25)
 
 
