@@ -14,7 +14,7 @@ cleanup() {
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
     docker rm -fv "$name-marker"
-    docker image rm "$name:positive" "$name:network" "$name:missing" "$name:stopped"
+    docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
@@ -109,6 +109,13 @@ docker create --name "$name-marker" "$name:network" > /dev/null
 docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
 docker rm "$name-marker"
 grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
+# Second network build: does a later CNI step still get its interface?
+if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egress-2.log" 2>&1; then
+    echo '--- SECOND network build failed' >&2
+    tail -n 40 "$PROBE_EVIDENCE/network-egress-2.log" >&2
+    false
+fi
+echo 'second network build succeeded'
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e
