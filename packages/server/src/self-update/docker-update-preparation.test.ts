@@ -420,6 +420,47 @@ describe('Docker update preparation', () => {
     });
   });
 
+  // Repository builds are not a reason to hold back a Server update: a builder the host cannot
+  // update keeps the previous one, and the operator is told why instead of the update failing.
+  it('prepares the standby and reports a builder the host components cannot update', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));
+    const docker = fakeDocker();
+    const log = vi.fn();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      // Installed before verity-host-builder existed: no `builder` trigger.
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path' }),
+      );
+      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+            log,
+          }),
+        ),
+      ).resolves.toMatchObject({ phase: 'standby' });
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Devcontainer builder not updated.*Re-run the Verity installer once/su,
+        ),
+      );
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
   /**
    * The PostgreSQL pre-pull (ADR 0008 D14).
    *

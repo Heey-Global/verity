@@ -75,6 +75,41 @@ on every repair run. It runs `deploy/buildkit/install.sh`, waits for
 - records `devcontainer-builder.json` in the host runtime directory, so the
   Updater can apply the same change during a later update.
 
+### Builder updates
+
+The builder is a host service, so a Server image alone does not change it. On
+hosts set up by an installer that includes `verity-host-builder`, every guarded
+Server update brings the builder to the one its release ships:
+
+1. A release image that carries this bundle declares
+   `org.verity.devcontainer-builder=1`.
+2. After registering the gVisor runtimes, and before the standby is created, the
+   Updater writes `builder-request.json` into the host runtime directory. The
+   request names only the official target image digest.
+3. `verity-host-builder`, started by its systemd path unit, verifies that
+   image's release signature with the pinned cosign verifier. It then copies
+   `deploy/buildkit`, `deploy/gvisor` and `deploy/host/verity-host-runtime` out
+   of the verified image and refuses a bundle that contains a symbolic link.
+4. It compares the bundle's content hash with
+   `devcontainer-builder-bundle.json`. An unchanged builder keeps running, and
+   builds in progress are not interrupted.
+5. Otherwise it keeps the current builder files aside and runs the bundle's
+   `install.sh` with the recorded socket group. It records the new hash only
+   once the unit is active and its socket exists. A failed installation, or a
+   builder that does not come back, restores the previous files and restarts
+   the previous builder.
+
+A builder that cannot be updated does not hold back the Server update. The
+Updater logs the reason, the previous builder keeps serving, and the next
+update asks again. Hosts set up before `verity-host-builder` existed have no
+component to ask: run the installer once. That run installs the current
+builder directly as well.
+
+The request carries no files and no code. The trust anchor is the Server
+release signature, which the host checks itself, so a requester can only
+choose among signed Verity releases. That includes an older one, whose builder
+is then installed, as a rolled-back Server would need.
+
 Deployments sealed before this release are migrated by a repair run (rerun the
 installer and choose "Repair"). The migration adds only the socket bind and its
 group; every other sealed setting is kept, and the previous spec is preserved
