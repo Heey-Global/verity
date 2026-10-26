@@ -107,6 +107,9 @@ if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egre
         sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables 2>&1 || true
         sudo iptables-save
         ls -l /usr/local/libexec/verity-buildkit/ /usr/local/libexec/verity-buildkit/cni/
+        echo '--- runsc view of the step network (latest debug logs)'
+        sudo bash -c 'ls -t /var/lib/verity-buildkit/evidence/runsc/*boot* 2>/dev/null | head -n 2 | xargs -r grep -hiE "netns|network|interface|link|route|eth|nic" | tail -n 60'
+        sudo bash -c 'ls -t /var/lib/verity-buildkit/evidence/runsc/* 2>/dev/null | head -n 4 | xargs -r grep -hiE "\"network\"|namespace|netns" | tail -n 20'
     } >&2
     false
 fi
