@@ -14,7 +14,7 @@ cleanup() {
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
     docker rm -fv "$name-marker"
-    docker image rm "$name:positive" "$name:network" "$name:missing" "$name:stopped"
+    docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
@@ -107,6 +107,16 @@ docker create --name "$name-marker" "$name:network" > /dev/null
 docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
 docker rm "$name-marker"
 grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
+echo '--- runsc network setup for every step so far'
+sudo bash -c 'for f in $(ls -tr /var/lib/verity-buildkit/evidence/runsc/*boot* 2>/dev/null); do echo "== $f"; grep -hiE "network\.go|netns|link|eth0|route|address|steal|interface" "$f" | grep -v config.go | head -n 25; done' >&2
+sudo ip -4 -o addr >&2; sudo ls -l /var/lib/verity-buildkit/net/cni/ >&2 || true
+sudo iptables-save -t nat | grep -F 10.213 >&2 || true
+if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egress-2.log" 2>&1; then
+    echo '--- SECOND network build failed' >&2
+    sudo bash -c 'for f in $(ls -tr /var/lib/verity-buildkit/evidence/runsc/*boot* 2>/dev/null | tail -n 2); do echo "== $f"; grep -hiE "network\.go|netns|link|eth0|route|address|steal|interface" "$f" | grep -v config.go | head -n 25; done' >&2
+    false
+fi
+echo 'second network build succeeded'
 # The step's network is torn down with it: no per-step NAT or forwarding rule
 # for the build subnet may outlive the build, and a repeated installation must
 # keep the subnet and add nothing.
