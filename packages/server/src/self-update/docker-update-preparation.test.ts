@@ -305,6 +305,40 @@ describe('Docker update preparation', () => {
       await rm(hostRuntimeDir, { recursive: true, force: true });
     }
   });
+  // An update is the guarded replacement that actually applies the builder bind,
+  // so a host repaired while its old Server kept serving gets builds back with
+  // its next update rather than needing a second repair.
+  it.each([
+    ['a verified builder receipt', { version: 1, gid: 1102 }, true],
+    ['no receipt', undefined, false],
+    ['a malformed receipt', { version: 1, gid: 0 }, false],
+  ])('builds the standby with the builder socket only for %s', async (_, receipt, expected) => {
+    const { root, journal } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'devcontainer-builder-preparation-'));
+    const docker = fakeDocker();
+    try {
+      if (receipt !== undefined)
+        await writeFile(join(hostRuntimeDir, 'devcontainer-builder.json'), JSON.stringify(receipt));
+      const actions = await dockerUpdatePreparation({
+        managedRoot: root,
+        docker,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+        hostRuntimeDir,
+        log: () => undefined,
+      });
+      await actions.prepareStandby!(journal);
+      await actions.ensureStandby(journal);
+      const created = docker.createContainer.mock.calls.at(-1)?.[0] as ContainerSpec;
+      expect(created.binds?.includes('/run/verity-buildkit:/run/verity-buildkit:ro')).toBe(
+        expected,
+      );
+      expect(created.groupAdd?.includes('1102')).toBe(expected);
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
   it('drives the durable journal through real Docker actions to a promotable standby', async () => {
     const { root } = await setup();
     const docker = fakeDocker();

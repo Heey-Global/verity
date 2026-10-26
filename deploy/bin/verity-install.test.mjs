@@ -72,6 +72,9 @@ function makeHost({
   containerPresentOnce = '',
   hostRuntimeStatus = 0,
   systemd = false,
+  // 'ok': the builder installer succeeds and its socket appears; 'fail': it exits
+  // non-zero; undefined: the checkout carries no builder installer at all.
+  builder = undefined,
 } = {}) {
   // Canonical, because the installer refuses a state directory whose path is not:
   // a symlinked TMPDIR would otherwise fail every case here for the wrong reason.
@@ -145,7 +148,22 @@ function makeHost({
   ]) {
     writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
   }
+  const builderRunDir = join(root, 'run-verity-buildkit');
+  const builderLog = join(root, 'builder.log');
+  if (builder !== undefined) {
+    mkdirSync(join(checkout, 'deploy', 'buildkit'), { recursive: true });
+    writeFileSync(
+      join(checkout, 'deploy', 'buildkit', 'install.sh'),
+      `#!/usr/bin/env bash\nprintf 'gid=%s\\n' "\${VERITY_BUILDKIT_GID-}" >>${JSON.stringify(builderLog)}\n` +
+        (builder === 'ok'
+          ? `mkdir -p ${JSON.stringify(builderRunDir)}\n` +
+            `${JSON.stringify(process.execPath)} -e "require('net').createServer().listen(process.argv[1], () => process.exit(0))" ${JSON.stringify(join(builderRunDir, 'buildkitd.sock'))}\n`
+          : 'exit 1\n'),
+      { mode: 0o755 },
+    );
+  }
   const hostRuntime = {
+    VERITY_BUILDKIT_RUN_DIR: builderRunDir,
     VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
     VERITY_HOST_DIAGNOSTIC_DIR: join(root, 'host-diagnostics'),
@@ -188,7 +206,7 @@ printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.1
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM VERITY_DEVCONTAINER_BUILDER_GID COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -240,6 +258,7 @@ printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.1
     dockerLog,
     hostRuntime,
     hostRuntimeLog,
+    builderLog,
   };
 }
 
@@ -556,6 +575,51 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       { version: 1, trigger: 'systemd-path' },
     );
   });
+
+  // The managed bootstrap seals the builder socket only for the group this run
+  // hands it, and the Updater migrates on the receipt. Either one appearing for a
+  // builder that never came up would seal a bind to a socket nothing serves.
+  test('hands over the builder group and receipt only after the socket exists', () => {
+    const host = makeHost({
+      docker: [{ match: 'image inspect', out: DIGEST_A }],
+      systemd: true,
+      builder: 'ok',
+    });
+    const result = run(host);
+    assert.equal(result.status, 0, result.output);
+    assert.equal(readFileSync(host.builderLog, 'utf8'), 'gid=1102\n');
+    assert.match(
+      readFileSync(host.hostRuntimeLog, 'utf8'),
+      /^systemctl is-active --quiet verity-buildkit\.service$/m,
+    );
+    assert.equal(handoverEnv(host).VERITY_DEVCONTAINER_BUILDER_GID, '1102');
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(
+          join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'devcontainer-builder.json'),
+          'utf8',
+        ),
+      ),
+      { version: 1, gid: 1102 },
+    );
+  });
+
+  for (const [label, options] of [
+    ['the builder installer fails', { systemd: true, builder: 'fail' }],
+    ['the host has no systemd', { systemd: false, builder: 'ok' }],
+  ]) {
+    test(`claims no builder when ${label}`, () => {
+      const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }], ...options });
+      mkdirSync(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, { recursive: true, mode: 0o700 });
+      const receipt = join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'devcontainer-builder.json');
+      writeFileSync(receipt, '{"version":1,"gid":1102}\n');
+      const result = run(host);
+      assert.equal(result.status, 0, result.output);
+      assert.equal(handoverEnv(host).VERITY_DEVCONTAINER_BUILDER_GID, '');
+      assert.equal(existsSync(receipt), false);
+      assert.match(result.output, /devcontainer builder is not available/);
+    });
+  }
 
   test('does not start the migration when the runtimes cannot be registered', () => {
     const host = makeHost({

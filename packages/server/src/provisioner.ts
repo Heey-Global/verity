@@ -3,6 +3,7 @@ import { connectDocumentCode } from './document-code.js';
 import { migrateLocalDocuments } from './document-migration.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 import {
   createDevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
@@ -443,6 +444,42 @@ export function devcontainerBuildArgs(args: {
   return argv;
 }
 
+/**
+ * The dedicated builder's socket endpoint, or a reason repository builds are
+ * unavailable.
+ *
+ * An explicit `VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT` always wins and is held to
+ * a private Unix socket. Without it, the socket the managed deployment mounts
+ * from its sealed spec is used, but only while that socket actually exists: a
+ * spec sealed before the builder, or a host whose builder is down, reports
+ * builds as unavailable instead of naming an endpoint nothing serves.
+ */
+export function devcontainerBuilderEndpoint(
+  environment: NodeJS.ProcessEnv = process.env,
+  isSocket: (path: string) => boolean = (path) => {
+    try {
+      return statSync(path).isSocket();
+    } catch {
+      return false;
+    }
+  },
+): string {
+  const explicit = environment.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+  if (explicit !== undefined) {
+    if (!/^unix:\/\/\/[^\s\0]+$/.test(explicit))
+      throw new Error(
+        'Devcontainer builds require VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT pointing to the private runsc worker Unix socket',
+      );
+    return explicit;
+  }
+  const mounted = `${DEVCONTAINER_BUILDER_SOCKET_DIRECTORY}/buildkitd.sock`;
+  if (isSocket(mounted)) return `unix://${mounted}`;
+  throw new Error(
+    'Devcontainer builds are unavailable: this Server has no gVisor builder socket. ' +
+      'Run the Verity installer again to repair the host, then update the Server.',
+  );
+}
+
 /** Real devcontainer-build spawner: runs `devcontainer build` with `DOCKER_HOST`
  *  pointed at the target daemon so the official CLI builds the derived image onto
  *  the same Engine Verity spawns containers on. Rejects (via `execFileAsync`) on a
@@ -459,12 +496,7 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   registryToken,
   noCache,
 }) => {
-  const endpoint = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
-  if (endpoint === undefined || !/^unix:\/\/\/[^\s\0]+$/.test(endpoint)) {
-    throw new Error(
-      'Devcontainer builds require VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT pointing to the private runsc worker Unix socket',
-    );
-  }
+  const endpoint = devcontainerBuilderEndpoint();
   const builderName = `verity-build-${randomUUID()}`;
   // Image/feature metadata can also perform localEnv substitution. Validating
   // the repository config alone must not expose the server's environment.

@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defaultDevcontainerBuildSpawner } from './provisioner.js';
+import { defaultDevcontainerBuildSpawner, devcontainerBuilderEndpoint } from './provisioner.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -52,8 +53,8 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ command: require('nod
 }
 
 describe('secure devcontainer builder selection', () => {
-  it.each([undefined, '', 'tcp://untrusted:1234', 'unix://relative', 'unix:///bad socket'])(
-    'rejects missing or unsupported endpoint %s before spawning',
+  it.each(['', 'tcp://untrusted:1234', 'unix://relative', 'unix:///bad socket'])(
+    'rejects unsupported endpoint %s before spawning',
     async (endpoint) => {
       vi.stubEnv('VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT', endpoint);
       await expect(
@@ -65,6 +66,24 @@ describe('secure devcontainer builder selection', () => {
       ).rejects.toThrow('private runsc worker');
     },
   );
+
+  // A managed Server sealed with the builder bind has no endpoint variable; the
+  // socket is its only configuration. One sealed before it must not be told a
+  // builder exists just because the variable is absent.
+  it('uses the sealed builder socket only while it exists', () => {
+    const socket = `${DEVCONTAINER_BUILDER_SOCKET_DIRECTORY}/buildkitd.sock`;
+    expect(devcontainerBuilderEndpoint({}, (path) => path === socket)).toBe(`unix://${socket}`);
+    expect(() => devcontainerBuilderEndpoint({}, () => false)).toThrow('builds are unavailable');
+    expect(
+      devcontainerBuilderEndpoint(
+        { VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: 'unix:///explicit.sock' },
+        () => true,
+      ),
+    ).toBe('unix:///explicit.sock');
+    expect(() =>
+      devcontainerBuilderEndpoint({ VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: '' }, () => true),
+    ).toThrow('private runsc worker');
+  });
 
   it('selects a private remote builder and removes its config after successful import', async () => {
     const f = fixture();
