@@ -12,7 +12,8 @@ import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
-import type { FindingGroup, ProjectDriveFolder, VulnerabilityFinding } from '@verity/mobile';
+import type { ProjectDriveFolder } from '@verity/mobile';
+import type { PackageFindings } from '../../components/vulnerability/PackageFindings';
 import {
   useGoogleAccountPicker,
   googleAccountSupports,
@@ -976,9 +977,7 @@ export const SessionChat = memo(function SessionChat({
   }, [applyAutomation, automation, client, sessionId]);
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
-  const [mainFixGroups, setMainFixGroups] = useState<FindingGroup<VulnerabilityFinding>[] | null>(
-    null,
-  );
+  const [mainFixGroups, setMainFixGroups] = useState<PackageFindings[] | null>(null);
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);

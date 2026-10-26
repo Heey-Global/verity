@@ -16880,7 +16880,7 @@ describe('vulnerability scan session integration', () => {
         >();
         expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
           code: 'vulnerability_new',
-          message: '1 new vulnerability',
+          message: '1 new vulnerable package',
         });
       });
       const projects = (await server.inject('/projects')).json<
