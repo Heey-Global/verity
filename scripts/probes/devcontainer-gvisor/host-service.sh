@@ -93,12 +93,16 @@ const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
 config.build.args = source.build.args;
 writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
 NODE
+# Experiment: isolated per-step networking through CNI.
+sudo GITHUB_ACTIONS=true bash scripts/probes/devcontainer-gvisor/cni-experiment.sh > "$PROBE_EVIDENCE/cni-experiment.log" 2>&1 \
+    || { cat "$PROBE_EVIDENCE/cni-experiment.log" >&2; false; }
 readlink -f /etc/resolv.conf > "$PROBE_EVIDENCE/host-resolv-conf.txt"
 cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
 # On failure, show the build's own output in the job log as well: the evidence
 # artifact is not always reachable from where the failure is triaged.
 if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1; then
     tail -n 80 "$PROBE_EVIDENCE/network-egress.log" >&2
+    sudo journalctl -u verity-buildkit --no-pager -n 60 >&2 || true
     false
 fi
 docker create --name "$name-marker" "$name:network" > /dev/null
