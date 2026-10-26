@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 /** Written by `deploy/bin/verity-install` into the host runtime directory. */
-export const DEVCONTAINER_BUILDER_RECEIPT_FILE = 'devcontainer-builder.json';
+const DEVCONTAINER_BUILDER_RECEIPT_FILE = 'devcontainer-builder.json';
 
 const receiptSchema = z
   .object({
