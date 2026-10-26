@@ -71,16 +71,6 @@ spawn_build() {
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
         node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
-spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
-docker create --name "$name-marker" "$name:positive" > /dev/null
-docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
-docker cp "$name-marker:/verity-feature-probe" "$PROBE_EVIDENCE/feature-marker.txt"
-docker rm "$name-marker"
-mkdir -p "$PROBE_EVIDENCE/runtime"
-sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
-sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE/runtime"
-node scripts/probes/devcontainer-gvisor/verify-evidence.mjs "$PROBE_EVIDENCE"
-node scripts/probes/devcontainer-gvisor/image-lifecycle.mjs "$name:positive" > "$PROBE_EVIDENCE/image-lifecycle.log" 2>&1
 # A RUN step must resolve names and reach package mirrors over HTTP and HTTPS
 # through the production worker configuration, uncached, on a runner whose
 # resolver is the systemd stub at 127.0.0.53 as on typical Ubuntu hosts.
@@ -129,6 +119,16 @@ sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
 [[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
 [[ $(count_subnet_rules) == "$rules_after_build" ]]
 [[ $rules_after_build == 0 ]] || { sudo iptables-save | grep -F "${subnet%/*}" >&2; false; }
+spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
+docker create --name "$name-marker" "$name:positive" > /dev/null
+docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
+docker cp "$name-marker:/verity-feature-probe" "$PROBE_EVIDENCE/feature-marker.txt"
+docker rm "$name-marker"
+mkdir -p "$PROBE_EVIDENCE/runtime"
+sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
+sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE/runtime"
+node scripts/probes/devcontainer-gvisor/verify-evidence.mjs "$PROBE_EVIDENCE"
+node scripts/probes/devcontainer-gvisor/image-lifecycle.mjs "$name:positive" > "$PROBE_EVIDENCE/image-lifecycle.log" 2>&1
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e
