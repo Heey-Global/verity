@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import type { ServerDeploymentSpecBody } from './deployment-spec.js';
+import { parseServerDeploymentSpec, type ServerDeploymentSpecBody } from './deployment-spec.js';
 import {
   advanceManagedDeploymentImage,
   configureManagedUpdateChannel,
@@ -11,7 +11,9 @@ import {
   MANAGED_DEPLOYMENT_SPEC_FILE,
   readManagedDeployment,
   migrateManagedControlPlaneRunner,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
   MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
 
@@ -575,4 +577,78 @@ it('preserves update channel authority across image advances', async () => {
   expect(state.spec.environment.filter((entry) => entry.name === 'VERITY_UPDATE_CHANNEL')).toEqual([
     { name: 'VERITY_UPDATE_CHANNEL', source: { kind: 'env', name: 'VERITY_UPDATE_CHANNEL' } },
   ]);
+});
+
+describe('managed devcontainer builder migration', () => {
+  const adopt = async (spec = adoptionSpec()) => {
+    const directory = await root();
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'managed-1',
+      spec,
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    return { directory, initial };
+  };
+  const migrate = (directory: string, image: string, gid = 1102) =>
+    migrateManagedDevcontainerBuilder({ root: directory, deploymentId: 'managed-1', image, gid });
+
+  it('adds only the read-only socket bind and its group, keeping the old authority', async () => {
+    const { directory, initial } = await adopt({ ...adoptionSpec(), resources: LIMITS });
+    const migrated = await migrate(directory, initial.spec.image);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    const { checksum: beforeChecksum, ...before } = initial.spec;
+    const { checksum: afterChecksum, ...after } = migrated.spec;
+    expect(afterChecksum).not.toBe(beforeChecksum);
+    expect(after).toEqual({
+      ...before,
+      mounts: [
+        ...before.mounts,
+        {
+          source: { kind: 'bind', path: '/run/verity-buildkit' },
+          target: '/run/verity-buildkit',
+          readOnly: true,
+        },
+      ],
+      user: { ...before.user, supplementaryGids: [1101, 1102] },
+    });
+    expect(
+      JSON.parse(await readFile(join(directory, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE), 'utf8')),
+    ).toEqual(initial.spec);
+    expect(await readManagedDeployment(directory)).toEqual(migrated);
+  });
+
+  // Rollback depends on the FIRST pre-migration authority. A repeated repair must
+  // neither rewrite the backup with the migrated spec nor change the sealed one.
+  it('is idempotent and never replaces its backup', async () => {
+    const { directory, initial } = await adopt();
+    const first = await migrate(directory, initial.spec.image);
+    expect(await migrate(directory, initial.spec.image)).toEqual(first);
+    expect(
+      parseServerDeploymentSpec(
+        JSON.parse(
+          await readFile(join(directory, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE), 'utf8'),
+        ),
+      ),
+    ).toEqual(initial.spec);
+  });
+
+  it('refuses a sealed bind whose group changed, and a moved authority', async () => {
+    const { directory, initial } = await adopt();
+    await migrate(directory, initial.spec.image);
+    await expect(migrate(directory, initial.spec.image, 2202)).rejects.toThrow(
+      'group differs from sealed authority',
+    );
+    await expect(
+      migrate(directory, `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`),
+    ).rejects.toThrow('authority changed');
+  });
+
+  it('keeps specs sealed before the builder readable', async () => {
+    const { directory, initial } = await adopt();
+    expect(await readManagedDeployment(directory)).toEqual(initial);
+    expect(initial.spec.mounts.some((mount) => mount.target === '/run/verity-buildkit')).toBe(
+      false,
+    );
+  });
 });

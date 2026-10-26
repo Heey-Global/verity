@@ -26,6 +26,44 @@ use outbound networking; this service does not implement egress policy.
 
 ## Installation and upgrade
 
+### Managed installations (`install.sh` / `verity-install`)
+
+The installer sets the builder up on systemd hosts, on a first installation and
+on every repair run. It runs `deploy/buildkit/install.sh`, waits for
+`verity-buildkit.service` to be active and for its socket to exist, and only then:
+
+- passes the socket's group to the managed bootstrap, which seals the read-only
+  `/run/verity-buildkit` bind and that group into the Server's deployment spec;
+- records `devcontainer-builder.json` in the host runtime directory, so the
+  Updater can apply the same change during a later update.
+
+Deployments sealed before this release are migrated by a repair run (rerun the
+installer and choose "Repair"). The migration adds only the socket bind and its
+group; every other sealed setting is kept, and the previous spec is preserved
+once as `server-deployment.before-devcontainer-builder.json` in the
+updater-owned deployment root. A repair never overwrites that backup.
+
+The repair does not restart a running Server. It keeps serving, the Updater
+reports the builder as pending, and the next guarded Server update creates the
+replacement with the bind. A stopped Server is recreated with it immediately.
+Until then, repository builds report that no builder is available.
+
+If the builder cannot be verified (no systemd, a failed install, a socket that
+does not appear), the run continues without it, removes any earlier receipt,
+and says so. Nothing is sealed for a builder that was not verified, and a spec
+without the bind stays valid. A Server built from such a spec reports
+repository builds as unavailable instead of naming an endpoint nothing serves.
+
+Releases that predate the builder bind cannot parse the migrated spec. Rolling
+back below this release requires the preserved spec and its matching image,
+restored through the normal stopped-deployment maintenance workflow, as for the
+host diagnostic bind.
+
+Re-running the installer restarts the builder and interrupts repository builds
+that are in progress.
+
+### Unmanaged (Compose) installations
+
 1. Drain new project builds and let active builds finish. Back up deployment
    configuration. Existing project containers can remain running throughout.
 2. On the Docker host, run `sudo bash deploy/buildkit/install.sh`. This verifies
@@ -38,22 +76,22 @@ use outbound networking; this service does not implement egress policy.
    `verity-buildkit` (GID 1102); choose an unused GID using
    `VERITY_BUILDKIT_GID` for both installation and Compose if necessary.
    Do not change socket permissions to world-writable.
-4. For managed deployments, seal the override into the deployment bundle so
-   replacement Server generations inherit the socket mount, group, and endpoint.
-   Recreate the Server using the normal deployment procedure, without replacing
-   existing project containers. Upgrading Server alone leaves repository builds
-   unavailable until the builder endpoint is configured.
-5. Check `systemctl status verity-buildkit` and `journalctl -u verity-buildkit`.
+4. Check `systemctl status verity-buildkit` and `journalctl -u verity-buildkit`.
    Provision a disposable project with a Dockerfile and Feature; confirm its
    image was loaded into the project Engine. Stop the builder and verify that
    another build fails without replacing an existing running sandbox. CI runs
    this check using the actual Server build spawner and records OCI evidence.
 
-`VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT` must point to the private local Unix
-socket (`unix:///run/verity-buildkit/buildkitd.sock`). Only trusted instance
-configuration supplies it. Removing the endpoint stops future repository builds;
-it does not terminate existing containers. To avoid repository builds for a
-project, PATCH its settings with `{"devcontainerEnabled":false}` before the next
+### Endpoint
+
+An explicit `VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT` must point to a private
+local Unix socket (`unix:///run/verity-buildkit/buildkitd.sock`). Only trusted
+instance configuration supplies it. Without it, the Server uses
+`/run/verity-buildkit/buildkitd.sock` when that socket exists, which is only the
+case when the trusted deployment mounts the builder's runtime directory. With
+neither, repository builds fail with a message pointing to an installer repair;
+existing containers are not affected. To avoid repository builds for a project,
+PATCH its settings with `{"devcontainerEnabled":false}` before the next
 provision/recreate. This skips repository lifecycle configuration as well.
 
 The injected Node Feature is pinned in `provisioner.ts`. The toolkit selected

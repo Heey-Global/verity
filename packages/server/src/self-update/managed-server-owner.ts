@@ -2,11 +2,16 @@ import { normalizeSecurityOptions } from '../docker-security-options.js';
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, ContainerSpec, DockerClient } from '../docker.js';
 import {
+  DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
   MANAGED_SERVER_DEFAULT_RESOURCES,
   sealDeploymentSpec,
   type ServerDeploymentSpec,
 } from './deployment-spec.js';
-import { readManagedDeployment, readManagedHostDiagnosticBackup } from './managed-deployment.js';
+import {
+  readManagedDeployment,
+  readManagedDevcontainerBuilderBackup,
+  readManagedHostDiagnosticBackup,
+} from './managed-deployment.js';
 
 export const MANAGED_SERVER_NAME = 'verity-managed-server';
 export const MANAGED_DEPLOYMENT_LABEL = 'verity.managed-deployment-id';
@@ -29,7 +34,8 @@ export interface ReconcileManagedServerOptions {
   readonly docker: ManagedServerDocker;
   readonly environment?: NodeJS.ProcessEnv;
   readonly readFile?: (path: string) => Promise<string>;
-  /** Allow only the recorded install migration on an already promoted Server. */
+  /** Allow only the recorded install migrations (host diagnostics, devcontainer
+   *  builder) on an already promoted Server. */
   readonly allowDiagnosticMountMigration?: boolean;
   readonly identity?: {
     readonly name: string;
@@ -52,6 +58,8 @@ export interface ManagedServerReconcileResult {
   readonly drift?: readonly string[];
   /** The running Server keeps serving until its next guarded replacement. */
   readonly diagnosticMountPending?: true;
+  /** As {@link diagnosticMountPending}, for the devcontainer builder socket. */
+  readonly devcontainerBuilderPending?: true;
 }
 
 /**
@@ -72,6 +80,7 @@ export type ManagedServerReconcileVerdict =
       readonly status: 'drift';
       readonly environment: readonly string[];
       readonly diagnosticMountPending?: true;
+      readonly devcontainerBuilderPending?: true;
     }
   | { readonly status: 'unknown' };
 
@@ -706,6 +715,85 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
   };
 }
 
+type PendingMount = 'diagnostic' | 'builder';
+
+/**
+ * Install migrations that add a bind to an adopted spec, newest first. Each one
+ * kept the authority it replaced as a backup, and a Server created before it
+ * matches that backup rather than the current spec.
+ */
+const PENDING_MOUNT_MIGRATIONS: readonly {
+  readonly key: PendingMount;
+  readonly target: string;
+  readonly readBackup: (root: string) => Promise<ServerDeploymentSpec | null>;
+  /** Groups the migration may have added alongside its bind. */
+  readonly addsGroups: boolean;
+}[] = [
+  {
+    key: 'builder',
+    target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+    readBackup: readManagedDevcontainerBuilderBackup,
+    addsGroups: true,
+  },
+  {
+    key: 'diagnostic',
+    target: '/run/verity-host-diagnostics',
+    readBackup: readManagedHostDiagnosticBackup,
+    addsGroups: false,
+  },
+];
+
+/**
+ * The sealed authority a running Server predating one or more install
+ * migrations was created from, or undefined when none applies.
+ *
+ * A backup is trusted only when the current spec minus exactly that migration's
+ * addition seals to the backup's checksum, so this never reaches past a change
+ * that was not one of these migrations.
+ */
+async function pendingMountAuthority(
+  spec: ServerDeploymentSpec,
+  inspect: ContainerInspect,
+  root: string,
+): Promise<{ spec: ServerDeploymentSpec; pending: ReadonlySet<PendingMount> } | undefined> {
+  let candidate = spec;
+  const pending = new Set<PendingMount>();
+  for (const migration of PENDING_MOUNT_MIGRATIONS) {
+    if (
+      !candidate.mounts.some((mount) => mount.target === migration.target) ||
+      inspect.mounts?.some((mount) => mount.destination === migration.target)
+    )
+      continue;
+    const backup = await migration.readBackup(root);
+    if (backup === null) continue;
+    const previousSeal = sealDeploymentSpec({
+      schemaVersion: candidate.schemaVersion,
+      deploymentId: candidate.deploymentId,
+      image: candidate.image,
+      environment: candidate.environment,
+      mounts: candidate.mounts.filter((mount) => mount.target !== migration.target),
+      user: {
+        uid: candidate.user.uid,
+        gid: candidate.user.gid,
+        supplementaryGids: migration.addsGroups
+          ? candidate.user.supplementaryGids.filter((gid) =>
+              backup.user.supplementaryGids.includes(gid),
+            )
+          : candidate.user.supplementaryGids,
+      },
+      restart: candidate.restart,
+      network: candidate.network,
+      platform: candidate.platform,
+      security: candidate.security,
+      ...(candidate.resources === undefined ? {} : { resources: candidate.resources }),
+    });
+    if (backup.checksum !== previousSeal.checksum) continue;
+    candidate = backup;
+    pending.add(migration.key);
+  }
+  return pending.size === 0 ? undefined : { spec: candidate, pending };
+}
+
 export async function managedServerContainerSpec(
   spec: ServerDeploymentSpec,
   environment: NodeJS.ProcessEnv,
@@ -846,32 +934,16 @@ export async function reconcileManagedServer(
       sealedNames,
     );
     let diagnosticMountPending = false;
+    let devcontainerBuilderPending = false;
     if (
       verdict.kind === 'structural' &&
-      (identity === undefined || options.allowDiagnosticMountMigration === true) &&
-      !inspect.mounts?.some((mount) => mount.destination === '/run/verity-host-diagnostics')
+      (identity === undefined || options.allowDiagnosticMountMigration === true)
     ) {
-      const backup = await readManagedHostDiagnosticBackup(options.managedRoot);
-      const diagnosticMount = spec.mounts.find(
-        (mount) => mount.target === '/run/verity-host-diagnostics',
-      );
-      const previousSeal = sealDeploymentSpec({
-        schemaVersion: spec.schemaVersion,
-        deploymentId: spec.deploymentId,
-        image: spec.image,
-        environment: spec.environment,
-        mounts: spec.mounts.filter((mount) => mount.target !== '/run/verity-host-diagnostics'),
-        user: spec.user,
-        restart: spec.restart,
-        network: spec.network,
-        platform: spec.platform,
-        security: spec.security,
-        ...(spec.resources === undefined ? {} : { resources: spec.resources }),
-      });
-      if (diagnosticMount !== undefined && backup?.checksum === previousSeal.checksum) {
+      const previous = await pendingMountAuthority(spec, inspect, options.managedRoot);
+      if (previous !== undefined) {
         const previousVerdict = judgeManagedContainer(
           inspect,
-          withIdentity(containerSpecFrom(backup, resolution.env)),
+          withIdentity(containerSpecFrom(previous.spec, resolution.env)),
           imageEnv,
           identity === undefined,
           sealedHostLimitsMode(spec),
@@ -879,7 +951,8 @@ export async function reconcileManagedServer(
         );
         if (previousVerdict.kind !== 'structural') {
           verdict = previousVerdict;
-          diagnosticMountPending = true;
+          diagnosticMountPending = previous.pending.has('diagnostic');
+          devcontainerBuilderPending = previous.pending.has('builder');
         }
       }
     }
@@ -903,11 +976,12 @@ export async function reconcileManagedServer(
       // that name, and the environment built without it therefore differs on
       // exactly that name. Adding the unresolved names separately would be a
       // second path to the same list that no test could tell apart from this one.
-      if (diagnosticMountPending)
+      if (diagnosticMountPending || devcontainerBuilderPending)
         return {
           containerId: inspect.id,
           action: 'unchanged',
-          diagnosticMountPending: true,
+          ...(diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+          ...(devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
           ...(verdict.environment.length === 0 ? {} : { drift: verdict.environment }),
         };
       return verdict.environment.length === 0
@@ -918,7 +992,7 @@ export async function reconcileManagedServer(
     // and there is no honest Server to produce here — by rebuilding or by
     // starting one that lacks a sealed variable.
     requireBuildable();
-    if (verdict.kind === 'environment' || diagnosticMountPending) {
+    if (verdict.kind === 'environment' || diagnosticMountPending || devcontainerBuilderPending) {
       if (!recreatable) {
         // The create-conflict path: something else put this container here while
         // we were creating one, and it is stopped and drifted. Replacing it is

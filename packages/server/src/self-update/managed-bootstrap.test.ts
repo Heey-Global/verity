@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   readManagedDeployment,
   MANAGED_DEPLOYMENT_SPEC_FILE,
+  MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
   MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
 import { sealDeploymentSpec } from './deployment-spec.js';
@@ -107,6 +108,80 @@ describe('runManagedBootstrap', () => {
       ),
     ).rejects.toThrow('sealed authority');
     expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+  });
+
+  // The installer passes the builder group only after verifying the service. An
+  // input that leaked into the sealed environment would become a source every
+  // later Updater must resolve, so it is consumed here and never forwarded.
+  it('seals the builder socket only for an installer-verified builder', async () => {
+    const compose = parseYaml(readFileSync('deploy/docker-compose.yml', 'utf8'), {
+      merge: true,
+    }) as { services: Record<string, { environment: Record<string, string> }> };
+    expect(compose.services['managed-bootstrap']!.environment.VERITY_DEVCONTAINER_BUILDER_GID).toBe(
+      '${VERITY_DEVCONTAINER_BUILDER_GID:-}',
+    );
+
+    const plain = await environment();
+    await runManagedBootstrap(
+      { ...plain, VERITY_DEVCONTAINER_BUILDER_GID: '' },
+      'x64',
+      plain.VERITY_MANAGED_ROOT,
+    );
+    const without = await readManagedDeployment(plain.VERITY_MANAGED_ROOT!);
+    if (!without.managed) throw new Error(without.reason);
+    expect(without.spec.mounts.some((mount) => mount.target === '/run/verity-buildkit')).toBe(
+      false,
+    );
+
+    const env = { ...(await environment()), VERITY_DEVCONTAINER_BUILDER_GID: '1102' };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    expect(desired.binds).toContain('/run/verity-buildkit:/run/verity-buildkit:ro');
+    expect(desired.groupAdd).toContain('1102');
+    expect(
+      state.spec.environment.some((entry) => entry.name === 'VERITY_DEVCONTAINER_BUILDER_GID'),
+    ).toBe(false);
+  });
+
+  it('migrates a deployment sealed before the builder on an installer repair', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const before = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!before.managed) throw new Error(before.reason);
+    const repair = { ...env, VERITY_DEVCONTAINER_BUILDER_GID: '1102' };
+    await runManagedBootstrap(repair, 'x64', env.VERITY_MANAGED_ROOT);
+    const migrated = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(
+      JSON.parse(
+        await readFile(
+          join(env.VERITY_MANAGED_ROOT!, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE),
+          'utf8',
+        ),
+      ),
+    ).toEqual(before.spec);
+    expect(migrated.spec.environment).toEqual(before.spec.environment);
+    expect(migrated.spec.resources).toEqual(before.spec.resources);
+    expect(migrated.spec.mounts).toEqual([
+      ...before.spec.mounts,
+      {
+        source: { kind: 'bind', path: '/run/verity-buildkit' },
+        target: '/run/verity-buildkit',
+        readOnly: true,
+      },
+    ]);
+    // A later repair that could not verify the builder leaves the sealed spec alone.
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+  });
+
+  it.each(['0', '-1', '65535', 'abc'])('rejects builder group %s', async (gid) => {
+    const env = { ...(await environment()), VERITY_DEVCONTAINER_BUILDER_GID: gid };
+    await expect(runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT)).rejects.toThrow(
+      'VERITY_DEVCONTAINER_BUILDER_GID',
+    );
   });
 
   it('forwards explicit Staging OAuth overrides without pinning the baked image default', async () => {

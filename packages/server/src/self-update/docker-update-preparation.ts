@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, DockerClient } from '../docker.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
+import { readDevcontainerBuilderCapability } from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   readManagedDeployment,
 } from './managed-deployment.js';
@@ -383,6 +386,33 @@ export async function dockerUpdatePreparation(
             (diagnostics.state === 'unsupported'
               ? 'Rerun the verified installer once to provision host diagnostics.'
               : 'Check the host diagnostics exporter and timer.'),
+        );
+      }
+      // Same shape as the diagnostic bind: only an installer-verified builder
+      // adds the socket, and never to a generation whose standby already exists.
+      const builder = await readDevcontainerBuilderCapability(options.hostRuntimeDir);
+      if (
+        builder.state === 'available' &&
+        !migrated.spec.mounts.some(
+          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+        )
+      ) {
+        if ((await findNamed(docker, candidateName(journal, STANDBY_ROLE))) === null) {
+          migrated = await migrateManagedDevcontainerBuilder({
+            root: options.managedRoot,
+            deploymentId: migrated.spec.deploymentId,
+            image: migrated.spec.image,
+            gid: builder.gid,
+          });
+          if (!migrated.managed) throw new Error(migrated.reason);
+        } else {
+          (options.log ?? console.warn)(
+            'Devcontainer builder migration deferred until the next update; this standby already exists',
+          );
+        }
+      } else if (builder.state === 'invalid') {
+        (options.log ?? console.warn)(
+          'Devcontainer builder receipt is invalid; rerun the verified installer to repair it',
         );
       }
       base = await managedServerContainerSpec(

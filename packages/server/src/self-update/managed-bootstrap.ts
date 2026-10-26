@@ -3,9 +3,11 @@ import { basename, isAbsolute, normalize } from 'node:path';
 import { createPostgresDb, withUnpairedDeviceFence } from '@verity/store';
 import { ACTIVATION_GATE_DIRECTORY } from './activation-gate.js';
 import {
+  DEVCONTAINER_BUILDER_MOUNT,
   MANAGED_DEPLOYMENT_ROOT,
   advanceManagedDeploymentImage,
   initializeManagedDeployment,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   readManagedDeployment,
 } from './managed-deployment.js';
@@ -40,6 +42,7 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_HOST_ARCHITECTURE?: string;
   readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
   readonly VERITY_HOST_DIAGNOSTIC_DIR?: string;
+  readonly VERITY_DEVCONTAINER_BUILDER_GID?: string;
   readonly VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM?: string;
 }
 
@@ -121,6 +124,16 @@ export async function runManagedBootstrap(
   ) {
     throw new Error('VERITY_PAIRING_STATE_HOST_PATH must be a normalized absolute directory');
   }
+  // Set by the installer only after it verified the builder unit is active and
+  // its socket exists. Empty means "no verified builder": the spec then carries
+  // no socket bind, and the Server reports repository builds as unavailable.
+  const builderGidInput = env.VERITY_DEVCONTAINER_BUILDER_GID?.trim() ?? '';
+  const builderGid =
+    builderGidInput === ''
+      ? undefined
+      : uint('VERITY_DEVCONTAINER_BUILDER_GID', builderGidInput, 0);
+  if (builderGid !== undefined && (builderGid === 0 || builderGid >= 65535))
+    throw new Error('VERITY_DEVCONTAINER_BUILDER_GID must be a positive group ID');
   const hostDiagnosticPath = env.VERITY_HOST_DIAGNOSTIC_DIR ?? '/var/lib/verity/host-diagnostics';
   if (
     !isAbsolute(hostDiagnosticPath) ||
@@ -166,6 +179,7 @@ export async function runManagedBootstrap(
             'VERITY_HOST_ARCHITECTURE',
             'VERITY_PAIRING_STATE_HOST_PATH',
             'VERITY_HOST_DIAGNOSTIC_DIR',
+            'VERITY_DEVCONTAINER_BUILDER_GID',
             'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
           ].includes(name)),
     )
@@ -223,8 +237,20 @@ export async function runManagedBootstrap(
             },
           ]
         : []),
+      ...(builderGid === undefined ? [] : [DEVCONTAINER_BUILDER_MOUNT]),
     ],
-    user: { uid, gid, supplementaryGids: [...new Set([dockerGid, relayGid, runnerGid])] },
+    user: {
+      uid,
+      gid,
+      supplementaryGids: [
+        ...new Set([
+          dockerGid,
+          relayGid,
+          runnerGid,
+          ...(builderGid === undefined ? [] : [builderGid]),
+        ]),
+      ],
+    },
     restart: 'unless-stopped',
     network: 'verity-net',
     platform: { os: 'linux', architecture },
@@ -271,4 +297,13 @@ export async function runManagedBootstrap(
     image,
     hostPath: hostDiagnosticPath,
   });
+  // The installer repair path for deployments sealed before the builder existed.
+  // Absent the verified input, an old spec is left exactly as it is.
+  if (builderGid !== undefined)
+    await migrateManagedDevcontainerBuilder({
+      root,
+      deploymentId: state.spec.deploymentId,
+      image,
+      gid: builderGid,
+    });
 }
