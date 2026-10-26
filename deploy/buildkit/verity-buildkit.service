@@ -1,6 +1,7 @@
 [Unit]
 Description=Verity devcontainer builder (gVisor only)
-After=network-online.target
+# Docker's networks are part of the subnet check, so start after Docker.
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]

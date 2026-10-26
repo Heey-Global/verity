@@ -61,24 +61,25 @@ overlaps() {
 # its own bridge), every Docker network, the pools Docker will allocate from
 # next, and the carrier-grade NAT range VPNs such as Tailscale claim.
 occupied() {
-    local route
-    while read -r route; do
-        [[ -n $route ]] || continue
-        valid_cidr "$route" && printf '%s\n' "$route"
-    done < <("$IP_CMD" -4 -o route show table all 2>/dev/null |
-        awk -v bridge="$BRIDGE" '
-            { dev = ""; for (i = 1; i < NF; i++) if ($i == "dev") dev = $(i + 1) }
-            dev == bridge { next }
-            { dst = ($1 ~ /^(local|broadcast|unicast|unreachable|blackhole|prohibit|throw)$/) ? $2 : $1 }
-            dst == "default" { next }
-            { print (dst ~ /\//) ? dst : dst "/32" }')
+    # An inventory that cannot be read is not an empty one. Treating it as empty
+    # would pick a range that may already be routed, so fail and let systemd
+    # retry the start once the host is ready.
+    local routes ids subnets route
+    routes="$("$IP_CMD" -4 -o route show table all)" || die 'could not read host routes'
+    awk -v bridge="$BRIDGE" '
+        { dev = ""; for (i = 1; i < NF; i++) if ($i == "dev") dev = $(i + 1) }
+        dev == bridge { next }
+        { dst = ($1 ~ /^(local|broadcast|unicast|unreachable|blackhole|prohibit|throw)$/) ? $2 : $1 }
+        dst == "default" { next }
+        { print (dst ~ /\//) ? dst : dst "/32" }' <<<"$routes" |
+        while read -r route; do valid_cidr "${route:-x}" && printf '%s\n' "$route"; done
     if command -v "$DOCKER_CMD" >/dev/null 2>&1; then
-        local ids
-        ids="$("$DOCKER_CMD" network ls -q 2>/dev/null || true)"
+        ids="$("$DOCKER_CMD" network ls -q)" || die 'could not list Docker networks'
         if [[ -n $ids ]]; then
             # shellcheck disable=SC2086 # network IDs are single words
-            "$DOCKER_CMD" network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' $ids 2>/dev/null |
-                tr ' ' '\n' | while read -r route; do valid_cidr "${route:-x}" && printf '%s\n' "$route"; done
+            subnets="$("$DOCKER_CMD" network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' $ids)" ||
+                die 'could not inspect Docker networks'
+            tr ' ' '\n' <<<"$subnets" | while read -r route; do valid_cidr "${route:-x}" && printf '%s\n' "$route"; done
         fi
     fi
     local pools=''
@@ -118,7 +119,8 @@ stored_value() {
 }
 
 select_subnet() {
-    OCCUPIED="$(occupied | sort -u)"
+    OCCUPIED="$(occupied)" || exit 1
+    OCCUPIED="$(sort -u <<<"$OCCUPIED")"
     local pinned stored conflict candidate
     pinned="$(stored_value PINNED_SUBNET)"
     if [[ -n $pinned ]]; then
@@ -197,7 +199,7 @@ JSON
     # A bridge left on a previous subnet would keep that route; let the bridge
     # plugin recreate it on the next step.
     if "$IP_CMD" -4 -o addr show dev "$BRIDGE" 2>/dev/null | grep -q . &&
-        ! "$IP_CMD" -4 -o addr show dev "$BRIDGE" 2>/dev/null | grep -qF " $gateway/"; then
+        ! "$IP_CMD" -4 -o addr show dev "$BRIDGE" 2>/dev/null | grep -qF " $gateway/${subnet#*/} "; then
         "$IP_CMD" link delete "$BRIDGE" 2>/dev/null || true
     fi
     log "build steps use $subnet on $BRIDGE"

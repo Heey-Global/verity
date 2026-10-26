@@ -53,6 +53,10 @@ rm -rf "$cni_dir.new"
 cp -a "$cni_work/plugins" "$cni_dir.new"
 rm -rf "$cni_dir"
 mv "$cni_dir.new" "$cni_dir"
+# A real directory at the link path would receive the link inside it instead.
+if [[ -e /usr/local/libexec/verity-buildkit/cni && ! -L /usr/local/libexec/verity-buildkit/cni ]]; then
+    rm -rf /usr/local/libexec/verity-buildkit/cni
+fi
 ln -sfn "cni-$cni_version" /usr/local/libexec/verity-buildkit/cni
 install -d -m 0755 /var/lib/cni
 sed "s/^  gid = 1102$/  gid = $builder_gid/" "$source_dir/buildkitd.toml" > /etc/verity-buildkit/buildkitd.toml

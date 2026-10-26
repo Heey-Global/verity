@@ -18,6 +18,8 @@ interface Host {
   daemonPools?: string[];
   networkEnv?: string;
   bridgeAddress?: string;
+  routesFail?: boolean;
+  dockerFails?: boolean;
 }
 
 function host(options: Host = {}) {
@@ -33,7 +35,7 @@ function host(options: Host = {}) {
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> ${JSON.stringify(log)}
 case "$*" in
-  "-4 -o route show table all") printf '%s\\n' ${(options.routes ?? []).map((r) => JSON.stringify(r)).join(' ')} ;;
+  "-4 -o route show table all") ${options.routesFail ? 'exit 1;' : ''} printf '%s\\n' ${(options.routes ?? []).map((r) => JSON.stringify(r)).join(' ')} ;;
   "-4 -o addr show dev verity-bk0") ${options.bridgeAddress === undefined ? 'exit 1' : `printf '5: verity-bk0    inet %s brd + scope global verity-bk0\\n' ${JSON.stringify(options.bridgeAddress)}`} ;;
 esac
 `,
@@ -42,6 +44,7 @@ esac
   writeFileSync(
     join(bin, 'docker'),
     `#!/usr/bin/env bash
+${options.dockerFails ? 'echo "Cannot connect to the Docker daemon" >&2; exit 1' : ''}
 case "$1 $2" in
   "network ls") printf 'n1\\n' ;;
   "network inspect") printf '%s ' ${(options.dockerSubnets ?? []).map((s) => JSON.stringify(s)).join(' ')} ;;
@@ -182,5 +185,26 @@ describe('build subnet selection', () => {
     const current = host({ bridgeAddress: '10.213.0.1/24' });
     expect(current.run('apply').status).toBe(0);
     expect(current.ipCalls()).not.toContain('link delete');
+  });
+
+  // The gateway alone matches a bridge left on the same base address with a
+  // different prefix, which would keep handing out addresses outside the range.
+  it('removes a bridge on the same gateway but a different prefix', () => {
+    const h = host({ networkEnv: 'PINNED_SUBNET=10.99.0.0/25\n', bridgeAddress: '10.99.0.1/24' });
+    expect(h.run('apply').status).toBe(0);
+    expect(h.ipCalls()).toContain('link delete verity-bk0');
+  });
+
+  // An inventory that could not be read looks exactly like a host with nothing
+  // on it, and every candidate would then pass the conflict check.
+  it.each([
+    ['the host routes', { routesFail: true }],
+    ['the Docker networks', { dockerFails: true }],
+  ] satisfies [string, Host][])('fails without a config when %s cannot be read', (_, options) => {
+    const h = host(options);
+    const result = h.run('apply');
+    expect(result.status).not.toBe(0);
+    expect(existsSync(join(h.config, 'cni.conflist'))).toBe(false);
+    expect(existsSync(join(h.config, 'network.env'))).toBe(false);
   });
 });

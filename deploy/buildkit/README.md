@@ -43,7 +43,11 @@ namespace stays usable. Reuse does not add NAT or forwarding rules.
 
 Steps reach the same destinations a project sandbox on its Docker network
 reaches: the internet, and through NAT whatever the host can route to. They do
-not share a network with project sandboxes or with each other.
+not share a network with project sandboxes. They do share the `verity-bk0`
+bridge and its subnet with each other: a namespace per step separates their
+interfaces, not their network, and nothing filters traffic between addresses
+on the bridge. The worker runs one step at a time, which limits but does not
+remove that exposure.
 
 The subnet is chosen on the host, never fixed in the product. Before every
 builder start, `network.sh apply` takes the first `/24` from `10.213.0.0/16`,
