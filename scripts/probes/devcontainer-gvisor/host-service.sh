@@ -41,9 +41,13 @@ for attempt in $(seq 1 30); do
 done
 [[ -S /run/verity-buildkit/buildkitd.sock ]]
 sudo systemctl show verity-buildkit -p MemoryMax -p MemorySwapMax -p CPUQuotaPerSecUSec -p TasksMax > "$PROBE_EVIDENCE/limits.txt"
-grep -Fx 'MemoryMax=2147483648' "$PROBE_EVIDENCE/limits.txt"
+# The limits the installer derived for this runner, in systemd's own units.
+bash deploy/buildkit/resources.sh > "$PROBE_EVIDENCE/resources.txt"
+quota_percent=$(sed -n 's/^CPU_QUOTA=\([0-9]*\)%$/\1/p' "$PROBE_EVIDENCE/resources.txt")
+memory_mib=$(sed -n 's/^MEMORY_MAX=\([0-9]*\)M$/\1/p' "$PROBE_EVIDENCE/resources.txt")
+grep -Fx "MemoryMax=$((memory_mib * 1024 * 1024))" "$PROBE_EVIDENCE/limits.txt"
 grep -Fx 'MemorySwapMax=0' "$PROBE_EVIDENCE/limits.txt"
-grep -Fx 'CPUQuotaPerSecUSec=1s' "$PROBE_EVIDENCE/limits.txt"
+grep -Fx "CPUQuotaPerSecUSec=$((quota_percent / 100))s" "$PROBE_EVIDENCE/limits.txt"
 grep -Fx 'TasksMax=512' "$PROBE_EVIDENCE/limits.txt"
 main_pid=$(sudo systemctl show verity-buildkit -p MainPID --value)
 [[ $main_pid =~ ^[1-9][0-9]*$ ]]
@@ -72,6 +76,13 @@ spawn_build() {
         node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
+# The runner's ext4 supports overlayfs, so "auto" must not have fallen back to
+# the native snapshotter, whose full copy per step is what this setting avoids.
+sudo test -d /var/lib/verity-buildkit/runc-overlayfs
+# install.sh removes native snapshots only on this report, so it must match.
+sudo journalctl -q -o cat -u verity-buildkit > "$PROBE_EVIDENCE/worker-start.log"
+grep -F 'found worker' "$PROBE_EVIDENCE/worker-start.log" | grep -F 'worker.snapshotter:overlayfs' > /dev/null
+sudo test ! -e /var/lib/verity-buildkit/runc-native
 docker create --name "$name-marker" "$name:positive" > /dev/null
 docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
 docker cp "$name-marker:/verity-feature-probe" "$PROBE_EVIDENCE/feature-marker.txt"

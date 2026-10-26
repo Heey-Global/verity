@@ -22,9 +22,10 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=verity-buildkit
 StateDirectoryMode=0700
 UMask=0007
-MemoryMax=2G
+# install.sh fills in the CPU and memory limits from resources.sh for this host.
+MemoryMax=@MEMORY_MAX@
 MemorySwapMax=0
-CPUQuota=100%
+CPUQuota=@CPU_QUOTA@
 TasksMax=512
 Delegate=yes
 NoNewPrivileges=yes
