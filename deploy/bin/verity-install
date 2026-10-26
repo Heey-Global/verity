@@ -1035,11 +1035,12 @@ if [ -n "$builder_gid" ]; then
   # What this run installed, so the next update leaves an unchanged builder running.
   VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" "$HOST_RUNTIME_LIBEXEC/verity-host-builder" \
     record "$repo_root/deploy" \
-    || rm -f "$HOST_RUNTIME_DIR/devcontainer-builder-bundle.json"
+    || "$HOST_RUNTIME_LIBEXEC/verity-host-builder" forget || true
 else
   # A receipt from an earlier run would let the Updater add a bind to a builder
   # this run could not verify.
-  rm -f "$builder_receipt" "$HOST_RUNTIME_DIR/devcontainer-builder-bundle.json"
+  rm -f "$builder_receipt"
+  "$HOST_RUNTIME_LIBEXEC/verity-host-builder" forget || true
   note 'The devcontainer builder is not available on this host; repository devcontainers will not build'
   hint 'It needs systemd and Docker; see deploy/buildkit/README.md, then run this installer again.'
 fi

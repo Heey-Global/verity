@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -42,6 +43,10 @@ interface HostOptions {
   readonly label?: string;
   readonly installFails?: boolean;
   readonly startsAfterInstall?: boolean;
+  /** Extra shell run by the bundle's installer after it rewrote the builder. */
+  readonly duringInstall?: string;
+  /** What the local store says the pulled image resolves to. */
+  readonly localDigest?: string;
 }
 
 async function host(options: HostOptions = {}) {
@@ -78,6 +83,7 @@ async function host(options: HostOptions = {}) {
     join(payload, 'buildkit', 'install.sh'),
     `printf 'install.sh gid=%s\\n' "$VERITY_BUILDKIT_GID" >>'${calls}'\n` +
       `printf 'new\\n' >'${config}/buildkitd.toml'\nprintf 'new\\n' >'${unit}'\n` +
+      (options.duringInstall ?? '') +
       (options.installFails === true ? 'exit 1\n' : '') +
       (options.startsAfterInstall === false ? `rm -f '${active}'\n` : ''),
   );
@@ -95,7 +101,7 @@ async function host(options: HostOptions = {}) {
   tool(
     'docker',
     `case "$1 $2" in
-  'image inspect') if [ "$3" = --format ]; then printf '%s\\n' '${options.label ?? '1'}'; fi ;;
+  'image inspect') case "$4" in *RepoDigests*) printf '%s\\n' ${options.localDigest === undefined ? '"$5"' : `'${options.localDigest}'`} ;; *Labels*) printf '%s\\n' '${options.label ?? '1'}' ;; esac ;;
   'create '*) echo container-1 ;;
   'cp '*) path=\${2#container-1:/opt/verity-install/deploy/}; tar -C "${payload}/$(dirname "$path")" -c "$(basename "$path")" ;;
 esac`,
@@ -112,6 +118,7 @@ esac`,
     VERITY_HOST_RUNTIME_TEST: '1',
     VERITY_HOST_BUILDER_COSIGN: join(bin, 'cosign'),
     VERITY_HOST_RUNTIME_DIR: state,
+    VERITY_HOST_BUILDER_DIR: join(root, 'host-builder'),
     VERITY_BUILDKIT_RUN_DIR: runDir,
     VERITY_BUILDKIT_READY_TIMEOUT: '1',
     VERITY_BUILDKIT_CONFIG_DIR: config,
@@ -136,8 +143,8 @@ esac`,
           .split('\n')
           .filter((line) => line.startsWith(`${name} `))
       : [];
-  const record = join(state, 'devcontainer-builder-bundle.json');
-  return { run, request, result, callsOf, config, unit, payload, record, state };
+  const record = join(root, 'host-builder', 'bundle.json');
+  return { root, run, request, result, callsOf, config, unit, payload, record, state };
 }
 
 describeHost('deploy/host/verity-host-builder', () => {
@@ -236,6 +243,68 @@ describeHost('deploy/host/verity-host-builder', () => {
       expect(existsSync(h.record)).toBe(false);
     },
   );
+
+  // systemd stops the unit with TERM at its timeout and at shutdown; a half-installed builder
+  // would otherwise stay until some later update happened to ask again.
+  it('restores the previous builder when stopped in the middle of an installation', async () => {
+    const h = await host({
+      // The installer runs in a subshell of the reconcile process; stop that process as
+      // systemd would.
+      duringInstall: 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"\nsleep 1\n',
+    });
+    h.request('update-1');
+    expect(h.run('apply-request').status).not.toBe(0);
+    expect(h.result().message).toContain('interrupted');
+    expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
+    expect(existsSync(h.record)).toBe(false);
+  });
+
+  // The request directory is mounted into the Updater. Anything this root process later
+  // executes or restores from there, the requester could replace after verification.
+  it('keeps staging, verifier, lock and backup out of the shared request directory', async () => {
+    const h = await host({ installFails: true });
+    h.request('update-1');
+    h.run('apply-request');
+    expect(readdirSync(h.state).sort()).toEqual([
+      'builder-request.json',
+      'builder-result.json',
+      'devcontainer-builder.json',
+    ]);
+  });
+
+  it('refuses an image the local store does not resolve to the requested digest', async () => {
+    const h = await host({
+      localDigest: `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`,
+    });
+    h.request('update-1');
+    expect(h.run('apply-request').status).not.toBe(0);
+    expect(h.callsOf('cosign')).toHaveLength(0);
+    expect(h.callsOf('install.sh')).toHaveLength(0);
+  });
+
+  // A path unit does not start a running service again, so a request written meanwhile would
+  // otherwise wait for the Updater's whole timeout.
+  it('also answers a request written while it was answering the previous one', async () => {
+    const h = await host();
+    h.request('update-1');
+    const newer = JSON.stringify({ version: 1, id: 'update-2', image });
+    writeFileSync(
+      join(h.payload, 'buildkit', 'install.sh'),
+      readFileSync(join(h.payload, 'buildkit', 'install.sh'), 'utf8') +
+        `printf '%s' '${newer}' >'${join(h.state, 'builder-request.json')}'\n`,
+    );
+    expect(h.run('apply-request').status).toBe(0);
+    expect(h.result()).toMatchObject({ id: 'update-2', ok: true });
+  });
+
+  it('does not restart the builder for a documentation change', async () => {
+    const h = await host();
+    expect(h.run('record', h.payload).status).toBe(0);
+    writeFileSync(join(h.payload, 'buildkit', 'README.md'), '# changed\n');
+    h.request('update-1');
+    expect(h.run('apply-request').status).toBe(0);
+    expect(h.callsOf('install.sh')).toHaveLength(0);
+  });
 
   it('answers a request it already answered successfully without doing anything', async () => {
     const h = await host();

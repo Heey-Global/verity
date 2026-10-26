@@ -1367,8 +1367,11 @@ builder".
 3. A request names only an official Server image digest. The component verifies that image's
    release signature with the same pinned cosign verifier and signer identity as the bootstrap
    installer. It installs only the bundle copied out of the verified image, never anything the
-   requester supplies. The trust anchor is the release signature, not the Updater. This holds
-   even after ADR 0017 removes the Updater's host-root equivalence.
+   requester supplies. It pulls the digest from the registry, so the signature and the copied
+   files describe the same image. Everything it later runs or restores (staging, the verifier, the
+   kept-aside builder, the record of the installed bundle) lives in a root-only directory that is
+   not mounted into any container. The trust anchor is the release signature, not the Updater.
+   This holds even after ADR 0017 removes the Updater's host-root equivalence.
 4. After the runtime reconciliation in `preflight`, the Updater sends the request when the target
    declares the label and the installer verified a builder on this host. The component compares
    a content hash of the bundle with the one recorded at the last installation, so an unchanged

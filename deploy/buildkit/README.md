@@ -86,18 +86,24 @@ Server update brings the builder to the one its release ships:
 2. After registering the gVisor runtimes, and before the standby is created, the
    Updater writes `builder-request.json` into the host runtime directory. The
    request names only the official target image digest.
-3. `verity-host-builder`, started by its systemd path unit, verifies that
-   image's release signature with the pinned cosign verifier. It then copies
-   `deploy/buildkit`, `deploy/gvisor` and `deploy/host/verity-host-runtime` out
-   of the verified image and refuses a bundle that contains a symbolic link.
-4. It compares the bundle's content hash with
-   `devcontainer-builder-bundle.json`. An unchanged builder keeps running, and
+3. `verity-host-builder`, started by its systemd path unit, pulls that digest
+   from the registry and verifies the image's release signature with the pinned
+   cosign verifier. It then copies `deploy/buildkit`, `deploy/gvisor` and
+   `deploy/host/verity-host-runtime` out of the verified image and refuses a
+   bundle that contains a symbolic link.
+4. It compares the bundle's content hash, documentation excluded, with the one
+   recorded at the last installation. An unchanged builder keeps running, and
    builds in progress are not interrupted.
 5. Otherwise it keeps the current builder files aside and runs the bundle's
    `install.sh` with the recorded socket group. It records the new hash only
-   once the unit is active and its socket exists. A failed installation, or a
-   builder that does not come back, restores the previous files and restarts
-   the previous builder.
+   once the unit is active and its socket exists. A failed installation, an
+   interruption (including systemd stopping the unit), or a builder that does
+   not come back restores the previous files and restarts the previous builder.
+
+Staging, the signature verifier, the kept-aside files and the record live in
+`/var/lib/verity/host-builder`. That directory is root-only and not mounted
+into any container. From the shared host runtime directory, the component
+reads only the request and the installer's receipt.
 
 A builder that cannot be updated does not hold back the Server update. The
 Updater logs the reason, the previous builder keeps serving, and the next

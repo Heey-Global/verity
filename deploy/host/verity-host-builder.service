@@ -9,8 +9,12 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/verity/verity-host-builder apply-request
-# Pulling BuildKit and the CNI plugins, plus the builder's own start.
+# Waiting for an earlier run (5 min at most), pulling BuildKit and the CNI plugins, and the
+# builder's own start. The Updater waits longer than this, so it sees the answer, including
+# the one written after systemd stops an overlong run and the previous builder is restored.
 TimeoutStartSec=20min
+# ProtectHome hides /root; the Docker CLI keeps its client config under HOME.
+Environment=HOME=/var/lib/verity/host-builder
 # No ProtectSystem: the builder's installer is the same root installer verity-install runs,
 # and writes /etc/verity-buildkit, its systemd unit, /usr/local/libexec/verity-buildkit, the
 # pinned runsc under /opt/verity and the runtime entries in /etc/docker/daemon.json.

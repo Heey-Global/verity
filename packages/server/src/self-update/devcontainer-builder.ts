@@ -125,7 +125,8 @@ export async function reconcileDevcontainerBuilder(
     result: 'builder-result.json',
     id: options.requestId,
     body: { version: 1, id: options.requestId, image: options.image },
-    timeoutMs: options.timeoutMs ?? 20 * 60_000,
+    // Longer than the host unit's own 20-minute limit, so its last answer still arrives.
+    timeoutMs: options.timeoutMs ?? 25 * 60_000,
     ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
     ...(options.now === undefined ? {} : { now: options.now }),
