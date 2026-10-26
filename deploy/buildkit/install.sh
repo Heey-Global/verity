@@ -71,7 +71,19 @@ systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
 # Once the worker runs on overlayfs, snapshots of the earlier native snapshotter
-# are unreachable and only hold disk space; the daemon never reopens them. The
-# unit is Type=notify, so the restart above returns once the worker has chosen.
-if [[ -d /var/lib/verity-buildkit/runc-overlayfs ]]; then rm -rf /var/lib/verity-buildkit/runc-native; fi
+# are unreachable and only hold disk space. Only the worker this start reported
+# counts: a runc-overlayfs directory can outlive a move of the state directory
+# to a file system where "auto" falls back to native, and that worker's state
+# is runc-native. Without a positive report, nothing is removed.
+# journald may file the line a moment after the restart has returned.
+invocation=$(systemctl show -p InvocationID --value verity-buildkit.service)
+for attempt in 1 2 3 4 5; do
+    [[ -n $invocation ]] || break
+    worker=$(journalctl -q -o cat "_SYSTEMD_INVOCATION_ID=$invocation" | grep -F 'found worker' || true)
+    if [[ -n $worker ]]; then
+        if [[ $worker == *'worker.snapshotter:overlayfs'* ]]; then rm -rf /var/lib/verity-buildkit/runc-native; fi
+        break
+    fi
+    sleep 1
+done
 printf 'Builder installed. Configure the Server socket mount and GID using deploy/docker-compose.buildkit.yml.\n'

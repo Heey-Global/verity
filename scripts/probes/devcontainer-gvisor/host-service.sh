@@ -79,6 +79,9 @@ spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
 # The runner's ext4 supports overlayfs, so "auto" must not have fallen back to
 # the native snapshotter, whose full copy per step is what this setting avoids.
 sudo test -d /var/lib/verity-buildkit/runc-overlayfs
+# install.sh removes native snapshots only on this report, so it must match.
+sudo journalctl -q -o cat -u verity-buildkit > "$PROBE_EVIDENCE/worker-start.log"
+grep -F 'found worker' "$PROBE_EVIDENCE/worker-start.log" | grep -F 'worker.snapshotter:overlayfs' > /dev/null
 sudo test ! -e /var/lib/verity-buildkit/runc-native
 docker create --name "$name-marker" "$name:positive" > /dev/null
 docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
