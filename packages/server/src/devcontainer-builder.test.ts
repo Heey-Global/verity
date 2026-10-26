@@ -11,7 +11,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(fail: 'inspect' | 'build' | undefined = undefined) {
+function fixture(fail: 'inspect' | 'build' | 'load' | undefined = undefined) {
   const root = mkdtempSync(join(tmpdir(), 'verity-builder-test-'));
   roots.push(root);
   const log = join(root, 'calls.jsonl');
@@ -21,7 +21,8 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ command: require('nod
 `;
   writeFileSync(
     join(root, 'docker'),
-    `#!/usr/bin/env node\n${recorder}\nif (${JSON.stringify(fail)} === 'inspect' && args[1] === 'inspect') process.exit(1);`,
+    `#!/usr/bin/env node\n${recorder}\nif (${JSON.stringify(fail)} === 'inspect' && args[1] === 'inspect') process.exit(1);
+if (${JSON.stringify(fail)} === 'load' && args[0] === 'load') process.exit(1);`,
     { mode: 0o755 },
   );
   writeFileSync(
@@ -93,6 +94,7 @@ describe('secure devcontainer builder selection', () => {
       ['docker', 'create'],
       ['docker', 'inspect'],
       ['devcontainer', '--workspace-folder'],
+      ['docker', '--input'],
       ['docker', 'rm'],
     ]);
     const create = calls[0]!;
@@ -103,9 +105,17 @@ describe('secure devcontainer builder selection', () => {
     expect(build.env.BUILDKIT_HOST).toBeUndefined();
     expect(build.env.DOCKER_HOST).toBe('unix:///target/docker.sock');
     expect(existsSync(build.env.DOCKER_CONFIG!)).toBe(false);
+    // The image reaches the Engine from the archive the build wrote, not through --load.
+    const archive = build.args[build.args.indexOf('--output') + 1]!.replace(
+      'type=docker,dest=',
+      '',
+    );
+    expect(archive.startsWith(`${build.env.DOCKER_CONFIG}/`)).toBe(true);
+    expect(calls[3]!.args).toEqual(['load', '--input', archive]);
+    expect(calls[3]!.env.DOCKER_HOST).toBe('unix:///target/docker.sock');
   });
 
-  it.each(['inspect', 'build'] as const)(
+  it.each(['inspect', 'build', 'load'] as const)(
     'rejects %s failure, cleans up, and never tries a fallback',
     async (failure) => {
       const f = fixture(failure);
@@ -115,6 +125,7 @@ describe('secure devcontainer builder selection', () => {
       expect(calls.filter((c) => c.command === 'devcontainer')).toHaveLength(
         failure === 'inspect' ? 0 : 1,
       );
+      expect(calls.filter((c) => c.args[0] === 'load')).toHaveLength(failure === 'load' ? 1 : 0);
       expect(calls.filter((c) => c.args[1] === 'create')).toHaveLength(1);
       expect(existsSync(calls[0]!.env.DOCKER_CONFIG!)).toBe(false);
     },
