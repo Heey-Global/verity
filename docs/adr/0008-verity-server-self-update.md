@@ -1370,7 +1370,10 @@ builder".
    requester supplies. It pulls the digest from the registry, so the signature and the copied
    files describe the same image. Everything it later runs or restores (staging, the verifier, the
    kept-aside builder, the record of the installed bundle) lives in a root-only directory that is
-   not mounted into any container. The trust anchor is the release signature, not the Updater.
+   not mounted into any container. The same holds for the lock and the `daemon.json` backup of
+   `verity-host-runtime`, which the builder installer runs. A stop (`KillMode=mixed`) signals only
+   the request process, which passes it on, waits for the previous builder to be restored, and
+   then publishes the answer. The trust anchor is the release signature, not the Updater.
    This holds even after ADR 0017 removes the Updater's host-root equivalence.
 4. After the runtime reconciliation in `preflight`, the Updater sends the request when the target
    declares the label and the installer verified a builder on this host. The component compares

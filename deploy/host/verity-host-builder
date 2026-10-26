@@ -151,7 +151,7 @@ restore_previous() {
 reconcile() {
   local image=$1 work gid cosign hash installed path digests existing=()
   [[ $image =~ $IMAGE_PATTERN ]] || die 'the request does not name an official Verity Server image digest'
-  need_tools curl docker jq sha256sum systemctl tar flock
+  need_tools curl docker jq sha256sum systemctl tar flock setsid
   gid="$(jq -er 'select(.version == 1) | .gid | select(type == "number")' "$RECEIPT" 2>/dev/null)" ||
     die 'this host has no installer-verified devcontainer builder; re-run the Verity installer once'
 
@@ -203,15 +203,31 @@ reconcile() {
   fi
 
   log 'installing the devcontainer builder from this release (builds in progress are interrupted)'
-  # From here until the builder is ready, any way out puts the previous builder back,
-  # including systemd stopping this unit (TERM) at its timeout or at shutdown.
-  trap 'restore_previous; die "interrupted while installing the builder; the previous builder was restored"' TERM INT
-  if ! (umask 0022 && VERITY_BUILDKIT_GID="$gid" bash "$work/bundle/buildkit/install.sh" >&2); then
+  # From here until the builder is ready, a stop puts the previous builder back. The installer
+  # runs in its own process group so a stop can end all of it at once, and in the background so
+  # this shell takes the signal now rather than after the installer has finished.
+  interrupted=0
+  install_pid=''
+  trap 'interrupted=1; if [[ -n $install_pid ]]; then kill -TERM -- "-$install_pid" 2>/dev/null || true; fi' TERM INT
+  VERITY_BUILDKIT_GID="$gid" setsid bash -c 'umask 0022 && exec bash "$1"' bash \
+    "$work/bundle/buildkit/install.sh" >&2 &
+  install_pid=$!
+  install_status=0
+  while kill -0 "$install_pid" 2>/dev/null; do
+    install_status=0
+    wait "$install_pid" || install_status=$?
+  done
+  if ((interrupted)); then
+    restore_previous
+    die 'interrupted while installing the builder; the previous builder was restored'
+  fi
+  if ((install_status != 0)); then
     restore_previous
     die 'the builder installation failed; the previous builder was restored'
   fi
-  if ! await_ready; then
+  if ! await_ready || ((interrupted)); then
     restore_previous
+    ((interrupted)) && die 'interrupted while installing the builder; the previous builder was restored'
     die 'the new builder did not become ready; the previous builder was restored'
   fi
   trap - TERM INT
@@ -219,47 +235,63 @@ reconcile() {
   log 'the devcontainer builder now matches this release'
 }
 
-# Answers the request on file. Prints the id it answered; returns reconcile's status.
+# Answers the request on file: sets ANSWERED (its id, empty without a request) and STATUS.
 answer_once() {
   local request="$STATE_DIR/builder-request.json" result="$STATE_DIR/builder-result.json"
-  local id image output status
+  local id image output child log
+  ANSWERED=''
+  STATUS=0
   [[ -f $request ]] || return 0
-  id="$(jq -er 'select(.version == 1) | .id | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"))' "$request")" ||
-    die 'builder-request.json is not a version-1 request'
-  printf '%s' "$id"
+  if ! id="$(jq -er 'select(.version == 1) | .id | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"))' "$request")"; then
+    log 'builder-request.json is not a version-1 request'
+    STATUS=1
+    return 0
+  fi
+  ANSWERED=$id
   # Already answered: the path unit fires again whenever the Updater rewrites the request.
   if [[ -f $result ]] && [[ $(jq -r '.id // empty' "$result") == "$id" ]] &&
     [[ $(jq -r '.ok' "$result") == true ]]; then
     return 0
   fi
   image="$(jq -r '.image // empty' "$request")"
-  status=0
-  # A separate process, not a subshell: a function on the left of `||` runs with `set -e`
-  # suspended, and every unchecked step would carry on after failing.
-  output="$("${BASH_SOURCE[0]}" reconcile "$image" 2>&1)" || status=$?
+  prepare_work_dir
+  log="$WORK_DIR/reconcile.log"
+  # A separate process, not a subshell or function: on the left of `||` a function runs with
+  # `set -e` suspended. Its output goes to a root-only file rather than a pipe, so nothing it
+  # writes while restoring can fail because this process stopped reading.
+  "${BASH_SOURCE[0]}" reconcile "$image" >"$log" 2>&1 &
+  child=$!
+  # systemd stops this unit with TERM to this process alone (KillMode=mixed). Pass it on, then
+  # keep waiting: the reconciler restores the previous builder, and this process publishes the
+  # answer before it exits.
+  trap 'kill -TERM "$child" 2>/dev/null || true' TERM INT
+  while kill -0 "$child" 2>/dev/null; do
+    STATUS=0
+    wait "$child" || STATUS=$?
+  done
+  trap - TERM INT
+  output="$(cat "$log")"
   printf '%s\n' "$output" >&2
-  write_json_atomically "$result" "$(jq -cn --arg id "$id" --argjson ok "$([[ $status -eq 0 ]] && echo true || echo false)" \
+  write_json_atomically "$result" "$(jq -cn --arg id "$id" --argjson ok "$([[ $STATUS -eq 0 ]] && echo true || echo false)" \
     --arg message "$(printf '%s' "$output" | grep '^verity-host-builder: ' | tail -n 1 | sed 's/^verity-host-builder: //')" \
     --arg finishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{version: 1, id: $id, ok: $ok, message: $message, finishedAt: $finishedAt}')"
-  return "$status"
 }
 
 apply_request() {
-  local answered='' current status=0 attempt
+  local previous='' attempt
   need_tools jq
   # systemd does not start the unit again for a request written while it is still running,
   # so answer until the request on file is the one just answered.
   for attempt in 1 2 3 4 5; do
-    status=0
-    current="$(answer_once)" || status=$?
-    [[ -n $current && $current != "$answered" ]] || return "$status"
-    answered=$current
-    [[ $(jq -r '.id // empty' "$STATE_DIR/builder-request.json" 2>/dev/null) != "$answered" ]] ||
-      return "$status"
+    answer_once
+    [[ -n $ANSWERED && $ANSWERED != "$previous" ]] || return "$STATUS"
+    previous=$ANSWERED
+    [[ $(jq -r '.id // empty' "$STATE_DIR/builder-request.json" 2>/dev/null) != "$previous" ]] ||
+      return "$STATUS"
   done
   log "more requests arrived during $attempt answers; the next trigger answers them"
-  return "$status"
+  return "$STATUS"
 }
 
 [[ $(id -u) -eq 0 || ${VERITY_HOST_RUNTIME_TEST:-} == 1 ]] || die 'must run as root'

@@ -13,6 +13,11 @@ ExecStart=/usr/local/libexec/verity/verity-host-builder apply-request
 # builder's own start. The Updater waits longer than this, so it sees the answer, including
 # the one written after systemd stops an overlong run and the previous builder is restored.
 TimeoutStartSec=20min
+# A stop signals only the request process, which passes it to the reconciler and stays to
+# publish the answer once the previous builder is restored. The default control-group mode
+# would end all of them at once, before either.
+KillMode=mixed
+TimeoutStopSec=5min
 # ProtectHome hides /root; the Docker CLI keeps its client config under HOME.
 Environment=HOME=/var/lib/verity/host-builder
 # No ProtectSystem: the builder's installer is the same root installer verity-install runs,

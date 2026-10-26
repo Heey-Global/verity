@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -126,6 +126,7 @@ esac`,
     VERITY_BUILDKIT_UNIT_FILE: unit,
   };
   const run = (...args: string[]) => spawnSync(script, args, { env, encoding: 'utf8' });
+  const start = (...args: string[]) => spawn(script, args, { env, stdio: 'ignore' });
   const request = (id: string, requested = image) =>
     writeFileSync(
       join(state, 'builder-request.json'),
@@ -144,7 +145,7 @@ esac`,
           .filter((line) => line.startsWith(`${name} `))
       : [];
   const record = join(root, 'host-builder', 'bundle.json');
-  return { root, run, request, result, callsOf, config, unit, payload, record, state };
+  return { root, run, start, request, result, callsOf, config, unit, payload, record, state };
 }
 
 describeHost('deploy/host/verity-host-builder', () => {
@@ -246,16 +247,32 @@ describeHost('deploy/host/verity-host-builder', () => {
 
   // systemd stops the unit with TERM at its timeout and at shutdown; a half-installed builder
   // would otherwise stay until some later update happened to ask again.
-  it('restores the previous builder when stopped in the middle of an installation', async () => {
-    const h = await host({
-      // The installer runs in a subshell of the reconcile process; stop that process as
-      // systemd would.
-      duringInstall: 'kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"\nsleep 1\n',
-    });
+  // systemd stops the unit at its timeout and at shutdown. With KillMode=mixed only the request
+  // process gets TERM; the previous builder must come back and the answer must still be
+  // published, or the Updater sees silence and the host keeps a half-installed builder.
+  it('restores the previous builder and answers when the service is stopped mid-installation', async () => {
+    const h = await host({ duringInstall: `touch '${'MARKER'}'\nsleep 30\n` });
+    const marker = join(h.root, 'installing');
+    writeFileSync(
+      join(h.payload, 'buildkit', 'install.sh'),
+      readFileSync(join(h.payload, 'buildkit', 'install.sh'), 'utf8').replace('MARKER', marker),
+    );
     h.request('update-1');
-    expect(h.run('apply-request').status).not.toBe(0);
+    const service = h.start('apply-request');
+    const exited = new Promise<number | null>((done) => service.on('exit', (code) => done(code)));
+    const started = Date.now();
+    while (!existsSync(marker)) {
+      if (Date.now() - started > 10_000) throw new Error('the installer never started');
+      await new Promise((done) => setTimeout(done, 50));
+    }
+    service.kill('SIGTERM');
+    expect(await exited).not.toBe(0);
+    // Well before the installer's own 30 seconds: the stop ended its whole process group.
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(h.result()).toMatchObject({ id: 'update-1', ok: false });
     expect(h.result().message).toContain('interrupted');
     expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
+    expect(h.callsOf('systemctl')).toContain('systemctl restart verity-buildkit.service');
     expect(existsSync(h.record)).toBe(false);
   });
 
