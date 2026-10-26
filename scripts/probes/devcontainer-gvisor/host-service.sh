@@ -100,6 +100,14 @@ cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
 if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1; then
     tail -n 80 "$PROBE_EVIDENCE/network-egress.log" >&2
     sudo journalctl -u verity-buildkit --no-pager -n 60 >&2 || true
+    {
+        echo '--- host network state after the failed step'
+        sudo cat /etc/verity-buildkit/network.env /etc/verity-buildkit/cni.conflist
+        ip -4 addr; ip -4 route
+        sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables 2>&1 || true
+        sudo iptables-save
+        ls -l /usr/local/libexec/verity-buildkit/ /usr/local/libexec/verity-buildkit/cni/
+    } >&2
     false
 fi
 docker create --name "$name-marker" "$name:network" > /dev/null

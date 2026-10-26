@@ -7,6 +7,7 @@ FROM ${PROBE_BASE_IMAGE}
 # below is fatal: no retries, no `|| true`, no fallback mirror.
 RUN set -eux; \
     cat /etc/resolv.conf; \
+    cat /proc/net/route /proc/net/if_inet6 2>/dev/null || true; \
     getent hosts deb.debian.org; \
     apt-get -o Acquire::Retries=0 update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
