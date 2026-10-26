@@ -1,21 +1,14 @@
 {
   "schema": 1,
-  "version": "1.79.1",
+  "version": "1.79.3",
   "runtime": "1.79.0",
   "channel": "production",
-  "commit": "9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
-  "tag": "mobile-v1.79.1",
-  "branch": "staging-mobile-v1.79.1-9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
-  "baseline": "mobile-v1.79.0",
-  "group": "39af6fdd-4131-4d34-9621-602fde9aab30",
+  "commit": "613923b439da0c3b18cdfcd90424dfa7a431c030",
+  "tag": "mobile-v1.79.3",
+  "branch": "staging-mobile-v1.79.3-613923b439da0c3b18cdfcd90424dfa7a431c030",
+  "baseline": "mobile-v1.79.1",
+  "group": "0b5f662f-2226-47a4-b3f0-24211b648520",
   "notes": [
-    "publish session documents automatically without Git (#1841)",
-    "invalidate Google actions when leaving a chat (#1916)",
-    "restore connection provider icons and consistent statuses (#1915)",
-    "defer auxiliary session catalog requests (#1913)",
-    "preserve text field focus when showing focus shadow (#1914)",
-    "frame Google account choices as tappable rows (#1911)",
-    "restrict scroll reports to diagnostic recording (#1908)",
-    "respect credential permissions and prevent unsafe repair turns (#1900)"
+    "group findings and overview counts by package (#1929)"
   ]
 }
