@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run as root on the Docker host.' >&2; exit 1; }
 source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # renovate: datasource=docker depName=moby/buildkit
-buildkit_image=moby/buildkit:v0.23.2@sha256:ddd1ca44b21eda906e81ab14a3d467fa6c39cd73b9a39df1196210edcb8db59e
+buildkit_image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
 builder_gid=${VERITY_BUILDKIT_GID:-1102}
 [[ $builder_gid =~ ^[0-9]+$ && $builder_gid -gt 0 && $builder_gid -lt 65535 ]] || { echo 'Invalid VERITY_BUILDKIT_GID' >&2; exit 1; }
 existing_gid=$(getent group verity-buildkit | cut -d: -f3 || true)
