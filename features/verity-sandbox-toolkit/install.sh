@@ -36,7 +36,7 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.307}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.309}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.94.0}"
 # renovate: datasource=github-releases depName=cli/cli
@@ -52,7 +52,7 @@ CODEX_VERSION="${CODEXVERSION:-0.163.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.2.2}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.1.2}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.1.3}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
