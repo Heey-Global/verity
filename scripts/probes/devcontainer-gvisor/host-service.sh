@@ -14,7 +14,7 @@ cleanup() {
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
     docker rm -fv "$name-marker"
-    docker image rm "$name:positive" "$name:missing" "$name:stopped"
+    docker image rm "$name:positive" "$name:network" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
@@ -69,7 +69,7 @@ spawn_build() {
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
-        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "$work" "$1"
+        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
 docker create --name "$name-marker" "$name:positive" > /dev/null
@@ -81,6 +81,25 @@ sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
 sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE/runtime"
 node scripts/probes/devcontainer-gvisor/verify-evidence.mjs "$PROBE_EVIDENCE"
 node scripts/probes/devcontainer-gvisor/image-lifecycle.mjs "$name:positive" > "$PROBE_EVIDENCE/image-lifecycle.log" 2>&1
+# A RUN step must resolve names and reach package mirrors over HTTP and HTTPS
+# through the production worker configuration, uncached, on a runner whose
+# resolver is the systemd stub at 127.0.0.53 as on typical Ubuntu hosts.
+network_work=$(mktemp -d "$RUNNER_TEMP/verity-host-builder-network.XXXXXX")
+cp -R scripts/probes/devcontainer-gvisor/network/.devcontainer "$network_work/"
+PROBE_CONFIG="$network_work/.devcontainer/devcontainer.json" PROBE_SOURCE="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+const source = JSON.parse(readFileSync(process.env.PROBE_SOURCE, 'utf8'));
+const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
+config.build.args = source.build.args;
+writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
+NODE
+readlink -f /etc/resolv.conf > "$PROBE_EVIDENCE/host-resolv-conf.txt"
+cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
+spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1
+docker create --name "$name-marker" "$name:network" > /dev/null
+docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
+docker rm "$name-marker"
+grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e
