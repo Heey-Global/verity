@@ -95,7 +95,12 @@ writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
 NODE
 readlink -f /etc/resolv.conf > "$PROBE_EVIDENCE/host-resolv-conf.txt"
 cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
-spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1
+# On failure, show the build's own output in the job log as well: the evidence
+# artifact is not always reachable from where the failure is triaged.
+if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1; then
+    tail -n 80 "$PROBE_EVIDENCE/network-egress.log" >&2
+    false
+fi
 docker create --name "$name-marker" "$name:network" > /dev/null
 docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
 docker rm "$name-marker"
