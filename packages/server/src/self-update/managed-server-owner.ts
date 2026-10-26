@@ -732,13 +732,15 @@ const PENDING_MOUNT_MIGRATIONS: readonly {
   {
     key: 'builder',
     target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
-    readBackup: readManagedDevcontainerBuilderBackup,
+    // Resolved at call time, as the import was used before this table existed:
+    // callers that stub this module for unrelated paths need not provide it.
+    readBackup: (root) => readManagedDevcontainerBuilderBackup(root),
     addsGroups: true,
   },
   {
     key: 'diagnostic',
     target: '/run/verity-host-diagnostics',
-    readBackup: readManagedHostDiagnosticBackup,
+    readBackup: (root) => readManagedHostDiagnosticBackup(root),
     addsGroups: false,
   },
 ];
