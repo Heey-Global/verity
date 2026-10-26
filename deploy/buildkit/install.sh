@@ -28,7 +28,7 @@ chmod 0755 /usr/local/libexec/verity-buildkit/buildkitd.new
 /usr/local/libexec/verity-buildkit/buildkitd.new --version
 mv /usr/local/libexec/verity-buildkit/buildkitd.new /usr/local/libexec/verity-buildkit/buildkitd
 ln -sfn "/opt/verity/runsc/$RUNSC_RELEASE/runsc" /usr/local/libexec/verity-buildkit/runsc-real
-install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/network.sh" /usr/local/libexec/verity-buildkit/
+install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" /usr/local/libexec/verity-buildkit/
 # CNI plugins for the per-step build network. The pinned archive is verified and
 # extracted afresh every run, replacing any earlier or partial copy as a whole,
 # so a hand-installed or interrupted directory is adopted rather than trusted.

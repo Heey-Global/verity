@@ -14,7 +14,7 @@ cleanup() {
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
     docker rm -fv "$name-marker"
-    docker image rm "$name:positive" "$name:network" "$name:missing" "$name:stopped"
+    docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
@@ -117,18 +117,26 @@ docker create --name "$name-marker" "$name:network" > /dev/null
 docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
 docker rm "$name-marker"
 grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
-# The step's network is torn down with it: no per-step NAT or forwarding rule
-# for the build subnet may outlive the build, and a repeated installation must
-# keep the subnet and add nothing.
+# BuildKit keeps a step's namespace for the next step, and runsc strips the
+# interface of the namespace it ran in. A second networked build after the first
+# is what catches a builder where only the first step after a start can reach
+# anything. Neither it nor a repeated installation may add rules for the subnet.
 subnet=$(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env)
 [[ -n $subnet ]]
 sudo cp /etc/verity-buildkit/network.env /etc/verity-buildkit/cni.conflist "$PROBE_EVIDENCE/"
-count_subnet_rules() { sudo iptables-save | grep -cF "${subnet%/*}" || true; }
-rules_after_build=$(count_subnet_rules)
+count_subnet_rules() { sudo iptables-save | grep -cF "${subnet%.*}." || true; }
+rules_after_first=$(count_subnet_rules)
+if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egress-2.log" 2>&1; then
+    tail -n 60 "$PROBE_EVIDENCE/network-egress-2.log" >&2
+    false
+fi
+rules_after_second=$(count_subnet_rules)
 sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
 [[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
-[[ $(count_subnet_rules) == "$rules_after_build" ]]
-[[ $rules_after_build == 0 ]] || { sudo iptables-save | grep -F "${subnet%/*}" >&2; false; }
+rules_after_reinstall=$(count_subnet_rules)
+printf 'rules: first=%s second=%s reinstall=%s\n' "$rules_after_first" "$rules_after_second" "$rules_after_reinstall" | tee "$PROBE_EVIDENCE/subnet-rules.txt"
+(( rules_after_second <= rules_after_first && rules_after_reinstall <= rules_after_first )) \
+    || { sudo iptables-save | grep -F "${subnet%.*}." >&2; false; }
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e

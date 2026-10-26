@@ -16,9 +16,6 @@ insecure-entitlements = []
   networkMode = "cni"
   cniConfigPath = "/etc/verity-buildkit/cni.conflist"
   cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"
-  # No pre-created namespaces: each step gets a fresh one, and none (with its
-  # NAT and forwarding rules) lingers between builds.
-  cniPoolSize = 0
   binary = "/usr/local/libexec/verity-buildkit/runsc"
   snapshotter = "native"
   max-parallelism = 1

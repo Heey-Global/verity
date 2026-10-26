@@ -16,9 +16,10 @@ test('production worker preserves snapshots and delegates only to gVisor', () =>
       `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`,
     );
     chmodSync(runtime, 0o755);
-    const adapter = join(root, 'runsc-buildkit-args.sh');
-    writeFileSync(adapter, source('runsc-buildkit-args.sh'));
-    chmodSync(adapter, 0o755);
+    for (const helper of ['runsc-buildkit-args.sh', 'runsc-netns.sh']) {
+      writeFileSync(join(root, helper), source(helper));
+      chmodSync(join(root, helper), 0o755);
+    }
     const wrapper = join(root, 'runsc');
     writeFileSync(wrapper, source('runsc').replaceAll('/usr/local/libexec/verity-buildkit', root));
     const result = spawnSync('sh', [wrapper, 'run', '--bundle', '/bundle path', '--keep', 'id'], {

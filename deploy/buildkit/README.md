@@ -32,9 +32,14 @@ container. BuildKit's host-network default cannot be used with gVisor: it gives
 the step no interface, so runsc's sandbox network stack cannot resolve or reach
 anything. The CNI plugins (`bridge`, `host-local`, `loopback`, `firewall`) come
 from the release archive pinned in `cni.env`, verified by checksum and
-re-extracted on every installation. No namespace pool is kept, so a step's
-interface and its NAT and forwarding rules end with the step. The bridge has no
-IPv6 address.
+re-extracted on every installation. The bridge has no IPv6 address.
+
+BuildKit keeps a step's namespace and hands it to the next step, while runsc's
+sandbox network removes the addresses and routes of the interface it takes over.
+Without intervention only the first step after a builder start would reach the
+network. `runsc-netns.sh` records the interface's IPv4 address and default
+route before each `run` and restores them after runsc exits, so the reused
+namespace stays usable. Reuse does not add NAT or forwarding rules.
 
 Steps reach the same destinations a project sandbox on its Docker network
 reaches: the internet, and through NAT whatever the host can route to. They do
