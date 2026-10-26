@@ -99,12 +99,25 @@ cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
 # artifact is not always reachable from where the failure is triaged.
 if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1; then
     tail -n 80 "$PROBE_EVIDENCE/network-egress.log" >&2
+    sudo journalctl -u verity-buildkit --no-pager -n 60 >&2 || true
     false
 fi
 docker create --name "$name-marker" "$name:network" > /dev/null
 docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
 docker rm "$name-marker"
 grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
+# The step's network is torn down with it: no per-step NAT or forwarding rule
+# for the build subnet may outlive the build, and a repeated installation must
+# keep the subnet and add nothing.
+subnet=$(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env)
+[[ -n $subnet ]]
+sudo cp /etc/verity-buildkit/network.env /etc/verity-buildkit/cni.conflist "$PROBE_EVIDENCE/"
+count_subnet_rules() { sudo iptables-save | grep -cF "${subnet%/*}" || true; }
+rules_after_build=$(count_subnet_rules)
+sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
+[[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
+[[ $(count_subnet_rules) == "$rules_after_build" ]]
+[[ $rules_after_build == 0 ]] || { sudo iptables-save | grep -F "${subnet%/*}" >&2; false; }
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e
