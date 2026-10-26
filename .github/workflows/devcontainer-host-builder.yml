@@ -15,7 +15,16 @@ on:
       - 'packages/server/src/server.ts'
       - 'deploy/buildkit/**'
       - 'deploy/docker-compose.buildkit.yml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      upgrade-from:
+        description: Release whose builder an existing host still runs (host network, no CNI)
+        required: false
+        default: v4.59.1
+      upgrade-to:
+        description: Published release to upgrade to (default the newest release tag)
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -52,5 +61,43 @@ jobs:
         with:
           name: devcontainer-gvisor-evidence
           path: ${{ runner.temp }}/devcontainer-gvisor-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  # An existing host does not run this branch's builder: it runs what an older release
+  # installed, plus whatever was edited by hand. Upgrade exactly that state with a published,
+  # signed release through verity-host-builder, the path a managed update takes, and require
+  # DNS, HTTPS and apt-get in a build afterwards. Published releases only, so on demand.
+  upgrade-from-host-network:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Install the repository-pinned devcontainer CLI
+        run: npm ci --ignore-scripts
+      - name: Build the Server and dependencies
+        run: npx tsc -b packages/server
+      - name: Upgrade an older host-network builder through the host component
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/devcontainer-builder-upgrade-evidence
+          UPGRADE_FROM: ${{ inputs.upgrade-from }}
+          UPGRADE_TO_INPUT: ${{ inputs.upgrade-to }}
+        run: |
+          UPGRADE_TO="${UPGRADE_TO_INPUT:-$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)}"
+          export UPGRADE_TO
+          bash scripts/probes/devcontainer-gvisor/upgrade-from-host-network.sh
+      - name: Retain upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: devcontainer-builder-upgrade-evidence
+          path: ${{ runner.temp }}/devcontainer-builder-upgrade-evidence
           if-no-files-found: warn
           retention-days: 7
