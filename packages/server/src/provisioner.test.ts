@@ -6679,7 +6679,8 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
 const { appendFileSync, writeFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, 'devcontainer ' + args.join(' ') + '\\n');
-const spec = args[args.indexOf('--output') + 1];
+const spec = args.includes('--output') ? args[args.indexOf('--output') + 1] : '';
+if (!spec.startsWith('type=docker,dest=/')) process.exit(2);
 writeFileSync(spec.replace(/^type=docker,dest=/, ''), 'archive');
 `,
         { mode: 0o755 },
