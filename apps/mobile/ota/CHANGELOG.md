@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.79.3](https://github.com/Heey-Global/verity/compare/mobile-v1.79.2...mobile-v1.79.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1940](https://github.com/Heey-Global/verity/issues/1940)) ([6e6280b](https://github.com/Heey-Global/verity/commit/6e6280b9997e80c7cd27e0af69d3be34672073ef))
+
 ## [1.79.2](https://github.com/Heey-Global/verity/compare/mobile-v1.79.1...mobile-v1.79.2) (2026-10-26)
 
 
