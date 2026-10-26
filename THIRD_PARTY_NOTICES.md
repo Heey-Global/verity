@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 68 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1046 |
+| MIT | 1045 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -1288,7 +1288,6 @@ separately by `TRADEMARKS.md`.
 | uglify-js | BSD-2-Clause | [source](https://www.npmjs.com/package/uglify-js) |
 | unbash | ISC | [source](https://www.npmjs.com/package/unbash) |
 | undici-types | MIT | [source](https://www.npmjs.com/package/undici-types) |
-| undici | MIT | [source](https://www.npmjs.com/package/undici) |
 | unicode-canonical-property-names-ecmascript | MIT | [source](https://www.npmjs.com/package/unicode-canonical-property-names-ecmascript) |
 | unicode-match-property-ecmascript | MIT | [source](https://www.npmjs.com/package/unicode-match-property-ecmascript) |
 | unicode-match-property-value-ecmascript | MIT | [source](https://www.npmjs.com/package/unicode-match-property-value-ecmascript) |
