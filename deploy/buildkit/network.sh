@@ -186,7 +186,7 @@ apply() {
       "ipam": {
         "type": "host-local",
         "dataDir": "$STATE_DIR/cni",
-        "ranges": [[{ "subnet": "$subnet", "gateway": "$gateway", "rangeStart": "$first", "rangeEnd": "$last" }]],
+        "ranges": [[{ "subnet": "$subnet" }]],
         "routes": [{ "dst": "0.0.0.0/0" }]
       }
     },
