@@ -9,6 +9,13 @@ insecure-entitlements = []
 
 [worker.oci]
   enabled = true
+  # Each RUN step gets its own network namespace on a NATed host bridge. The
+  # host-network default leaves runsc's sandbox network with no interface, so
+  # no step could resolve or reach anything. network.sh writes the CNI config
+  # and chooses a subnet that does not overlap this host's routes.
+  networkMode = "cni"
+  cniConfigPath = "/etc/verity-buildkit/cni.conflist"
+  cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"
   binary = "/usr/local/libexec/verity-buildkit/runsc"
   snapshotter = "native"
   max-parallelism = 1

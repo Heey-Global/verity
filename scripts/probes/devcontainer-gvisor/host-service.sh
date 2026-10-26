@@ -14,7 +14,7 @@ cleanup() {
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
     docker rm -fv "$name-marker"
-    docker image rm "$name:positive" "$name:missing" "$name:stopped"
+    docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
@@ -69,7 +69,7 @@ spawn_build() {
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
-        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "$work" "$1"
+        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
 docker create --name "$name-marker" "$name:positive" > /dev/null
@@ -81,6 +81,62 @@ sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
 sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE/runtime"
 node scripts/probes/devcontainer-gvisor/verify-evidence.mjs "$PROBE_EVIDENCE"
 node scripts/probes/devcontainer-gvisor/image-lifecycle.mjs "$name:positive" > "$PROBE_EVIDENCE/image-lifecycle.log" 2>&1
+# A RUN step must resolve names and reach package mirrors over HTTP and HTTPS
+# through the production worker configuration, uncached, on a runner whose
+# resolver is the systemd stub at 127.0.0.53 as on typical Ubuntu hosts.
+network_work=$(mktemp -d "$RUNNER_TEMP/verity-host-builder-network.XXXXXX")
+cp -R scripts/probes/devcontainer-gvisor/network/.devcontainer "$network_work/"
+PROBE_CONFIG="$network_work/.devcontainer/devcontainer.json" PROBE_SOURCE="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+const source = JSON.parse(readFileSync(process.env.PROBE_SOURCE, 'utf8'));
+const config = JSON.parse(readFileSync(process.env.PROBE_CONFIG, 'utf8'));
+config.build.args = source.build.args;
+writeFileSync(process.env.PROBE_CONFIG, JSON.stringify(config));
+NODE
+readlink -f /etc/resolv.conf > "$PROBE_EVIDENCE/host-resolv-conf.txt"
+cat /etc/resolv.conf >> "$PROBE_EVIDENCE/host-resolv-conf.txt"
+# On failure, show the build's own output in the job log as well: the evidence
+# artifact is not always reachable from where the failure is triaged.
+if ! spawn_build "$name:network" "$network_work" > "$PROBE_EVIDENCE/network-egress.log" 2>&1; then
+    tail -n 80 "$PROBE_EVIDENCE/network-egress.log" >&2
+    sudo journalctl -u verity-buildkit --no-pager -n 60 >&2 || true
+    {
+        echo '--- host network state after the failed step'
+        sudo cat /etc/verity-buildkit/network.env /etc/verity-buildkit/cni.conflist
+        ip -4 addr; ip -4 route
+        sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables 2>&1 || true
+        sudo iptables-save
+        ls -l /usr/local/libexec/verity-buildkit/ /usr/local/libexec/verity-buildkit/cni/
+        echo '--- runsc view of the step network (latest debug logs)'
+        sudo bash -c 'ls -t /var/lib/verity-buildkit/evidence/runsc/*boot* 2>/dev/null | head -n 2 | xargs -r grep -hiE "netns|network|interface|link|route|eth|nic" | tail -n 60'
+        sudo bash -c 'ls -t /var/lib/verity-buildkit/evidence/runsc/* 2>/dev/null | head -n 4 | xargs -r grep -hiE "\"network\"|namespace|netns" | tail -n 20'
+    } >&2
+    false
+fi
+docker create --name "$name-marker" "$name:network" > /dev/null
+docker cp "$name-marker:/verity-network-probe" "$PROBE_EVIDENCE/network-marker.txt"
+docker rm "$name-marker"
+grep -Fx network-egress "$PROBE_EVIDENCE/network-marker.txt"
+# BuildKit keeps a step's namespace for the next step, and runsc strips the
+# interface of the namespace it ran in. A second networked build after the first
+# is what catches a builder where only the first step after a start can reach
+# anything. Neither it nor a repeated installation may add rules for the subnet.
+subnet=$(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env)
+[[ -n $subnet ]]
+sudo cp /etc/verity-buildkit/network.env /etc/verity-buildkit/cni.conflist "$PROBE_EVIDENCE/"
+count_subnet_rules() { sudo iptables-save | grep -cF "${subnet%.*}." || true; }
+rules_after_first=$(count_subnet_rules)
+if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egress-2.log" 2>&1; then
+    tail -n 60 "$PROBE_EVIDENCE/network-egress-2.log" >&2
+    false
+fi
+rules_after_second=$(count_subnet_rules)
+sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
+[[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
+rules_after_reinstall=$(count_subnet_rules)
+printf 'rules: first=%s second=%s reinstall=%s\n' "$rules_after_first" "$rules_after_second" "$rules_after_reinstall" | tee "$PROBE_EVIDENCE/subnet-rules.txt"
+(( rules_after_second <= rules_after_first && rules_after_reinstall <= rules_after_first )) \
+    || { sudo iptables-save | grep -F "${subnet%.*}." >&2; false; }
 expect_rejection() {
     local tag=$1 log=$2 code
     set +e

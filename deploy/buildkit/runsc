@@ -1,6 +1,8 @@
 #!/bin/sh
 # BuildKit owns snapshots; runsc's private root overlay would discard RUN writes.
+# runsc-netns.sh keeps the step's CNI interface addressed for the next step.
 set -eu
-exec /usr/local/libexec/verity-buildkit/runsc-buildkit-args.sh \
+exec /usr/local/libexec/verity-buildkit/runsc-netns.sh \
+    /usr/local/libexec/verity-buildkit/runsc-buildkit-args.sh \
     /usr/local/libexec/verity-buildkit/runsc-real \
     --root=/run/verity-buildkit/runsc --platform=systrap --network=sandbox --overlay2=none "$@"

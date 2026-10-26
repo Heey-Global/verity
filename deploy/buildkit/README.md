@@ -24,6 +24,44 @@ time and disables insecure entitlements and the containerd worker. BuildKit GC
 bounds its own cache independently of the Server's exported images. A build can
 use outbound networking; this service does not implement egress policy.
 
+## Build-step network
+
+Each `RUN` step gets its own network namespace, attached through CNI to the
+host bridge `verity-bk0` and NATed to the host's uplink, as Docker attaches a
+container. BuildKit's host-network default cannot be used with gVisor: it gives
+the step no interface, so runsc's sandbox network stack cannot resolve or reach
+anything. The CNI plugins (`bridge`, `host-local`, `loopback`, `firewall`) come
+from the release archive pinned in `cni.env`, verified by checksum and
+re-extracted on every installation. The bridge has no IPv6 address.
+
+BuildKit keeps a step's namespace and hands it to the next step, while runsc's
+sandbox network removes the addresses and routes of the interface it takes over.
+Without intervention only the first step after a builder start would reach the
+network. `runsc-netns.sh` records the interface's IPv4 address and default
+route before each `run` and restores them after runsc exits, so the reused
+namespace stays usable. Reuse does not add NAT or forwarding rules.
+
+Steps reach the same destinations a project sandbox on its Docker network
+reaches: the internet, and through NAT whatever the host can route to. They do
+not share a network with project sandboxes. They do share the `verity-bk0`
+bridge and its subnet with each other: a namespace per step separates their
+interfaces, not their network, and nothing filters traffic between addresses
+on the bridge. The worker runs one step at a time, which limits but does not
+remove that exposure.
+
+The subnet is chosen on the host, never fixed in the product. Before every
+builder start, `network.sh apply` takes the first `/24` from `10.213.0.0/16`,
+then `10.247.0.0/16`, that overlaps no host route in any routing table, no
+Docker network, no Docker address pool (configured or default) and not
+`100.64.0.0/10`. The choice is stored as `SUBNET` in
+`/etc/verity-buildkit/network.env` and kept while it stays free. If a later
+route takes it, such as a new VPN, the next start moves to a free range and
+logs the move; steps keep no network state, so a move is safe. To choose a
+subnet yourself, set `PINNED_SUBNET=<prefix>` in that file and restart
+`verity-buildkit`. A pinned subnet that overlaps something is refused with the
+overlap named, never replaced. If every candidate is taken, the builder does
+not start and says so.
+
 ## Installation and upgrade
 
 ### Managed installations (`install.sh` / `verity-install`)
