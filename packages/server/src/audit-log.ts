@@ -275,7 +275,18 @@ function groupByOperation(events: AuditEvent[], order: string[]): AuditEvent[][]
   }
   return order.flatMap((id) => {
     const list = groups.get(id);
-    return list ? [list.sort((a, b) => a.recordedAt.localeCompare(b.recordedAt))] : [];
+    // The stream position breaks ties between events recorded in the same millisecond,
+    // so the first event — which the summary reads its start and kind from — is stable.
+    return list
+      ? [
+          list.sort(
+            (a, b) =>
+              a.recordedAt.localeCompare(b.recordedAt) ||
+              a.streamId.localeCompare(b.streamId) ||
+              a.sequence - b.sequence,
+          ),
+        ]
+      : [];
   });
 }
 
@@ -335,7 +346,7 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
         .selectFrom('audit_events')
         .select([
           'operation_id',
-          // Text keeps the microseconds a JavaScript Date would drop from the cursor.
+          // Text, so the cursor round-trips the stored value exactly through Postgres.
           sql<string>`min(recorded_at)::text`.as('started_at'),
         ])
         .groupBy('operation_id');
