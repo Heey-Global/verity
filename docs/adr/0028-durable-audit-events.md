@@ -109,8 +109,8 @@ stream and run and only when the head actually moves, so a quiet stream whose
 tail has not changed produces no event and the legacy chain's format is
 untouched; restore-triggered advancement follows the same rule. The installation
 stream's own head advancement is recorded by its head record alone and never by
-an event, and is therefore exempt from the fail-closed rule, and events written by a run do not count as tail movement for that
-run's successor, so verification does not feed itself and the installation
+an event and is therefore exempt from the fail-closed rule. Events written by a
+run do not count as tail movement for that run's successor, so verification does not feed itself and the installation
 stream stays quiet when nothing else happens. The write-gap append is
 additionally fail-closed for the recovering process alone, as described below.
 Retention and overrun changes and the one-time legacy-prune confirmation are
@@ -264,7 +264,8 @@ row per stored event. Each row is built from the
   wake, server update) and time.
 - **Status:** a completed operation with its expected outcome shows no status
   word. Only deviations do: running (`transient`), failed, denied or refused
-  (`needsSetup`) and indeterminate (“Unknown”). The status intents have no
+  (`needsSetup`, whose labels already include Rejected and Error) and
+  indeterminate (“Unknown”). The status intents have no
   mapping for an unknown outcome yet; the design system needs that addition
   before the screen is built, rather than borrowing `optional`, whose meaning
   differs.
