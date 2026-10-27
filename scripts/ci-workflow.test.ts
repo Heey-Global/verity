@@ -3936,6 +3936,28 @@ describe('server image CI smoke', () => {
     .replace('${{ runner.temp }}', '$RUNNER_TEMP')
     .replace(/\$\{\{ env\.(\w+) \}\}/g, '$$$1');
 
+  it('builds the recovery candidate with the real pinned PostgreSQL image label', async () => {
+    const resolve = buildJob.steps.find((step) => step.id === 'postgres');
+    expect(resolve?.run).toBeDefined();
+    const root = await mkdtemp(join(tmpdir(), 'ci-postgres-pin-'));
+    const output = join(root, 'output');
+    try {
+      execFileSync('bash', ['-c', resolve!.run!], {
+        env: { ...process.env, GITHUB_OUTPUT: output },
+      });
+      const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8'));
+      expect(readFileSync(output, 'utf8').trim()).toBe(`image=${compose.services.postgres.image}`);
+      expect(build?.with?.['build-args']).toContain(
+        'VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}',
+      );
+      expect(readFileSync('deploy/Dockerfile', 'utf8')).toContain(
+        'LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports the image once and loads that archive into every daemon that runs it', () => {
     // `load: true` next to the archive would export the image twice, and a
     // `docker save` anywhere re-packs what was just unpacked — each a minute or

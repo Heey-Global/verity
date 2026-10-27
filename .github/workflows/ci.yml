@@ -1395,6 +1395,18 @@ jobs:
             memory-swap=6g
             cpu-period=100000
             cpu-quota=300000
+      - name: Resolve the bundled PostgreSQL pin
+        id: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*(postgres:[^[:space:]]+@sha256:[0-9a-f]{64})[[:space:]]*$/\1/p' deploy/docker-compose.yml)
+          if [[ ${#pins[@]} -ne 1 ]]; then
+            echo "expected exactly one digest-pinned postgres image in deploy/docker-compose.yml, found ${#pins[@]}" >&2
+            exit 1
+          fi
+          echo "image=${pins[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Build Verity server image
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1416,6 +1428,7 @@ jobs:
           tags: ${{ env.VERITY_CI_IMAGE }}
           build-args: |
             VERITY_SERVER_VERSION=99.0.0
+            VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ env.VERITY_CI_RELAY_IMAGE }}
           # THE canonical note for every `type=gha` cache in this repo; the other
           # eight build steps point back here. All three attributes exist because
