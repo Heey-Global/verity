@@ -189,3 +189,31 @@ it('links Forgejo projects to their instance and never to github.com', () => {
   const [, unknown] = projectGroups([project('g'), forgejoProject], [], new Map(), new Map(), null);
   expect(unknown?.repo).toBeUndefined();
 });
+
+it('keeps sessions available without declaring projects inactive before a successful list read', () => {
+  const sessions = [session('s', 'p')];
+  for (const state of ['loading', 'error'] as const) {
+    const groups = projectGroups([], sessions, new Map(), new Map(), null, [], null, state);
+    const group = groups.find((value) => value.id === 'orphan:p')!;
+    expect(group.sessions).toEqual(sessions);
+    expect(group.title).toBe(state === 'loading' ? 'Loading project' : 'Project unavailable');
+    expect(group.inactiveProjectId).toBeUndefined();
+    const loaded = projectGroups(
+      [project('p')],
+      sessions,
+      new Map(),
+      new Map(),
+      null,
+      groups,
+      null,
+      'ready',
+    );
+    expect(loaded.map((value) => value.id)).toEqual(['p']);
+    expect(loaded[0]?.title).toBe('p');
+  }
+  const missing = projectGroups([], sessions, new Map(), new Map(), null, [], null, 'ready');
+  expect(missing.find((value) => value.id === 'orphan:p')).toMatchObject({
+    title: 'Inactive project',
+    inactiveProjectId: 'p',
+  });
+});

@@ -232,7 +232,8 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
 // URL, so a referenced image loads only when its row is on screen and is cached
 // across reopens — the backlog of images never loads up front.
-import { Image as ExpoImage, type ImageSource } from 'expo-image';
+import type { ImageSource } from 'expo-image';
+import { Image as ExpoImage } from '../../components/ui/Image';
 import { UITextView } from 'react-native-uitextview';
 import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
@@ -1991,6 +1992,7 @@ export const SessionChat = memo(function SessionChat({
         return;
       }
       if (shouldRestoreToLatestEdge(anchor)) {
+        markSessionSwitch(switchTiming, 'restore-path-latest');
         readingAwayFromBottomRef.current = false;
         restoreToLatestEdge(anchor?.atBottom ? 'saved-bottom' : 'empty');
         return;
@@ -2002,6 +2004,7 @@ export const SessionChat = memo(function SessionChat({
         inTail,
       });
       if (!inTail) {
+        markSessionSwitch(switchTiming, 'restore-path-outside-tail');
         // Do not page deep history on open. A stale/bad deep anchor makes the session
         // feel stuck behind the restore cover and can fetch toward the beginning of a
         // long transcript. Restore only positions already loaded in the initial tail.
@@ -2015,6 +2018,7 @@ export const SessionChat = memo(function SessionChat({
       // Left scrolled up reading history and that row is still in the loaded tail:
       // cover the final positioning so the operator never sees the measurement
       // correction hop.
+      markSessionSwitch(switchTiming, 'restore-path-anchor');
       readingAwayFromBottomRef.current = true;
       setRestoring(true);
       setRestoreTarget(anchor);
@@ -2045,12 +2049,14 @@ export const SessionChat = memo(function SessionChat({
       // (restoreInterruptedRef) so we don't fight the operator taking over.
       const RESTORE_STEPS_MS = [0, 60, 150, 300, 500];
       const settle = () => {
+        markSessionSwitch(switchTiming, 'restore-settle');
         cancelRestoreTimers();
         setRestoring(false);
         setRestoreTarget(null);
         positioningRef.current = false;
       };
       const step = (i: number) => {
+        markSessionSwitch(switchTiming, 'restore-step', i);
         if (restoreInterruptedRef.current) {
           settle();
           return;
@@ -2089,13 +2095,15 @@ export const SessionChat = memo(function SessionChat({
       // Start once the open transition has settled (InteractionManager); a timeout backs
       // it up if that handle is delayed (mirrors the composer-focus pattern above).
       let started = false;
-      const begin = () => {
+      const begin = (source: number) => {
         if (started) return;
         started = true;
+        markSessionSwitch(switchTiming, 'restore-start', source);
         step(0);
       };
-      restoreTaskRef.current = InteractionManager.runAfterInteractions(begin);
-      restoreTimersRef.current.push(setTimeout(begin, 300));
+      markSessionSwitch(switchTiming, 'restore-scheduled');
+      restoreTaskRef.current = InteractionManager.runAfterInteractions(() => begin(0));
+      restoreTimersRef.current.push(setTimeout(() => begin(1), 300));
       return;
     }
     // A normal user-triggered history load is in flight — wait for it to settle.
@@ -2110,6 +2118,7 @@ export const SessionChat = memo(function SessionChat({
   useEffect(() => {
     if (!restoring) return;
     const timer = setTimeout(() => {
+      markSessionSwitch(switchTiming, 'restore-timeout');
       cancelRestoreTimers();
       setRestoring(false);
       setRestoreTarget(null);
@@ -7059,7 +7068,9 @@ function AgentMarkdown({
             block.type === 'code' ? (
               <View key={i} style={styles.codeBlock}>
                 {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-                {searchHighlightQuery ? (
+                {/* UITextView's web fallback bypasses the route's Unistyles
+                    Text transform, losing the code's theme color. */}
+                {Platform.OS === 'web' || searchHighlightQuery ? (
                   <Text style={styles.codeText} selectable>
                     <HighlightedSearchText text={block.content} />
                   </Text>

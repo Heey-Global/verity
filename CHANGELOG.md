@@ -6,6 +6,25 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.61.0](https://github.com/Heey-Global/verity/compare/v4.60.3...v4.61.0) (2026-10-27)
+
+
+### Features
+
+* **agent-seed:** ask before installing dependencies and gate every branch ([#1955](https://github.com/Heey-Global/verity/issues/1955)) ([6c279e2](https://github.com/Heey-Global/verity/commit/6c279e2ec4c21e8092ef0d3505ac2f17dd266744))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1953](https://github.com/Heey-Global/verity/issues/1953)) ([a7f8db8](https://github.com/Heey-Global/verity/commit/a7f8db805e8d9a6436ad7569af1e51c16c1ef6c8))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.2 ([#1951](https://github.com/Heey-Global/verity/issues/1951)) ([b1fc169](https://github.com/Heey-Global/verity/commit/b1fc1694320349a24207dca81f5f3a071d4e8b38))
+* **meetings:** forward Uplink webhook connection to online meetings ([#1967](https://github.com/Heey-Global/verity/issues/1967)) ([858b735](https://github.com/Heey-Global/verity/commit/858b735ef8245eda3a67dfd0929f9ed0b0b1b9eb))
+* **mobile:** start interactive native reads on a dedicated queue ([#1960](https://github.com/Heey-Global/verity/issues/1960)) ([8106af1](https://github.com/Heey-Global/verity/commit/8106af1e3df1db2d6e3fc78cc64d9ea133abf0e0))
+* **secrets:** bind Doppler approvals to provider authority ([#1959](https://github.com/Heey-Global/verity/issues/1959)) ([a99166e](https://github.com/Heey-Global/verity/commit/a99166ec0b45ac2d5bb716e8fbd9b275bc50cda1))
+* **server:** archive symlinks and generated trees during document migration ([#1961](https://github.com/Heey-Global/verity/issues/1961)) ([b50e0ff](https://github.com/Heey-Global/verity/commit/b50e0ff21e04e1b4b6fc207af960cd549812890d))
+* **server:** revoke stale HTTP MCP streams ([#1966](https://github.com/Heey-Global/verity/issues/1966)) ([05b67a8](https://github.com/Heey-Global/verity/commit/05b67a884ade8631375be22588ba55f9d4a1fec0))
+* **web:** restore attachments and inverted transcript layout ([#1963](https://github.com/Heey-Global/verity/issues/1963)) ([f36f14b](https://github.com/Heey-Global/verity/commit/f36f14b87d541318534a69ff88f5e17ef3ee32fd))
+
 ## [4.60.3](https://github.com/Heey-Global/verity/compare/v4.60.2...v4.60.3) (2026-10-26)
 
 

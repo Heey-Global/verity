@@ -1,3 +1,7 @@
+import {
+  brokeredDopplerBindingId,
+  parseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import type { SessionFileRootName } from './session-files.js';
 import {
   createDocumentWorkspaceProvisioner,
@@ -6567,7 +6571,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+      authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
+          const snapshot = await gatewayDeps.authorizationSnapshot?.({
+            sessionId,
+            turnId,
+            projectId,
+            toolName,
+            request,
+          });
+          if (snapshot === undefined) throw new Error('approved Doppler binding is unavailable');
+          return JSON.stringify(parseBrokeredDopplerBinding(snapshot));
+        }
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
@@ -6925,6 +6940,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         callId,
         invocationId,
+        authorizationSnapshot,
         requestMac,
         macKeyId,
         toolName,
@@ -6963,6 +6979,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             toolName,
             input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
+            ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+            authorizationSnapshot !== undefined
+              ? {
+                  brokeredGrantBindingId: brokeredDopplerBindingId(
+                    parseBrokeredDopplerBinding(authorizationSnapshot),
+                  ),
+                }
+              : {}),
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
