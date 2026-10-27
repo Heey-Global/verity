@@ -27889,25 +27889,48 @@ var MessageBuffer = class {
 
 // node_modules/@agentclientprotocol/sdk/dist/core/line-buffer.js
 var newline = 10;
+var carriageReturn = 13;
 var LineBuffer = class {
   /** Bytes of the current (incomplete) line, carried across chunks. */
   #pending;
   #maxMessageBytes;
-  constructor(maxMessageBytes) {
+  #splitOnCarriageReturn;
+  /** Whether the last line ended at a CR whose LF may start the next chunk. */
+  #afterCarriageReturn = false;
+  constructor(maxMessageBytes, { splitOnCarriageReturn = false } = {}) {
     this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
     this.#pending = new MessageBuffer(Math.min(Number.MAX_SAFE_INTEGER, this.#maxMessageBytes + 1));
+    this.#splitOnCarriageReturn = splitOnCarriageReturn;
   }
   /**
-   * Consumes a chunk, yielding each complete line without its trailing
-   * LF or CRLF.
+   * Consumes a chunk, yielding each complete line without its line ending.
    */
   *push(chunk) {
     let start = 0;
+    if (this.#afterCarriageReturn && chunk.byteLength > 0) {
+      this.#afterCarriageReturn = false;
+      if (chunk[0] === newline) {
+        start = 1;
+      }
+    }
     let newlineIndex = chunk.indexOf(newline, start);
-    while (newlineIndex !== -1) {
-      yield this.#takeLine(chunk.subarray(start, newlineIndex));
-      start = newlineIndex + 1;
-      newlineIndex = chunk.indexOf(newline, start);
+    let carriageReturnIndex = this.#splitOnCarriageReturn ? chunk.indexOf(carriageReturn, start) : -1;
+    while (newlineIndex !== -1 || carriageReturnIndex !== -1) {
+      if (carriageReturnIndex === -1 || newlineIndex !== -1 && newlineIndex < carriageReturnIndex) {
+        yield this.#takeLine(chunk.subarray(start, newlineIndex));
+        start = newlineIndex + 1;
+        newlineIndex = chunk.indexOf(newline, start);
+      } else {
+        yield this.#takeLine(chunk.subarray(start, carriageReturnIndex));
+        start = carriageReturnIndex + 1;
+        if (start === chunk.byteLength) {
+          this.#afterCarriageReturn = true;
+        } else if (chunk[start] === newline) {
+          start++;
+          newlineIndex = chunk.indexOf(newline, start);
+        }
+        carriageReturnIndex = chunk.indexOf(carriageReturn, start);
+      }
     }
     if (start < chunk.byteLength) {
       const tail = chunk.subarray(start);
@@ -27920,12 +27943,14 @@ var LineBuffer = class {
    * undefined if no bytes are buffered.
    */
   flush() {
+    this.#afterCarriageReturn = false;
     if (this.#pending.byteLength === 0) {
       return void 0;
     }
     return stripCarriageReturn(this.#pending.take());
   }
   clear() {
+    this.#afterCarriageReturn = false;
     this.#pending.clear();
   }
   #takeLine(tail) {
@@ -27938,7 +27963,7 @@ var LineBuffer = class {
   }
   #checkLine(tail) {
     const lastByte = tail.byteLength > 0 ? tail[tail.byteLength - 1] : this.#pending.lastByte;
-    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === 13 ? 1 : 0);
+    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === carriageReturn ? 1 : 0);
     if (byteLength > this.#maxMessageBytes) {
       this.clear();
       throw new MessageTooLargeError(this.#maxMessageBytes);
@@ -27946,7 +27971,7 @@ var LineBuffer = class {
   }
 };
 function stripCarriageReturn(line) {
-  return line[line.byteLength - 1] === 13 ? line.subarray(0, -1) : line;
+  return line[line.byteLength - 1] === carriageReturn ? line.subarray(0, -1) : line;
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/core/stream.js
