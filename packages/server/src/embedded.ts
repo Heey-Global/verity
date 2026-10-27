@@ -1,4 +1,5 @@
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
@@ -3733,6 +3734,19 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      buildStorage: new BuildStorage(
+        join(
+          config.dataVolumeRoot ??
+            config.dataDir ??
+            config.workspacesDir ??
+            join(tmpdir(), 'verity'),
+          'build-storage',
+        ),
+        undefined,
+        undefined,
+        undefined,
+        '/run/verity-buildkit',
+      ),
       imageReferences,
       audit: auditRecorder,
       store: eventStore,
@@ -4660,6 +4674,7 @@ export async function buildEmbeddedServer(
       dataRoot: config.dataVolumeRoot,
       serverContainerId: config.diagnosticServerContainerId,
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true

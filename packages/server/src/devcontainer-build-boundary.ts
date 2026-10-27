@@ -360,8 +360,9 @@ export interface DevcontainerBuildSnapshot {
  * Linux /proc is already required by the sandbox deployment. */
 export async function createDevcontainerBuildSnapshot(
   workspaceFolder: string,
+  temporaryRoot = tmpdir(),
 ): Promise<DevcontainerBuildSnapshot> {
-  const snapshot = mkdtempSync(join(tmpdir(), 'verity-build-'));
+  const snapshot = mkdtempSync(join(temporaryRoot, 'verity-build-'));
   const links: string[] = [];
   let entries = 0;
   let bytes = 0;

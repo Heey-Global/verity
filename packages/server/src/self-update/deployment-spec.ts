@@ -308,8 +308,7 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         // OPTIONAL, like the diagnostic bind: specs sealed before the builder
         // existed stay parseable, and only a verified installation adds it.
         (source.path === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
-          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
-          mount.readOnly))
+          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY))
     ) {
       mounts.push({
         source: { kind: 'bind', path: source.path },
@@ -340,7 +339,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   if (
     mounts.length < 3 ||
     mounts.length > 9 ||
-    mounts.some((mount) => mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target)) ||
+    mounts.some(
+      (mount) =>
+        mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
+        mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target),
+    ) ||
     new Set(mountKeys).size !== mountKeys.length ||
     // Distinct targets, not just distinct keys: two binds from different host
     // paths onto /var/run/docker.sock produce different keys, and with a fourth

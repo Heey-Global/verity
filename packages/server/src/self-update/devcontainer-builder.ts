@@ -53,7 +53,7 @@ export async function readDevcontainerBuilderCapability(
  * Older releases do not, and are never asked for it.
  */
 export const DEVCONTAINER_BUILDER_LABEL = 'org.verity.devcontainer-builder';
-export const DEVCONTAINER_BUILDER_CONTRACT = '1';
+export const DEVCONTAINER_BUILDER_CONTRACT = '2';
 
 const INSTALLER_ONCE =
   'Re-run the Verity installer once on the host; later updates then install the builder ' +

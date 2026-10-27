@@ -10,6 +10,7 @@ import {
 import {
   readManagedDeployment,
   readManagedDevcontainerBuilderBackup,
+  readManagedBuilderAdmissionBackup,
   readManagedHostDiagnosticBackup,
 } from './managed-deployment.js';
 
@@ -715,7 +716,7 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
   };
 }
 
-type PendingMount = 'diagnostic' | 'builder';
+type PendingMount = 'diagnostic' | 'builder' | 'builder-admission';
 
 /**
  * Install migrations that add a bind to an adopted spec, newest first. Each one
@@ -729,6 +730,12 @@ const PENDING_MOUNT_MIGRATIONS: readonly {
   /** Groups the migration may have added alongside its bind. */
   readonly addsGroups: boolean;
 }[] = [
+  {
+    key: 'builder-admission',
+    target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+    readBackup: (root) => readManagedBuilderAdmissionBackup(root),
+    addsGroups: false,
+  },
   {
     key: 'builder',
     target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
@@ -786,7 +793,11 @@ async function previousAuthority(
 ): Promise<ServerDeploymentSpec | undefined> {
   if (
     !candidate.mounts.some((mount) => mount.target === migration.target) ||
-    inspect.mounts?.some((mount) => mount.destination === migration.target)
+    inspect.mounts?.some(
+      (mount) =>
+        mount.destination === migration.target &&
+        (migration.key !== 'builder-admission' || mount.readWrite !== false),
+    )
   )
     return undefined;
   const backup = await migration.readBackup(root);
@@ -796,7 +807,12 @@ async function previousAuthority(
     deploymentId: candidate.deploymentId,
     image: candidate.image,
     environment: candidate.environment,
-    mounts: candidate.mounts.filter((mount) => mount.target !== migration.target),
+    mounts:
+      migration.key === 'builder-admission'
+        ? candidate.mounts.map((mount) =>
+            mount.target === migration.target ? { ...mount, readOnly: true } : mount,
+          )
+        : candidate.mounts.filter((mount) => mount.target !== migration.target),
     user: {
       uid: candidate.user.uid,
       gid: candidate.user.gid,
@@ -973,7 +989,8 @@ export async function reconcileManagedServer(
         if (previousVerdict.kind !== 'structural') {
           verdict = previousVerdict;
           diagnosticMountPending = previous.pending.has('diagnostic');
-          devcontainerBuilderPending = previous.pending.has('builder');
+          devcontainerBuilderPending =
+            previous.pending.has('builder') || previous.pending.has('builder-admission');
         }
       }
     }

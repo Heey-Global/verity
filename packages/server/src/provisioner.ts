@@ -1,3 +1,4 @@
+import type { BuildStorage, BuildStorageLease } from './build-storage.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { connectDocumentCode } from './document-code.js';
 import { migrateLocalDocuments } from './document-migration.js';
@@ -376,6 +377,8 @@ const defaultGitRunner: GitRunner = async (args, opts) => {
  *  message carries the build stderr so the provisioner can surface a truncated
  *  `provision_error`. Kept injectable so tests never spawn a real build. */
 export type DevcontainerBuildSpawner = (args: {
+  storageLease?: BuildStorageLease;
+  signal?: AbortSignal;
   workspaceFolder: string;
   imageName: string;
   dockerHost: string;
@@ -515,12 +518,18 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   additionalFeatures,
   registryToken,
   noCache,
+  storageLease,
+  signal,
 }) => {
   const endpoint = devcontainerBuilderEndpoint();
+  const run = storageLease?.run ?? execFileAsync;
+  let phase = 'builder setup';
   const builderName = `verity-build-${randomUUID()}`;
   // Image/feature metadata can also perform localEnv substitution. Validating
   // the repository config alone must not expose the server's environment.
-  const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
+  const dockerConfigDir = mkdtempSync(
+    join(storageLease?.directory ?? tmpdir(), 'verity-dockercfg-'),
+  );
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: dockerConfigDir,
@@ -544,13 +553,14 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     }
     // A private buildx record per attempt prevents global selection or concurrent-build races.
     // Creating a remote driver cannot start a Docker/runc worker on failure.
-    await execFileAsync(
+    await run(
       'docker',
       ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
-      { env, timeout: 30_000, maxBuffer: 1024 * 1024 },
+      { env, ...(signal === undefined ? {} : { signal }), timeout: 30_000, maxBuffer: 1024 * 1024 },
     );
-    await execFileAsync('docker', ['buildx', 'inspect', builderName, '--bootstrap'], {
+    await run('docker', ['buildx', 'inspect', builderName, '--bootstrap'], {
       env,
+      ...(signal === undefined ? {} : { signal }),
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
     });
@@ -560,7 +570,8 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     // stream; on Docker Engine 29 the image was tagged while buildx and BuildKit both
     // kept waiting until the build timeout. A complete file has no such hand-over.
     const archive = join(dockerConfigDir, 'image.tar');
-    const built = await execFileAsync(
+    phase = 'build/export';
+    const built = await run(
       'devcontainer',
       devcontainerBuildArgs({
         workspaceFolder,
@@ -569,22 +580,40 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
         noCache,
         output: `type=docker,dest=${archive}`,
       }),
-      { env, timeout: 30 * 60_000, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
+      {
+        env,
+        ...(signal === undefined ? {} : { signal }),
+        remoteOperation: 'build-export',
+        timeout: 30 * 60_000,
+        maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES,
+      },
     );
-    await execFileAsync('docker', ['load', '--input', archive], {
+    phase = 'image import';
+    await run('docker', ['load', '--input', archive], {
       env,
+      ...(signal === undefined ? {} : { signal }),
+      remoteOperation: 'image-import',
       timeout: 15 * 60_000,
       maxBuffer: 1024 * 1024,
     });
     return built;
+  } catch (cause) {
+    throw new Error(
+      `Devcontainer ${phase} failed: ${buildFailureMessage(cause)}` +
+        (storageLease?.retainArtifacts
+          ? '. Remote termination is unconfirmed; further builds are blocked and owned files retained. Follow deploy/buildkit/README.md offline reconciliation; do not delete reservation records.'
+          : ''),
+      { cause },
+    );
   } finally {
     // Removing a remote driver only removes this private client record, never worker state.
-    await execFileAsync('docker', ['buildx', 'rm', builderName], {
+    await run('docker', ['buildx', 'rm', builderName], {
       env,
+      ...(signal === undefined ? {} : { signal }),
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
     }).catch(() => undefined);
-    rmSync(dockerConfigDir, { recursive: true, force: true });
+    if (!storageLease?.retainArtifacts) rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
 
@@ -862,6 +891,8 @@ export interface ProvisionerOptions {
    *  every project runs the base image. Injectable so tests
    *  don't spawn a real build. */
   devcontainerBuild?: DevcontainerBuildSpawner | undefined;
+  /** Instance-wide context/build/export/import admission and owned artifact recovery. */
+  buildStorage?: BuildStorage | undefined;
   /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
   imageReferences?: DerivedImageReferences | undefined;
   /** Durable audit trail for project image builds (ADR 0028). When wired, a build
@@ -5913,8 +5944,10 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath);
+    const storageLease = this.opts.buildStorage?.acquire();
+    let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
     try {
+      snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);
       const snapshotDevcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
       const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(snapshotDevcontainerDir);
       if (unsupportedKeys.length > 0) {
@@ -5956,6 +5989,7 @@ export class ProvisionerImpl implements Provisioner {
             usesConfiguredOverride: !usesDefaultImage,
           };
       }
+      storageLease?.reserveBuild();
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
       // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
@@ -6003,6 +6037,7 @@ export class ProvisionerImpl implements Provisioner {
       });
       try {
         await build({
+          ...(storageLease === undefined ? {} : { storageLease }),
           workspaceFolder: snapshot.workspaceFolder,
           imageName: derivedTag,
           dockerHost,
@@ -6035,7 +6070,11 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     } finally {
-      await snapshot.dispose();
+      try {
+        if (!storageLease?.retainArtifacts) await snapshot?.dispose();
+      } finally {
+        storageLease?.dispose();
+      }
     }
   }
 
