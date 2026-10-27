@@ -192,6 +192,36 @@ describe('owned attempt recovery and cancellation', () => {
     expect(existsSync(lease.directory)).toBe(false);
   });
 
+  it('cancels a SIGTERM-resistant command and its descendants promptly', async () => {
+    const f = fixture();
+    const lease = f.manager().acquire();
+    const controller = new AbortController();
+    const ready = join(f.directory, 'ready');
+    const marker = join(f.directory, 'late-write');
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unsafe'), 800)`;
+    const pending = lease.run(
+      process.execPath,
+      [
+        '-e',
+        `process.on('SIGTERM', () => {}); require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio:'inherit'}); require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000)`,
+      ],
+      { ...commandOptions, signal: controller.signal },
+    );
+    const rejected = expect(pending).rejects.toThrow('aborted');
+    try {
+      await expect.poll(() => existsSync(ready), { timeout: 2000 }).toBe(true);
+      controller.abort();
+      await rejected;
+    } finally {
+      controller.abort();
+      await pending.catch(() => {});
+      lease.dispose();
+    }
+    await setTimeout(1000);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(lease.directory)).toBe(false);
+  });
+
   it('reconciles a positively abandoned attempt, preserving unrecognized directories', () => {
     const f = fixture();
     const abandoned = join(f.root, 'attempt-abandoned');

@@ -275,6 +275,9 @@ export class BuildStorage {
             child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk));
             child.once('error', (error) => {
               failure ??= error;
+              // AbortSignal only sends SIGTERM to the leader. Terminate the
+              // whole group even when that leader ignores the signal.
+              terminate();
             });
             const timeout = setTimeout(() => {
               failure ??= new Error('Build command timed out');
