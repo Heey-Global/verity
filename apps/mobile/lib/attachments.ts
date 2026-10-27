@@ -111,9 +111,9 @@ export function releaseDroppedFile(uri: string): void {
   new FsFile(uri).delete();
 }
 
-async function attachmentFileBase64(uri: string): Promise<string> {
+async function attachmentFileBase64(uri: string, file?: Blob): Promise<string> {
   if (Platform.OS !== 'web') return new FsFile(uri).base64();
-  const blob = await droppedFileData(uri);
+  const blob = file ?? (await droppedFileData(uri));
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -335,7 +335,7 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
   const empty: string[] = [];
   for (const asset of result.assets.slice(0, remaining)) {
     try {
-      const data = await attachmentFileBase64(asset.uri);
+      const data = await attachmentFileBase64(asset.uri, asset.file);
       if (data.length === 0) {
         empty.push(asset.name);
         continue;
