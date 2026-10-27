@@ -84,6 +84,64 @@ describe('iOS scene lifecycle', () => {
     }
   });
 
+  // The silent failure: iOS launches Verity without a scene to deliver a watch
+  // recording, React Native never starts, and nobody receives the file.
+  it('activates the watch inbox at launch, outside the scene', async () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const inbox = native.match(/final class (\w+): NSObject, WCSessionDelegate/)?.[1];
+    expect(inbox).toBeDefined();
+    expect(native).toContain('static let shared');
+    const { swift } = await generate();
+    const launch = swift.slice(
+      swift.indexOf('didFinishLaunchingWithOptions launchOptions'),
+      swift.indexOf('return super.application(application, didFinishLaunchingWithOptions'),
+    );
+    expect(launch).toContain(`${inbox}.shared.activate()`);
+  });
+
+  // A killed final attempt otherwise leaves the watch waiting until retention expires.
+  it('finishes an interrupted exhausted watch transcription before retention cleanup', () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const exhausted = native.slice(
+      native.indexOf('} else if (entry.attempts ?? 0) >= Self.maxAttempts {'),
+      native.indexOf('} else if entry.lastAttemptAt'),
+    );
+    expect(exhausted).toMatch(/if entry.state == \.received \{\s*finish\(/);
+    expect(exhausted).toContain('.failure(NSError(');
+    expect(exhausted.indexOf('finish(')).toBeLessThan(exhausted.indexOf('if expired'));
+    const finish = native.slice(native.indexOf('private func finish('));
+    expect(finish).toMatch(/case \.failure\(let error\):\s*entry.state = \.failed/);
+    expect(finish).toContain('try save(entry)');
+    expect(finish).toMatch(
+      /if entry.state == \.transcribed \|\| \(entry.attempts \?\? 0\) >= Self.maxAttempts \{\s*self.reply\(reply\)/,
+    );
+  });
+
+  // A terminal reply deletes the watch copy, so persistence must succeed first.
+  it('persists a watch transcript before releasing either audio copy', () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const finish = native.slice(
+      native.indexOf('private func finish('),
+      native.indexOf('private static func transcribeFile('),
+    );
+    const saved = finish.indexOf('try save(entry)');
+    expect(saved).toBeGreaterThan(-1);
+    expect(saved).toBeLessThan(finish.indexOf('removeItem(at: audioURL(id))'));
+    expect(saved).toBeLessThan(finish.indexOf('self.reply(reply)'));
+    expect(finish.slice(saved)).toMatch(/catch \{[^}]*return\s*\}/);
+  });
+
+  // Incremental prebuild must also activate reception in previously generated projects.
+  it('upgrades the previous scene migration with watch inbox activation', async () => {
+    const { swift } = await generate();
+    const previous = swift.replace('    VerityWatchInbox.shared.activate()\n', '');
+    expect(previous).not.toContain('VerityWatchInbox.shared.activate()');
+    expect((await generate(previous)).swift).toBe(swift);
+    await expect(
+      generate(previous.replace('    sceneLaunchOptions = launchOptions', '')),
+    ).rejects.toThrow('watch inbox migration');
+  });
+
   it('is idempotent and rejects template drift rather than retaining legacy startup', async () => {
     const { swift } = await generate();
     expect((await generate(swift)).swift).toBe(swift);

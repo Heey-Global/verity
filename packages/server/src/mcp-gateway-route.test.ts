@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
+import { isDocumentWorkspace } from './document-workspace.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
   markInternalConnections,
@@ -33,11 +34,14 @@ const TEST_UID = process.getuid?.() ?? 1000;
 const TEST_GID = process.getgid?.() ?? 1000;
 
 let ctx: TestDb;
+let projectRoot: string;
 beforeAll(async () => {
   ctx = await createTestDb();
+  projectRoot = mkdtempSync(join(tmpdir(), 'verity-mcp-projects-'));
 });
 afterAll(async () => {
   await ctx.close();
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 beforeEach(async () => {
   await truncateAll(ctx.db);
@@ -86,6 +90,7 @@ function build(
     runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics>;
     linkedTools?: boolean;
     planningTools?: boolean;
+    vulnerabilityTools?: boolean;
     unlocked?: boolean;
     deferLinkedApproval?: boolean;
     /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
@@ -107,20 +112,22 @@ function build(
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
-      options.trustedCli === true
-        ? ['verity_http_request', 'verity_secret_run']
-        : options.linkedTools === true
-          ? ['verity_send_session_message', 'verity_list_linked_sessions']
-          : options.planningTools === true
-            ? [
-                'verity_start_planning',
-                'verity_present_plan',
-                'verity_end_planning',
-                'verity_tasks',
-                'verity_app_help',
-                'verity_http_request',
-              ]
-            : ['verity_http_request'],
+      options.vulnerabilityTools === true
+        ? ['verity_vulnerabilities']
+        : options.trustedCli === true
+          ? ['verity_http_request', 'verity_secret_run']
+          : options.linkedTools === true
+            ? ['verity_send_session_message', 'verity_list_linked_sessions']
+            : options.planningTools === true
+              ? [
+                  'verity_start_planning',
+                  'verity_present_plan',
+                  'verity_end_planning',
+                  'verity_tasks',
+                  'verity_app_help',
+                  'verity_http_request',
+                ]
+              : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -269,7 +276,8 @@ function build(
     secretCipher: cipher,
     ...(options.projectSpawns
       ? {
-          projectCloneRoot: '/data/dev',
+          dataRoot: join(projectRoot, 'data'),
+          projectCloneRoot: join(projectRoot, 'projects'),
           projectBackend: (_project: unknown, selected: Backend) => selected,
           projectWorktrees: () => ({
             add: async () => `/wt/new-handoff-${crypto.randomUUID()}`,
@@ -1451,7 +1459,9 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       };
       expect(body.result.isError, body.result.content[0]?.text).toBeUndefined();
       const result = JSON.parse(body.result.content[0]!.text) as { sessionId: string };
-      expect((await harness.store.getSession(result.sessionId))?.model).toBe('codex/default');
+      const session = await harness.store.getSession(result.sessionId);
+      expect(session?.model).toBe('codex/default');
+      expect(isDocumentWorkspace(session!.worktree)).toBe(true);
       expect(harness.dispatches).toHaveLength(1);
       await harness.store.updateProjectSettings('website', {
         allowedAgents: ['opencode'],
@@ -2219,4 +2229,53 @@ it('keeps a newer proposal when an agent dismissal confirmation races a revision
     expect(JSON.parse(response.body)).toMatchObject({ result: { isError: true } });
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+});
+
+it('serves vulnerability reads through the audited gateway and refuses foreign resource overrides', async () => {
+  const harness = build({ vulnerabilityTools: true });
+  await harness.store.upsertProject({
+    id: 'p1',
+    owner: 'test',
+    repo: 'vulns',
+    containerName: 'vulns',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/vulns',
+    model: 'test',
+  });
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Read vulnerabilities',
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const call = (args: object) =>
+      postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_vulnerabilities', arguments: args },
+      });
+    const read = await call({ action: 'read', scope: 'session' });
+    expect(read.body).toContain('findings');
+    expect(read.body).toContain('comparable');
+    await harness.store.startSessionPlanning('s1');
+    expect((await call({ action: 'read', scope: 'project' })).body).toContain('findings');
+    expect((await call({ action: 'scan', scope: 'project' })).body).toContain('planning mode');
+    expect(
+      (await call({ action: 'read', scope: 'project', projectId: 'foreign' })).body,
+    ).not.toContain('comparable');
+  });
+  expect(harness.approvals).toEqual([]);
+  expect(harness.invocations).toEqual([]);
+  expect(
+    harness.records.some(
+      (r) => r.toolName === 'verity_vulnerabilities' && r.kind === 'gateway_call_served',
+    ),
+  ).toBe(true);
 });

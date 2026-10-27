@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
+  DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
   parseServerDeploymentSpec,
   sealDeploymentSpec,
   type ServerDeploymentSpec,
@@ -23,6 +24,8 @@ export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployme
 const MANAGED_DEPLOYMENT_MARKER_VERSION = 1 as const;
 export const MANAGED_DEPLOYMENT_SPEC_FILE = 'server-deployment.json';
 export const MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE = 'server-deployment.before-host-diagnostics.json';
+export const MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE =
+  'server-deployment.before-devcontainer-builder.json';
 export const MANAGED_DEPLOYMENT_MARKER_FILE = 'managed-deployment.json';
 
 interface ManagedDeploymentMarker {
@@ -90,18 +93,30 @@ export async function readManagedDeployment(root: string): Promise<ManagedDeploy
   }
 }
 
+async function readManagedBackup(
+  rootPath: string,
+  name: string,
+): Promise<ServerDeploymentSpec | null> {
+  const root = await openUpdaterOwnedRoot(rootPath);
+  try {
+    return parseServerDeploymentSpec(await readJson(join(`/proc/self/fd/${root.fd}`, name)));
+  } finally {
+    await root.close();
+  }
+}
+
 /** Read the pre-migration authority through the same owned-directory boundary. */
 export async function readManagedHostDiagnosticBackup(
   rootPath: string,
 ): Promise<ServerDeploymentSpec | null> {
-  const root = await openUpdaterOwnedRoot(rootPath);
-  try {
-    return parseServerDeploymentSpec(
-      await readJson(join(`/proc/self/fd/${root.fd}`, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE)),
-    );
-  } finally {
-    await root.close();
-  }
+  return readManagedBackup(rootPath, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE);
+}
+
+/** The authority as it was before {@link migrateManagedDevcontainerBuilder}. */
+export async function readManagedDevcontainerBuilderBackup(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  return readManagedBackup(rootPath, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE);
 }
 
 async function writeExclusive(path: string, value: unknown): Promise<void> {
@@ -364,14 +379,34 @@ export async function migrateManagedHostDiagnostics(options: {
   }
 }
 
-/** Installer-only capability migration; old deployments remain readable without these mounts. */
-export async function migrateManagedBackupMounts(options: {
+/** The read-only builder socket bind a migrated or freshly sealed spec carries. */
+export const DEVCONTAINER_BUILDER_MOUNT: ServerDeploymentSpecBody['mounts'][number] = {
+  source: { kind: 'bind', path: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY },
+  target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+  readOnly: true,
+};
+
+/**
+ * Give an adopted Server the dedicated devcontainer builder: the read-only
+ * socket bind and the socket's group, changing no other sealed authority.
+ *
+ * Only a caller that has verified the host service may ask for this; the
+ * installer does, after the builder unit is active and its socket exists. Old
+ * specs stay valid without it, and a Server built from one reports repository
+ * builds as unavailable rather than pretending a builder is there.
+ *
+ * Older releases cannot parse the new bind, so the previous authority is kept as
+ * {@link MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE} before it changes, and an
+ * existing backup is never overwritten.
+ */
+export async function migrateManagedDevcontainerBuilder(options: {
   root: string;
   deploymentId: string;
   image: string;
-  backupPath: string;
-  identityPath: string;
+  gid: number;
 }): Promise<ManagedDeploymentState> {
+  if (!Number.isSafeInteger(options.gid) || options.gid <= 0 || options.gid >= 65535)
+    throw new Error('devcontainer builder group must be a positive group ID');
   const root = await openUpdaterOwnedRoot(options.root);
   try {
     const pinnedRoot = `/proc/self/fd/${root.fd}`;
@@ -381,48 +416,48 @@ export async function migrateManagedBackupMounts(options: {
       existing.spec.deploymentId !== options.deploymentId ||
       existing.spec.image !== options.image
     )
-      throw new Error('Managed authority changed before backup migration');
-    const requested = [
-      {
-        source: { kind: 'bind' as const, path: options.backupPath },
-        target: '/run/verity-backups',
-        readOnly: false,
-      },
-      {
-        source: { kind: 'bind' as const, path: options.identityPath },
-        target: '/run/verity-backup-identity',
-        readOnly: false,
-      },
-    ];
-    for (const mount of requested) {
-      const current = existing.spec.mounts.find((item) => item.target === mount.target);
-      if (
-        current &&
-        (current.source.kind !== 'bind' ||
-          current.source.path !== mount.source.path ||
-          current.readOnly)
-      )
-        throw new Error('Backup mount differs from sealed authority');
-    }
-    if (
-      requested.every((mount) =>
-        existing.spec.mounts.some((current) => current.target === mount.target),
-      )
-    )
-      return existing;
-    const body: ServerDeploymentSpecBody & { checksum?: string } = { ...existing.spec };
-    delete body.checksum;
-    const updated = parseServerDeploymentSpec(
-      sealDeploymentSpec({ ...body, mounts: [...body.mounts, ...requested] }),
+      throw new Error('managed deployment authority changed before builder migration');
+    const sealed = existing.spec.mounts.some(
+      (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
     );
-    if (updated === null) throw new Error('Backup deployment mounts are not allowlisted');
-    const backupName = 'deployment-spec.before-backups.json';
-    const backup = await readJson(join(pinnedRoot, backupName));
-    if (backup === undefined) await writeAtomicExclusive(pinnedRoot, backupName, existing.spec);
+    const grouped = existing.spec.user.supplementaryGids.includes(options.gid);
+    if (sealed && grouped) return existing;
+    // A sealed bind without this group was not written by this migration: the
+    // socket group changed, and guessing which one the Server should join would
+    // be granting authority nobody verified.
+    if (sealed) throw new Error('devcontainer builder group differs from sealed authority');
+    const body: ServerDeploymentSpecBody = {
+      schemaVersion: existing.spec.schemaVersion,
+      deploymentId: existing.spec.deploymentId,
+      image: existing.spec.image,
+      environment: existing.spec.environment,
+      mounts: [...existing.spec.mounts, DEVCONTAINER_BUILDER_MOUNT],
+      user: {
+        uid: existing.spec.user.uid,
+        gid: existing.spec.user.gid,
+        supplementaryGids: grouped
+          ? existing.spec.user.supplementaryGids
+          : [...existing.spec.user.supplementaryGids, options.gid],
+      },
+      restart: existing.spec.restart,
+      network: existing.spec.network,
+      platform: existing.spec.platform,
+      security: existing.spec.security,
+      ...(existing.spec.resources === undefined ? {} : { resources: existing.spec.resources }),
+    };
+    const validated = parseServerDeploymentSpec(sealDeploymentSpec(body));
+    if (validated === null) throw new Error('devcontainer builder mount is not allowlisted');
+    const backup = await readJson(join(pinnedRoot, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE));
+    if (backup === undefined)
+      await writeAtomicExclusive(
+        pinnedRoot,
+        MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
+        existing.spec,
+      );
     else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
-      throw new Error('Backup authority checkpoint is invalid');
-    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, updated);
-    return { managed: true, marker: existing.marker, spec: updated };
+      throw new Error('devcontainer builder authority backup is invalid');
+    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);
+    return { managed: true, marker: existing.marker, spec: validated };
   } finally {
     await root.close();
   }
@@ -629,6 +664,70 @@ export async function writeManagedUpdateChannel(
     const state = await readManagedDeploymentFiles(pinnedRoot);
     if (!state.managed) throw new Error(state.reason);
     await writeAtomic(pinnedRoot, 'update-channel.json', channel);
+  } finally {
+    await root.close();
+  }
+}
+
+/** Installer-only capability migration; old deployments remain readable without these mounts. */
+export async function migrateManagedBackupMounts(options: {
+  root: string;
+  deploymentId: string;
+  image: string;
+  backupPath: string;
+  identityPath: string;
+}): Promise<ManagedDeploymentState> {
+  const root = await openUpdaterOwnedRoot(options.root);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const existing = await readManagedDeploymentFiles(pinnedRoot);
+    if (!existing.managed) throw new Error(existing.reason);
+    if (
+      existing.spec.deploymentId !== options.deploymentId ||
+      existing.spec.image !== options.image
+    )
+      throw new Error('Managed authority changed before backup migration');
+    const requested = [
+      {
+        source: { kind: 'bind' as const, path: options.backupPath },
+        target: '/run/verity-backups',
+        readOnly: false,
+      },
+      {
+        source: { kind: 'bind' as const, path: options.identityPath },
+        target: '/run/verity-backup-identity',
+        readOnly: false,
+      },
+    ];
+    for (const mount of requested) {
+      const current = existing.spec.mounts.find((item) => item.target === mount.target);
+      if (
+        current &&
+        (current.source.kind !== 'bind' ||
+          current.source.path !== mount.source.path ||
+          current.readOnly)
+      )
+        throw new Error('Backup mount differs from sealed authority');
+    }
+    if (
+      requested.every((mount) =>
+        existing.spec.mounts.some((current) => current.target === mount.target),
+      )
+    )
+      return existing;
+    const body: ServerDeploymentSpecBody & { checksum?: string } = { ...existing.spec };
+    delete body.checksum;
+    const updated = parseServerDeploymentSpec(
+      sealDeploymentSpec({ ...body, mounts: [...body.mounts, ...requested] }),
+    );
+    if (updated === null) throw new Error('Backup deployment mounts are not allowlisted');
+    const backupName = 'deployment-spec.before-backups.json';
+    const backup = await readJson(join(pinnedRoot, backupName));
+    if (backup === undefined) await writeAtomicExclusive(pinnedRoot, backupName, existing.spec);
+    else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
+      throw new Error('Backup authority checkpoint is invalid');
+    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, updated);
+    return { managed: true, marker: existing.marker, spec: updated };
   } finally {
     await root.close();
   }

@@ -66,15 +66,15 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'Use create_source_folder for an empty subfolder, or move_source to move an existing file within project Sources; sourcePath is relative to sources and path is relative to the destination folder. ' +
   'After verifying the imported file, remove the original from the worktree when the user asked to move it. ' +
   'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. Each publication requires a separate approval. ' +
-  'For publish_shared, path is relative to `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
+  'For publish_shared, path is relative to the session Documents working copy when supplied, otherwise `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
-  'Every other knowledge read or write goes through the files under `/knowledge`, not this tool.';
+  'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   'Durable project knowledge is mounted at `/knowledge`. Immutable source material is under ' +
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
   'When asked to move an existing worktree file into Sources, use `verity_knowledge` with `import_source`, verify the result, then remove the original and update references. Use nested destination paths to organize imports; use `create_source_folder` for empty folders and `move_source` to reorganize existing project Sources files. ' +
-  'Create and revise distilled project knowledge under the writable `/knowledge/insights` folder. ' +
+  'Create and revise project documents in the session Documents working copy when a path is supplied. Verity publishes those changes automatically; `/knowledge/insights` is then read-only. Without a Documents working copy, use the writable `/knowledge/insights` folder. ' +
   'When work produces a durable, reusable conclusion grounded in project sources, create or update ' +
   'a concise Markdown insight without asking first. Prefer improving an existing insight over creating ' +
   'a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +

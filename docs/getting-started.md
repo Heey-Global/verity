@@ -189,16 +189,18 @@ button "Open Verity" becomes active. Tap it.
    project's agents work, separate from your other projects and from the
    server itself; agents can still reach the internet from it.
 3. Open the project and start a new session. A session is one conversation
-   with one agent, with its own copy of the project files.
+   with one agent, with its own durable working copy of Documents.
 4. Type a first task, for example:
 
-   > Create a small Node.js web page that shows the current time, and tell me
-   > how to start it.
+   > Draft a one-page project brief with goals, open questions, and next steps.
 
 **What you should see:** the agent replies, you can follow its tool activity
 as it works, and it asks you before doing anything that needs permission.
-Later sessions can run at the same time in the same project; each one works
-on its own branch, so they do not interfere.
+Later sessions can run at the same time in the same project. Verity publishes
+their document changes automatically after each turn. Concurrent edits preserve
+both versions under Documents → Conflicts. Local projects need no Git or manual
+save step. The file explorer shows Sources, Documents, and Global; session
+working copies remain available even after their sessions are deleted.
 
 You are done with the setup. Everything below is optional.
 
@@ -226,6 +228,10 @@ sign-in; you choose which repositories Verity may use. Afterwards, "New
 project" offers "GitHub" next to "Local project", and Verity shows
 pull-request and CI status inside each session. A self-hosted Forgejo server
 connects the same way under Forgejo and then appears next to GitHub.
+
+A connection adds a Code area for repository work. Code sessions use Git branches
+and pull requests; Documents stay outside the repository. Existing document
+sessions keep their working copies after Code is connected.
 
 Other connections, such as Google Drive folders or secret managers, live in
 the same place and are explained in the [connections guide](connections.md).

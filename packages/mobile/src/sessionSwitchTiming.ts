@@ -126,6 +126,7 @@ export type SwitchTransportPhase =
   | 'route-ready'
   | 'lane-admitted'
   | 'native-dispatch'
+  | 'native-promise-returned'
   | 'native-return'
   | 'native-error'
   | 'fetch-return'

@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.79.0](https://github.com/Heey-Global/verity/compare/mobile-v1.78.0...mobile-v1.79.0) (2026-10-25)
+
+
+### Bug Fixes
+
+* **mobile:** draw the Verity V as a vector in the Watch complication ([#1895](https://github.com/Heey-Global/verity/issues/1895)) ([3d2dac5](https://github.com/Heey-Global/verity/commit/3d2dac55cb8c52bdfe122a0f4ca57a3c474ad312))
+* **mobile:** reduce Google account picker to the account choice ([#1897](https://github.com/Heey-Global/verity/issues/1897)) ([3ca3708](https://github.com/Heey-Global/verity/commit/3ca3708d0bae5a5c8eff8821517bb3f2a6260c8b))
+* **remote-control:** accept unchanged readiness revisions ([#1896](https://github.com/Heey-Global/verity/issues/1896)) ([84ab4d0](https://github.com/Heey-Global/verity/commit/84ab4d096103f7476ddcbfee07bf7214b9d73453))
+
+## [1.78.0](https://github.com/Heey-Global/verity/compare/mobile-v1.77.0...mobile-v1.78.0) (2026-10-24)
+
+
+### Features
+
+* **diagnostics:** add selected recording admission and bounded attempt ([#1831](https://github.com/Heey-Global/verity/issues/1831)) ([0f29617](https://github.com/Heey-Global/verity/commit/0f29617d2659eacc68f36dd30df86b70cd8772fb))
+* **mobile:** attribute auxiliary requests and native invocation timing ([#1871](https://github.com/Heey-Global/verity/issues/1871)) ([d636f3c](https://github.com/Heey-Global/verity/commit/d636f3cec564d343337db3d720dc79caa3e7ba76))
+* **mobile:** calmer update progress and channel settings in the header ([#1823](https://github.com/Heey-Global/verity/issues/1823)) ([fd3529d](https://github.com/Heey-Global/verity/commit/fd3529dd1db2c50903589af9df6124e97234d187))
+* **mobile:** expose bounded selected connection test ([#1840](https://github.com/Heey-Global/verity/issues/1840)) ([46a2709](https://github.com/Heey-Global/verity/commit/46a270964e222c5f49e92adefe4e6e7ee4e6ef6a))
+* **mobile:** give Verity a dedicated iPad meeting pane ([#1878](https://github.com/Heey-Global/verity/issues/1878)) ([3f20e91](https://github.com/Heey-Global/verity/commit/3f20e91d3c6178c5dd0cc939f9490bd235783e8e))
+* **mobile:** offer fixing main-branch vulnerabilities as a starter card ([#1886](https://github.com/Heey-Global/verity/issues/1886)) ([55d229a](https://github.com/Heey-Global/verity/commit/55d229a2a24e79c220c7db64070d696158d2e0f4))
+* **mobile:** prototype Apple Watch quick capture with iPhone transcription ([#1387](https://github.com/Heey-Global/verity/issues/1387)) ([0f06d68](https://github.com/Heey-Global/verity/commit/0f06d68fc72a4826ba10261b33f8f3a6a7e5918a))
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+* **security:** improve vulnerability indicators and scan lifecycle ([#1828](https://github.com/Heey-Global/verity/issues/1828)) ([079ec9f](https://github.com/Heey-Global/verity/commit/079ec9f7258b44b7c938f577e602e79643e4f62e))
+* **security:** integrate scan UI and harden release handoff ([#1824](https://github.com/Heey-Global/verity/issues/1824)) ([b7870c1](https://github.com/Heey-Global/verity/commit/b7870c1a4fa840e3736e8c6e49f669f628e03474))
+
+
+### Bug Fixes
+
+* **forgejo:** isolate session credentials and authenticate worktree fetches ([#1839](https://github.com/Heey-Global/verity/issues/1839)) ([f29de54](https://github.com/Heey-Global/verity/commit/f29de54691ca4a59ba881341727856a6bf00e5e2))
+* **mobile:** compact meters and session rows in narrow split views ([#1827](https://github.com/Heey-Global/verity/issues/1827)) ([c65b476](https://github.com/Heey-Global/verity/commit/c65b476c8050905282e9450dbd280a3c47919cdc))
+* **mobile:** expose local connection test failure receipts ([#1860](https://github.com/Heey-Global/verity/issues/1860)) ([8d6cbe2](https://github.com/Heey-Global/verity/commit/8d6cbe24d871efa7250bab6518d10a0344b2b272))
+* **mobile:** preserve recording arming after admission completes ([#1865](https://github.com/Heey-Global/verity/issues/1865)) ([d2d9814](https://github.com/Heey-Global/verity/commit/d2d98140930e4b48cc3b1f733720953bcc2529b4))
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
 ## [1.77.0](https://github.com/Heey-Global/verity/compare/mobile-v1.76.0...mobile-v1.77.0) (2026-10-23)
 
 

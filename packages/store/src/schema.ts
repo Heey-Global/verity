@@ -445,6 +445,7 @@ interface ProjectIdentityClaimsTable {
  * GitHub/project sync can refresh lifecycle metadata without touching local
  * runtime preferences or secret references. */
 export interface ProjectSettingsTable {
+  devcontainer_enabled: Generated<boolean>;
   project_id: string;
   doppler_token_ref: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_token: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1513,6 +1514,7 @@ interface AttendeeStateTable {
 }
 
 export interface VulnScanResultsTable {
+  classification_version: Generated<number>;
   content_hash: string;
   findings: string;
   scanned_at: ColumnType<Date, Date | undefined, Date>;
@@ -1522,6 +1524,8 @@ export interface VulnScanStateTable {
   project_id: string;
   session_id: string | null;
   content_hash: string | null;
+  base_content_hash: ColumnType<string | null, string | null | undefined, string | null>;
+  base_checked: ColumnType<boolean, boolean | undefined, boolean>;
   status: string;
   detail: string | null;
   revision: string | null;

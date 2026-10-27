@@ -1,7 +1,7 @@
 # Ephemeral Docker daemon for the live Secret Job CI path. Keeping runsc inside this
 # privileged test container avoids mutating the shared self-hosted runner.
 # renovate: datasource=docker depName=docker
-FROM docker:29.9.1-dind@sha256:3e5756e2b6dad6a5f1f5deacf0a19f9eaa2581b76ae092b2d4a118162e1d4d4e
+FROM docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
 
 COPY deploy/gvisor/versions.env /tmp/versions.env
 
@@ -16,6 +16,7 @@ RUN set -eu; \
     install_path="/opt/verity/runsc/$RUNSC_RELEASE/runsc"; \
     install -d -m 0755 "$(dirname "$install_path")"; \
     curl --fail --silent --show-error --location \
+      --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 --retry-max-time 300 \
       "https://storage.googleapis.com/gvisor/releases/release/${RUNSC_RELEASE#release-}/$arch/runsc" \
       --output "$install_path"; \
     printf '%s  %s\n' "$checksum" "$install_path" | sha512sum --check --status; \

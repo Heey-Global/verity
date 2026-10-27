@@ -1,3 +1,4 @@
+import { VerityApiError } from '@verity/mobile';
 import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
@@ -164,6 +165,27 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.currentPr).toBeNull();
     hook.unmount();
     await act(async () => slow.resolve(branches()));
+  });
+
+  it('preserves the permission rejection reason for the PR bar', async () => {
+    const client = {
+      getBranches: jest.fn().mockResolvedValue(branches()),
+      mergePullRequest: jest.fn().mockRejectedValue(
+        new VerityApiError(403, 'A maintainer must merge it.', {
+          code: 'merge_permission_denied',
+        }),
+      ),
+    } as unknown as VerityClient;
+    const hook = renderHook(() => useBranches(client, 's'));
+    await advance(0);
+    await act(async () => {
+      expect(await hook.result.current.mergePullRequest(42)).toEqual({
+        ok: false,
+        message: 'A maintainer must merge it.',
+        permissionDenied: true,
+      });
+    });
+    expect(hook.result.current.pullRequest?.phase).toBe('open');
   });
 
   it('updates cached merge state immediately while revalidation is pending', async () => {

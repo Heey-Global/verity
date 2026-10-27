@@ -175,8 +175,21 @@ export function compactMeetingAnswer(answer: string): string {
   return kept.join('\n');
 }
 
+const ANSWER_URL = /https?:\/\/[^\s)\]>]+/u;
+
+/** The first web address in an answer, for opening the source its card names. */
+export function meetingAnswerSourceUrl(answer: string): string | null {
+  const url = ANSWER_URL.exec(answer)?.[0];
+  if (!url) return null;
+  try {
+    return new URL(url).href;
+  } catch {
+    return null;
+  }
+}
+
 export function meetingAnswerSource(answer: string): string | null {
-  const url = /https?:\/\/[^\s)\]>]+/u.exec(answer)?.[0];
+  const url = ANSWER_URL.exec(answer)?.[0];
   if (!url) return null;
   try {
     return new URL(url).hostname.replace(/^www\./u, '');

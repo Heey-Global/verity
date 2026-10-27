@@ -19,7 +19,8 @@ import {
   SettingsNavRow,
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
-import { type IconName } from '../../../components/Icon';
+import { type ComponentProps } from 'react';
+import { AgentProviderIcon } from '../../../components/AgentProviderIcon';
 import { type StatusIntent } from '../../../components/ui/Status';
 import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../lib/client';
@@ -32,7 +33,7 @@ type Connection = {
   usageKey: Exclude<keyof Usage, 'forgejo'>;
   title: string;
   group: string;
-  icon: IconName;
+  icon: ComponentProps<typeof SettingsNavRow>['icon'];
   subtitle: string;
   route: Href;
   connected: boolean;
@@ -125,6 +126,7 @@ function CodeHostRows({
 }
 
 function ConnectionsView({ client }: { client: VerityClient }) {
+  const { theme } = useUnistyles();
   const reload = useLoadVeritySettings(client);
   const { settings } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -132,6 +134,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
   const [matrix, setMatrix] = useState<{ connected: boolean; status?: string }>({
     connected: false,
   });
+  const [attendeeConnected, setAttendeeConnected] = useState(false);
   const [mcpCount, setMcpCount] = useState(0);
   const [forge, setForge] = useState<ForgeConnectionList | null>(null);
   const [usage, setUsage] = useState<Awaited<
@@ -151,14 +154,17 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         Promise.resolve().then(() => client.getGoogleConnection()),
         Promise.resolve().then(() => client.getConnectionUsage()),
         Promise.resolve().then(() => client.listConnections()),
-      ]).then(([integrations, mcp, googleAccount, connectionUsage, forgeConnections]) => {
+        Promise.resolve().then(() => client.getAttendeeSettings()),
+      ]).then(([integrations, mcp, googleAccount, connectionUsage, forgeConnections, attendee]) => {
         if (!active) return;
         if (forgeConnections.status === 'fulfilled') setForge(forgeConnections.value);
         setError(
           integrations.status === 'rejected' ||
             mcp.status === 'rejected' ||
-            googleAccount.status === 'rejected',
+            googleAccount.status === 'rejected' ||
+            attendee.status === 'rejected',
         );
+        if (attendee.status === 'fulfilled') setAttendeeConnected(attendee.value.configured);
         if (connectionUsage.status === 'fulfilled') setUsage(connectionUsage.value);
         if (googleAccount.status === 'fulfilled')
           setGoogle({
@@ -181,7 +187,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       title: 'Claude',
       usageKey: 'claude',
       group: 'Agents',
-      icon: 'terminal',
+      icon: { element: <AgentProviderIcon provider="claude" color={theme.colors.action} /> },
       subtitle: 'Use your Claude subscription',
       route: '/settings/services/claude',
       connected: settings?.claudeCodeOauthCredentialsConfigured === true,
@@ -197,7 +203,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       title: 'Codex',
       usageKey: 'codex',
       group: 'Agents',
-      icon: 'terminal',
+      icon: { element: <AgentProviderIcon provider="codex" color={theme.colors.action} /> },
       subtitle: 'Use your Codex subscription',
       route: '/settings/services/codex',
       connected: settings?.codexAuthJsonConfigured === true,
@@ -206,7 +212,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       title: 'OpenCode',
       usageKey: 'opencode',
       group: 'Agents',
-      icon: 'terminal',
+      icon: { element: <AgentProviderIcon provider="opencode" color={theme.colors.action} /> },
       subtitle: 'Custom providers and models',
       route: '/settings/services/opencode',
       connected:
@@ -231,7 +237,8 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       icon: 'message-circle',
       subtitle: 'Import room messages into project knowledge',
       route: '/settings/services/matrix',
-      ...matrix,
+      connected: matrix.connected,
+      ...(matrix.status && matrix.status !== 'online' ? { status: matrix.status } : {}),
     },
     {
       title: 'Doppler',
@@ -282,6 +289,10 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         <SettingsNavRow
           icon="mic"
           title="Attendee"
+          status={{
+            intent: attendeeConnected ? 'ready' : 'optional',
+            label: attendeeConnected ? 'Connected' : 'Connect',
+          }}
           subtitle="Online meeting bots and transcripts"
           onPress={() => router.push('/settings/services/attendee')}
         />

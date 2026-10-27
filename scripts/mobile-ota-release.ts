@@ -1,6 +1,7 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
 interface Candidate {
   schema: number;
@@ -52,6 +53,8 @@ interface Pull {
 interface AssociatedPull {
   number: number;
   merged_at: string | null;
+  merge_commit_sha?: string;
+  base?: { ref: string; repo: { full_name: string } };
   head: { ref: string; sha: string };
 }
 interface Review {
@@ -530,12 +533,7 @@ function stage(runtime: string, version: string) {
     '--json',
     'number,headRefOid,author',
   );
-  if (
-    open.length > 1 ||
-    (open[0] &&
-      open[0].author?.login !== 'app/github-actions' &&
-      open[0].author?.login !== 'github-actions[bot]')
-  )
+  if (open.length > 1 || (open[0] && !isReleaseBotLogin(open[0].author?.login)))
     throw new Error('Rolling OTA branch is not exclusively workflow-owned');
   const expectedHead = open[0]?.headRefOid ?? git('rev-parse', commit);
   if (open[0]) {
@@ -577,11 +575,7 @@ function stage(runtime: string, version: string) {
       '--json',
       'author',
     );
-    if (
-      historical.some(
-        (pr) => !['app/github-actions', 'github-actions[bot]'].includes(pr.author?.login),
-      )
-    )
+    if (historical.some((pr) => !isReleaseBotLogin(pr.author?.login)))
       throw new Error('Refusing to replace an unowned rolling branch');
     if (!historical.length) {
       // A branch can exist before its first PR. The ownership reservation must
@@ -702,8 +696,9 @@ function stage(runtime: string, version: string) {
         .split('/')
         .at(-1),
     );
-  // The new commit has no CI verdict yet. Clear approvals for earlier candidates
-  // before starting CI so stale approval cannot make this candidate mergeable.
+  // The new commit has no CI verdict yet; its pull_request run starts from the
+  // app-authored commit above. Clear approvals for earlier candidates before
+  // that run can finish so stale approval cannot make this candidate mergeable.
   for (const review of staleApprovals(number, result.data.createCommitOnBranch.commit.oid)) {
     gh(
       'api',
@@ -714,17 +709,6 @@ function stage(runtime: string, version: string) {
       'message=The OTA candidate changed. Review the current immutable update before approving again.',
     );
   }
-  gh(
-    'workflow',
-    'run',
-    'ci.yml',
-    '--ref',
-    branch,
-    '-f',
-    'release-train=mobile-ota',
-    '-f',
-    `release-pr=${number}`,
-  );
   // Retire only known workflow-authored legacy candidates after the rolling PR
   // and its verification exist; never close human-authored work by title alone.
   const others = json<Pull[]>(
@@ -742,7 +726,7 @@ function stage(runtime: string, version: string) {
     if (
       !pr.headRefName.startsWith(legacyPrefix) ||
       !/^automation\/promote-mobile-v\d+\.\d+\.\d+$/.test(pr.headRefName) ||
-      !['app/github-actions', 'github-actions[bot]'].includes(pr.author?.login)
+      !isReleaseBotLogin(pr.author?.login)
     )
       continue;
     const legacyFile = api<{ content: string }>(
@@ -784,10 +768,30 @@ function promote() {
   // manual retries. Do not rely on repository approval-dismissal settings.
   const mergeCommit = git('log', '-1', '--format=%H', '--', manifestPath);
   const prs = api<AssociatedPull[]>(`repos/${repository()}/commits/${mergeCommit}/pulls`);
-  const pr = prs.find(
+  let pr = prs.find(
     (value) =>
       value.merged_at && value.head.ref === `automation/promote-mobile-ota-${candidate.runtime}`,
   );
+  if (!pr) {
+    // GitHub can omit merged PRs from the commit association endpoint. Recover
+    // only the exact merge that last changed the approved manifest.
+    const branch = `automation/promote-mobile-ota-${candidate.runtime}`;
+    const owner = repository().split('/')[0];
+    const closed = api<AssociatedPull[][]>(
+      '--paginate',
+      '--slurp',
+      `repos/${repository()}/pulls?state=closed&base=main&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`,
+    ).flat();
+    const matches = closed.filter(
+      (value) =>
+        value.merged_at &&
+        value.merge_commit_sha === mergeCommit &&
+        value.head.ref === branch &&
+        value.base?.ref === 'main' &&
+        value.base.repo.full_name === repository(),
+    );
+    if (matches.length === 1) pr = matches[0];
+  }
   if (!pr) throw new Error('Promotion requires a merged rolling candidate PR');
   if (staleApprovals(pr.number, pr.head.sha).length)
     throw new Error(
@@ -814,8 +818,13 @@ function promote() {
   const native = releaseRows().find(
     (release) => release.tag_name === `mobile-v${candidate.runtime}` && !release.draft,
   );
-  if (!native || native.prerelease)
-    throw new Error('Approve the native production runtime before promoting its OTA');
+  if (!native || native.prerelease) {
+    const message = `OTA ${candidate.version} waits for native production runtime ${candidate.runtime}; the release reconciler will resume promotion after publication.`;
+    console.log(message);
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY ?? '/dev/null', `${message}\n`);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    return;
+  }
   const latest = published(candidate.runtime);
   if (!compatibleBaseline(candidate, latest))
     throw new Error('Candidate is stale; stage against the delivered release');

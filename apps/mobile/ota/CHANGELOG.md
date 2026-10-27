@@ -1,5 +1,94 @@
 # Changelog
 
+## [1.79.3](https://github.com/Heey-Global/verity/compare/mobile-v1.79.2...mobile-v1.79.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1940](https://github.com/Heey-Global/verity/issues/1940)) ([6e6280b](https://github.com/Heey-Global/verity/commit/6e6280b9997e80c7cd27e0af69d3be34672073ef))
+
+## [1.79.2](https://github.com/Heey-Global/verity/compare/mobile-v1.79.1...mobile-v1.79.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.1 ([#1922](https://github.com/Heey-Global/verity/issues/1922)) ([37270b9](https://github.com/Heey-Global/verity/commit/37270b91b56b5abe17e9d26acaeeda1f6c48ddb0))
+* **deps:** update dependency expo-server-sdk to v8 ([#1925](https://github.com/Heey-Global/verity/issues/1925)) ([d792523](https://github.com/Heey-Global/verity/commit/d792523f7012482160477274d6f78e8b49880a87))
+* **vulnerabilities:** group findings and overview counts by package ([#1929](https://github.com/Heey-Global/verity/issues/1929)) ([d1fb6b4](https://github.com/Heey-Global/verity/commit/d1fb6b49accd6b727aad557651a38613ce86c557))
+
+## [1.79.1](https://github.com/Heey-Global/verity/compare/mobile-v1.79.0...mobile-v1.79.1) (2026-10-25)
+
+
+### Features
+
+* **documents:** publish session documents automatically without Git ([#1841](https://github.com/Heey-Global/verity/issues/1841)) ([3f99d75](https://github.com/Heey-Global/verity/commit/3f99d75647ab06e319d122058a170773f965d693))
+
+
+### Bug Fixes
+
+* **merge:** respect credential permissions and prevent unsafe repair turns ([#1900](https://github.com/Heey-Global/verity/issues/1900)) ([d11ae75](https://github.com/Heey-Global/verity/commit/d11ae754228e2bfc4bd47c908e9aa0e22f22227e))
+* **mobile:** defer auxiliary session catalog requests ([#1913](https://github.com/Heey-Global/verity/issues/1913)) ([be4c235](https://github.com/Heey-Global/verity/commit/be4c235d21bd438b1db0d5cd8f2349fc097bfa54))
+* **mobile:** frame Google account choices as tappable rows ([#1911](https://github.com/Heey-Global/verity/issues/1911)) ([1823178](https://github.com/Heey-Global/verity/commit/18231780049446e08286094c9aa7837e236b0e29))
+* **mobile:** invalidate Google actions when leaving a chat ([#1916](https://github.com/Heey-Global/verity/issues/1916)) ([4711bdf](https://github.com/Heey-Global/verity/commit/4711bdffa83af7bfa02e155cb01b09c68f916213))
+* **mobile:** preserve text field focus when showing focus shadow ([#1914](https://github.com/Heey-Global/verity/issues/1914)) ([8d1ea99](https://github.com/Heey-Global/verity/commit/8d1ea994b6eb43f1d52bf6d7e994ec9214f458d5))
+* **mobile:** restore connection provider icons and consistent statuses ([#1915](https://github.com/Heey-Global/verity/issues/1915)) ([767b852](https://github.com/Heey-Global/verity/commit/767b85289b1c4ff60c208383b8faf5bee5822c6c))
+* **mobile:** restrict scroll reports to diagnostic recording ([#1908](https://github.com/Heey-Global/verity/issues/1908)) ([1b43130](https://github.com/Heey-Global/verity/commit/1b43130cdf9d69e932a90624fd0ecb0a76340502))
+
+## [1.77.6](https://github.com/Heey-Global/verity/compare/mobile-v1.77.5...mobile-v1.77.6) (2026-10-24)
+
+
+### Features
+
+* **mobile:** attribute auxiliary requests and native invocation timing ([#1871](https://github.com/Heey-Global/verity/issues/1871)) ([d636f3c](https://github.com/Heey-Global/verity/commit/d636f3cec564d343337db3d720dc79caa3e7ba76))
+
+
+### Bug Fixes
+
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
+## [1.77.5](https://github.com/Heey-Global/verity/compare/mobile-v1.77.4...mobile-v1.77.5) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** patch body-parser and ctutils vulnerabilities ([#1866](https://github.com/Heey-Global/verity/issues/1866)) ([3cf1c65](https://github.com/Heey-Global/verity/commit/3cf1c65e20978b8035f00d66767f68e7394c7b8e))
+* **mobile:** preserve recording arming after admission completes ([#1865](https://github.com/Heey-Global/verity/issues/1865)) ([d2d9814](https://github.com/Heey-Global/verity/commit/d2d98140930e4b48cc3b1f733720953bcc2529b4))
+
+## [1.77.4](https://github.com/Heey-Global/verity/compare/mobile-v1.77.3...mobile-v1.77.4) (2026-10-24)
+
+
+### Features
+
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+
+
+### Bug Fixes
+
+* **mobile:** expose local connection test failure receipts ([#1860](https://github.com/Heey-Global/verity/issues/1860)) ([8d6cbe2](https://github.com/Heey-Global/verity/commit/8d6cbe24d871efa7250bab6518d10a0344b2b272))
+
+## [1.77.3](https://github.com/Heey-Global/verity/compare/mobile-v1.77.2...mobile-v1.77.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** use patched zod in Expo CLI ([#1848](https://github.com/Heey-Global/verity/issues/1848)) ([e85a5d8](https://github.com/Heey-Global/verity/commit/e85a5d87d0b5388e753c041d0dcd2e8fa18b43d3))
+
+## [1.77.2](https://github.com/Heey-Global/verity/compare/mobile-v1.77.1...mobile-v1.77.2) (2026-10-24)
+
+
+### Features
+
+* **diagnostics:** add selected recording admission and bounded attempt ([#1831](https://github.com/Heey-Global/verity/issues/1831)) ([0f29617](https://github.com/Heey-Global/verity/commit/0f29617d2659eacc68f36dd30df86b70cd8772fb))
+* **mobile:** expose bounded selected connection test ([#1840](https://github.com/Heey-Global/verity/issues/1840)) ([46a2709](https://github.com/Heey-Global/verity/commit/46a270964e222c5f49e92adefe4e6e7ee4e6ef6a))
+* **security:** improve vulnerability indicators and scan lifecycle ([#1828](https://github.com/Heey-Global/verity/issues/1828)) ([079ec9f](https://github.com/Heey-Global/verity/commit/079ec9f7258b44b7c938f577e602e79643e4f62e))
+
+
+### Bug Fixes
+
+* **deps:** bump fast-uri ([#1844](https://github.com/Heey-Global/verity/issues/1844)) ([3837025](https://github.com/Heey-Global/verity/commit/38370259a8c5677f3d2cc1b9fc15f42bac9a5ede))
+* **deps:** update dependency @napi-rs/canvas to v1.0.12 ([#1836](https://github.com/Heey-Global/verity/issues/1836)) ([2beb867](https://github.com/Heey-Global/verity/commit/2beb867c05001019ebdd3dd601431db9c745828c))
+* **forgejo:** isolate session credentials and authenticate worktree fetches ([#1839](https://github.com/Heey-Global/verity/issues/1839)) ([f29de54](https://github.com/Heey-Global/verity/commit/f29de54691ca4a59ba881341727856a6bf00e5e2))
+
 ## [1.77.1](https://github.com/Heey-Global/verity/compare/mobile-v1.77.0...mobile-v1.77.1) (2026-10-23)
 
 

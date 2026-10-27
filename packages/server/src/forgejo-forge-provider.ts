@@ -1,3 +1,4 @@
+import { ForgeMergePermissionError } from './forge-provider.js';
 import type { ProjectRecord } from '@verity/store';
 import type {
   ForgeProvider,
@@ -127,7 +128,17 @@ export function createForgejoForgeProvider(options: {
       if (!unavailable(error)) incomplete = true;
     }
     checks.completed = checks.successful + checks.failed;
+    let viewerCanMerge: boolean | undefined;
+    try {
+      const branch = await transport.json<{ user_can_merge?: boolean }>(
+        `${coordinate(ref)}/branches/${encodeURIComponent(pull.base.ref)}`,
+      );
+      viewerCanMerge = branch.user_can_merge;
+    } catch {
+      /* Permission discovery is best effort, never a denial by itself. */
+    }
     return {
+      ...(typeof viewerCanMerge === 'boolean' ? { viewerCanMerge } : {}),
       number: pull.number,
       title: pull.title,
       url: pull.html_url,
@@ -223,6 +234,15 @@ export function createForgejoForgeProvider(options: {
         try {
           const ref = await options.identityFor(repoDir)();
           if (!ref) return false;
+          const pull = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls/${number}`);
+          if (pull?.base?.ref) {
+            const branch = await transport
+              .json<{ user_can_merge?: boolean }>(
+                `${coordinate(ref)}/branches/${encodeURIComponent(pull.base.ref)}`,
+              )
+              .catch(() => undefined);
+            if (branch?.user_can_merge === false) throw new ForgeMergePermissionError();
+          }
           const repository = await transport.json<Record<string, unknown>>(coordinate(ref));
           const methods: Record<string, string> = {
             merge: 'allow_merge_commits',
@@ -248,6 +268,9 @@ export function createForgejoForgeProvider(options: {
           cache.clear();
           return true;
         } catch (error) {
+          if (error instanceof ForgeMergePermissionError) throw error;
+          if (error instanceof ForgejoRequestError && error.mergePermissionDenied)
+            throw new ForgeMergePermissionError();
           if (unavailable(error)) capabilities.pullRequestMerge = false;
           return false;
         }

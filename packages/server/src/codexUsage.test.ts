@@ -794,7 +794,7 @@ describe('createCodexUsageService', () => {
     });
 
     await expect(service.getLimits()).resolves.toEqual([]);
-    expect(warnings).toEqual(['no-credential']);
+    expect(warnings).toEqual([]);
   });
 
   it('reports what the last attempt learned, so a dead probe cannot look healthy', async () => {

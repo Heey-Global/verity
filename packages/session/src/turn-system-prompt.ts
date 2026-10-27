@@ -50,12 +50,9 @@ import type { Backend } from './backend.js';
  * agent offer push/PR chips, and those labels are rendered verbatim, so a tap
  * dispatches a turn that cannot succeed against a clone with no `origin`.
  *
- * {@link REPO_CONVENTIONS_SYSTEM_PROMPT} and {@link CODE_REVIEW_SYSTEM_PROMPT}
- * are NOT part of that swap. Neither is remote-bound the way the pull-request
- * rule is: a local project still branches and commits, and its clone can be
- * linked to GitHub later — the case {@link LOCAL_PROJECT_SYSTEM_PROMPT} names
- * its own expiry condition for. Dropping them there would leave the session that
- * outlives the link naming branches the Issue chip cannot parse.
+ * Document sessions also omit repository conventions and code-review receipts:
+ * their durable working copies publish automatically without Git. Connecting Code
+ * creates Code sessions; existing document sessions keep their original role.
  */
 /** Where a session's project lives, as far as the turn prompt cares. */
 export type TurnCodeHost = 'github' | 'forgejo' | 'local';
@@ -89,9 +86,9 @@ ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
 ${pullRequestPrompt(codeHost)}
 
-${REPO_CONVENTIONS_SYSTEM_PROMPT}
+${codeHost === 'local' ? '' : REPO_CONVENTIONS_SYSTEM_PROMPT}
 
-${CODE_REVIEW_SYSTEM_PROMPT}
+${codeHost === 'local' ? '' : CODE_REVIEW_SYSTEM_PROMPT}
 
 ${LANGUAGE_SYSTEM_PROMPT}
 

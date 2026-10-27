@@ -1,5 +1,5 @@
 import { nodeSpawner } from '@verity/session';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
   chmod,
@@ -22,6 +22,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vite
 import {
   agentLaunchSpec,
   materializeManagedAgentHome,
+  sessionHomePath,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 
 // Records ownership hand-offs: rootless, the agent identity is this process, so
@@ -436,4 +437,81 @@ it('cleans managed policy and private runtime directories without following syml
   await isolated.cleanup();
   await expect(stat(isolated.home)).rejects.toMatchObject({ code: 'ENOENT' });
   expect(await readFile(outside, 'utf8')).toBe('preserve');
+});
+
+it('waits for interrupted-turn cleanup before rebuilding the home for a different backend', async () => {
+  const options = {
+    enforceRoot: false,
+    agentUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    runtimeDir: root,
+  };
+  const first = await materializeManagedAgentHome(
+    { command: 'codex-acp', sessionEnv: { VERITY_SESSION_ID: 'model-switch' } },
+    options,
+    'http://127.0.0.1:1',
+  );
+  const next = materializeManagedAgentHome(
+    { command: 'claude-agent-acp', sessionEnv: { VERITY_SESSION_ID: 'model-switch' } },
+    options,
+    'http://127.0.0.1:1',
+  );
+  const cleanup = new Promise<void>((resolveCleanup, rejectCleanup) => {
+    setTimeout(() => {
+      void first.cleanup().then(resolveCleanup, rejectCleanup);
+    }, 100);
+  });
+  const second = await next;
+  try {
+    await cleanup;
+    expect(second.home).toBe(first.home);
+  } finally {
+    await second.cleanup();
+  }
+});
+
+it('reclaims a dead process lock without unlinking the session lock inode', async () => {
+  const options = {
+    enforceRoot: false,
+    agentUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    runtimeDir: root,
+  };
+  await mkdir(join(root, 'session-homes'));
+  const lockPath = `${sessionHomePath(root, 'dead-holder')}.lock`;
+  const holder = spawn(
+    '/usr/bin/flock',
+    [
+      lockPath,
+      process.execPath,
+      '-e',
+      'process.stdout.write("locked\\n"); setInterval(() => {}, 1000)',
+    ],
+    { detached: true },
+  );
+  try {
+    await new Promise<void>((resolveReady, rejectReady) => {
+      holder.stdout.once('data', () => resolveReady());
+      holder.once('error', rejectReady);
+    });
+    const inode = (await stat(lockPath)).ino;
+    const next = materializeManagedAgentHome(
+      { command: 'codex-acp', sessionEnv: { VERITY_SESSION_ID: 'dead-holder' } },
+      options,
+      'http://127.0.0.1:1',
+    );
+    process.kill(-holder.pid!, 'SIGKILL');
+    const home = await next;
+    try {
+      expect((await stat(lockPath)).ino).toBe(inode);
+    } finally {
+      await home.cleanup();
+    }
+  } finally {
+    try {
+      process.kill(-holder.pid!, 'SIGKILL');
+    } catch {
+      /* Already reaped. */
+    }
+  }
 });

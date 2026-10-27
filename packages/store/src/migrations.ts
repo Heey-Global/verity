@@ -4576,7 +4576,48 @@ migrations['0163_vulnerability_actions'] = {
   },
 };
 
-migrations['0164_backup_foundation'] = {
+// A session is compared with the commit it branched from, so packages the default
+// branch upgraded later are not reported as added by the session.
+migrations['0164_vulnerability_session_base'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // No foreign key: a removed result must leave the hash in place, so readers see an
+    // unreadable baseline instead of a missing one and do not fall back to main.
+    await sql`alter table vuln_scan_state add column base_content_hash text`.execute(db);
+    // False for rows written before branch points were recorded; those are rescanned once.
+    await sql`alter table vuln_scan_state add column base_checked boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_state drop column base_checked`.execute(db);
+    await sql`alter table vuln_scan_state drop column base_content_hash`.execute(db);
+  },
+};
+
+migrations['0165_vulnerability_classification'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results add column classification_version integer not null default 0`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table vuln_scan_results drop column classification_version`.execute(db);
+  },
+};
+
+migrations['0166_devcontainer_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await db.schema
+      .alterTable('project_settings')
+      .addColumn('devcontainer_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+      .execute();
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.alterTable('project_settings').dropColumn('devcontainer_enabled').execute();
+  },
+};
+
+migrations['0167_backup_foundation'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
       db,

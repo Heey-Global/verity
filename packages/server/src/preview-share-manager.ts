@@ -1,3 +1,4 @@
+import { hasNoNewPrivileges } from './docker-security-options.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -1338,7 +1339,7 @@ export class PreviewShareManager {
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 64,
       memoryBytes: 128 * 1024 * 1024,
       nanoCpus: 500_000_000,
@@ -1666,7 +1667,7 @@ async function assertEligibleSandbox(
     containerUser === '0' ||
     containerUser === 'root' ||
     sandbox.capDrop?.includes('ALL') !== true ||
-    sandbox.securityOpt?.includes('no-new-privileges:true') !== true
+    !hasNoNewPrivileges(sandbox.securityOpt)
   ) {
     throw new PreviewShareConflictError('sandbox does not satisfy public preview hardening');
   }

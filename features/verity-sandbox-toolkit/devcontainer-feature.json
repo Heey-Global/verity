@@ -23,12 +23,12 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.304",
+      "default": "2.1.310",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
       "type": "string",
-      "default": "0.94.0",
+      "default": "0.95.0",
       "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
     },
     "installCodex": {
@@ -38,7 +38,7 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.163.0",
+      "default": "0.164.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
@@ -53,7 +53,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "2.0.32",
+      "default": "2.1.4",
       "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {
@@ -78,7 +78,7 @@
     },
     "dopplerVersion": {
       "type": "string",
-      "default": "3.77.0",
+      "default": "3.77.1",
       "description": "Exact DopplerHQ/cli release version to pin."
     },
     "gitleaksVersion": {

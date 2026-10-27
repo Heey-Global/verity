@@ -1,3 +1,5 @@
+import { sessionGoogleStatus } from './session-google-status.js';
+import { ForgeMergePermissionError } from './forge-provider.js';
 import {
   createCachedProjectTokenMint,
   createGitHubAppProjectTokenMint,
@@ -6176,6 +6178,7 @@ describe('PATCH /projects/:id/settings', () => {
       method: 'PATCH',
       url: '/projects/p-settings/settings',
       payload: {
+        devcontainerEnabled: false,
         dopplerProject: ' verity ',
         dopplerConfig: ' prod ',
         defaultBranch: ' main ',
@@ -6187,6 +6190,7 @@ describe('PATCH /projects/:id/settings', () => {
     expect(res.json()).toMatchObject({
       settings: {
         projectId: 'p-settings',
+        devcontainerEnabled: false,
         dopplerProject: 'verity',
         dopplerConfig: 'prod',
         defaultBranch: 'main',
@@ -6693,6 +6697,7 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
+      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
       sessionId: 's1',
       worktree: '/wt/s1',
       model: 'm',
@@ -9895,7 +9900,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it('returns 409 and asks the agent to fix the PR when GitHub rejects the merge', async () => {
+  it('returns 409 without an agent turn when merge rejection has no confirmed repairable cause', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const withMerge = buildServer({
       eventStore: ctx.store,
@@ -9914,13 +9919,166 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('#119') });
     // A rejected merge posts no marker (nothing landed).
     expect(emitMerged).not.toHaveBeenCalled();
-    expect(dispatchTurn).toHaveBeenCalledWith(
-      's1',
-      expect.stringContaining('GitHub rejected the merge for pull request #119'),
-      undefined,
-      { displayPrompt: 'Fix merge for PR #119' },
-    );
+    expect(dispatchTurn).not.toHaveBeenCalled();
     await withMerge.close();
+  });
+
+  it.each([true, false])(
+    'never dispatches an agent for permission or unknown thrown errors: %s',
+    async (permission) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        mergePr: vi
+          .fn()
+          .mockRejectedValue(
+            permission ? new ForgeMergePermissionError() : new Error('network failed'),
+          ),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(permission ? 403 : 409);
+        if (permission) expect(response.json().error).toContain('maintainer');
+        expect(dispatchTurn).not.toHaveBeenCalled();
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it.each([
+    { mergeState: 'dirty', pipeline: 'unknown', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'clean', pipeline: 'failure', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'unstable', pipeline: 'failure', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'clean', pipeline: 'unknown', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'dirty', pipeline: 'failure', viewerCanMerge: false, repair: false },
+  ] as const)(
+    'only dispatches a repair for confirmed fixable rejection: %j',
+    async ({ repair, viewerCanMerge, ...status }) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feature');
+      let calls = 0;
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<
+          Parameters<typeof buildServer>[0]['branches']
+        >,
+        branchPrStatus: vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(
+              prStatus(
+                ++calls === 1
+                  ? { pipeline: 'success', mergeable: true }
+                  : { ...status, ...(viewerCanMerge === undefined ? {} : { viewerCanMerge }) },
+              ),
+            ),
+          ),
+        mergePr: vi.fn().mockResolvedValue(false),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(409);
+        expect(dispatchTurn).toHaveBeenCalledTimes(repair ? 1 : 0);
+        if (repair)
+          expect(dispatchTurn.mock.calls[0]?.[1]).toContain('Do not change repository permissions');
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it('does not call the merge provider when its credential explicitly lacks permission', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feature');
+    const mergePr = vi.fn().mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi
+        .fn()
+        .mockResolvedValue(
+          prStatus({ pipeline: 'unknown', mergeable: true, viewerCanMerge: false }),
+        ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe('merge_permission_denied');
+      expect(mergePr).not.toHaveBeenCalled();
+      expect(dispatchTurn).not.toHaveBeenCalled();
+    } finally {
+      await withMerge.close();
+    }
+  });
+
+  it.each([
+    { pipeline: 'unknown', mergeable: true, expected: 200 },
+    { pipeline: 'success', mergeable: true, expected: 200 },
+    { pipeline: 'failure', mergeable: true, mergeState: 'unstable', expected: 200 },
+    { pipeline: 'failure', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, expected: 409 },
+    { pipeline: 'running', mergeable: true, expected: 409 },
+    { pipeline: 'pending', mergeable: true, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: false, expected: 409 },
+    { pipeline: 'unknown', mergeable: null, expected: 409 },
+    { pipeline: 'failure', mergeable: false, mergeState: 'unstable', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, mergeState: 'dirty', expected: 409 },
+    { pipeline: 'unknown', mergeable: true, phase: 'closed', expected: 409 },
+  ] as const)('rechecks merge eligibility at action time: %j', async ({ expected, ...status }) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feat/119-ready');
+    const mergePr = vi
+      .fn<(number: number, wt: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn().mockResolvedValue(
+        prStatus({
+          ...status,
+          checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 },
+        }),
+      ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(expected);
+      if (expected === 200) {
+        expect(response.json()).toMatchObject({ merged: true });
+        expect(mergePr).toHaveBeenCalledWith(119, '/wt/s1');
+      } else {
+        expect(mergePr).not.toHaveBeenCalled();
+      }
+    } finally {
+      await withMerge.close();
+    }
   });
 
   it('rejects a stale or forged notification before calling GitHub merge', async () => {
@@ -12532,6 +12690,7 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'verity-__local__--my-project',
       state: 'active',
     });
+    const dataRoot = mkdtempSync(join(worktreeRoot, 'local-documents-'));
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/__local__-my-project/.verity-sessions/agent-local',
@@ -12541,7 +12700,8 @@ describe('POST /sessions with project field (#174)', () => {
       bus,
       conductor,
       provisioner: fakeProvisioner(),
-      projectCloneRoot: '/data/dev',
+      dataRoot,
+      projectCloneRoot: join(dataRoot, 'workspaces'),
       projectBackend: fakeProjectBackend,
       projectWorktrees: () => projectWorktrees,
     });
@@ -12553,11 +12713,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
+      expect(projectWorktrees.add).not.toHaveBeenCalled();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
+        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
       });
     } finally {
       await a.close();
@@ -13863,6 +14024,64 @@ describe('POST /projects/:id/sleep and /wake', () => {
     }
   });
 
+  it('rejects an active wake when a sandbox mutation prevents takeover', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-wake-mutation',
+      owner: 'test',
+      repo: 'wake-mutation',
+      containerName: 'wake-mutation',
+      state: 'active',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      wakeProject: vi.fn(),
+      tryBeginProjectSandboxActivity: vi.fn(() => false),
+      endProjectSandboxActivity: vi.fn(),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-wake-mutation/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.endProjectSandboxActivity).not.toHaveBeenCalled();
+      expect(provisioner.wakeProject).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps a stuck waking project a conflict when no wake is in flight', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-stuck-waking',
+      owner: 'heey-global',
+      repo: 'stuck-waking',
+      containerName: 'dev-heey-global-stuck-waking',
+      state: 'waking',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: vi.fn(),
+      wakeProject: vi.fn(),
+      // The real provisioner refuses a `waking` row it has no attempt for, e.g. after a restart.
+      ensureProjectSandboxAwake: vi.fn(async (id: string) => {
+        throw new ProvisioningError(`project ${id} is waking`);
+      }),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-stuck-waking/wake',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.ensureProjectSandboxAwake).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('rejects a transition from the wrong lifecycle state', async () => {
     await ctx.store.upsertProject({
       id: 'p-failed-sleep-route',
@@ -13913,6 +14132,40 @@ describe('DELETE /projects/:id', () => {
       })),
     };
   }
+
+  it.each([false, true])(
+    'runs image cleanup only after hiding, without making cleanup failure undo deletion (%s)',
+    async (fail) => {
+      await ctx.store.upsertProject({
+        id: 'p-image-delete',
+        owner: 'org',
+        repo: 'repo',
+        containerName: 'dev-image-delete',
+        state: 'active',
+      });
+      let hiddenAtCleanup: Date | null | undefined;
+      const cleanup = vi.fn(async (id: string) => {
+        hiddenAtCleanup = (await ctx.store.getProject(id))?.hiddenAt;
+        if (fail) throw new Error('image busy');
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        deprovisioner: fakeDeprovisioner(),
+        onProjectHidden: cleanup,
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/projects/p-image-delete' });
+        expect(res.statusCode).toBe(200);
+        expect(cleanup).toHaveBeenCalledExactlyOnceWith('p-image-delete');
+        expect(hiddenAtCleanup).toBeInstanceOf(Date);
+        expect((await ctx.store.getProject('p-image-delete'))?.hiddenAt).toBeInstanceOf(Date);
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({
@@ -16437,6 +16690,175 @@ it('replaces a meeting index entry by transcript path when the title changes', a
 });
 
 describe('vulnerability scan session integration', () => {
+  it('scans a paused project only after its manual start finishes and leaves it active', async () => {
+    const id = 'vuln-paused-start';
+    await ctx.store.upsertProject({
+      id,
+      owner: 'test',
+      repo: id,
+      containerName: id,
+      state: 'absent',
+    });
+    await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+    let finish!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provision = vi.fn(async (projectId: string) => {
+      await ready;
+      return (await ctx.store.updateProjectState(projectId, 'active'))!;
+    });
+    const run = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        worktree: '/work/.verity-vuln-test1234/tree',
+        hash: 'a'.repeat(64),
+        revision: 'b'.repeat(40),
+        lockfiles: [],
+      }),
+      stderr: '',
+      timedOut: false,
+    }));
+    const runtime = {
+      runAutomationScript: run,
+    } as unknown as import('./project-runtime.js').ProjectRuntime;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: { provision },
+      projectRuntime: runtime,
+    });
+    try {
+      expect(
+        (await server.inject({ method: 'POST', url: `/projects/${id}/repair` })).statusCode,
+      ).toBe(202);
+      expect(provision).toHaveBeenCalledOnce();
+      expect(run).not.toHaveBeenCalled();
+      finish();
+      await vi.waitFor(async () =>
+        expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe('no_lockfiles'),
+      );
+      expect((await ctx.store.getProject(id))?.state).toBe('active');
+      expect(startSession).not.toHaveBeenCalled();
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await server.close();
+    }
+  });
+
+  it.each(['success', 'failure', 'takeover', 'takeover-while-waking'] as const)(
+    'temporarily wakes a sleeping project for a manual scan: %s',
+    async (scenario) => {
+      const id = `vuln-sleeper-${scenario}`;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'test',
+        repo: id,
+        containerName: id,
+        state: 'sleeping',
+      });
+      await ctx.store.vulnerabilityScans.setSettings({ enabled: true, schedule: null });
+      let activity = 0;
+      const touch = () => {
+        activity++;
+      };
+      const wakeProject = vi.fn(async (projectId: string) => {
+        touch();
+        return (await ctx.store.updateProjectState(projectId, 'active'))!;
+      });
+      const sleepProject = vi.fn(
+        async (projectId: string, options?: { shouldRestore?: () => boolean }) => {
+          if (options?.shouldRestore && !options.shouldRestore())
+            return (await ctx.store.getProject(projectId))!;
+          return (await ctx.store.updateProjectState(projectId, 'sleeping'))!;
+        },
+      );
+      const provisioner = {
+        provision: vi.fn(),
+        wakeProject,
+        wakeProjectForScan: async (projectId: string) => {
+          const waking = wakeProject(projectId);
+          const activityAt = activity;
+          return { project: await waking, owned: true, activityAt };
+        },
+        sleepProject,
+        ensureProjectSandboxAwake: async (projectId: string) => {
+          touch();
+          return (await ctx.store.getProject(projectId))!;
+        },
+        tryBeginProjectSandboxActivity: () => {
+          touch();
+          return true;
+        },
+        endProjectSandboxActivity: touch,
+        projectSandboxLastActivityAt: () => activity,
+      };
+      const runtime = {
+        runAutomationScript: async (
+          _project: unknown,
+          _settings: unknown,
+          input: { script: string },
+        ) => {
+          if (input.script.includes('mktemp')) {
+            if (scenario === 'failure') throw new Error('scan preparation failed');
+            if (scenario === 'takeover-while-waking') {
+              // The user taps Wake while the scan's own wake has not finished yet.
+              await ctx.store.updateProjectState(id, 'waking');
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+              await ctx.store.updateProjectState(id, 'active');
+            }
+            if (scenario === 'takeover')
+              expect(
+                (await server.inject({ method: 'POST', url: `/projects/${id}/wake` })).statusCode,
+              ).toBe(200);
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                worktree: '/work/.verity-vuln-test1234/tree',
+                hash: 'a'.repeat(64),
+                revision: 'b'.repeat(40),
+                lockfiles: [],
+              }),
+              stderr: '',
+              timedOut: false,
+            };
+          }
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      } as unknown as import('./project-runtime.js').ProjectRuntime;
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner,
+        projectRuntime: runtime,
+      });
+      try {
+        expect(
+          (await server.inject({ method: 'POST', url: `/projects/${id}/vulnerability-scan` }))
+            .statusCode,
+        ).toBe(202);
+        await vi.waitFor(async () =>
+          expect((await ctx.store.vulnerabilityScans.getState(id))?.status).toBe(
+            scenario === 'failure' ? 'error' : 'no_lockfiles',
+          ),
+        );
+        expect(wakeProject).toHaveBeenCalledOnce();
+        const takenOver = scenario === 'takeover' || scenario === 'takeover-while-waking';
+        expect((await ctx.store.getProject(id))?.state).toBe(takenOver ? 'active' : 'sleeping');
+        expect(sleepProject).toHaveBeenCalledTimes(takenOver ? 0 : 1);
+        expect(startSession).not.toHaveBeenCalled();
+        expect(sendTurn).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   it('hydrates summary warnings and scans after an interrupted turn without starting an agent', async () => {
     await ctx.store.upsertProject({
       id: 'vuln-project',
@@ -16453,6 +16875,9 @@ describe('vulnerability scan session integration', () => {
     });
     await ctx.store.vulnerabilityScans.setSettings({ enabled: true, sessionChanges: true });
     const finding = {
+      category: 'security' as const,
+      classificationSource: 'osv',
+      classificationVersion: 1,
       advisoryId: 'GHSA-example',
       aliases: [],
       ecosystem: 'npm',
@@ -16475,6 +16900,7 @@ describe('vulnerability scan session integration', () => {
         projectId: 'vuln-project',
         sessionId,
         contentHash: sessionId ? 'integration-session' : 'integration-main',
+        ...(sessionId ? { baseChecked: true, baseContentHash: 'integration-main' } : {}),
         status: 'ready',
         detail: null,
         revision: 'abc',
@@ -16488,7 +16914,7 @@ describe('vulnerability scan session integration', () => {
         >();
         expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
           code: 'vulnerability_new',
-          message: '1 new vulnerability',
+          message: '1 new vulnerable package',
         });
       });
       const projects = (await server.inject('/projects')).json<
@@ -16498,6 +16924,8 @@ describe('vulnerability scan session integration', () => {
         count: 1,
         critical: 0,
         high: 1,
+        maintenance: 0,
+        unclassified: 0,
       });
       bus.publish('vuln-session', { seq: 1, ts: Date.now(), event: { t: 'interrupted' } });
       await vi.waitFor(

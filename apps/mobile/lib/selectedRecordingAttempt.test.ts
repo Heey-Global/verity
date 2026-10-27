@@ -138,8 +138,34 @@ it('attaches only after arming, validates two fresh statuses, warms once and sto
     1234,
   ]);
 });
+it.each([false, true])(
+  'accepts unchanged readiness revision (clock advanced: %s)',
+  async (advanced) => {
+    let reads = 0;
+    mockFetch.mockImplementation(async (_url, init) => {
+      const value = status(4);
+      value.selection.readiness.monotonicMs = 100 + (advanced ? reads++ : 0);
+      return { ok: true, json: async () => (init.method === 'DELETE' ? stopped() : value) };
+    });
+    await expect(selectedRecordingAttempt(options)).resolves.toEqual({ status: 200 });
+    expect(mockRequest).toHaveBeenCalledTimes(1);
+  },
+);
+it('rejects a readiness transition without a revision advance', async () => {
+  const prepared = status(4);
+  prepared.selection.readiness.ready = false;
+  mockArm.mockResolvedValue(prepared);
+  mockFetch.mockImplementation(async (_url, init) => ({
+    ok: true,
+    json: async () => (init.method === 'DELETE' ? stopped() : status(4)),
+  }));
+  await expect(selectedRecordingAttempt(options)).rejects.toThrow('readiness unavailable');
+  expect(mockRequest).not.toHaveBeenCalled();
+  expect(mockStop).toHaveBeenCalled();
+});
 it.each([
   'revision',
+  'clock',
   'session',
   'installation',
   'generation',
@@ -152,7 +178,8 @@ it.each([
   mockFetch.mockImplementation(async (_url, init) => {
     const s = status(++call);
     if (init.method === 'GET' && call === 2) {
-      if (fault === 'revision') s.selection.readiness.revision = 1;
+      if (fault === 'clock') s.selection.readiness.monotonicMs = 0;
+      if (fault === 'revision') s.selection.readiness.revision = 0;
       if (fault === 'session') s.selection.sessionHash = 'f'.repeat(16);
       if (fault === 'installation') s.installationFingerprint = 'f'.repeat(16);
       if (fault === 'generation') s.selection.readiness.app.generation = 'f'.repeat(16);

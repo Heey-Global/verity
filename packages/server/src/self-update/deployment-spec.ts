@@ -10,6 +10,23 @@ const MAX_MEMORY_BYTES = 1024 ** 4;
 const MAX_NANO_CPUS = 1024 * 1_000_000_000;
 const MAX_PIDS_LIMIT = 4_194_304;
 
+/**
+ * Host directory of the dedicated devcontainer builder's Unix socket
+ * (`deploy/buildkit`), mounted read-only at the same path in the Server.
+ *
+ * Fixed rather than configurable: the systemd unit owns this runtime directory,
+ * and a sealed spec naming any other host path would be a bind the installer
+ * never verified.
+ */
+export const DEVCONTAINER_BUILDER_SOCKET_DIRECTORY = '/run/verity-buildkit';
+
+/** Targets whose bind is read-only by construction. Every other mount is writable. */
+const READ_ONLY_TARGETS = [
+  '/run/verity-pairing',
+  '/run/verity-host-diagnostics',
+  DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+];
+
 /** Host resource ceilings for the managed Server container. */
 export interface ServerDeploymentSpecResources {
   /** `HostConfig.Memory`. */
@@ -292,6 +309,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         (mount.target === '/run/verity-host-diagnostics' &&
           source.path !== '/' &&
           !source.path.includes(':') &&
+          mount.readOnly) ||
+        // OPTIONAL, like the diagnostic bind: specs sealed before the builder
+        // existed stay parseable, and only a verified installation adds it.
+        (source.path === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
+          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
           mount.readOnly))
     ) {
       mounts.push({
@@ -322,12 +344,8 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 10 ||
-    mounts.some(
-      (mount) =>
-        mount.readOnly !==
-        (mount.target === '/run/verity-pairing' || mount.target === '/run/verity-host-diagnostics'),
-    ) ||
+    mounts.length > 11 ||
+    mounts.some((mount) => mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target)) ||
     new Set(mountKeys).size !== mountKeys.length ||
     // Distinct targets, not just distinct keys: two binds from different host
     // paths onto /var/run/docker.sock produce different keys, and with a fourth

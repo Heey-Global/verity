@@ -81,7 +81,7 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     : [];
   const logs: ReturnType<typeof compactLog>[] = [];
   const report = {
-    schema: 5,
+    schema: 6,
     runtimeDiagnostics: exportRuntimeDiagnostics(),
     commit: BUILD_COMMIT,
     sessionSwitchTimings: exportSessionSwitchTimings(),

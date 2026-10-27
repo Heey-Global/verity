@@ -1,8 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { FILE_HISTORY_DIR } from './session-file-history.js';
 import { STANDARD_MOUNTS, standardKnowledgeBinds } from './sandbox-standard-mounts.js';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, readdir, rename, rmdir, stat, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rmdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { basename, join, relative } from 'node:path';
 
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 
@@ -23,7 +34,8 @@ import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
  *     ├── overview.md         the project's short memory (D5)
  *     ├── sources/            immutable source material
  *     │   ├── documents/      chat, share sheet, Drive, web
- *     │   └── meetings/       recordings + transcripts
+ *     │   ├── meetings/       recordings + transcripts
+ *     │   └── matrix/         conversations + attachments
  *     ├── insights/           agent- and operator-authored knowledge
  *     ├── .text/              extracted text per file (hidden in the explorer)
  *     └── shared/             EMPTY — the mount point for the shared folder
@@ -52,6 +64,13 @@ export const EXTRACTED_TEXT_DIR = '.text';
 const KNOWLEDGE_SOURCES_DIR = 'sources';
 const SHARED_LAYOUT_MARKER = '.sources-layout-v1';
 export const KNOWLEDGE_DOCUMENTS_DIR = `${KNOWLEDGE_SOURCES_DIR}/documents`;
+export const KNOWLEDGE_MATRIX_DIR = `${KNOWLEDGE_SOURCES_DIR}/matrix`;
+const LEGACY_MATRIX_DIR = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix`;
+export function currentMatrixBody(body: string): string {
+  return body.startsWith(`Attachment: ${LEGACY_MATRIX_DIR}/`)
+    ? body.replace(`Attachment: ${LEGACY_MATRIX_DIR}/`, `Attachment: ${KNOWLEDGE_MATRIX_DIR}/`)
+    : body;
+}
 export const KNOWLEDGE_MEETINGS_DIR = `${KNOWLEDGE_SOURCES_DIR}/meetings`;
 export const KNOWLEDGE_INSIGHTS_DIR = 'insights';
 
@@ -63,6 +82,7 @@ export const KNOWLEDGE_INSIGHTS_DIR = 'insights';
 export const PROJECT_KNOWLEDGE_SUBDIRS = [
   KNOWLEDGE_DOCUMENTS_DIR,
   KNOWLEDGE_MEETINGS_DIR,
+  KNOWLEDGE_MATRIX_DIR,
   KNOWLEDGE_INSIGHTS_DIR,
 ] as const;
 export const PROJECT_KNOWLEDGE_TOP_LEVEL_DIRS = [
@@ -126,6 +146,7 @@ export async function ensureSharedKnowledge(dataRoot: string): Promise<string> {
       await migrateLegacyKnowledgeDirectory(dir, 'meetings', KNOWLEDGE_MEETINGS_DIR);
       await migrateLegacyKnowledgeDirectory(dir, 'notes', KNOWLEDGE_INSIGHTS_DIR);
     }
+    await migrateMatrixSources(dir);
     for (const sub of [...PROJECT_KNOWLEDGE_SUBDIRS, EXTRACTED_TEXT_DIR]) {
       await mkdir(join(dir, sub), { recursive: true, mode: 0o755 });
     }
@@ -158,6 +179,7 @@ export async function ensureProjectKnowledge(dataRoot: string, projectId: string
     await migrateLegacyKnowledgeDirectory(dir, 'imports', KNOWLEDGE_DOCUMENTS_DIR);
     await migrateLegacyKnowledgeDirectory(dir, 'meetings', KNOWLEDGE_MEETINGS_DIR);
     await migrateLegacyKnowledgeDirectory(dir, 'notes', KNOWLEDGE_INSIGHTS_DIR);
+    await migrateMatrixSources(dir);
     for (const sub of [...PROJECT_KNOWLEDGE_SUBDIRS, EXTRACTED_TEXT_DIR, SHARED_KNOWLEDGE_DIR]) {
       await mkdir(join(dir, sub), { recursive: true, mode: 0o755 });
     }
@@ -349,4 +371,60 @@ async function renameAfterConcurrentCheck(from: string, to: string): Promise<voi
     if (source === undefined && destination !== undefined) return;
     throw error;
   }
+}
+
+/** Preserve stable room/attachment names: collisions require explicit recovery. */
+async function migrateMatrixSources(root: string): Promise<void> {
+  async function moveTree(from: string, to: string, extracted = false): Promise<void> {
+    const source = await lstat(from).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!source) return;
+    if (source.isSymbolicLink()) throw new Error(`Matrix migration refuses symlink: ${from}`);
+    if (source.isDirectory()) {
+      const destination = await lstat(to).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (destination && (!destination.isDirectory() || destination.isSymbolicLink()))
+        throw new Error(`Matrix migration destination conflict: ${to}`);
+      await mkdir(to, { recursive: true, mode: 0o755 });
+      for (const entry of await readdir(from))
+        await moveTree(join(from, entry), join(to, entry), extracted);
+      await rmdir(from);
+      return;
+    }
+    if (!source.isFile()) throw new Error(`Matrix migration refuses special file: ${from}`);
+    const destination = await lstat(to).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (destination) throw new Error(`Matrix migration destination conflict: ${to}`);
+    const isProjection = relative(join(root, LEGACY_MATRIX_DIR), from).split('/').length === 2;
+    if (from.endsWith('.md') && (extracted || isProjection)) {
+      const content = await readFile(from, 'utf8');
+      const updated = extracted
+        ? content.replace(
+            /^Source: sources\/documents\/matrix\//mu,
+            `Source: ${KNOWLEDGE_MATRIX_DIR}/`,
+          )
+        : content.replace(
+            /^> Attachment: sources\/documents\/matrix\//gmu,
+            `> Attachment: ${KNOWLEDGE_MATRIX_DIR}/`,
+          );
+      if (content !== updated) {
+        const temporary = `${from}.${randomUUID()}.tmp`;
+        await writeFile(temporary, updated, { mode: source.mode & 0o777 });
+        await rename(temporary, from);
+      }
+    }
+    await rename(from, to);
+  }
+  await moveTree(join(root, LEGACY_MATRIX_DIR), join(root, KNOWLEDGE_MATRIX_DIR));
+  await moveTree(
+    join(root, EXTRACTED_TEXT_DIR, LEGACY_MATRIX_DIR),
+    join(root, EXTRACTED_TEXT_DIR, KNOWLEDGE_MATRIX_DIR),
+    true,
+  );
 }

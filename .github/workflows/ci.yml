@@ -69,12 +69,28 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.12.1'
+      # Merged release PRs are authored by the release app, whose `<slug>[bot]`
+      # login the barrier must trust next to github-actions[bot]. The slug is an
+      # output of minting a token, so mint one that can only read metadata.
+      # Fork and Dependabot PRs get no secrets and keep the GitHub Actions
+      # default; a failed mint degrades the same way instead of failing CI.
+      - name: Resolve release app identity
+        id: app-token
+        if: github.event_name != 'push' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - name: Protect untagged releases from workflow changes
         if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -116,6 +132,25 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: .github/scripts/validate-release-title "$PR_TITLE"
+      # Generated release and promotion PRs are authored by the release app and
+      # scoped below by author and head branch. The app's `<slug>[bot]` login is
+      # an output of minting a token, so mint one that can only read metadata,
+      # and only for the branches that can be release PRs; a fork PR has no
+      # secrets and runs the full suite like any other PR.
+      - name: Resolve release app identity
+        id: app-token
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          (startsWith(github.head_ref, 'release-please--branches--main--components--') ||
+          startsWith(github.head_ref, 'automation/promote-')))
+        # renovate: datasource=github-actions depName=actions/create-github-app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-metadata: read
       - id: detect
         name: Detect changed areas
         shell: bash
@@ -127,8 +162,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
           PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          RELEASE_BOT_LOGINS: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
         run: |
           set -euo pipefail
+
+          # Release PRs come from GitHub Actions (history) or the release app.
+          is_release_bot() { [[ -n "$1" && ",github-actions[bot],${RELEASE_BOT_LOGINS:-}," == *",$1,"* ]]; }
 
           lint=false
           typecheck=false
@@ -151,7 +190,7 @@ jobs:
             installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
           }
 
-          # Scope generated PR `synchronize` events through the checked classifier.
+          # Scope generated PR events through the checked classifier.
           release_scoped=false
           release_base=''
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -169,8 +208,8 @@ jobs:
               fi
               pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR}" --jq \
                 '[.user.login, .base.ref, .head.ref, .head.sha, .base.sha] | join("|")')"
-              expected="github-actions[bot]|main|${GITHUB_REF_NAME}|${GITHUB_SHA}|"
-              if [[ "$pr" != "$expected"* ]]; then
+              expected="main|${GITHUB_REF_NAME}|${GITHUB_SHA}|"
+              if ! is_release_bot "${pr%%|*}" || [[ "${pr#*|}" != "$expected"* ]]; then
                 echo "::error::PR ${RELEASE_PR} is not the Release Please PR for this ref" >&2
                 exit 1
               fi
@@ -252,8 +291,8 @@ jobs:
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
             [ "${RELEASE_TRAIN:-full}" = "backend" ]; then
-            # GITHUB_TOKEN-created PRs do not emit pull_request events. The
-            # API-verified immutable base lets this metadata-only dispatch inherit
+            # A manual scoped dispatch has no pull_request payload. The
+            # API-verified immutable base lets this metadata-only run inherit
             # the exact green tree Release Please used.
             before="$release_base"
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
@@ -417,7 +456,7 @@ jobs:
                 # `mobile-app` job — which has the only full mobile install in CI —
                 # is where that is checked. A change to the anchors themselves is
                 # the likeliest way to break it, so it must reach that job.
-                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts|scripts/unistyles-reload.test.ts)
+                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts|scripts/unistyles-reload.test.ts|scripts/expo-cli-zod-compat.test.ts)
                   lint=true
                   typecheck=true
                   test=true
@@ -1212,7 +1251,7 @@ jobs:
       # `npm ci` tree, which nothing caches or shares (no `cache: npm`, and the
       # only cache above is apps/mobile/.cache/jest).
       - run: npm run -w @verity/mobile-app patch:native
-      - run: npx vitest run scripts/unistyles-reload.test.ts --maxWorkers=1
+      - run: npx vitest run scripts/unistyles-reload.test.ts scripts/expo-cli-zod-compat.test.ts --maxWorkers=1
         env:
           VERITY_REQUIRE_MOBILE_NATIVE: '1'
       - run: npm run -w @verity/mobile build
@@ -1791,7 +1830,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server bin/verity-repo code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-local-checks bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server bin/verity-repo code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else

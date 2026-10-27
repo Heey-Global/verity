@@ -13,6 +13,8 @@ import {
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { DockerError, type ContainerSpec, type DockerClient } from '../docker.js';
+import { hasNoNewPrivileges } from '../docker-security-options.js';
+import { withAgentSeedLease } from './agent-seed-lease.js';
 import type { UpdateJournal } from './update-journal.js';
 import { localPreviewIngressMigration } from './local-preview-ingress.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
@@ -86,6 +88,7 @@ export interface ReconcileManagedCompanionsOptions {
   readonly journal: UpdateJournal;
   readonly waitForHandoff?: () => Promise<void>;
   readonly reconcileRunner?: () => Promise<void>;
+  readonly cleanupSeeds?: () => Promise<void>;
 }
 
 /*
@@ -415,7 +418,7 @@ async function reconcileManagedCompanionsOnce(
           state.user === '0:0' &&
           state.networkMode === 'none' &&
           state.restartPolicy === 'on-failure' &&
-          state.securityOpt?.includes('no-new-privileges:true') === true &&
+          hasNoNewPrivileges(state.securityOpt) &&
           state.mounts?.length === expectedMounts.size &&
           state.mounts.every(
             (mount) =>
@@ -451,7 +454,7 @@ async function reconcileManagedCompanionsOnce(
         user: '0:0',
         network: 'none',
         restartPolicy: 'on-failure',
-        securityOpt: ['no-new-privileges:true'],
+        securityOpt: ['no-new-privileges=true'],
       };
       try {
         const created = await options.docker.createContainer(spec);
@@ -486,6 +489,18 @@ async function reconcileManagedCompanionsOnce(
     });
   }
 
+  // Reclamation runs only after every companion has reconciled successfully.
+  // The Updater's own seed mount stays read-only; a short-lived helper owns writes.
+  try {
+    if (options.cleanupSeeds !== undefined) await options.cleanupSeeds();
+    else await cleanupManagedAgentSeeds(options, updaterInspect);
+  } catch (error) {
+    console.warn(
+      'agent-seed cleanup skipped:',
+      error instanceof Error ? error.message : 'cleanup failed',
+    );
+  }
+
   const refreshed = await options.docker.listContainers();
   for (const item of refreshed.filter(
     (entry) =>
@@ -497,6 +512,48 @@ async function reconcileManagedCompanionsOnce(
     } catch (error) {
       if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
     }
+  }
+}
+
+async function cleanupManagedAgentSeeds(
+  options: ReconcileManagedCompanionsOptions,
+  updater: Awaited<ReturnType<DockerClient['inspectContainer']>>,
+): Promise<void> {
+  const wait = options.docker.waitContainer;
+  if (wait === undefined) throw new Error('seed cleanup requires container completion reporting');
+  const seedMount = updater.mounts?.find(
+    (mount) =>
+      mount.type === 'bind' && mount.destination === '/opt/agent-seed' && mount.readWrite === false,
+  );
+  if (seedMount?.source === undefined) throw new Error('Updater seed root mount is unavailable');
+  const socketPath = options.environment?.VERITY_DOCKER_SOCKET_PATH ?? '/var/run/docker.sock';
+  const name = `verity-agent-seed-cleanup-g${String(options.journal.generation)}`;
+  const helper = await options.docker.createContainer({
+    image: options.journal.targetDigest,
+    name,
+    command: ['cleanup-agent-seed'],
+    env: [`VERITY_AGENT_SEED_CLEANUP_HOST_ROOT=${seedMount.source}`],
+    binds: [`${socketPath}:/var/run/docker.sock`, `${seedMount.source}:/opt/agent-seed-cleanup`],
+    user: '0:0',
+    network: 'none',
+    readOnlyRootfs: true,
+    capDrop: ['ALL'],
+    securityOpt: ['no-new-privileges=true'],
+    pidsLimit: 128,
+    memoryBytes: 256 * 1024 * 1024,
+    memorySwapBytes: 256 * 1024 * 1024,
+    nanoCpus: 1_000_000_000,
+    labels: {
+      [MANAGED_DEPLOYMENT_LABEL]: options.journal.deploymentId,
+      [MANAGED_ROLE_LABEL]: 'agent-seed-cleanup',
+    },
+  });
+  try {
+    await options.docker.startContainer(helper.id);
+    if ((await wait(helper.id)) !== 0)
+      throw new Error('seed cleanup helper could not establish a complete, unambiguous inventory');
+  } finally {
+    await options.docker.removeContainer(helper.id);
   }
 }
 
@@ -549,6 +606,29 @@ export async function publishAgentSeedAtomically(
   verifySelection: ((directory: string) => Promise<void>) | undefined = undefined,
   requireExistingSelection = false,
 ): Promise<void> {
+  await mkdir(seedTarget, { recursive: true, mode: 0o755 });
+  return withAgentSeedLease(seedTarget, () =>
+    publishAgentSeedUnderLease(
+      source,
+      seedTarget,
+      targetImage,
+      version,
+      now,
+      verifySelection,
+      requireExistingSelection,
+    ),
+  );
+}
+
+async function publishAgentSeedUnderLease(
+  source: string,
+  seedTarget: string,
+  targetImage: string,
+  version: string,
+  now: () => Date,
+  verifySelection: ((directory: string) => Promise<void>) | undefined,
+  requireExistingSelection: boolean,
+): Promise<void> {
   if (targetImage === '' || targetImage.length > 1024 || /[\r\n]/.test(targetImage))
     throw new Error('agent-seed publication requires a valid source image reference');
   await mkdir(seedTarget, { recursive: true, mode: 0o755 });
@@ -595,6 +675,14 @@ export async function publishAgentSeedAtomically(
     if ((await readPublishedAgentSeedDigest(seedTarget)) !== key)
       throw new Error('agent-seed promotion did not select the target digest');
     await validatePublishedAgentSeed(current, targetImage, version);
+    if (previous !== null && previous !== join('.versions', key)) {
+      if (!/^\.versions\/[a-f0-9]{64}$/.test(previous))
+        throw new Error('agent-seed previous selection is not an immutable release');
+      const previousNext = join(seedTarget, '.previous.next');
+      await rm(previousNext, { force: true });
+      await symlink(previous, previousNext);
+      await rename(previousNext, join(seedTarget, '.previous'));
+    }
   } catch (error) {
     if (previous !== null) {
       await rm(currentNext, { force: true });

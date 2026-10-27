@@ -60,25 +60,52 @@ function fixture() {
   return { activation, manager, uplink, ack, ready, descriptor, id: ack.runId };
 }
 describe('selected Core arming', () => {
-  it('requires a preparing ACK before returning confirmation and later fresh ready status', async () => {
-    const { manager, uplink, activation, id } = fixture();
-    const start = await manager.start(id, 30000, 3, 'selected');
-    expect(uplink.start).toHaveBeenCalledWith(id, 30000, 3, 'selected');
-    expect(start).toMatchObject({
-      phase: 'starting',
-      selection: { sessionHash: hash('selected'), confirmed: true },
-    });
-    expect(activation.expiry(hash('foreign'))).toBeUndefined();
-    expect(await manager.selectedStatus(id)).toMatchObject({
-      phase: 'recording',
-      selection: { confirmed: true, readiness: { ready: true } },
-    });
-    expect(await manager.selectedStatus(id)).toMatchObject({
-      phase: 'failed',
-      selection: { confirmed: false, readiness: { ready: false } },
-    });
-    expect(activation.status().enabled).toBe(false);
-  });
+  it.each([false, true])(
+    'accepts unchanged readiness with a fresh correlated reply (clock advanced: %s)',
+    async (advanced) => {
+      const { manager, uplink, activation, id, ready } = fixture();
+      const start = await manager.start(id, 30000, 3, 'selected');
+      expect(uplink.start).toHaveBeenCalledWith(id, 30000, 3, 'selected');
+      expect(start).toMatchObject({
+        phase: 'starting',
+        selection: { sessionHash: hash('selected'), confirmed: true },
+      });
+      expect(activation.expiry(hash('foreign'))).toBeUndefined();
+      expect(await manager.selectedStatus(id)).toMatchObject({
+        phase: 'recording',
+        selection: { confirmed: true, readiness: { ready: true } },
+      });
+      if (advanced) {
+        ready.readiness.monotonicMs++;
+        ready.readiness.checkedAt = new Date(
+          Date.parse(ready.readiness.checkedAt) + 1,
+        ).toISOString();
+        uplink.status.mockResolvedValue(metadata(ready));
+      }
+      expect(await manager.selectedStatus(id)).toMatchObject({
+        phase: 'recording',
+        selection: { confirmed: true, readiness: { ready: true } },
+      });
+      expect(activation.status().enabled).toBe(true);
+    },
+  );
+  it.each(['revision', 'clock', 'same-revision-change'])(
+    'rejects invalid readiness progression: %s',
+    async (fault) => {
+      const { manager, uplink, id, ready } = fixture();
+      await manager.start(id, 30000, 3, 'selected');
+      await manager.selectedStatus(id);
+      if (fault === 'revision') ready.readiness.revision--;
+      if (fault === 'clock') ready.readiness.monotonicMs--;
+      if (fault === 'same-revision-change') ready.readiness.app.generation = 'f'.repeat(16);
+      uplink.status.mockResolvedValue(metadata(ready));
+      expect(await manager.selectedStatus(id)).toMatchObject({
+        phase: 'failed',
+        selection: { confirmed: false },
+      });
+      expect(uplink.stop).toHaveBeenCalledWith(id);
+    },
+  );
   it.each(['missing', 'foreign', 'already_app_bound', 'wrong_duration', 'wrong_run'])(
     'fails closed for %s confirmation',
     async (kind) => {

@@ -38,20 +38,20 @@ describe('project setup presentation', () => {
           },
           detection,
         ),
-      ).toEqual({ label: '2 critical on main', tone: 'attention' });
+      ).toEqual({ label: '3 vulnerable packages', tone: 'attention' });
     }
     expect(
       projectOverviewStatus({
         ...project,
         vulnerabilitySummary: { count: 1, critical: 0, high: 1 },
       })?.label,
-    ).toBe('1 high on main');
+    ).toBe('1 vulnerable package');
     expect(
       projectOverviewStatus({
         ...project,
         vulnerabilitySummary: { count: 1, critical: 0, high: 0 },
       })?.label,
-    ).toBe('1 vulnerability on main');
+    ).toBe('1 vulnerable package');
   });
   it('maps internal lifecycle states to friendly progress', () => {
     expect(projectSetupStatus(project)).toMatchObject({
@@ -400,4 +400,19 @@ describe('toolkit drift notice', () => {
       expect(text).not.toMatch(/older|out of date|will fail/i);
     }
   });
+});
+
+it('keeps unresolved classification visible alongside security counts', () => {
+  expect(
+    projectOverviewStatus({
+      ...project,
+      vulnerabilitySummary: { count: 0, critical: 0, high: 0, maintenance: 2, unclassified: 1 },
+    })?.label,
+  ).toBe('1 package needs classification');
+  expect(
+    projectOverviewStatus({
+      ...project,
+      vulnerabilitySummary: { count: 3, critical: 0, high: 2, maintenance: 2, unclassified: 1 },
+    })?.label,
+  ).toBe('3 vulnerable packages · 1 need classification');
 });

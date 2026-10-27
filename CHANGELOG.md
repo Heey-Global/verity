@@ -6,6 +6,157 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.60.3](https://github.com/Heey-Global/verity/compare/v4.60.2...v4.60.3) (2026-10-26)
+
+
+### Performance Improvements
+
+* **buildkit:** layer build snapshots and size builder limits to the host ([#1945](https://github.com/Heey-Global/verity/issues/1945)) ([9174186](https://github.com/Heey-Global/verity/commit/9174186dee79b8db6d59c90e9f9ab438da3519b6))
+
+## [4.60.2](https://github.com/Heey-Global/verity/compare/v4.60.1...v4.60.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **buildkit:** run a BuildKit release without the cache-export loop ([#1943](https://github.com/Heey-Global/verity/issues/1943)) ([bdb4b71](https://github.com/Heey-Global/verity/commit/bdb4b715c51654b4d5c200107ac6dfb6193aecf8))
+* **deps:** update agent clis ([#1940](https://github.com/Heey-Global/verity/issues/1940)) ([6e6280b](https://github.com/Heey-Global/verity/commit/6e6280b9997e80c7cd27e0af69d3be34672073ef))
+
+## [4.60.1](https://github.com/Heey-Global/verity/compare/v4.60.0...v4.60.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **server:** load devcontainer images from a complete archive ([#1938](https://github.com/Heey-Global/verity/issues/1938)) ([fec5666](https://github.com/Heey-Global/verity/commit/fec566610df9481487b503bf36455d7706ed62da))
+
+## [4.60.0](https://github.com/Heey-Global/verity/compare/v4.59.2...v4.60.0) (2026-10-26)
+
+
+### Features
+
+* **deploy:** deliver devcontainer builder changes through Server updates ([#1935](https://github.com/Heey-Global/verity/issues/1935)) ([cd4cfe2](https://github.com/Heey-Global/verity/commit/cd4cfe21e761a40bf518d0e93b735cf7abff9898))
+
+## [4.59.2](https://github.com/Heey-Global/verity/compare/v4.59.1...v4.59.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **buildkit:** give gVisor build steps an isolated, routable network ([#1932](https://github.com/Heey-Global/verity/issues/1932)) ([8fb3556](https://github.com/Heey-Global/verity/commit/8fb3556406d0aa8176f588f343c76ad28c21a266))
+
+## [4.59.1](https://github.com/Heey-Global/verity/compare/v4.59.0...v4.59.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deploy:** provision the gVisor devcontainer builder on managed installations ([#1930](https://github.com/Heey-Global/verity/issues/1930)) ([e4a4de9](https://github.com/Heey-Global/verity/commit/e4a4de91004d75a774a9a13147de88c26d673a17))
+* **deps:** update agent clis ([#1921](https://github.com/Heey-Global/verity/issues/1921)) ([78817ef](https://github.com/Heey-Global/verity/commit/78817ef04190af3d20896bab63c04a22bf7cb012))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.1 ([#1922](https://github.com/Heey-Global/verity/issues/1922)) ([37270b9](https://github.com/Heey-Global/verity/commit/37270b91b56b5abe17e9d26acaeeda1f6c48ddb0))
+* **deps:** update dependency expo-server-sdk to v8 ([#1925](https://github.com/Heey-Global/verity/issues/1925)) ([d792523](https://github.com/Heey-Global/verity/commit/d792523f7012482160477274d6f78e8b49880a87))
+* **vulnerabilities:** group findings and overview counts by package ([#1929](https://github.com/Heey-Global/verity/issues/1929)) ([d1fb6b4](https://github.com/Heey-Global/verity/commit/d1fb6b49accd6b727aad557651a38613ce86c557))
+
+## [4.59.0](https://github.com/Heey-Global/verity/compare/v4.58.1...v4.59.0) (2026-10-25)
+
+
+### Features
+
+* **documents:** publish session documents automatically without Git ([#1841](https://github.com/Heey-Global/verity/issues/1841)) ([3f99d75](https://github.com/Heey-Global/verity/commit/3f99d75647ab06e319d122058a170773f965d693))
+* **server:** isolate devcontainer builds with gVisor and registry authentication ([#1905](https://github.com/Heey-Global/verity/issues/1905)) ([90b2282](https://github.com/Heey-Global/verity/commit/90b22826a9b54077dddb9202cb651c3245a73e92))
+* **server:** retain referenced derived images during cleanup ([#1917](https://github.com/Heey-Global/verity/issues/1917)) ([befe57f](https://github.com/Heey-Global/verity/commit/befe57fba5fc5eed095a528f944acaa76184ad9a))
+
+
+### Bug Fixes
+
+* **merge:** respect credential permissions and prevent unsafe repair turns ([#1900](https://github.com/Heey-Global/verity/issues/1900)) ([d11ae75](https://github.com/Heey-Global/verity/commit/d11ae754228e2bfc4bd47c908e9aa0e22f22227e))
+* **mobile:** defer auxiliary session catalog requests ([#1913](https://github.com/Heey-Global/verity/issues/1913)) ([be4c235](https://github.com/Heey-Global/verity/commit/be4c235d21bd438b1db0d5cd8f2349fc097bfa54))
+* **release:** handle Watch archives and transient runtime downloads ([#1901](https://github.com/Heey-Global/verity/issues/1901)) ([cb05f74](https://github.com/Heey-Global/verity/commit/cb05f74c3c6f7f671e10771ba8d38291039f6ebb))
+* **server:** reduce query churn and safely maintain host containers ([#1906](https://github.com/Heey-Global/verity/issues/1906)) ([1947cdb](https://github.com/Heey-Global/verity/commit/1947cdb00cbfdbfb5c33f4eba129f71c5e90701a))
+
+## [4.58.1](https://github.com/Heey-Global/verity/compare/v4.58.0...v4.58.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @anthropic-ai/claude-code to v2.1.307 ([#1889](https://github.com/Heey-Global/verity/issues/1889)) ([a9441de](https://github.com/Heey-Global/verity/commit/a9441de9b4850268157ac575337f56b12c00e7ca))
+* **deps:** update dependency @napi-rs/canvas to v1.0.13 ([#1890](https://github.com/Heey-Global/verity/issues/1890)) ([ae1aceb](https://github.com/Heey-Global/verity/commit/ae1acebf8af1c858aa96313cae7b91b7f25da66b))
+* **remote-control:** accept unchanged readiness revisions ([#1896](https://github.com/Heey-Global/verity/issues/1896)) ([84ab4d0](https://github.com/Heey-Global/verity/commit/84ab4d096103f7476ddcbfee07bf7214b9d73453))
+
+## [4.58.0](https://github.com/Heey-Global/verity/compare/v4.57.3...v4.58.0) (2026-10-24)
+
+
+### Features
+
+* **mobile:** prototype Apple Watch quick capture with iPhone transcription ([#1387](https://github.com/Heey-Global/verity/issues/1387)) ([0f06d68](https://github.com/Heey-Global/verity/commit/0f06d68fc72a4826ba10261b33f8f3a6a7e5918a))
+
+
+### Bug Fixes
+
+* **release:** bound production recovery by candidate and pipeline ([#1881](https://github.com/Heey-Global/verity/issues/1881)) ([cc6b7e8](https://github.com/Heey-Global/verity/commit/cc6b7e820b32eaa246056636a7370a5799fb46c8))
+
+## [4.57.3](https://github.com/Heey-Global/verity/compare/v4.57.2...v4.57.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **merge:** allow mergeable pull requests without CI checks ([#1879](https://github.com/Heey-Global/verity/issues/1879)) ([a6730b1](https://github.com/Heey-Global/verity/commit/a6730b168974b3a2834f0ac95ada94c7873c28e6))
+
+## [4.57.2](https://github.com/Heey-Global/verity/compare/v4.57.1...v4.57.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **release:** recover missing OTA candidate PR associations ([#1873](https://github.com/Heey-Global/verity/issues/1873)) ([5b29863](https://github.com/Heey-Global/verity/commit/5b29863bc764607f8b6d0badfb039eb009dc4169))
+* **security:** classify and group vulnerability scan findings ([#1870](https://github.com/Heey-Global/verity/issues/1870)) ([d55f2bf](https://github.com/Heey-Global/verity/commit/d55f2bfb3d7f189dbf7f83d82efdcae50c3e0b9b))
+
+## [4.57.1](https://github.com/Heey-Global/verity/compare/v4.57.0...v4.57.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** patch body-parser and ctutils vulnerabilities ([#1866](https://github.com/Heey-Global/verity/issues/1866)) ([3cf1c65](https://github.com/Heey-Global/verity/commit/3cf1c65e20978b8035f00d66767f68e7394c7b8e))
+* **forgejo:** support brokered TLS connections to IP addresses ([#1869](https://github.com/Heey-Global/verity/issues/1869)) ([67cf874](https://github.com/Heey-Global/verity/commit/67cf8743b591b96773aa162b97d2eec876bdd901))
+
+## [4.57.0](https://github.com/Heey-Global/verity/compare/v4.56.1...v4.57.0) (2026-10-24)
+
+
+### Features
+
+* **security:** expose scoped vulnerability scans to agents ([#1854](https://github.com/Heey-Global/verity/issues/1854)) ([6e789f9](https://github.com/Heey-Global/verity/commit/6e789f95e655d1bb77104b38cb2096208c00cdcb))
+
+
+### Bug Fixes
+
+* **deps:** bump body-parser ([#1857](https://github.com/Heey-Global/verity/issues/1857)) ([76e5af5](https://github.com/Heey-Global/verity/commit/76e5af5558babda4cf0d369618645fcf5c1239aa))
+* **forgejo:** preserve broker context in agent environments ([#1858](https://github.com/Heey-Global/verity/issues/1858)) ([eb4fd58](https://github.com/Heey-Global/verity/commit/eb4fd58499a658632027cc726a2aa8a9de704a07))
+* **release:** defer OTA promotion until native production publication ([#1853](https://github.com/Heey-Global/verity/issues/1853)) ([eb0b37d](https://github.com/Heey-Global/verity/commit/eb0b37d4b23733c409269066b4dfecd5335b21f5))
+
+## [4.56.1](https://github.com/Heey-Global/verity/compare/v4.56.0...v4.56.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** use patched zod in Expo CLI ([#1848](https://github.com/Heey-Global/verity/issues/1848)) ([e85a5d8](https://github.com/Heey-Global/verity/commit/e85a5d87d0b5388e753c041d0dcd2e8fa18b43d3))
+
+## [4.56.0](https://github.com/Heey-Global/verity/compare/v4.55.0...v4.56.0) (2026-10-24)
+
+
+### Features
+
+* **diagnostics:** add selected recording admission and bounded attempt ([#1831](https://github.com/Heey-Global/verity/issues/1831)) ([0f29617](https://github.com/Heey-Global/verity/commit/0f29617d2659eacc68f36dd30df86b70cd8772fb))
+* **scripts:** render App Store screenshots from the web demo ([#1830](https://github.com/Heey-Global/verity/issues/1830)) ([9db4040](https://github.com/Heey-Global/verity/commit/9db40409cb04ba52d86ab461f29297b19dfe2b49))
+* **security:** improve vulnerability indicators and scan lifecycle ([#1828](https://github.com/Heey-Global/verity/issues/1828)) ([079ec9f](https://github.com/Heey-Global/verity/commit/079ec9f7258b44b7c938f577e602e79643e4f62e))
+* **security:** integrate scan UI and harden release handoff ([#1824](https://github.com/Heey-Global/verity/issues/1824)) ([b7870c1](https://github.com/Heey-Global/verity/commit/b7870c1a4fa840e3736e8c6e49f669f628e03474))
+
+
+### Bug Fixes
+
+* **deps:** bump fast-uri ([#1843](https://github.com/Heey-Global/verity/issues/1843)) ([45c4d73](https://github.com/Heey-Global/verity/commit/45c4d736465fd386bd4c7cf7faa0daba94c9ac3f))
+* **deps:** bump fast-uri ([#1844](https://github.com/Heey-Global/verity/issues/1844)) ([3837025](https://github.com/Heey-Global/verity/commit/38370259a8c5677f3d2cc1b9fc15f42bac9a5ede))
+* **deps:** update agent clis ([#1835](https://github.com/Heey-Global/verity/issues/1835)) ([3a70a76](https://github.com/Heey-Global/verity/commit/3a70a764e780cd4b415d4384a6bc3b031b803e28))
+* **deps:** update dependency @napi-rs/canvas to v1.0.12 ([#1836](https://github.com/Heey-Global/verity/issues/1836)) ([2beb867](https://github.com/Heey-Global/verity/commit/2beb867c05001019ebdd3dd601431db9c745828c))
+* **forgejo:** isolate session credentials and authenticate worktree fetches ([#1839](https://github.com/Heey-Global/verity/issues/1839)) ([f29de54](https://github.com/Heey-Global/verity/commit/f29de54691ca4a59ba881341727856a6bf00e5e2))
+* **release:** author release PRs as the release app ([#1832](https://github.com/Heey-Global/verity/issues/1832)) ([9094de4](https://github.com/Heey-Global/verity/commit/9094de4ade67f5f6043146cd58c4c84c8b4565e5))
+* **release:** read app ID from the configured secret ([#1846](https://github.com/Heey-Global/verity/issues/1846)) ([2cc864c](https://github.com/Heey-Global/verity/commit/2cc864c19a7148933976ff5b1327d6399ddb858d))
+* **session:** release session homes after interrupted agent exits ([#1845](https://github.com/Heey-Global/verity/issues/1845)) ([cd70366](https://github.com/Heey-Global/verity/commit/cd7036602077ef09339498ff064b25f6ffceec26))
+
 ## [4.55.0](https://github.com/Heey-Global/verity/compare/v4.54.0...v4.55.0) (2026-10-23)
 
 

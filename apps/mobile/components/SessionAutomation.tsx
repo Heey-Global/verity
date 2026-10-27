@@ -21,6 +21,7 @@ import {
   automationScheduleLabel,
 } from '../lib/automationText';
 import { Icon } from './Icon';
+import { tint } from './ui/tint';
 
 /** One line under the session header, styled like the connected-service bars. */
 export function AutomationBar({
@@ -276,17 +277,34 @@ export function SessionStarterCard({
   title,
   text,
   badge,
+  onPress,
+  accessibilityHint,
 }: {
-  icon: 'code' | 'message-circle' | 'repeat';
+  icon: 'code' | 'message-circle' | 'repeat' | 'shield';
   title: string;
   text: string;
   badge?: string;
+  /**
+   * Makes the card the one actionable item among the hints: warning border, tinted
+   * icon and a chevron, so it does not read like the passive cards around it.
+   */
+  onPress?: () => void;
+  accessibilityHint?: string;
 }) {
   const { theme } = useUnistyles();
-  return (
-    <View style={styles.starter}>
-      <View style={styles.starterIcon}>
-        <Icon name={icon} size={18} color={theme.colors.action} />
+  const content = (
+    <>
+      <View
+        style={[
+          styles.starterIcon,
+          onPress ? { backgroundColor: tint(theme.colors.attention, 'fill') } : null,
+        ]}
+      >
+        <Icon
+          name={icon}
+          size={18}
+          color={onPress ? theme.colors.attention : theme.colors.action}
+        />
       </View>
       <View style={styles.starterBody}>
         <View style={styles.starterTitleRow}>
@@ -299,7 +317,25 @@ export function SessionStarterCard({
         </View>
         <Text style={styles.starterText}>{text}</Text>
       </View>
-    </View>
+    </>
+  );
+  if (!onPress) return <View style={styles.starter}>{content}</View>;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}. ${text}`}
+      accessibilityHint={accessibilityHint}
+      style={({ pressed }) => [
+        styles.starter,
+        styles.starterAction,
+        { borderColor: tint(theme.colors.attention, 'border') },
+        pressed ? styles.starterPressed : null,
+      ]}
+    >
+      {content}
+      <Icon name="chevron-right" size={20} color={theme.colors.attention} />
+    </Pressable>
   );
 }
 
@@ -515,6 +551,12 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
+  },
+  starterAction: {
+    alignItems: 'center',
+  },
+  starterPressed: {
+    backgroundColor: theme.colors.surfaceAlt,
   },
   starterIcon: {
     width: 32,

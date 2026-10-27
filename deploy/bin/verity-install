@@ -935,21 +935,30 @@ heading 'Container runtimes'
 install -d -m 0755 -o root -g root "$HOST_RUNTIME_LIBEXEC"
 install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-runtime" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-runtime"
+# Its sibling for the devcontainer builder: later updates install the builder their release
+# ships through it, after verifying that release's signature on the host.
+install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-builder" \
+  "$HOST_RUNTIME_LIBEXEC/verity-host-builder"
 install -d -m 0700 -o root -g root "$HOST_RUNTIME_DIR"
 host_runtime_trigger=none
 if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
-  for unit in verity-host-runtime.path verity-host-runtime.service; do
+  for unit in verity-host-runtime.path verity-host-runtime.service \
+    verity-host-builder.path verity-host-builder.service; do
     install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
   done
   systemctl daemon-reload
   systemctl enable --now verity-host-runtime.path >/dev/null 2>&1 \
     || die 'could not enable verity-host-runtime.path — see `systemctl status verity-host-runtime.path`'
+  systemctl enable --now verity-host-builder.path >/dev/null 2>&1 \
+    || die 'could not enable verity-host-builder.path — see `systemctl status verity-host-builder.path`'
   host_runtime_trigger=systemd-path
 else
   note 'No systemd on this host: runtime migrations that a later release needs will ask you to re-run the Verity installer'
 fi
 agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
-printf '{"version":1,"trigger":"%s"}\n' "$host_runtime_trigger" >"$agent_tmp"
+# `builder` tells the Updater it may ask verity-host-builder; hosts installed before it
+# existed lack the key, and their Updater asks for this installer instead.
+printf '{"version":1,"trigger":"%s","builder":"%s"}\n' "$host_runtime_trigger" "$host_runtime_trigger" >"$agent_tmp"
 chmod 0644 "$agent_tmp"
 mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
 note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'
@@ -1002,6 +1011,50 @@ fi
 VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics" \
   || note 'Host diagnostic collection unavailable; Control will report missing or stale evidence'
 
+# ── devcontainer builder ───────────────────────────────────────────────────
+# Repository devcontainers build only on the dedicated gVisor BuildKit service
+# (deploy/buildkit). Install or repair it, then hand the managed bootstrap its
+# socket group ONLY once the unit is active and the socket exists: that input,
+# and the receipt the Updater reads during a later update, are the sole reasons
+# a sealed Server spec gains the socket bind. A host where this fails keeps
+# running; its Server reports repository builds as unavailable instead.
+BUILDKIT_RUN_DIR="${VERITY_BUILDKIT_RUN_DIR:-/run/verity-buildkit}"  # test seam; the sealed bind is fixed
+builder_receipt="$HOST_RUNTIME_DIR/devcontainer-builder.json"
+builder_gid=''
+if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
+  requested_builder_gid="${VERITY_BUILDKIT_GID:-1102}"
+  note 'Installing the gVisor devcontainer builder (repository builds in progress are interrupted)'
+  if [[ $requested_builder_gid =~ ^[1-9][0-9]{0,4}$ ]] && [ "$requested_builder_gid" -lt 65535 ] \
+    && VERITY_BUILDKIT_GID="$requested_builder_gid" bash "$repo_root/deploy/buildkit/install.sh"; then
+    builder_attempt=0
+    while [ "$builder_attempt" -lt 30 ]; do
+      if systemctl is-active --quiet verity-buildkit.service && [ -S "$BUILDKIT_RUN_DIR/buildkitd.sock" ]; then
+        builder_gid="$requested_builder_gid"
+        break
+      fi
+      builder_attempt=$((builder_attempt + 1))
+      sleep 1
+    done
+  fi
+fi
+if [ -n "$builder_gid" ]; then
+  builder_tmp="$(mktemp "$HOST_RUNTIME_DIR/.devcontainer-builder.json.XXXXXX")"
+  printf '{"version":1,"gid":%s}\n' "$builder_gid" >"$builder_tmp"
+  chmod 0644 "$builder_tmp"
+  mv -f "$builder_tmp" "$builder_receipt"
+  # What this run installed, so the next update leaves an unchanged builder running.
+  VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" "$HOST_RUNTIME_LIBEXEC/verity-host-builder" \
+    record "$repo_root/deploy" \
+    || "$HOST_RUNTIME_LIBEXEC/verity-host-builder" forget || true
+else
+  # A receipt from an earlier run would let the Updater add a bind to a builder
+  # this run could not verify.
+  rm -f "$builder_receipt"
+  "$HOST_RUNTIME_LIBEXEC/verity-host-builder" forget || true
+  note 'The devcontainer builder is not available on this host; repository devcontainers will not build'
+  hint 'It needs systemd and Docker; see deploy/buildkit/README.md, then run this installer again.'
+fi
+
 # ── hand over to the guarded migration ─────────────────────────────────────
 heading 'Starting Verity'
 note 'Running the guarded migration'
@@ -1011,6 +1064,7 @@ VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
 VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
 VERITY_RUNNER_SUPERVISOR=1 \
 VERITY_HOST_ARCHITECTURE="$host_architecture" \
+VERITY_DEVCONTAINER_BUILDER_GID="$builder_gid" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
 VERITY_BACKUP_DIR="$VERITY_BACKUP_DIR" \

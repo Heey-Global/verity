@@ -104,13 +104,17 @@ export function projectOverviewStatus(
   detection?: DevServerDetection | null,
 ): ProjectOverviewStatus | undefined {
   const vulnerabilities = project.vulnerabilitySummary;
+  if (vulnerabilities?.unclassified && !vulnerabilities.count)
+    return {
+      label:
+        vulnerabilities.unclassified === 1
+          ? '1 package needs classification'
+          : `${vulnerabilities.unclassified} packages need classification`,
+      tone: 'attention',
+    };
   if (vulnerabilities && vulnerabilities.count > 0) {
-    const count = vulnerabilities.critical || vulnerabilities.high || vulnerabilities.count;
-    const label = vulnerabilities.critical
-      ? `${count} critical on main`
-      : vulnerabilities.high
-        ? `${count} high on main`
-        : `${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'} on main`;
+    const count = vulnerabilities.count;
+    const label = `${count} vulnerable ${count === 1 ? 'package' : 'packages'}${vulnerabilities.unclassified ? ` · ${vulnerabilities.unclassified} need classification` : ''}`;
     return { label, tone: 'attention' };
   }
   const badge = projectBadge(project);

@@ -284,10 +284,7 @@ describe('broker relay', () => {
       transportErrors.push(error);
     };
     try {
-      // The SDK declares `sessionId` as optional-and-possibly-undefined, which this repo's
-      // `exactOptionalPropertyTypes` reads as narrower than its own `Transport`. Runtime
-      // shape is exactly what `connect` expects.
-      await client.connect(transport as unknown as Parameters<Client['connect']>[0]);
+      await client.connect(transport);
       const listed = await client.listTools();
       expect(listed.tools.map((tool) => tool.name)).toEqual(['verity_http_request']);
       // The gateway's 405 reached the client through the relay, so the transport dropped

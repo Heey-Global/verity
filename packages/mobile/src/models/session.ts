@@ -57,6 +57,8 @@ interface PendingEntry extends PendingMessage {
 
 /** The render state the chat screen consumes. */
 export interface SessionModelState {
+  googleStatus?: SessionDetail['googleStatus'];
+  detailLoaded?: boolean;
   /** Live transcript + status + usage (from the stream's reducer). */
   session: SessionState;
   /** Last stream error (server `error` frame / connection); cleared on the next event. */
@@ -253,6 +255,9 @@ export class SessionModel {
   // session detail; `switchModel` updates `_model` on a successful switch.
   private _model: string | undefined;
   private _modelSwitched = false;
+  private _googleStatus: SessionDetail['googleStatus'];
+  private _detailLoaded = false;
+  private detailRead: AbortController | undefined;
   private _projectId: string | null | undefined;
   private _switchingModel = false;
   private _modelSwitchPending = false;
@@ -454,6 +459,8 @@ export class SessionModel {
       name: this._name,
       model: this._model,
       projectId: this._projectId,
+      googleStatus: this._googleStatus,
+      detailLoaded: this._detailLoaded,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
       terminationUnconfirmed: this._terminationUnconfirmed,
@@ -1081,8 +1088,17 @@ export class SessionModel {
    * a 410 on send, which flips the flag false. */
   private async loadDetail(): Promise<void> {
     const seqAtRequest = this.stream.newestSeq;
+    this.detailRead?.abort();
+    const controller = new AbortController();
+    this.detailRead = controller;
     try {
-      const detail = await this.opts.client.getSession(this.opts.sessionId, { trace: this.timing });
+      const detail = await this.opts.client.getSession(this.opts.sessionId, {
+        trace: this.timing,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      this._googleStatus = detail.googleStatus;
+      this._detailLoaded = true;
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
       }
@@ -1173,6 +1189,7 @@ export class SessionModel {
   /** Close the stream (stops reconnecting) and stop the activity poll. */
   stop(): void {
     this._running = false;
+    this.detailRead?.abort();
     this._historyLoad?.abort();
     this._historyLifetime.abort();
     this.stream.stop();

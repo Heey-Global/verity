@@ -1,3 +1,4 @@
+import { ForgeMergePermissionError, isForgeMergePermissionDenied } from './forge-provider.js';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -485,7 +486,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     number: number,
     token: string,
   ): Promise<
-    { ok: true; value: boolean | null; mergeState: PullRequestStatus['mergeState'] } | { ok: false }
+    | {
+        ok: true;
+        value: boolean | null;
+        mergeState: PullRequestStatus['mergeState'];
+        viewerCanMerge?: boolean;
+      }
+    | { ok: false }
   > => {
     const url = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls/${String(number)}`;
     const res = await fetchJson(url, token);
@@ -494,8 +501,16 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     }
     const body = res.body as Record<string, unknown>;
     const mergeable = body.mergeable;
+    const base = body.base as { repo?: { permissions?: { push?: boolean } } } | undefined;
+    // Repository write access cannot promise bypass of branch protection. Only
+    // an explicit denial is useful here; missing permissions remain unknown.
     return mergeable === null || typeof mergeable === 'boolean'
-      ? { ok: true, value: mergeable, mergeState: mergeStateOf(body) }
+      ? {
+          ok: true,
+          value: mergeable,
+          mergeState: mergeStateOf(body),
+          ...(base?.repo?.permissions?.push === false ? { viewerCanMerge: false } : {}),
+        }
       : { ok: false };
   };
 
@@ -607,6 +622,11 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           pipeline,
           checks,
           mergeable,
+          ...(mergeability.ok &&
+          'viewerCanMerge' in mergeability &&
+          typeof mergeability.viewerCanMerge === 'boolean'
+            ? { viewerCanMerge: mergeability.viewerCanMerge }
+            : {}),
           ...(mergeState === undefined ? {} : { mergeState }),
           ...(typeof baseRef === 'string' && baseRef.length > 0 ? { baseRef } : {}),
           ...(typeof baseSha === 'string' && baseSha.length > 0 ? { baseSha } : {}),
@@ -787,12 +807,19 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
             ...(expectedHeadSha !== undefined ? { sha: expectedHeadSha } : {}),
           }),
         });
-        if (!res.ok) return confirmMerged();
+        if (!res.ok) {
+          if (await confirmMerged()) return true;
+          const refusal: unknown = await res.json().catch(() => undefined);
+          if (isForgeMergePermissionDenied(res.status, refusal))
+            throw new ForgeMergePermissionError();
+          return false;
+        }
         cache.clear();
         lastCacheByBranch.clear();
         responseCache.clear();
         return true;
-      } catch {
+      } catch (error) {
+        if (error instanceof ForgeMergePermissionError) throw error;
         return confirmMerged();
       }
     },

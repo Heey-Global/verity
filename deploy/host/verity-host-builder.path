@@ -1,0 +1,12 @@
+# Installed by deploy/bin/verity-install. The managed Updater writes builder-request.json into
+# this root-owned directory (bind-mounted into its container) during an update whose release
+# declares org.verity.devcontainer-builder; see verity-host-builder.
+[Unit]
+Description=Verity devcontainer builder requests from the managed Updater
+
+[Path]
+PathChanged=/var/lib/verity/host-runtime/builder-request.json
+Unit=verity-host-builder.service
+
+[Install]
+WantedBy=multi-user.target
