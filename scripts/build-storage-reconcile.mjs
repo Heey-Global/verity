@@ -67,7 +67,7 @@ export function verifyOfflineEvidence(record, host, services, executables) {
 }
 
 /** @param {string | undefined} attempt */
-export function reconcile(attempt) {
+function reconcile(attempt) {
   if (process.getuid?.() !== 0) refuse('run as root on the build host');
   if (readFileSync('/proc/1/comm', 'utf8').trim() !== 'systemd')
     refuse('run in the host PID namespace');

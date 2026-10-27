@@ -112,8 +112,7 @@ export async function readManagedHostDiagnosticBackup(
   return readManagedBackup(rootPath, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE);
 }
 
-export const MANAGED_BUILDER_ADMISSION_BACKUP_FILE =
-  'server-deployment.before-builder-admission.json';
+const MANAGED_BUILDER_ADMISSION_BACKUP_FILE = 'server-deployment.before-builder-admission.json';
 export async function readManagedBuilderAdmissionBackup(
   rootPath: string,
 ): Promise<ServerDeploymentSpec | null> {
