@@ -239,8 +239,9 @@ administrator-only access removes no existing project-member capability.
 The app shows the trail as an **Audit logs** row in the Server group of
 Settings, next to Updates, and only to administrators. Following the existing
 settings rows, its subtitle names what the trail contains for the enabled
-domains (for the first stage: builds, secret access and server updates) and it
-carries no status while the trail is healthy. Degraded audit health (writes
+domains — builds and secret access in the first stage, “Builds, secret access
+and server updates” once system operations are recorded — and it carries no
+status while the trail is healthy. Degraded audit health (writes
 currently failing) or an unresolved unverified stream gives the row a
 `needsSetup` status (“Needs review”), so a problem with the trail is visible
 without opening it; a past write-gap stays visible in the list but no longer
