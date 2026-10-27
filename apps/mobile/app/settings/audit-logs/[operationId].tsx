@@ -4,7 +4,7 @@
 import type { AuditOperationDetail, VerityClient } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect, useLocalSearchParams, type Href } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -53,14 +53,24 @@ export function AuditOperationView({
   const [operation, setOperation] = useState<AuditOperationDetail | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
 
+  const latest = useRef(0);
+
   const load = useCallback(() => {
+    const request = ++latest.current;
     setError(undefined);
     client
       .auditOperation(operationId)
-      .then(setOperation)
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : 'Could not load this entry.'),
-      );
+      .then((value) => {
+        if (request === latest.current) setOperation(value);
+      })
+      .catch((cause: unknown) => {
+        if (request === latest.current)
+          setError(cause instanceof Error ? cause.message : 'Could not load this entry.');
+      });
+    // Blur, unmount and route changes invalidate responses still in flight.
+    return () => {
+      latest.current += 1;
+    };
   }, [client, operationId]);
   useFocusEffect(load);
 

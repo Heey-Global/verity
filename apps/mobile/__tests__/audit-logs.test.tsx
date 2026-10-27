@@ -144,6 +144,41 @@ describe('audit logs screen', () => {
 });
 
 describe('audit operation screen', () => {
+  // A slow initial read must not replace the result of a newer focus refresh,
+  // whether it eventually resolves or rejects.
+  it.each(['resolve', 'reject'] as const)(
+    'ignores an older request that later %ss',
+    async (outcome) => {
+      setSearchParams({ operationId: 'op-1' });
+      const detail = {
+        ...op(),
+        server: { release: '4.57.3', generation: 14 },
+        build: null,
+        imageRef: null,
+        gapWindow: null,
+        events: [],
+      };
+      let resolveOld!: (value: typeof detail) => void;
+      let rejectOld!: (error: Error) => void;
+      const old = new Promise<typeof detail>((resolve, reject) => {
+        resolveOld = resolve;
+        rejectOld = reject;
+      });
+      const auditOperation = jest.fn().mockReturnValueOnce(old).mockResolvedValue(detail);
+      mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditOperation }));
+      render(<AuditOperationScreen />);
+      await act(async () => refocus());
+      expect(await screen.findByText('Succeeded')).toBeOnTheScreen();
+      await act(async () => {
+        if (outcome === 'resolve') resolveOld({ ...detail, status: 'running' });
+        else rejectOld(new Error('Obsolete request failed'));
+      });
+      expect(screen.getByText('Succeeded')).toBeOnTheScreen();
+      expect(screen.queryByText('Running')).toBeNull();
+      expect(screen.queryByText('Obsolete request failed')).toBeNull();
+    },
+  );
+
   it('shows who started a build, its source and result', async () => {
     setSearchParams({ operationId: 'op-1' });
     const auditOperation = jest.fn().mockResolvedValue({
