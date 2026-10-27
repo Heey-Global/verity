@@ -6178,6 +6178,7 @@ describe('PATCH /projects/:id/settings', () => {
       method: 'PATCH',
       url: '/projects/p-settings/settings',
       payload: {
+        devcontainerEnabled: false,
         dopplerProject: ' verity ',
         dopplerConfig: ' prod ',
         defaultBranch: ' main ',
@@ -6189,6 +6190,7 @@ describe('PATCH /projects/:id/settings', () => {
     expect(res.json()).toMatchObject({
       settings: {
         projectId: 'p-settings',
+        devcontainerEnabled: false,
         dopplerProject: 'verity',
         dopplerConfig: 'prod',
         defaultBranch: 'main',
@@ -12688,6 +12690,7 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'verity-__local__--my-project',
       state: 'active',
     });
+    const dataRoot = mkdtempSync(join(worktreeRoot, 'local-documents-'));
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/__local__-my-project/.verity-sessions/agent-local',
@@ -12697,7 +12700,8 @@ describe('POST /sessions with project field (#174)', () => {
       bus,
       conductor,
       provisioner: fakeProvisioner(),
-      projectCloneRoot: '/data/dev',
+      dataRoot,
+      projectCloneRoot: join(dataRoot, 'workspaces'),
       projectBackend: fakeProjectBackend,
       projectWorktrees: () => projectWorktrees,
     });
@@ -12709,11 +12713,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
+      expect(projectWorktrees.add).not.toHaveBeenCalled();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
+        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
       });
     } finally {
       await a.close();
@@ -14127,6 +14132,40 @@ describe('DELETE /projects/:id', () => {
       })),
     };
   }
+
+  it.each([false, true])(
+    'runs image cleanup only after hiding, without making cleanup failure undo deletion (%s)',
+    async (fail) => {
+      await ctx.store.upsertProject({
+        id: 'p-image-delete',
+        owner: 'org',
+        repo: 'repo',
+        containerName: 'dev-image-delete',
+        state: 'active',
+      });
+      let hiddenAtCleanup: Date | null | undefined;
+      const cleanup = vi.fn(async (id: string) => {
+        hiddenAtCleanup = (await ctx.store.getProject(id))?.hiddenAt;
+        if (fail) throw new Error('image busy');
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        deprovisioner: fakeDeprovisioner(),
+        onProjectHidden: cleanup,
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/projects/p-image-delete' });
+        expect(res.statusCode).toBe(200);
+        expect(cleanup).toHaveBeenCalledExactlyOnceWith('p-image-delete');
+        expect(hiddenAtCleanup).toBeInstanceOf(Date);
+        expect((await ctx.store.getProject('p-image-delete'))?.hiddenAt).toBeInstanceOf(Date);
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({
@@ -16875,7 +16914,7 @@ describe('vulnerability scan session integration', () => {
         >();
         expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
           code: 'vulnerability_new',
-          message: '1 new vulnerability',
+          message: '1 new vulnerable package',
         });
       });
       const projects = (await server.inject('/projects')).json<

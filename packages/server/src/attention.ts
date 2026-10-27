@@ -361,7 +361,7 @@ export function sessionAttentionSignals(inputs: SessionAttentionInputs): Attenti
   if (count > 0)
     signals.push({
       code: 'vulnerability_new',
-      message: `${count} new ${count === 1 ? 'vulnerability' : 'vulnerabilities'}`,
+      message: `${count} new vulnerable ${count === 1 ? 'package' : 'packages'}`,
     });
   return signals;
 }

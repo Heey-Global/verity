@@ -76,6 +76,39 @@ describe('ServerDeploymentSpec', () => {
     ).toBeNull();
   });
 
+  // The builder socket grants build authority, so its bind is pinned to the one
+  // host directory the systemd unit owns, read-only, and at most once.
+  it('permits only the fixed read-only devcontainer builder socket bind', () => {
+    const mount = {
+      source: { kind: 'bind' as const, path: '/run/verity-buildkit' },
+      target: '/run/verity-buildkit',
+      readOnly: true,
+    };
+    const withMount = { ...body(), mounts: [...body().mounts, mount] };
+    expect(parseServerDeploymentSpec(sealDeploymentSpec(withMount))).not.toBeNull();
+    for (const invalid of [
+      { ...mount, readOnly: false },
+      { ...mount, source: { kind: 'bind', path: '/run' } },
+      { ...mount, source: { kind: 'bind', path: '/var/run/docker.sock' } },
+      { ...mount, target: '/run/verity-buildkit/buildkitd.sock' },
+      { ...mount, source: { kind: 'volume', name: 'verity-data' } },
+    ]) {
+      expect(
+        parseServerDeploymentSpec(
+          sealDeploymentSpec({
+            ...body(),
+            mounts: [...body().mounts, invalid],
+          } as ServerDeploymentSpecBody),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({ ...withMount, mounts: [...withMount.mounts, mount] }),
+      ),
+    ).toBeNull();
+  });
+
   it('round-trips a sealed allowlisted spec', () => {
     const spec = sealDeploymentSpec(body());
     expect(parseServerDeploymentSpec(JSON.parse(JSON.stringify(spec)))).toEqual(spec);

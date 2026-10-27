@@ -1346,3 +1346,55 @@ update the rollback point for data, because the promoted Server runs forward-onl
 **Limits.** The snapshot is taken before quiescing, so changes between it and the switch are not in
 it. A quiesced final snapshot after `quiescing-old` needs the old Server's control socket and
 database to stay usable while quiesced and a new rollback path from that phase; ADR 0025 defers both.
+
+## Amendment 4 — the devcontainer builder follows the release (2026-10-26)
+
+**Context.** Repository devcontainers build on a dedicated gVisor BuildKit service on the host
+(`deploy/buildkit`), installed by `verity-install`. Like the runtime registrations, it is
+host state that a Server image does not change. A fix to the builder therefore reached hosts only
+through a manual installer run, and an updated Server kept building against the old builder. The
+fixed runtime allowlist of `verity-host-runtime` (Amendment 2) cannot express "install this
+builder".
+
+**Decision.**
+
+1. A release image that carries the builder bundle under `/opt/verity-install/deploy` declares
+   the OCI label `org.verity.devcontainer-builder=1`.
+2. The host gains a third Verity component, `verity-host-builder`, with the same shape: a
+   root-owned script plus a systemd path unit, installed by `verity-install`, with
+   `builder-request.json` in and `builder-result.json` out in the same root-owned directory.
+   `agent.json` gains `builder`, so an Updater on an older host knows that nothing can answer.
+3. A request names only an official Server image digest. The component verifies that image's
+   release signature with the same pinned cosign verifier and signer identity as the bootstrap
+   installer. It installs only the bundle copied out of the verified image, never anything the
+   requester supplies. It pulls the digest from the registry, so the signature and the copied
+   files describe the same image. Everything it later runs or restores (staging, the verifier, the
+   kept-aside builder, the record of the installed bundle) lives in a root-only directory that is
+   not mounted into any container. The same holds for the lock and the `daemon.json` backup of
+   `verity-host-runtime`, which the builder installer runs. A stop (`KillMode=mixed`) signals only
+   the request process, which passes it on, waits for the previous builder to be restored, and
+   then publishes the answer. The trust anchor is the release signature, not the Updater.
+   This holds even after ADR 0017 removes the Updater's host-root equivalence.
+4. After the runtime reconciliation in `preflight`, the Updater sends the request when the target
+   declares the label and the installer verified a builder on this host. The component compares
+   a content hash of the bundle with the one recorded at the last installation, so an unchanged
+   builder keeps running. A changed bundle is installed with the previous builder files kept
+   aside, and those files are restored if the installation fails or the builder does not become
+   ready.
+5. A builder that cannot be updated does not fail the update. Repository builds are not a reason
+   to hold back a Server release, and the previous builder keeps serving. The Updater logs the
+   reason, and the next update asks again.
+
+**Not chosen.** A privileged helper container, for the reasons given in Amendment 2. A bundle
+supplied through the request directory was also rejected: it would make the Updater the trust
+anchor for code that runs as root.
+
+**Transition.** Hosts installed before this component need one installer run. That run also
+installs the current builder directly. Every later builder change is applied by updates.
+
+**Limits.** A requester can choose an older signed release, whose builder is then installed. This
+is intended for rollbacks, and it is the same latitude Amendment 2 gives runtime pins. The runsc
+registration that the builder installer performs is not part of the rollback, because it equals
+the release's runtime pins, which Amendment 2 reconciles anyway. Hosts without systemd get the
+builder at install time only.
+

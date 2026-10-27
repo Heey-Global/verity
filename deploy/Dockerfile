@@ -388,6 +388,13 @@ LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 # pins its own code verifies against; gvisor-runtime-config.test.ts keeps the three in step.
 LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{\"x86_64\":\"75c092fe87d84078f06ac40937cb5207fb5a1a92511b38b4790c915801555daadc59fef33de8db4dd92e1892a6de390c8a2e390a7a3bd0e2d3731d9ed6a3a6e8\",\"aarch64\":\"ee39fa48121797db60919dacb77145d604c9a54616323a00304f8482fca87af20e8e78b079cb193ab7bef7230ad3f79096a3491e12c09ba11625c7be5130e084\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
 
+# This image carries the devcontainer builder bundle under /opt/verity-install/deploy in the
+# form deploy/host/verity-host-builder installs from. During an update the Updater names this
+# image to that host component, which verifies the release signature itself and installs the
+# bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
+# contract value equal in all three places.
+LABEL org.verity.devcontainer-builder="1"
+
 # The Google Drive OAuth iOS client id (ADR 0009), injected by release.yml as a
 # build-arg so the running server has it WITHOUT runtime Doppler access (the
 # customer deployment cannot reach the vendor Doppler). Non-secret — the same id

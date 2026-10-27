@@ -1,0 +1,43 @@
+[Unit]
+Description=Verity devcontainer builder (gVisor only)
+# Docker's networks are part of the subnet check, so start after Docker.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60
+# Revalidate the build subnet against current host routes on every start. The
+# leading + runs it outside the sandboxing below, which hides the Docker socket
+# it reads Docker networks from.
+ExecStartPre=+/usr/local/libexec/verity-buildkit/network.sh apply
+ExecStart=/usr/local/libexec/verity-buildkit/buildkitd --config /etc/verity-buildkit/buildkitd.toml --otel-socket-path=/run/verity-buildkit/otel.sock
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=verity-buildkit
+RuntimeDirectoryMode=0755
+# The Server bind-mounts this directory; replacing it strands that mount.
+RuntimeDirectoryPreserve=yes
+StateDirectory=verity-buildkit
+StateDirectoryMode=0700
+UMask=0007
+# install.sh fills in the CPU and memory limits from resources.sh for this host.
+MemoryMax=@MEMORY_MAX@
+MemorySwapMax=0
+CPUQuota=@CPU_QUOTA@
+TasksMax=512
+Delegate=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+# CNI's bridge and firewall plugins take the iptables lock and keep results in
+# /var/lib/cni; nothing else outside builder state is writable.
+ReadWritePaths=/var/lib/verity-buildkit /run/verity-buildkit /var/lib/cni -/run/xtables.lock
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/run/containerd -/data
+# Root and mount/network namespace privileges are required by the OCI worker.
+# RUN processes still execute through runsc; insecure entitlements are disabled.
+
+[Install]
+WantedBy=multi-user.target

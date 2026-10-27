@@ -14,8 +14,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const seedHookPath = 'agent-seed/hooks/pre-push';
 const shippedHookPath = 'features/verity-sandbox-toolkit/agent-seed/hooks/pre-push';
+const seedLocalChecksPath = 'agent-seed/bin/verity-local-checks';
+const shippedLocalChecksPath = 'features/verity-sandbox-toolkit/agent-seed/bin/verity-local-checks';
 const hook = fileURLToPath(new URL(`../${seedHookPath}`, import.meta.url));
 const shippedHook = fileURLToPath(new URL(`../${shippedHookPath}`, import.meta.url));
+const localChecks = fileURLToPath(new URL(`../${seedLocalChecksPath}`, import.meta.url));
 const tempRoots: string[] = [];
 
 /**
@@ -101,6 +104,46 @@ function runHook(
   });
 }
 
+/** A PATH holding only the named commands, so a test can take one away. */
+function restrictedPath(repo: string, commands: string[]): string {
+  const bin = join(repo, 'bin');
+  mkdirSync(bin);
+  for (const command of commands) {
+    const source = execFileSync('/usr/bin/env', ['sh', '-c', `command -v ${command}`], {
+      encoding: 'utf8',
+    }).trim();
+    symlinkSync(source, join(bin, command));
+  }
+  return bin;
+}
+
+/** The operator's "skip lint/format for this session" answer, recorded the way the
+ *  hook's banner tells the agent to record it. */
+function skipLocalChecks(repo: string): void {
+  execFileSync(localChecks, ['skip'], {
+    cwd: repo,
+    env: { ...process.env, ...hermeticGit },
+    stdio: 'ignore',
+  });
+}
+
+/** A repository where the review gate is reachable and has un-reviewed work, so a
+ *  test about an earlier gate can prove the hook got PAST it rather than merely
+ *  that it did not print one particular message. */
+function repoWithPendingReview(packageJson?: string): string {
+  const repo = emptyRepo();
+  if (packageJson !== undefined) writeFileSync(join(repo, 'package.json'), packageJson);
+  commit(repo, 'base');
+  git(['-C', repo, 'branch', 'review-base']);
+  commit(repo, 'un-reviewed work');
+  return repo;
+}
+
+const reviewEnv = () => ({
+  VERITY_SECRET_SCAN_BIN: passingSecretScan(),
+  VERITY_CODE_REVIEW_BASE_REF: 'review-base',
+});
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -108,14 +151,7 @@ afterEach(() => {
 describe('pre-push lint gate', () => {
   it('blocks a package repository when node is unavailable', () => {
     const repo = repoWith('{"scripts":{"lint":"eslint ."}}');
-    const bin = join(repo, 'bin');
-    mkdirSync(bin);
-    for (const command of ['env', 'bash', 'git']) {
-      const source = execFileSync('/usr/bin/env', ['sh', '-c', `command -v ${command}`], {
-        encoding: 'utf8',
-      }).trim();
-      symlinkSync(source, join(bin, command));
-    }
+    const bin = restrictedPath(repo, ['env', 'bash', 'git']);
 
     const result = runHook(repo, { path: bin });
 
@@ -130,11 +166,182 @@ describe('pre-push lint gate', () => {
     expect(result.stderr).toContain('package.json is unreadable or invalid');
   });
 
-  it('blocks declared checks when dependencies are unavailable', () => {
-    const result = runHook(repoWith('{"scripts":{"lint":"eslint ."}}'));
+  /**
+   * Missing npm and missing node_modules used to share one banner. They are
+   * different situations: nobody chose to leave npm out of the image, so that
+   * stays a provisioning block, while node_modules is absent in every fresh
+   * worktree by design and installing it is a decision — the hook must not make
+   * it, and must not ask the operator to fix the image either.
+   */
+  it('still blocks as a provisioning bug when npm is unavailable', () => {
+    const repo = repoWith('{"scripts":{"lint":"eslint ."}}');
+    const bin = restrictedPath(repo, ['env', 'bash', 'git', 'node', 'cat', 'head', 'tr', 'grep']);
+
+    const result = runHook(repo, {
+      path: bin,
+      env: { VERITY_SECRET_SCAN_BIN: passingSecretScan() },
+    });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('local lint/format toolchain unavailable');
+    expect(result.stderr).toContain('PUSH BLOCKED - npm unavailable');
+    expect(result.stderr).not.toContain('dependencies are not installed');
+  });
+
+  it('asks before installing when dependencies are missing, naming both commands', () => {
+    const repo = repoWith('{"scripts":{"lint":"eslint ."}}');
+    writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
+
+    const result = runHook(repo, { env: { VERITY_SECRET_SCAN_BIN: passingSecretScan() } });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "lint and format checks can't run: dependencies are not installed",
+    );
+    // The two options the operator is to be offered, as runnable commands: an
+    // agent that only ever sees this banner must be able to act on either answer.
+    expect(result.stderr).toContain('npm ci --ignore-scripts');
+    expect(result.stderr).toContain('verity-local-checks skip');
+    expect(result.stderr).not.toMatch(/--no-verify/);
+  });
+
+  it('offers npm install when there is no lockfile to install from', () => {
+    const result = runHook(repoWith('{"scripts":{"format":"prettier --check ."}}'), {
+      env: { VERITY_SECRET_SCAN_BIN: passingSecretScan() },
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('npm install --ignore-scripts');
+    expect(result.stderr).not.toContain('npm ci');
+  });
+
+  it('stays inert in a repository that declares neither check', () => {
+    const result = runHook(repoWithPendingReview('{"name":"fixture"}'), { env: reviewEnv() });
+
+    // No dependency question for a repository with nothing to run; straight on to
+    // the review gate.
+    expect(result.stderr).not.toContain('dependencies are not installed');
+    expect(result.stderr).toContain('pre-push code review required');
+  });
+
+  it('honours the recorded skip and goes on to the review gate', () => {
+    const repo = repoWithPendingReview('{"scripts":{"lint":"eslint ."}}');
+    skipLocalChecks(repo);
+
+    const result = runHook(repo, { env: reviewEnv() });
+
+    expect(result.stderr).toContain(
+      'Lint and format skipped (your choice for this session). Secret scan and code review still run.',
+    );
+    // The skip covers lint/format only: the review gate must still be the one
+    // that stops this push.
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('pre-push code review required');
+  });
+
+  it('asks again when package.json or the lockfile changed since the skip', () => {
+    const repo = repoWithPendingReview('{"scripts":{"lint":"eslint ."}}');
+    skipLocalChecks(repo);
+    writeFileSync(join(repo, 'package-lock.json'), '{"lockfileVersion":3}');
+
+    const result = runHook(repo, { env: reviewEnv() });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('PUSH BLOCKED - dependencies or check config changed');
+    expect(result.stderr).toContain('npm ci --ignore-scripts');
+    expect(result.stderr).toContain('verity-local-checks skip');
+    expect(result.stderr).not.toContain('pre-push code review required');
+  });
+
+  it('forgets the skip on reset', () => {
+    const repo = repoWithPendingReview('{"scripts":{"lint":"eslint ."}}');
+    skipLocalChecks(repo);
+    execFileSync(localChecks, ['reset'], {
+      cwd: repo,
+      env: { ...process.env, ...hermeticGit },
+      stdio: 'ignore',
+    });
+
+    const result = runHook(repo, { env: reviewEnv() });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('dependencies are not installed');
+  });
+
+  it('ignores the skip once dependencies are installed and runs the checks', () => {
+    // A lint script that fails on purpose: the only way to tell "the check ran"
+    // from "the check was skipped" is a failure that reaches the banner.
+    const repo = repoWithPendingReview('{"scripts":{"lint":"exit 7"}}');
+    skipLocalChecks(repo);
+    mkdirSync(join(repo, 'node_modules'));
+
+    const result = runHook(repo, { env: reviewEnv() });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('PUSH BLOCKED - lint failed');
+    expect(result.stderr).not.toContain('Lint and format skipped');
+    expect(result.stderr).not.toMatch(/--no-verify/);
+  });
+});
+
+/**
+ * Protected branches used to leave the hook after the secret scan. A direct push
+ * to main is exactly where an un-reviewed or un-linted commit lands with no PR
+ * check in front of it, so review and lint now run there like anywhere else.
+ */
+describe('pre-push gate on protected branches', () => {
+  it.each(['main', 'master', 'staging', 'release/1.0'])(
+    'reaches the review gate on %s',
+    (branch) => {
+      const repo = emptyRepo();
+      git(['-C', repo, 'checkout', '-q', '-b', branch]);
+      commit(repo, 'base');
+      git(['-C', repo, 'branch', 'review-base']);
+      commit(repo, 'un-reviewed work');
+
+      const result = runHook(repo, { env: reviewEnv() });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('pre-push code review required');
+    },
+  );
+
+  it('reviews a ref pushed to main from another checkout', () => {
+    const repo = repoWithPendingReview();
+    const pushed = git(['-C', repo, 'rev-parse', 'HEAD']).trim();
+
+    const result = runHook(repo, {
+      input: `refs/heads/test/pre-push ${pushed} refs/heads/main ${'0'.repeat(40)}\n`,
+      env: reviewEnv(),
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('pre-push code review required');
+    expect(result.stderr).toContain(pushed);
+  });
+
+  it('lets a marked tip through to main', () => {
+    const repo = emptyRepo();
+    git(['-C', repo, 'checkout', '-q', '-b', 'main']);
+    commit(repo, 'base');
+    git(['-C', repo, 'branch', 'review-base']);
+    const head = commit(repo, 'reviewed work');
+    mkdirSync(join(repo, '.agents'));
+    writeFileSync(join(repo, '.agents/.last-code-review-sha'), `${head}\n`);
+
+    const result = runHook(repo, { env: reviewEnv() });
+
+    expect(result.status).toBe(0);
+  });
+
+  it('still passes a push that only deletes a remote branch', () => {
+    const repo = repoWithPendingReview();
+
+    const result = runHook(repo, {
+      input: `(delete) ${'0'.repeat(40)} refs/heads/main ${'a'.repeat(40)}\n`,
+      env: reviewEnv(),
+    });
+
+    expect(result.status).toBe(0);
   });
 });
 
@@ -320,7 +527,17 @@ describe('agent-seed hook packaging', () => {
     // container needs when the checkout belongs to another uid — git would abort
     // on dubious ownership rather than answer.
     const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-    for (const path of [seedHookPath, shippedHookPath]) {
+    // The hook resolves `verity-local-checks` as a sibling and prints it as the
+    // command to run, so the helper has the same shipping contract as the hook.
+    expect(readFileSync(join(repoRoot, shippedLocalChecksPath), 'utf8')).toBe(
+      readFileSync(localChecks, 'utf8'),
+    );
+    for (const path of [
+      seedHookPath,
+      shippedHookPath,
+      seedLocalChecksPath,
+      shippedLocalChecksPath,
+    ]) {
       const entry = execFileSync('git', ['-C', repoRoot, 'ls-files', '-s', '--', path], {
         encoding: 'utf8',
       });
@@ -353,6 +570,12 @@ describe('agent-seed hook packaging', () => {
         artifact.indexOf('verity-code-review mark'),
       );
       expect(artifact).toContain('code_review');
+      // The dependency question: the fragment tells the agent what to do when
+      // the hook prints this banner, so the two have to agree on its wording.
+      expect(artifact).toContain(
+        "lint and format checks can't run: dependencies are not installed",
+      );
+      expect(artifact).toContain('dependencies or check config changed');
     }
   });
 

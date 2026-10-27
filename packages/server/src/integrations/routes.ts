@@ -9,7 +9,11 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import { affectedChatDay, orphanMessage, projectChatHistory } from './knowledge-projection.js';
-import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
+import {
+  currentMatrixBody,
+  ensureProjectKnowledge,
+  KNOWLEDGE_MATRIX_DIR,
+} from '../knowledge-folder.js';
 import { ingestKnowledgeBytes, removeKnowledgeExtraction } from '../knowledge-file-ingest.js';
 import type { ImageTextJob } from '../knowledge-image-text.js';
 import { acquireKnowledgeMutationLock } from '../knowledge-mutation-lock.js';
@@ -101,7 +105,7 @@ function attachmentPath(input: IntegrationEvent, activatedAt: Date, fileName: st
       .slice(0, 50)
       .join('')
       .replace(/^\.+/u, '') || 'file';
-  return `${KNOWLEDGE_DOCUMENTS_DIR}/matrix/${room}/attachments/${eventId}-${safeName}`;
+  return `${KNOWLEDGE_MATRIX_DIR}/${room}/attachments/${eventId}-${safeName}`;
 }
 
 function authorized(request: FastifyRequest, token: string | undefined): boolean {
@@ -383,12 +387,12 @@ export function registerIntegrationRoutes(
             originalId: input.targetEventId ?? input.eventId,
           });
           if (input.kind === 'redaction' && target?.body) {
-            const prefix = `Attachment: ${KNOWLEDGE_DOCUMENTS_DIR}/matrix/`;
+            const prefix = `Attachment: ${KNOWLEDGE_MATRIX_DIR}/`;
             const marker = createHash('sha256').update(target.eventId).digest('hex').slice(0, 24);
-            const relative = target.body.startsWith(prefix)
-              ? target.body.slice('Attachment: '.length)
+            const relative = currentMatrixBody(target.body).startsWith(prefix)
+              ? currentMatrixBody(target.body).slice('Attachment: '.length)
               : '';
-            const expectedPrefix = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix/${createHash('sha256')
+            const expectedPrefix = `${KNOWLEDGE_MATRIX_DIR}/${createHash('sha256')
               .update(`${input.accountId}\0${input.sourceId}\0${binding.activatedAt.toISOString()}`)
               .digest('hex')
               .slice(0, 24)}/attachments/${marker}-`;

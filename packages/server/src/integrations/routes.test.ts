@@ -144,7 +144,7 @@ it('requires an explicit project binding before accepting chat, then updates edi
   expect(imported.statusCode).toBe(200);
   const attachmentPath = z.object({ path: z.string() }).parse(imported.json()).path;
   expect(attachmentPath).toMatch(
-    /^sources\/documents\/matrix\/[a-f0-9]+\/attachments\/[a-f0-9]+-notes\.txt$/u,
+    /^sources\/matrix\/[a-f0-9]+\/attachments\/[a-f0-9]+-notes\.txt$/u,
   );
   const attachmentRoot = join(root, 'knowledge', projectId);
   // Without this hand-off, images import fine and their text silently never appears.
@@ -203,18 +203,27 @@ it('requires an explicit project binding before accepting chat, then updates edi
     kind: 'edit',
     body: 'Revised plan',
   };
+  // Retained events still carry their pre-migration attachment path.
+  await ctx.db
+    .updateTable('integration_events')
+    .set({
+      body: `Attachment: ${attachmentPath.replace('sources/matrix/', 'sources/documents/matrix/')}`,
+    })
+    .where('account_id', '=', base.accountId)
+    .where('event_id', '=', '$file')
+    .execute();
   expect((await send(edit)).statusCode).toBe(200);
   const source = (
     await app.inject({ method: 'GET', url: `/projects/${projectId}/integrations` })
   ).json().sources[0];
   expect(source.status).toBe('active');
-  const path = join(root, 'knowledge', projectId, 'sources', 'documents', 'matrix');
+  const path = join(root, 'knowledge', projectId, 'sources', 'matrix');
   const { readdir } = await import('node:fs/promises');
   const [roomDir] = await readdir(path);
   const [dayFile] = await readdir(join(path, roomDir!));
   const file = join(path, roomDir!, dayFile!);
   expect(await readFile(file, 'utf8')).toContain('Revised plan');
-  expect(await readFile(file, 'utf8')).toContain('Attachment: sources/documents/matrix/');
+  expect(await readFile(file, 'utf8')).toContain('Attachment: sources/matrix/');
   expect(await readFile(file, 'utf8')).not.toContain('Original plan');
   const redaction = {
     ...base,
@@ -375,7 +384,7 @@ it('imports orphan edits once and clears previous failure evidence with a new wo
     { accountId: id, sourceId, eventId: orphanEdit.eventId },
   );
   expect(snapshot.event).toMatchObject({ stored: true, kind: 'edit' });
-  const matrixRoot = join(root, 'knowledge', projectId, 'sources', 'documents', 'matrix');
+  const matrixRoot = join(root, 'knowledge', projectId, 'sources', 'matrix');
   const [roomDir] = await readdir(matrixRoot);
   const [dayFile] = await readdir(join(matrixRoot, roomDir!));
   const chat = await readFile(join(matrixRoot, roomDir!, dayFile!), 'utf8');

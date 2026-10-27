@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { WELCOME_SESSION_MARKER, renderWelcomeGuidePrompt } from '@verity/events';
@@ -12,6 +15,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServer } from './server.js';
+import { isDocumentWorkspace } from './document-workspace.js';
 import { localProjectInput } from './project-collection-routes.js';
 import {
   STARTER_PROJECT_SLUG,
@@ -26,11 +30,14 @@ const conductor = {} as unknown as Conductor;
 const log = { info: vi.fn(), warn: vi.fn() };
 
 let ctx: TestDb;
+let root: string;
 beforeAll(async () => {
   ctx = await createTestDb();
+  root = mkdtempSync(join(tmpdir(), 'verity-welcome-'));
 });
 afterAll(async () => {
   await ctx.close();
+  rmSync(root, { recursive: true, force: true });
 });
 beforeEach(async () => {
   await truncateAll(ctx.db);
@@ -148,15 +155,9 @@ describe('POST /onboarding/welcome', () => {
       conductor,
       secretCipher: cipher,
       provisioner: { provision },
-      projectCloneRoot: '/data/dev',
+      dataRoot: join(root, 'data'),
+      projectCloneRoot: join(root, 'projects'),
       projectBackend: (_project, selected) => selected,
-      projectWorktrees: () => ({
-        add: vi.fn(
-          async (branch: string) =>
-            `/data/dev/welcome/.verity-sessions/${branch.replace(/\//g, '-')}`,
-        ),
-        remove: vi.fn(async () => undefined),
-      }),
     });
     const init = await app.inject({
       method: 'POST',
@@ -387,6 +388,8 @@ describe('POST /onboarding/welcome', () => {
         projectId: first.body.projectId,
       });
       expect(await store.hasSessionAutomationMarker(sessionId, WELCOME_SESSION_MARKER)).toBe(true);
+
+      expect(isDocumentWorkspace((await store.getSession(sessionId))!.worktree)).toBe(true);
 
       const events = await store.getEvents(sessionId);
       expect(events.map((event) => event.t)).toEqual(['notice', 'choices', 'status']);
