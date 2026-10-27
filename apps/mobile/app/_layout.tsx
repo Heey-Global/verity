@@ -4,6 +4,7 @@ import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/run
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
 import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
+import { BrowserAlertHost } from '../components/ui/BrowserAlertHost';
 import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
@@ -329,6 +330,7 @@ function HydratedRoot() {
                 <QuickCaptureBubble />
               </>
             )}
+            <BrowserAlertHost />
           </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
