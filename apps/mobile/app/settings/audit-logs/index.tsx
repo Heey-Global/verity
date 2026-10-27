@@ -72,8 +72,6 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   const load = useCallback(() => {
     const request = ++latest.current;
     setError(undefined);
-    // A cursor from the previous filter must not page the new one.
-    setNextBefore(null);
     client
       .auditOperations({
         ...(filter === 'all' ? {} : { domain: filter }),
@@ -96,6 +94,9 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   }, [client, filter, query]);
 
   useFocusEffect(load);
+  // A cursor from the previous filter must not page the new one. Reset on a filter
+  // change only, so a refocus keeps the pages already loaded.
+  useEffect(() => setNextBefore(null), [filter, query]);
 
   const loadMore = () => {
     if (nextBefore === null || loadingMore) return;

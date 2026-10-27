@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { canonicalJson } from '@verity/secret-contracts';
 import type { Database } from '@verity/store';
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import { sql } from 'kysely';
 import { z } from 'zod';
 
@@ -166,7 +166,7 @@ export interface AuditOperationQuery {
 export interface AuditLog {
   /** Append one event. With `txn` it co-commits with the caller's transaction and a
    *  failure propagates; without, it runs in its own transaction. */
-  append(input: AuditEventInput, txn?: Kysely<Database>): Promise<AuditEvent>;
+  append(input: AuditEventInput, txn?: Transaction<Database>): Promise<AuditEvent>;
   /** Events grouped by operation, newest operation first. */
   listOperations(query: AuditOperationQuery): Promise<{
     operations: AuditEvent[][];
@@ -303,7 +303,8 @@ function decodeCursor(cursor: string | undefined): { at: string; operationId: st
       Array.isArray(value) &&
       value.length === 2 &&
       typeof value[0] === 'string' &&
-      typeof value[1] === 'string'
+      typeof value[1] === 'string' &&
+      !Number.isNaN(Date.parse(value[0]))
     ) {
       return { at: value[0], operationId: value[1] };
     }
@@ -333,13 +334,17 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
       if (query.domain !== undefined) matching = matching.where('domain', '=', query.domain);
       const search = query.search?.trim();
       if (search) {
-        const fragment = `%${search.replace(/^sha256:/i, '').replace(/[\\%_]/g, '\\$&')}%`;
+        const term = search.replace(/^sha256:/i, '');
+        const fragment = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+        // A bare `sha256:` must not turn into a pattern that matches everything.
         matching = matching.where((eb) =>
-          eb.or([
-            eb('operation_id', '=', search),
-            eb('image_id', 'ilike', fragment),
-            eb('project_label', 'ilike', fragment),
-          ]),
+          term.length === 0
+            ? eb('operation_id', '=', search)
+            : eb.or([
+                eb('operation_id', '=', search),
+                eb('image_id', 'ilike', fragment),
+                eb('project_label', 'ilike', fragment),
+              ]),
         );
       }
       let starts = db

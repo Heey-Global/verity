@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   AUDIT_INSTALLATION_STREAM,
@@ -176,13 +176,23 @@ export function createAuditRecorder(
         {
           ...base,
           kind: 'build.requested',
+          // Fitted to the allowlist here, so only unavailable storage — never an
+          // unusual value — can refuse a build.
           payload: {
-            imageTag: intent.imageTag,
+            imageTag: intent.imageTag.slice(0, 300),
             forceRebuild: intent.forceRebuild,
-            commit: intent.commit,
-            baseImageRef: intent.baseImageRef,
-            configFingerprint: intent.configFingerprint,
-            features: intent.features,
+            commit:
+              intent.commit !== null && /^[0-9a-f]{7,64}$/.test(intent.commit)
+                ? intent.commit
+                : null,
+            baseImageRef: intent.baseImageRef.slice(0, 500),
+            configFingerprint: /^[0-9a-f]{8,128}$/.test(intent.configFingerprint)
+              ? intent.configFingerprint
+              : createHash('sha256').update(intent.configFingerprint, 'utf8').digest('hex'),
+            features: intent.features
+              .filter((feature) => feature.length > 0)
+              .slice(0, 20)
+              .map((feature) => feature.slice(0, 500)),
           },
         },
         'fail-closed',
@@ -197,9 +207,19 @@ export function createAuditRecorder(
           await write(
             {
               ...base,
-              imageId: result.imageId,
+              imageId: result.imageId?.slice(0, 200) ?? null,
               kind: 'build.succeeded',
-              payload: { ...result, durationMs: durationMs() },
+              payload: {
+                imageId: result.imageId?.slice(0, 200) || null,
+                sizeBytes:
+                  result.sizeBytes !== null &&
+                  Number.isSafeInteger(result.sizeBytes) &&
+                  result.sizeBytes >= 0
+                    ? result.sizeBytes
+                    : null,
+                baseImageDigest: result.baseImageDigest?.slice(0, 200) || null,
+                durationMs: durationMs(),
+              },
             },
             'best-effort',
           );
@@ -255,7 +275,12 @@ export function createAuditRecorder(
       if (gaps.size > 0) {
         try {
           const server = await options.server();
-          for (const streamId of [...gaps.keys()]) await flushGap(streamId, server);
+          // Each stream on its own: one failing write must not hold back the others.
+          for (const streamId of [...gaps.keys()]) {
+            await flushGap(streamId, server).catch((error: unknown) =>
+              report(error, 'audit.write_gap'),
+            );
+          }
         } catch (error) {
           report(error, 'audit.write_gap');
         }

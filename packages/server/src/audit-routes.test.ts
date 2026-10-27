@@ -122,6 +122,24 @@ describe('audit routes', () => {
     await app.close();
   });
 
+  // The intent gate exists for storage outages; an unusual ref or commit format must
+  // never be the reason a build is refused.
+  it('records a build whose inputs exceed the allowlist limits', async () => {
+    const recorder = createAuditRecorder(log, { server });
+    const build = await recorder.beginBuild(
+      intent({
+        baseImageRef: `registry.example/${'x'.repeat(600)}`,
+        commit: 'HEAD',
+        configFingerprint: 'not-a-hex-hash',
+        features: Array.from({ length: 30 }, (_, i) => `feature-${i}`),
+      }),
+    );
+    await build.succeeded({ imageId: 'sha256:x', sizeBytes: Number.NaN, baseImageDigest: null });
+    const events = await log.operation(build.operationId);
+    expect(events.map((e) => e.kind)).toEqual(['build.requested', 'build.succeeded']);
+    expect(events[0]!.payload).toMatchObject({ commit: null });
+  });
+
   it('reports audit health', async () => {
     const recorder = createAuditRecorder(log, { server });
     const health = vi.spyOn(recorder, 'health');
