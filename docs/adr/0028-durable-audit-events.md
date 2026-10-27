@@ -110,28 +110,29 @@ tail has not changed produces no event and the legacy chain's format is
 untouched; restore-triggered advancement follows the same rule. The installation
 stream's own head advancement is recorded by its head record alone and never by
 an event and is therefore exempt from the fail-closed rule. Events written by a
-run do not count as tail movement for that run's successor, so verification does not feed itself and the installation
-stream stays quiet when nothing else happens. The write-gap append is
-additionally fail-closed for the recovering process alone, as described below.
-Retention and overrun changes and the one-time legacy-prune confirmation are
-database transitions that delete history, so they co-commit with their audit
-event and are refused when it cannot be written. Interactive administrator reads
-in the app are deliberately neither recorded nor fail-closed in this first
-stage; they are limited to administrators, and recording them would add volume
-without a question the trail could newly answer. New Devcontainer builds require
-a committed audit intent before the build is started, whatever triggered them:
-initial provisioning, the explicit rebuild action, fleet replacement after an
-update, or a wake that finds no image for the current configuration hash. Every
-such build executes repository and Feature code, so the trigger does not change
-the rule. The rule is about image builds Verity mediates, not about the
-Devcontainer path as such: agent-requested builds through the Docker policy
-gateway stay denied under [ADR 0017](0017-docker-policy-gateway.md) D5 today,
-and if a build-worker design later admits them they join this fail-closed group
-rather than the best-effort Resources domain. Image resolution is
-content-addressed and a wake that finds its image does not build; a wake that
-would build, and whose intent cannot be committed, fails with an explicit
-audit-health error instead of running unrecorded. Secret approvals, grant
-issuance and gateway-served secret calls keep the fail-closed behavior that [ADR
+run do not count as tail movement for that run's successor, so verification does
+not feed itself and the installation stream stays quiet when nothing else
+happens. The write-gap append is additionally fail-closed for the recovering
+process alone, as described below. Retention and overrun changes and the
+one-time legacy-prune confirmation are database transitions that delete history,
+so they co-commit with their audit event and are refused when it cannot be
+written. Interactive administrator reads in the app are deliberately neither
+recorded nor fail-closed in this first stage; they are limited to
+administrators, and recording them would add volume without a question the trail
+could newly answer. New Devcontainer builds require a committed audit intent
+before the build is started, whatever triggered them: initial provisioning, the
+explicit rebuild action, fleet replacement after an update, or a wake that finds
+no image for the current configuration hash. Every such build executes
+repository and Feature code, so the trigger does not change the rule. The rule
+is about image builds Verity mediates, not about the Devcontainer path as such:
+agent-requested builds through the Docker policy gateway stay denied under [ADR
+0017](0017-docker-policy-gateway.md) D5 today, and if a build-worker design
+later admits them they join this fail-closed group rather than the best-effort
+Resources domain. Image resolution is content-addressed and a wake that finds
+its image does not build; a wake that would build, and whose intent cannot be
+committed, fails with an explicit audit-health error instead of running
+unrecorded. Secret approvals, grant issuance and gateway-served secret calls
+keep the fail-closed behavior that [ADR
 0014](0014-acp-secret-tools-approval-gated.md) and the recorder already require;
 this ADR does not weaken it. Admin-agent reads and administrator exports are
 denied when their own audit event cannot be written, as the Access section
