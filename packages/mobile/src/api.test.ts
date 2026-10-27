@@ -1153,10 +1153,13 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
-  it('maps a 503 (fleet registry not configured) to an empty list', async () => {
-    const { fetch } = fakeFetch(json({ error: 'not configured' }, 503));
+  it('surfaces a 503 without pretending the project list is empty', async () => {
+    const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listProjects()).toEqual([]);
+    await expect(client.listProjects()).rejects.toMatchObject({
+      status: 503,
+      message: 'temporarily unavailable',
+    });
   });
 
   it('fetches repository issues with validated connection metadata', async () => {

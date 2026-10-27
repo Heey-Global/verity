@@ -3059,13 +3059,8 @@ export class VerityClient {
   /** Verity projects for the overview. Plain absent GitHub repos are deliberately
    * excluded; paused projects remain listed with `state='absent'`. */
   async listProjects(): Promise<ProjectRecord[]> {
-    try {
-      const res = await this.request('/projects', { method: 'GET' });
-      return z.array(projectRecordSchema).parse(await res.json());
-    } catch (err) {
-      if (err instanceof VerityApiError && err.status === 503) return [];
-      throw err;
-    }
+    const res = await this.request('/projects', { method: 'GET' });
+    return z.array(projectRecordSchema).parse(await res.json());
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
