@@ -9,6 +9,8 @@ on:
       - 'deploy/gvisor/versions.env'
       - 'features/verity-sandbox-toolkit/npm/devcontainers/**'
       - 'packages/server/src/provisioner.ts'
+      - 'packages/server/src/build-storage.ts'
+      - 'packages/server/src/devcontainer-build-boundary.ts'
       - 'packages/server/src/derived-image-references.ts'
       - 'packages/server/src/docker-gc.ts'
       - 'packages/server/src/embedded.ts'

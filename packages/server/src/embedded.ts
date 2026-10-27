@@ -1,3 +1,4 @@
+import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
@@ -3699,6 +3700,15 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      buildStorage: new BuildStorage(
+        join(
+          config.dataVolumeRoot ??
+            config.dataDir ??
+            config.workspacesDir ??
+            join(tmpdir(), 'verity'),
+          'build-storage',
+        ),
+      ),
       imageReferences,
       store: eventStore,
       db,

@@ -23,13 +23,12 @@ the host's CPUs (at least one), a quarter of its memory kept between 2 GiB and
 8 GiB, no swap, and 512 tasks. `resources.sh` derives those limits and the
 installer writes them into the unit, so they follow the host on every
 installation and update. The OCI worker runs one operation at a time and
-disables insecure entitlements and the containerd worker. Snapshots use
-overlayfs wherever the state directory's file system supports it: each step is
-a layer over its parent rather than a full copy of the image's file system,
-which keeps small steps fast and the cache within its limit. Elsewhere BuildKit
-falls back to the slower `native` snapshotter. An upgrade from `native` to
-overlayfs rebuilds the cache once and removes the old snapshots. BuildKit GC
-bounds its own cache independently of the Server's exported images. A build can
+disables insecure entitlements and the containerd worker. Fresh installations use `auto`, which selects overlayfs where supported and
+otherwise native. Updates preserve the configured OCI snapshotter, including
+`native`. Snapshotter changes and deletion of old worker directories require
+separate maintenance. BuildKit GC bounds eligible cache independently of active
+snapshots, Docker images and exported archives; its budget is not an active-build
+peak limit. A build can
 use outbound networking; this service does not implement egress policy.
 
 ## Build-step network
@@ -90,7 +89,7 @@ hosts set up by an installer that includes `verity-host-builder`, every guarded
 Server update brings the builder to the one its release ships:
 
 1. A release image that carries this bundle declares
-   `org.verity.devcontainer-builder=1`.
+   `org.verity.devcontainer-builder=2`.
 2. After registering the gVisor runtimes, and before the standby is created, the
    Updater writes `builder-request.json` into the host runtime directory. The
    request names only the official target image digest.
@@ -190,6 +189,24 @@ publisher signature. Runner boundary attestation still compares the resulting
 toolkit with the signed Server's bundled trust root. A mismatched toolkit is
 rejected there. No production rollout is implied by the integration tests.
 
+### Storage contract upgrade
+
+Storage management uses builder bundle contract 2. Hosts with the contract-1
+host updater need one installer Repair from this release before they can apply
+contract-2 builder updates. The old host component deliberately refuses the new
+bundle: it does not know how to back up the additional storage service units.
+A Server update can finish while repository builds remain unavailable pending
+that Repair and valid filesystem evidence. Existing project containers continue
+running. Configure and verify the storage roots below before testing a build.
+
+Subsequent guarded builder updates include both storage units in their scoped
+backup, retain host policy files, and restore timer activation/enabling on failure.
+A Server rollback keeps the current compatible builder unless its release
+explicitly supports this builder contract. Do not downgrade the builder by
+running an older installer that deletes snapshotter state. Keep the previous
+Server image and deployment configuration for rollback; cache or project data
+removal is not part of rollback.
+
 The service cache lives under `/var/lib/verity-buildkit`. Do not delete it during
 active builds. Service upgrades and host maintenance should drain builds first.
 Keep the previous pinned installation/deployment available for rollback; never
@@ -220,3 +237,146 @@ with force. A failed reference read skips image collection; a failed deletion is
 logged and retried by the existing boot/daily/disk-pressure collector. A cleanup
 failure does not undo project deletion. Named data volumes and the dedicated
 BuildKit service's cache follow their existing, separate retention policies.
+
+## Storage admission and owned artifacts
+
+The Server admits one context/build/export/import attempt at a time across all
+projects. Another request receives an actionable busy error and can be retried;
+it does not allocate another context or TAR while waiting. A context requires
+room for its existing 2 GiB input limit before copying starts. A cache miss then
+reserves the complete estimated remaining build growth through image import.
+Image-reference reservations continue to protect the imported image through
+container creation, independently of disk admission.
+
+Contexts, temporary registry credentials and TARs live below the Server data
+root's private `build-storage/attempt-*` directories, rather than container
+`/tmp`. Successful, failed, timed-out and cancelled attempts remove their own
+files. Commands run in tracked process groups; timeouts terminate their
+descendants before releasing the attempt. No project volume, clone, worktree,
+rollback image or BuildKit snapshot is an owned attempt artifact.
+
+Before another attempt, recovery removes abandoned directories only when their
+recorded owner and command groups are definitively gone in the same PID
+namespace. A live group, unreadable record or changed namespace retains the
+files and blocks admission. For a container replacement, verify host builds and
+imports have stopped before reconciling only the reported owned attempt
+directory. Do not remove the entire data root or infer inactivity from a missing
+Server PID in a different namespace.
+
+| Setting                     | Default | Meaning                                                                                |
+| --------------------------- | ------- | -------------------------------------------------------------------------------------- |
+| `VERITY_BUILD_ESTIMATE_GIB` | 306     | Total context, snapshot, export and import growth estimate for an unknown/native build |
+| `VERITY_BUILD_FREE_GIB`     | 10      | Free-byte reserve left after admission                                                 |
+| `VERITY_BUILD_FREE_INODES`  | 1000000 | Minimum free inode count                                                               |
+
+These positive integer settings belong to the trusted Server environment. The
+unknown-build estimate is intentionally conservative and **has not been validated
+as an upper bound for arbitrary Dockerfiles**. Configure a smaller estimate only
+from bounded cold/warm build measurements for the intended workload. Admission
+estimates and periodic checks cannot enforce a filesystem quota or guarantee
+that another host workload will not exhaust the disk between samples.
+
+Every active command checks the reserve every two seconds. Host measurements
+come from the storage timer every 15 seconds and must be no more than 120 seconds
+old. Missing, invalid, stale, duplicate or unavailable root evidence rejects a
+cache miss. Unknown topology never permits independent free-space budgets:
+admission conservatively charges the full estimate against the lowest available
+capacity and inode count across the local staging filesystem and all host roots.
+
+## Filesystem evidence and cache policy
+
+`verity-build-storage.timer` publishes
+`/var/lib/verity/host-diagnostics/storage.json` atomically. The Server reads it
+through its existing read-only `/run/verity-host-diagnostics` mount. Collection
+does not prune, run builds or traverse project files. It reports filesystem IDs,
+mounts, byte capacity and inodes separately for BuildKit, Docker, containerd,
+export and project roots. A bounded `buildctl debug workers` response reports
+current worker labels separately; Docker's driver and old state-directory names
+are never treated as proof of the BuildKit snapshotter. Active-solve attribution
+is explicitly unavailable in this report.
+
+Docker Engine may keep image content and snapshots in containerd outside
+`DockerRootDir`. Establish that root from the host runtime configuration and put
+it in `/etc/verity-buildkit/storage-roots.conf`; no containerd root is guessed.
+For a host using the standard containerd root and managed data volume:
+
+```text
+version=1
+containerdRoot=/var/lib/containerd
+dataVolume=verity-data
+```
+
+The publisher obtains `DockerRootDir` and the named volume's actual mountpoint
+from Docker. For bind-mounted data, set `exportRoot=/absolute/host/data/path`;
+set `projectRoot=/absolute/host/project/path` when project data is elsewhere.
+Unset containerd roots remain unavailable and block new builds. Recheck these
+paths after moving Docker, containerd or data storage. Config files are parsed
+as data, never sourced as shell programs.
+
+For a bounded one-time physical tree sample, pass established host paths:
+
+```sh
+VERITY_STORAGE_REPORT_USAGE=1 bash deploy/buildkit/storage-report.sh \
+  /var/lib/verity-buildkit /var/lib/docker /var/lib/containerd \
+  /actual/export/root /actual/project/root
+```
+
+Each optional `du -sx` has a ten-second timeout; a timeout is unknown, not zero.
+Root tree totals can overlap (for example Docker volumes and project data).
+Do not sum overlapping roots, mounted merged views, or logical image/cache sizes
+with physical tree totals. A physical snapshot total is not reclaimable-cache
+evidence. For phase peaks, sample filesystem availability before, during and
+after a separately budgeted representative build/export/import; retain timestamps,
+phase boundaries, cancellation outcome and collector timeouts. A historical TAR
+size alone cannot establish the next build's snapshot or import budget.
+
+The installer renders version-1 `/etc/verity-buildkit/storage-policy.conf` when
+present. Without it, the cache target is 10 GiB, retained floor 1 GiB, free-space
+target 5 GiB and age eligibility 72 hours. Example:
+
+```text
+version=1
+reservedGiB=1
+budgetGiB=10
+freeGiB=5
+ageHours=72
+```
+
+Reapply the current installer after editing the policy; editing generated TOML
+is not persistent configuration. Invalid settings fail before installation
+mutates binaries or runtimes. Existing OCI snapshotter configuration is retained;
+an unsupported custom state root fails for explicit maintenance. BuildKit owns
+reference-safe GC: active/shared records may keep physical usage above the cache
+target. Image retention continues to protect durable project selections,
+container references and the existing Server rollback policy. No generic Docker
+system prune or volume cleanup is added by storage management.
+
+## Tooling reuse
+
+The toolkit CLI installer reuses a pinned installation only when the source
+lockfile, installer/hardening code, Node runtime, installed bytes, ownership,
+permissions and executable links match its installation receipt. Missing or
+changed entries trigger a complete locked reinstall. Version overrides are
+installed afresh. Claude ACP is rebuilt because it receives additional external
+patches; their application is never skipped by this receipt. Compatible Docker
+CLI/plugin copies share Dockerfile steps with identical source stage,
+destination and permissions.
+
+## Acceptance after deployment
+
+Use an isolated test host and a numeric disk/time budget for cold, warm and
+repeated representative builds. Record timestamped filesystem samples at
+context, build/export and import boundaries; sampling may miss brief peaks.
+Compare peak growth and final retained usage, including a completed GC pass.
+Demonstrate convergence of eligible cache while keeping active references,
+required rollback images and project data. Exercise low-space/inode rejection,
+concurrent requests, cancellation and restart recovery within that budget.
+The disposable host-service CI fixture records bounded cold/warm/repeated
+phase samples; its small-workload estimate does not calibrate larger projects.
+
+After separately approving a production rollout, a project Repair is successful
+only when the build process exits successfully, the archive imports, the
+gVisor sandbox starts, and an agent responds. Confirm owned archive cleanup as
+well. A completed export, an existing image tag or a running control-plane
+container alone does not demonstrate project recovery. Deployment, host data
+cleanup and snapshotter changes remain separate maintenance actions.

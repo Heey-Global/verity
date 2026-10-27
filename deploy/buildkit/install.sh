@@ -7,6 +7,16 @@ source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 buildkit_image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
 builder_gid=${VERITY_BUILDKIT_GID:-1102}
 [[ $builder_gid =~ ^[0-9]+$ && $builder_gid -gt 0 && $builder_gid -lt 65535 ]] || { echo 'Invalid VERITY_BUILDKIT_GID' >&2; exit 1; }
+# Validate storage policy before changing binaries, service files or runtimes.
+rendered_config=$(bash "$source_dir/storage-policy.sh" "$source_dir/buildkitd.toml" \
+    /etc/verity-buildkit/buildkitd.toml /etc/verity-buildkit/storage-policy.conf "$builder_gid")
+diagnostic_dir=${VERITY_HOST_DIAGNOSTIC_DIR:-}
+if [[ -z $diagnostic_dir && -f /etc/verity-buildkit/diagnostic-path ]]; then
+    diagnostic_dir=$(cat /etc/verity-buildkit/diagnostic-path)
+fi
+diagnostic_dir=${diagnostic_dir:-/var/lib/verity/host-diagnostics}
+[[ ! -L $diagnostic_dir ]] || { echo 'Build diagnostic directory must not be a symlink' >&2; exit 1; }
+storage_unit=$(bash "$source_dir/storage-service.sh" "$source_dir/verity-build-storage.service" "$diagnostic_dir")
 existing_gid=$(getent group verity-buildkit | cut -d: -f3 || true)
 if [[ -n $existing_gid ]]; then
     [[ $existing_gid == "$builder_gid" ]] || { echo 'verity-buildkit group GID mismatch' >&2; exit 1; }
@@ -23,12 +33,16 @@ trap cleanup EXIT
 # Extract the pinned daemon; no Docker daemon or build worker runs in this container.
 docker pull "$buildkit_image"
 container=$(docker create "$buildkit_image")
+docker cp "$container:/usr/bin/buildctl" /usr/local/libexec/verity-buildkit/buildctl.new
+chmod 0755 /usr/local/libexec/verity-buildkit/buildctl.new
+/usr/local/libexec/verity-buildkit/buildctl.new --version
+mv /usr/local/libexec/verity-buildkit/buildctl.new /usr/local/libexec/verity-buildkit/buildctl
 docker cp "$container:/usr/bin/buildkitd" /usr/local/libexec/verity-buildkit/buildkitd.new
 chmod 0755 /usr/local/libexec/verity-buildkit/buildkitd.new
 /usr/local/libexec/verity-buildkit/buildkitd.new --version
 mv /usr/local/libexec/verity-buildkit/buildkitd.new /usr/local/libexec/verity-buildkit/buildkitd
 ln -sfn "/opt/verity/runsc/$RUNSC_RELEASE/runsc" /usr/local/libexec/verity-buildkit/runsc-real
-install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" /usr/local/libexec/verity-buildkit/
+install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" /usr/local/libexec/verity-buildkit/
 # CNI plugins for the per-step build network. The pinned archive is verified and
 # extracted afresh every run, replacing any earlier or partial copy as a whole,
 # so a hand-installed or interrupted directory is adopted rather than trusted.
@@ -59,7 +73,9 @@ if [[ -e /usr/local/libexec/verity-buildkit/cni && ! -L /usr/local/libexec/verit
 fi
 ln -sfn "cni-$cni_version" /usr/local/libexec/verity-buildkit/cni
 install -d -m 0755 /var/lib/cni
-sed "s/^  gid = 1102$/  gid = $builder_gid/" "$source_dir/buildkitd.toml" > /etc/verity-buildkit/buildkitd.toml
+printf '%s\n' "$rendered_config" > /etc/verity-buildkit/buildkitd.toml.new
+chmod 0644 /etc/verity-buildkit/buildkitd.toml.new
+mv /etc/verity-buildkit/buildkitd.toml.new /etc/verity-buildkit/buildkitd.toml
 resources=$(bash "$source_dir/resources.sh")
 cpu_quota=$(sed -n 's/^CPU_QUOTA=//p' <<<"$resources")
 memory_max=$(sed -n 's/^MEMORY_MAX=//p' <<<"$resources")
@@ -67,23 +83,17 @@ sed -e "s/@CPU_QUOTA@/$cpu_quota/" -e "s/@MEMORY_MAX@/$memory_max/" "$source_dir
     > /etc/systemd/system/verity-buildkit.service.new
 chmod 0644 /etc/systemd/system/verity-buildkit.service.new
 mv /etc/systemd/system/verity-buildkit.service.new /etc/systemd/system/verity-buildkit.service
+install -d -m 0755 "$diagnostic_dir"
+printf '%s\n' "$diagnostic_dir" > /etc/verity-buildkit/diagnostic-path
+printf '%s\n' "$storage_unit" > /etc/systemd/system/verity-build-storage.service.new
+chmod 0644 /etc/systemd/system/verity-build-storage.service.new
+mv /etc/systemd/system/verity-build-storage.service.new /etc/systemd/system/verity-build-storage.service
+install -m 0644 "$source_dir/verity-build-storage.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
-# Once the worker runs on overlayfs, snapshots of the earlier native snapshotter
-# are unreachable and only hold disk space. Only the worker this start reported
-# counts: a runc-overlayfs directory can outlive a move of the state directory
-# to a file system where "auto" falls back to native, and that worker's state
-# is runc-native. Without a positive report, nothing is removed.
-# journald may file the line a moment after the restart has returned.
-invocation=$(systemctl show -p InvocationID --value verity-buildkit.service)
-for attempt in 1 2 3 4 5; do
-    [[ -n $invocation ]] || break
-    worker=$(journalctl -q -o cat "_SYSTEMD_INVOCATION_ID=$invocation" | grep -F 'found worker' || true)
-    if [[ -n $worker ]]; then
-        if [[ $worker == *'worker.snapshotter:overlayfs'* ]]; then rm -rf /var/lib/verity-buildkit/runc-native; fi
-        break
-    fi
-    sleep 1
-done
+systemctl enable --now verity-build-storage.timer
+systemctl start verity-build-storage.service
+# Snapshotter state is not an installer artifact. Old workers can hold references
+# needed for rollback; removing their directories requires separate maintenance.
 printf 'Builder installed. Configure the Server socket mount and GID using deploy/docker-compose.buildkit.yml.\n'

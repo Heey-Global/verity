@@ -13,10 +13,13 @@ cleanup() {
     sudo journalctl -u verity-buildkit --no-pager > "$PROBE_EVIDENCE/service.log"
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
     sudo systemctl disable --now verity-buildkit
+    sudo systemctl disable --now verity-build-storage.timer
+    sudo systemctl stop verity-build-storage.service
     docker rm -fv "$name-marker"
     docker image rm "$name:positive" "$name:network" "$name:network2" "$name:missing" "$name:stopped"
     if docker image inspect "$name:positive" > /dev/null 2>&1; then status=1; fi
     if sudo systemctl is-active --quiet verity-buildkit; then status=1; fi
+    if sudo systemctl is-active --quiet verity-build-storage.timer; then status=1; fi
     sudo chown -R "$(id -u):$(id -g)" "$PROBE_EVIDENCE"
     printf '%s\n' "$status" > "$PROBE_EVIDENCE/exit-code.txt"
     exit "$status"
@@ -58,6 +61,13 @@ sudo nsenter --target "$main_pid" --mount --root --wdns=/ -- "$(command -v node)
     /run/docker.sock /var/run/docker.sock /run/containerd/containerd.sock \
     < scripts/probes/devcontainer-gvisor/verify-worker-sockets.mjs
 cp -R scripts/probes/devcontainer-gvisor/.devcontainer "$work/"
+# Establish the disposable runner's actual runtime root before enabling admission.
+# A missing containerd configuration is a test failure, never substituted capacity.
+containerd_root=$(sudo containerd config dump | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["root"])')
+[[ $containerd_root == /* ]]
+sudo test -d "$containerd_root"
+printf 'version=1\ncontainerdRoot=%s\nexportRoot=%s\nprojectRoot=%s\n' "$containerd_root" "$work" "$work" \
+    | sudo tee /etc/verity-buildkit/storage-roots.conf > /dev/null
 PROBE_CONFIG="$work/.devcontainer/devcontainer.json" node --input-type=module - <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';
 const base = /^FROM (node:[^\s]+@sha256:[a-f0-9]{64})/m.exec(readFileSync('deploy/preview-edge.Dockerfile', 'utf8'))?.[1];
@@ -70,16 +80,21 @@ NODE
 # Explicit sudo run-as groups are not covered by every runner sudoers policy.
 # Supplementary groups retain Docker access for image loading; the Server is non-root.
 spawn_build() {
+    sudo systemctl restart verity-build-storage.service
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
+        PROBE_STORAGE_ROOT="$work/build-storage" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
+        PROBE_EVIDENCE="$PROBE_EVIDENCE" PROBE_WARM="${PROBE_WARM:-0}" \
         node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
+PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/warm.log" 2>&1
+PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/repeated.log" 2>&1
 # The runner's ext4 supports overlayfs, so "auto" must not have fallen back to
 # the native snapshotter, whose full copy per step is what this setting avoids.
 sudo test -d /var/lib/verity-buildkit/runc-overlayfs
-# install.sh removes native snapshots only on this report, so it must match.
+# This is a fresh runner, not evidence that an installer removed older state.
 sudo journalctl -q -o cat -u verity-buildkit > "$PROBE_EVIDENCE/worker-start.log"
 grep -F 'found worker' "$PROBE_EVIDENCE/worker-start.log" | grep -F 'worker.snapshotter:overlayfs' > /dev/null
 sudo test ! -e /var/lib/verity-buildkit/runc-native

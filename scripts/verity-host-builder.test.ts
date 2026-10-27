@@ -58,6 +58,8 @@ async function host(options: HostOptions = {}) {
   const config = join(root, 'etc-verity-buildkit');
   const libexec = join(root, 'libexec-verity-buildkit');
   const unit = join(root, 'verity-buildkit.service');
+  const storageUnit = join(root, 'verity-build-storage.service');
+  const storageTimer = join(root, 'verity-build-storage.timer');
   const runDir = join(root, 'run-verity-buildkit');
   for (const dir of [bin, state, config, libexec, runDir]) mkdirSync(dir, { recursive: true });
   const calls = join(root, 'calls.log');
@@ -67,6 +69,8 @@ async function host(options: HostOptions = {}) {
   writeFileSync(join(config, 'buildkitd.toml'), 'previous\n');
   writeFileSync(join(libexec, 'buildkitd'), 'previous\n');
   writeFileSync(unit, 'previous\n');
+  writeFileSync(storageUnit, 'previous\n');
+  writeFileSync(storageTimer, 'previous\n');
   writeFileSync(active, '');
   if (options.receipt !== false)
     writeFileSync(join(state, 'devcontainer-builder.json'), '{"version":1,"gid":1234}\n');
@@ -83,6 +87,7 @@ async function host(options: HostOptions = {}) {
     join(payload, 'buildkit', 'install.sh'),
     `printf 'install.sh gid=%s\\n' "$VERITY_BUILDKIT_GID" >>'${calls}'\n` +
       `printf 'new\\n' >'${config}/buildkitd.toml'\nprintf 'new\\n' >'${unit}'\n` +
+      `printf 'new\\n' >'${storageUnit}'\nprintf 'new\\n' >'${storageTimer}'\n` +
       (options.duringInstall ?? '') +
       (options.installFails === true ? 'exit 1\n' : '') +
       (options.startsAfterInstall === false ? `rm -f '${active}'\n` : ''),
@@ -101,7 +106,7 @@ async function host(options: HostOptions = {}) {
   tool(
     'docker',
     `case "$1 $2" in
-  'image inspect') case "$4" in *RepoDigests*) printf '%s\\n' ${options.localDigest === undefined ? '"$5"' : `'${options.localDigest}'`} ;; *Labels*) printf '%s\\n' '${options.label ?? '1'}' ;; esac ;;
+  'image inspect') case "$4" in *RepoDigests*) printf '%s\\n' ${options.localDigest === undefined ? '"$5"' : `'${options.localDigest}'`} ;; *Labels*) printf '%s\\n' '${options.label ?? '2'}' ;; esac ;;
   'create '*) echo container-1 ;;
   'cp '*) path=\${2#container-1:/opt/verity-install/deploy/}; tar -C "${payload}/$(dirname "$path")" -c "$(basename "$path")" ;;
 esac`,
@@ -145,7 +150,21 @@ esac`,
           .filter((line) => line.startsWith(`${name} `))
       : [];
   const record = join(root, 'host-builder', 'bundle.json');
-  return { root, run, start, request, result, callsOf, config, unit, payload, record, state };
+  return {
+    root,
+    run,
+    start,
+    request,
+    result,
+    callsOf,
+    config,
+    unit,
+    storageUnit,
+    storageTimer,
+    payload,
+    record,
+    state,
+  };
 }
 
 describeHost('deploy/host/verity-host-builder', () => {
@@ -200,6 +219,7 @@ describeHost('deploy/host/verity-host-builder', () => {
   it.each([
     ['an image without a valid release signature', { signed: false }, image],
     ['an image that does not declare the builder contract', { label: '<no value>' }, image],
+    ['an older builder contract without storage rollback support', { label: '1' }, image],
     ['a tag instead of a digest', {}, 'ghcr.io/heey-global/verity/verity-server:latest'],
     ['another repository', {}, `ghcr.io/example/verity-server@sha256:${'a'.repeat(64)}`],
   ] satisfies [string, HostOptions, string][])('refuses %s', async (_, options, requested) => {
@@ -240,6 +260,8 @@ describeHost('deploy/host/verity-host-builder', () => {
       expect(h.result().message).toContain(message);
       expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
       expect(readFileSync(h.unit, 'utf8')).toBe('previous\n');
+      expect(readFileSync(h.storageUnit, 'utf8')).toBe('previous\n');
+      expect(readFileSync(h.storageTimer, 'utf8')).toBe('previous\n');
       expect(h.callsOf('systemctl')).toContain('systemctl restart verity-buildkit.service');
       expect(existsSync(h.record)).toBe(false);
     },
