@@ -17,18 +17,29 @@ const safeCodes = new Set([
 ]);
 
 /** Recovery failures can carry private input in messages, causes and process output.
- * @param {{ code?: string, stack?: string } | null | undefined} error
+ * @param {{ code?: string, stack?: string, actual?: unknown, expected?: unknown } | null | undefined} error
  */
 export function formatRestoreFailure(error) {
   const code = safeCodes.has(error?.code) ? error.code : 'unknown';
   const sites = [
     ...String(error?.stack ?? '').matchAll(
-      /^\s+at [^\n]*?(\/app\/packages\/(?:server|store)\/dist\/[A-Za-z0-9/_-]+\.js:[0-9]+:[0-9]+)/gm,
+      /^\s+at [^\n]*?((?:\/app\/packages\/(?:server|store)\/dist\/[A-Za-z0-9/_-]+\.js|\/opt\/verity-restore-fixture\/driver\.mjs):[0-9]+:[0-9]+)/gm,
     ),
   ]
     .slice(0, 8)
     .map((match) => match[1]);
-  return 'Restore fixture failure: ' + JSON.stringify({ code, sites });
+  /** @param {unknown} value */
+  const numeric = (value) =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  return (
+    'Restore fixture failure: ' +
+    JSON.stringify({
+      code,
+      sites,
+      actual: numeric(error?.actual),
+      expected: numeric(error?.expected),
+    })
+  );
 }
 
 const activationFailures = [

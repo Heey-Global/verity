@@ -49,3 +49,19 @@ it('redacts private activation logs while preserving static readiness failures a
   expect(filesystemFailure).toContain('ENOENT');
   expect(filesystemFailure).not.toContain(secret);
 });
+
+it('locates fixture assertions and reports numeric statuses without private compared values', () => {
+  const error = {
+    code: 'ERR_ASSERTION',
+    stack: 'Error\n at restore (file:///opt/verity-restore-fixture/driver.mjs:638:14)',
+    actual: 503,
+    expected: 200,
+  };
+  const result = formatRestoreFailure(error);
+  expect(result).toContain('/opt/verity-restore-fixture/driver.mjs:638:14');
+  expect(result).toContain('"actual":503');
+  expect(result).toContain('"expected":200');
+  expect(
+    formatRestoreFailure({ ...error, actual: 'private-token', expected: 'private-key' }),
+  ).not.toContain('private-');
+});
