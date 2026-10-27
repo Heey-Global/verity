@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.79.4](https://github.com/Heey-Global/verity/compare/mobile-v1.79.3...mobile-v1.79.4) (2026-10-27)
+
+
+### Features
+
+* **agent-seed:** ask before installing dependencies and gate every branch ([#1955](https://github.com/Heey-Global/verity/issues/1955)) ([6c279e2](https://github.com/Heey-Global/verity/commit/6c279e2ec4c21e8092ef0d3505ac2f17dd266744))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1953](https://github.com/Heey-Global/verity/issues/1953)) ([a7f8db8](https://github.com/Heey-Global/verity/commit/a7f8db805e8d9a6436ad7569af1e51c16c1ef6c8))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.0.2 ([#1951](https://github.com/Heey-Global/verity/issues/1951)) ([b1fc169](https://github.com/Heey-Global/verity/commit/b1fc1694320349a24207dca81f5f3a071d4e8b38))
+* **mobile:** recover project loading after transient failures ([#1958](https://github.com/Heey-Global/verity/issues/1958)) ([c0c454f](https://github.com/Heey-Global/verity/commit/c0c454ff9a3cbf80fa55e4af772a01f284c2456c))
+* **mobile:** start interactive native reads on a dedicated queue ([#1960](https://github.com/Heey-Global/verity/issues/1960)) ([8106af1](https://github.com/Heey-Global/verity/commit/8106af1e3df1db2d6e3fc78cc64d9ea133abf0e0))
+* **web:** restore attachments and inverted transcript layout ([#1963](https://github.com/Heey-Global/verity/issues/1963)) ([f36f14b](https://github.com/Heey-Global/verity/commit/f36f14b87d541318534a69ff88f5e17ef3ee32fd))
+
 ## [1.79.3](https://github.com/Heey-Global/verity/compare/mobile-v1.79.2...mobile-v1.79.3) (2026-10-26)
 
 
