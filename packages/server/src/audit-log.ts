@@ -16,7 +16,7 @@ import { z } from 'zod';
  * `audit_streams` columns for them exist so the allocation counter never has to move.
  */
 
-export const AUDIT_SCHEMA_VERSION = 1;
+const AUDIT_SCHEMA_VERSION = 1;
 export const AUDIT_GENESIS_HASH = '0'.repeat(64);
 export const AUDIT_INSTALLATION_STREAM = 'installation';
 
@@ -26,7 +26,7 @@ export function projectAuditStream(projectId: string): string {
 
 /** Who started an operation. Request text never sets it: callers pass what the
  *  authenticated request, the agent turn or the system job established. */
-export const auditInitiatorSchema = z.discriminatedUnion('kind', [
+const auditInitiatorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user'), userId: z.string().min(1).nullable() }).strict(),
   z
     .object({
@@ -92,8 +92,8 @@ const payloads = {
     .strict(),
 } as const;
 
-export type AuditEventKind = keyof typeof payloads;
-export type AuditPayload<K extends AuditEventKind> = z.infer<(typeof payloads)[K]>;
+type AuditEventKind = keyof typeof payloads;
+type AuditPayload<K extends AuditEventKind> = z.infer<(typeof payloads)[K]>;
 
 const DOMAINS: Record<AuditEventKind, AuditDomain> = {
   'build.requested': 'builds',
@@ -154,7 +154,7 @@ export function auditEventHash(event: Omit<AuditEvent, 'eventHash'>): string {
   return sha256Hex(`verity.audit.v1\0${canonicalJson(event)}`);
 }
 
-export interface AuditOperationQuery {
+interface AuditOperationQuery {
   domain?: AuditDomain | undefined;
   /** Operation ID, image ID/digest fragment or project label fragment. */
   search?: string | undefined;

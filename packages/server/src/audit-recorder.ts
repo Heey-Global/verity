@@ -20,7 +20,7 @@ export class AuditUnavailableError extends Error {
   }
 }
 
-export interface AuditHealth {
+interface AuditHealth {
   status: 'ok' | 'degraded';
   /** Best-effort writes that failed and are not yet covered by a write-gap event. */
   pendingFailedWrites: number;
@@ -38,7 +38,7 @@ export interface BuildIntent {
   features: string[];
 }
 
-export interface BuildAudit {
+interface BuildAudit {
   readonly operationId: string;
   succeeded(result: {
     imageId: string | null;

@@ -19,18 +19,18 @@ import type { AuditRecorder } from './audit-recorder.js';
  * of events it took to record it.
  */
 
-export type AuditOperationKind = 'build' | 'image_removed' | 'project_deleted' | 'write_gap';
+type AuditOperationKind = 'build' | 'image_removed' | 'project_deleted' | 'write_gap';
 /** `unknown`: the operation never recorded a result and no longer runs here, e.g.
  *  because the Server was replaced mid-build. */
-export type AuditOperationStatus = 'succeeded' | 'failed' | 'running' | 'unknown' | 'recorded';
+type AuditOperationStatus = 'succeeded' | 'failed' | 'running' | 'unknown' | 'recorded';
 
-export type AuditInitiatorView =
+type AuditInitiatorView =
   | { kind: 'user'; isRequester: boolean }
   | { kind: 'session'; sessionId: string; name: string | null }
   | { kind: 'system'; trigger: string }
   | { kind: 'unknown' };
 
-export interface AuditOperationSummary {
+interface AuditOperationSummary {
   operationId: string;
   kind: AuditOperationKind;
   status: AuditOperationStatus;
@@ -43,7 +43,7 @@ export interface AuditOperationSummary {
   failedWrites: number | null;
 }
 
-export interface AuditOperationDetail extends AuditOperationSummary {
+interface AuditOperationDetail extends AuditOperationSummary {
   server: { release: string; generation: number | null };
   build: {
     imageTag: string;
@@ -105,7 +105,7 @@ async function initiatorView(
   }
 }
 
-export async function summarizeOperation(
+async function summarizeOperation(
   events: AuditEvent[],
   context: {
     isActive: (operationId: string) => boolean;
