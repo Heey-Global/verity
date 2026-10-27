@@ -16,6 +16,7 @@ import {
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BuildStorage } from '../../../packages/server/dist/build-storage.js';
+import { cacheBytes, parseCacheUsage } from './storage-evidence.mjs';
 
 const { AbortController, AbortSignal } = globalThis;
 
@@ -73,7 +74,7 @@ const inspect = (...args) =>
     timeout: 10_000,
     maxBuffer: 4 * 1024 ** 2,
   });
-const usage = () => JSON.parse(inspect('du', '--format', '{{json .}}')) ?? [];
+const usage = () => parseCacheUsage(inspect('du', '--format', '{{json .}}'));
 const histories = () =>
   inspect('debug', 'histories', '--format', '{{json .}}')
     .trim()
@@ -121,8 +122,8 @@ try {
     await run(...build());
   }
   const before = usage();
-  const total = (records) => records.reduce((sum, record) => sum + Math.max(0, record.Size), 0);
-  assert(total(before) > GiB, 'Fixture must exceed the target cache budget');
+  result = { before };
+  assert(cacheBytes(before) > GiB, 'Fixture must exceed the target cache budget');
 
   // Hold a real solve while applying the same BuildKit budget mechanism used
   // by GC. This exercises reference safety; automatic GC scheduling is separate.
@@ -147,26 +148,27 @@ try {
       'No active remote solve observed',
     );
     await waitFor(
-      () => usage().some((record) => record.InUse && record.Description.includes('sleep 120')),
+      () => usage().some((record) => record.inUse && record.description.includes('sleep 120')),
       'The remote RUN step did not become active',
     );
     const pinned = usage()
-      .filter((record) => record.InUse && record.Description.includes('sleep 120'))
-      .map((record) => record.ID);
+      .filter((record) => record.inUse && record.description.includes('sleep 120'))
+      .map((record) => record.id);
     assert(pinned.length > 0, 'The active RUN must hold a cache reference');
     // Prune cannot use the already-running lease command slot. This separate
     // bounded client acts only on this disposable worker, never project images.
     const pruned = inspect('prune', '--all', '--keep-storage', String(GiB / 1e6));
     writeFileSync(join(evidence, 'cache-prune.log'), pruned);
     const after = usage();
-    const kept = new Set(after.map((record) => record.ID));
+    result = { before, after, pinned };
+    const kept = new Set(after.map((record) => record.id));
     assert(
       pinned.every((id) => kept.has(id)),
       'GC removed an active reference',
     );
-    assert(total(after) < total(before), 'Eligible cache did not converge');
-    const reclaimable = after.filter((record) => !record.InUse);
-    assert(total(reclaimable) <= GiB, 'Reclaimable cache remains above target');
+    assert(cacheBytes(after) < cacheBytes(before), 'Eligible cache did not converge');
+    const reclaimable = after.filter((record) => !record.inUse);
+    assert(cacheBytes(reclaimable) <= GiB, 'Reclaimable cache remains above target');
     cancel.abort();
     assert.equal((await settled).ok, false, 'Cancelled client unexpectedly succeeded');
     const completed = await waitFor(
