@@ -110,7 +110,10 @@ it('confirms the proposal on the server before refreshing the task list', async 
 });
 
 it('dismisses a suggestion without creating a task', async () => {
-  client.updateLiveMeetingResultTask.mockResolvedValue({ ...ready, tasks: [] });
+  client.updateLiveMeetingResultTask.mockResolvedValue({
+    ...ready,
+    tasks: [{ ...ready.tasks[0], state: 'dismissed' }],
+  });
   render(<MeetingResult {...props} />);
   fireEvent.press(await screen.findByText('Not a task'));
   await waitFor(() =>
@@ -121,4 +124,5 @@ it('dismisses a suggestion without creating a task', async () => {
   );
   expect(refreshTasks).not.toHaveBeenCalled();
   expect(screen.queryByText('Prepare release')).toBeNull();
+  expect(screen.queryByText('TASKS')).toBeNull();
 });

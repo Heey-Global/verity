@@ -1,6 +1,6 @@
 import { File, Paths } from 'expo-file-system';
 import { printableFileHtml } from '@verity/mobile';
-import { createVerityClient } from './client';
+import { createVerityClient, getActiveMeetingServerId } from './client';
 import { meetingSavedCard } from './meetingSavedCard';
 import { loadPrintModule, loadSharingModule } from './sessionFileUi';
 
@@ -8,7 +8,10 @@ export async function shareMeetingResult(
   sessionId: string,
   meetingId: string,
   mode: 'markdown' | 'pdf',
+  serverId?: string | null,
 ): Promise<void> {
+  if (serverId && serverId !== getActiveMeetingServerId())
+    throw new Error('Reconnect to this meeting’s server to share it.');
   const client = createVerityClient();
   if (!client) throw new Error('Connect to your server to share this meeting.');
   let card: ReturnType<typeof meetingSavedCard> = null;

@@ -185,7 +185,7 @@ export function MeetingResult(props: {
               ))}
             </>
           ) : null}
-          {ready && result.tasks.length ? (
+          {ready && result.tasks.some((task) => task.state !== 'dismissed') ? (
             <>
               <SectionHeader title="TASKS" />
               {result.tasks

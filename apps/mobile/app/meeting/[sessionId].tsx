@@ -1848,13 +1848,20 @@ export default function MeetingScreen() {
               {
                 text: 'Markdown',
                 onPress: () => {
-                  void shareMeetingResult(sessionId, meeting.id, 'markdown').catch(report);
+                  void shareMeetingResult(
+                    sessionId,
+                    meeting.id,
+                    'markdown',
+                    meeting.serverId,
+                  ).catch(report);
                 },
               },
               {
                 text: 'PDF',
                 onPress: () => {
-                  void shareMeetingResult(sessionId, meeting.id, 'pdf').catch(report);
+                  void shareMeetingResult(sessionId, meeting.id, 'pdf', meeting.serverId).catch(
+                    report,
+                  );
                 },
               },
               { text: 'Cancel', style: 'cancel' },
