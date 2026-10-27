@@ -3957,6 +3957,12 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      providerAuthority: async (projectId) => {
+        const binding = await getBrokeredProjectBinding(projectId);
+        return binding
+          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
+          : undefined;
+      },
       resolveSecrets: createManagedDevServerSecretResolver({
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,

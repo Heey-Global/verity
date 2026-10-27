@@ -3926,6 +3926,7 @@ describe('managed dev server actions', () => {
     const seen = {
       command: 'npm run dev',
       workdir: 'web',
+      providerSnapshot: { provider: 'doppler' as const, project: 'demo', config: 'staging' },
       secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
     };
     expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
@@ -4245,4 +4246,24 @@ it('preserves compact Google presentation in session detail while accepting olde
   expect(await client.getSessionGoogleStatus('s', controller.signal)).toEqual(googleStatus);
   expect(fetch.mock.calls.at(-1)?.[1]?.signal).toBe(controller.signal);
   expect(fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ authorization: 'Bearer paired' });
+});
+
+it('preserves the provider snapshot returned with managed server views', async () => {
+  const providerSnapshot = { provider: 'doppler', project: 'demo', config: 'staging' };
+  const server = {
+    id: 'srv',
+    name: 'API',
+    command: 'node server.mjs',
+    workdir: '.',
+    approved: false,
+    secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    providerSnapshot,
+    instance: null,
+    elsewhere: [],
+  };
+  const { fetch } = fakeFetchSequence(json({ servers: [server] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(
+    providerSnapshot,
+  );
 });
