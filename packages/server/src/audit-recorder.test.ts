@@ -138,6 +138,31 @@ describe('audit recorder', () => {
     await expect(audit.imageRemoved({ imageRef: 'x' })).resolves.toBeUndefined();
   });
 
+  // The gap must precede every later event on its stream, also one written while a
+  // health check is still writing the gap.
+  it('never lets a concurrent event overtake the write-gap event', async () => {
+    const fake = fakeLog();
+    const audit = recorder(fake.log);
+    fake.setFailing(true);
+    await audit.projectDeleted({
+      projectId: 'p1',
+      projectLabel: 'org/repo',
+      initiator: { kind: 'user', userId: 'u1' },
+    });
+    fake.setFailing(false);
+    // A slow gap write opens the window in which another event could overtake it.
+    const append = fake.log.append.bind(fake.log);
+    fake.log.append = async (input, txn) => {
+      if (input.kind === 'audit.write_gap') await new Promise((r) => setTimeout(r, 20));
+      return append(input, txn);
+    };
+    const checking = audit.health();
+    // The health check has taken the gap and is still writing it.
+    await new Promise((r) => setTimeout(r, 5));
+    await Promise.all([checking, audit.beginBuild(intent)]);
+    expect(fake.appended.map((e) => e.kind)).toEqual(['audit.write_gap', 'build.requested']);
+  });
+
   it('flushes outstanding gaps when health is checked', async () => {
     const fake = fakeLog();
     const audit = recorder(fake.log);

@@ -47,14 +47,15 @@ export interface ContainerReplacementConfig {
   portBindings: Record<string, Array<{ HostIp: string; HostPort: string }>>;
 }
 
-/** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
- * scope: only those endpoints the proxy explicitly allows. */
+/** Identity of a local image, for the durable audit trail. */
 export interface DockerImageIdentity {
   id: string;
   sizeBytes: number | null;
   repoDigests: string[];
 }
 
+/** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
+ * scope: only those endpoints the proxy explicitly allows. */
 export interface DockerClient {
   /** Create a container without starting it (Engine `/containers/create`). The
    *  `{ Id }` of the new container is returned, NOT the running state. Rejects

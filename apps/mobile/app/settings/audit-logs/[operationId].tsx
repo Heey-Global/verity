@@ -92,26 +92,31 @@ export function AuditOperationView({
 
       <SettingsGroup title="Started by">
         <SettingsListPanel>
-          {session !== undefined ? (
+          {session === undefined ? (
+            <Row title="Initiator" subtitle={auditInitiatorLabel(operation.initiator)} />
+          ) : session.name !== null ? (
             <Row
               title="Session"
-              subtitle={session.name ?? 'Agent session'}
+              subtitle={session.name}
               navigates
               onPress={() =>
                 router.push(`/session/${encodeURIComponent(session.sessionId)}` as Href)
               }
             />
           ) : (
-            <Row title="Initiator" subtitle={auditInitiatorLabel(operation.initiator)} />
+            // The session is gone; only its record remains, so there is nothing to open.
+            <Row title="Session" subtitle="Deleted session" />
           )}
-          {project !== null ? (
+          {project === null ? null : operation.kind === 'project_deleted' ? (
+            <Row title="Project" subtitle={project.label ?? project.id} />
+          ) : (
             <Row
               title="Project"
               subtitle={project.label ?? project.id}
               navigates
               onPress={() => router.push(`/project/${encodeURIComponent(project.id)}` as Href)}
             />
-          ) : null}
+          )}
         </SettingsListPanel>
       </SettingsGroup>
 

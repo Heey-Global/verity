@@ -146,12 +146,28 @@ export function createAuditRecorder(
     }
   }
 
+  // One write at a time per stream, so a gap event is never overtaken by an event
+  // this process writes concurrently on the same stream.
+  const queues = new Map<string, Promise<unknown>>();
+  function serial<T>(streamId: string, task: () => Promise<T>): Promise<T> {
+    const previous = queues.get(streamId) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    const settled = next.catch(() => undefined);
+    queues.set(streamId, settled);
+    void settled.then(() => {
+      if (queues.get(streamId) === settled) queues.delete(streamId);
+    });
+    return next;
+  }
+
   /** The recovering process writes its gap event before any other event of its own. */
   async function write(draft: Draft, mode: 'fail-closed' | 'best-effort'): Promise<boolean> {
     try {
       const server = await options.server();
-      await flushGap(draft.streamId, server);
-      await log.append({ ...draft, server } as AuditEventInput);
+      await serial(draft.streamId, async () => {
+        await flushGap(draft.streamId, server);
+        await log.append({ ...draft, server } as AuditEventInput);
+      });
       return true;
     } catch (error) {
       if (mode === 'fail-closed') throw new AuditUnavailableError(error);
@@ -242,10 +258,10 @@ export function createAuditRecorder(
       await write(
         {
           kind: 'image.removed',
-          payload: { imageRef: image.imageRef, reason: 'cleanup' },
+          payload: { imageRef: image.imageRef.slice(0, 500), reason: 'cleanup' },
           operationId: randomUUID(),
           streamId: AUDIT_INSTALLATION_STREAM,
-          imageId: image.imageId ?? null,
+          imageId: image.imageId?.slice(0, 200) ?? null,
           initiator: { kind: 'system', trigger: 'image_cleanup' },
         },
         'best-effort',
@@ -277,7 +293,7 @@ export function createAuditRecorder(
           const server = await options.server();
           // Each stream on its own: one failing write must not hold back the others.
           for (const streamId of [...gaps.keys()]) {
-            await flushGap(streamId, server).catch((error: unknown) =>
+            await serial(streamId, () => flushGap(streamId, server)).catch((error: unknown) =>
               report(error, 'audit.write_gap'),
             );
           }

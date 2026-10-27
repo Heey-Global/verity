@@ -63,6 +63,9 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   // Only the newest request may write: a slow answer for an old filter must not
   // replace the list the administrator is looking at.
   const latest = useRef(0);
+  // Older pages the administrator has loaded. While there are any, returning from an
+  // entry keeps the list as it was instead of jumping back to the newest page.
+  const olderPages = useRef(0);
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(search), SEARCH_DELAY_MS);
@@ -93,10 +96,17 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
       });
   }, [client, filter, query]);
 
-  useFocusEffect(load);
-  // A cursor from the previous filter must not page the new one. Reset on a filter
-  // change only, so a refocus keeps the pages already loaded.
-  useEffect(() => setNextBefore(null), [filter, query]);
+  // A new filter starts from the newest page; its cursor must not page the old list.
+  // Declared before the focus effect, so it has reset the state the effect reads.
+  useEffect(() => {
+    olderPages.current = 0;
+    setNextBefore(null);
+  }, [filter, query]);
+  useFocusEffect(
+    useCallback(() => {
+      if (olderPages.current === 0) load();
+    }, [load]),
+  );
 
   const loadMore = () => {
     if (nextBefore === null || loadingMore) return;
@@ -110,6 +120,7 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
       })
       .then((list) => {
         if (request !== latest.current || list === null) return;
+        olderPages.current += 1;
         setOperations((current) => [...(current ?? []), ...list.operations]);
         setNextBefore(list.nextBefore);
       })

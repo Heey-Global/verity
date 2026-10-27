@@ -13,6 +13,7 @@ import {
   mockCreateVerityClient,
   mockPush,
   resetSettingsHarness,
+  refocus,
   setSearchParams,
 } from './support/settingsHarness';
 
@@ -93,6 +94,25 @@ describe('audit logs screen', () => {
     expect(screen.getByText(/^Entries since/)).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Project image built'));
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs/op-1');
+  });
+
+  // Returning from an older entry must preserve the pages already loaded.
+  it('keeps older pages when returning from an entry', async () => {
+    const auditOperations = jest
+      .fn()
+      .mockResolvedValueOnce({ operations: [op()], nextBefore: 'cursor', oldestRecordedAt: null })
+      .mockResolvedValueOnce({
+        operations: [op({ operationId: 'older', status: 'failed' })],
+        nextBefore: null,
+        oldestRecordedAt: null,
+      });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditOperations }));
+    render(<AuditLogsScreen />);
+    fireEvent.press(await screen.findByText('Show older entries'));
+    expect(await screen.findByText('Failed')).toBeOnTheScreen();
+    await act(async () => refocus());
+    expect(auditOperations).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Failed')).toBeOnTheScreen();
   });
 
   it('filters by area and searches', async () => {

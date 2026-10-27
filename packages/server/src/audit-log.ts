@@ -295,7 +295,9 @@ function encodeCursor(at: string, operationId: string): string {
   return Buffer.from(JSON.stringify([at, operationId]), 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string | undefined): { at: string; operationId: string } | undefined {
+export function decodeAuditCursor(
+  cursor: string | undefined,
+): { at: string; operationId: string } | undefined {
   if (cursor === undefined) return undefined;
   try {
     const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
@@ -309,7 +311,7 @@ function decodeCursor(cursor: string | undefined): { at: string; operationId: st
       return { at: value[0], operationId: value[1] };
     }
   } catch {
-    // Fall through: an unreadable cursor starts from the newest entry.
+    // Fall through: the route rejects an unreadable cursor.
   }
   return undefined;
 }
@@ -356,7 +358,7 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
         ])
         .groupBy('operation_id');
       if (filtered) starts = starts.where('operation_id', 'in', matching);
-      const cursor = decodeCursor(query.before);
+      const cursor = decodeAuditCursor(query.before);
       if (cursor !== undefined) {
         // Compound cursor: operations that started at the same instant are neither
         // skipped nor repeated across pages.

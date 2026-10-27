@@ -119,6 +119,8 @@ describe('audit routes', () => {
     });
     expect((await app.inject('/audit/operations/missing')).statusCode).toBe(404);
     expect((await app.inject('/audit/operations?domain=secrets')).statusCode).toBe(400);
+    // Answering an unreadable cursor with page one would duplicate it in the client.
+    expect((await app.inject('/audit/operations?before=not-a-cursor')).statusCode).toBe(400);
     await app.close();
   });
 

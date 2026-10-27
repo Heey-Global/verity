@@ -1,7 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { AUDIT_DOMAINS, type AuditEvent, type AuditInitiator, type AuditLog } from './audit-log.js';
+import {
+  AUDIT_DOMAINS,
+  decodeAuditCursor,
+  type AuditEvent,
+  type AuditInitiator,
+  type AuditLog,
+} from './audit-log.js';
 import type { AuditRecorder } from './audit-recorder.js';
 
 /**
@@ -194,7 +200,12 @@ export function registerAuditRoutes(app: FastifyInstance, deps: AuditRouteDeps):
 
   app.get('/audit/operations', async (request, reply) => {
     const query = listQuerySchema.safeParse(request.query);
-    if (!query.success) {
+    // An unreadable cursor would otherwise return the first page, which a client
+    // paging forward appends as duplicates.
+    if (
+      !query.success ||
+      (query.data.before !== undefined && decodeAuditCursor(query.data.before) === undefined)
+    ) {
       reply.code(400);
       return { error: 'invalid audit query' };
     }
