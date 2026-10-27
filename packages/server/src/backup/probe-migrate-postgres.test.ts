@@ -33,7 +33,9 @@ describe.skipIf(!adminUrl)('probe migration on PostgreSQL', () => {
         await probe.end();
       }
     } finally {
-      await pool.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      // Pool shutdown can resolve before the server observes the final socket close.
+      // Do not turn that normal close into an asynchronous FATAL connection error.
+      await pool.query(`DROP DATABASE "${name}"`);
       await pool.end();
     }
   });
