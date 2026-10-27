@@ -1,3 +1,4 @@
+import { restoreComposeDatabaseVolume } from './restore-compose-volume.js';
 import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DockerClient } from '../docker.js';
@@ -35,11 +36,12 @@ export function createRestoreLifecycle(
   },
 ): RestoreJobAdapters {
   const preparation = createRestorePreparation(options);
-  const previousRuntime = (job: RestoreJob) =>
+  const previousRuntime = async (job: RestoreJob) =>
     new RestorePreviousRuntime({
       docker: options.docker,
       job,
       composeProject: options.previousComposeProject,
+      databaseVolume: await restoreComposeDatabaseVolume(options.root, job),
     });
   const frozenPrevious = async (job: RestoreJob) => {
     const path = join(options.root, job.id, 'previous-runtime');
@@ -63,7 +65,7 @@ export function createRestoreLifecycle(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-      const previous = await previousRuntime(job).inspect(hostConfiguration);
+      const previous = await (await previousRuntime(job)).inspect(hostConfiguration);
       await mkdir(join(options.root, job.id), { recursive: true, mode: 0o700 });
       await writeDurable(path, Buffer.from(JSON.stringify({ jobId: job.id, previous })), true);
       return previous;
@@ -77,7 +79,7 @@ export function createRestoreLifecycle(
           throw new Error('Finish or recover the active update before restoring');
       }
       const previous = await frozenPrevious(job);
-      await previousRuntime(job).stop(previous, signal);
+      await (await previousRuntime(job)).stop(previous, signal);
     };
     if (options.previousManagedRoot) await withUpdateJournalLease(options.previousManagedRoot, run);
     else await run();
@@ -100,7 +102,7 @@ export function createRestoreLifecycle(
     const promotion = new InstallerRestorePromotion(root, {
       inspect: () => frozenPrevious(job),
       stop: async (previous, signal) => {
-        await previousRuntime(job).stop(previous, signal);
+        await (await previousRuntime(job)).stop(previous, signal);
         await stopRestoreTrialRuntime(runtime);
       },
       save: (previous, signal) => storage.save(previous, signal),
@@ -118,14 +120,14 @@ export function createRestoreLifecycle(
       },
       rollback: async (previous, from, signal) => {
         // A prior attempt may have resumed these writers before its completion was checkpointed.
-        await previousRuntime(job).stop(previous, signal);
+        await (await previousRuntime(job)).stop(previous, signal);
         await stopRestoreTrialRuntime(runtime);
         await removeRestoreDatabase(options.docker, job);
         if (
           ['publishing', 'published', 'starting', 'started', 'checking', 'healthy'].includes(from)
         )
           await storage.rollback(previous, signal);
-        await previousRuntime(job).resume(previous, signal);
+        await (await previousRuntime(job)).resume(previous, signal);
       },
     });
     return { runtime, trial, promotion };
@@ -178,7 +180,7 @@ export function createRestoreLifecycle(
         // No publication occurred; all original canonical volumes and host files are still intact.
         try {
           await readBounded(join(options.root, job.id, 'previous-runtime'), 2 * 1024 * 1024);
-          await previousRuntime(job).resume(await frozenPrevious(job), signal);
+          await (await previousRuntime(job)).resume(await frozenPrevious(job), signal);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }

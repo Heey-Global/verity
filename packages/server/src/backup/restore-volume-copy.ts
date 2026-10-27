@@ -1,3 +1,4 @@
+import { restoreComposeDatabaseVolume } from './restore-compose-volume.js';
 import type { DockerClient } from '../docker.js';
 import type { RestoreJob } from './restore-job.js';
 import { restoreDatabaseResources } from './restore-database-runtime.js';
@@ -19,6 +20,7 @@ sync -f /to`;
 export async function copyRestoreVolume(options: {
   docker: DockerClient;
   job: RestoreJob;
+  root: string;
   source: string;
   destination: string;
   signal?: AbortSignal;
@@ -27,15 +29,16 @@ export async function copyRestoreVolume(options: {
   if (!job.verified || !docker.waitContainer || !docker.listContainers || !docker.listVolumes)
     throw new Error('Verified restore and Docker ownership inspection required');
   const resources = restoreDatabaseResources(job);
+  const databaseVolume = await restoreComposeDatabaseVolume(options.root, job);
   const allowed = new Set([
     `verity-data:${resources.prefix}-previous-data`,
-    `verity-db:${resources.prefix}-previous-db`,
+    `${databaseVolume}:${resources.prefix}-previous-db`,
     `verity-managed-deployment:${resources.prefix}-previous-managed`,
     `${resources.prefix}-data:verity-data`,
-    `${resources.volume}:verity-db`,
+    `${resources.volume}:${databaseVolume}`,
     `${resources.prefix}-managed:verity-managed-deployment`,
     `${resources.prefix}-previous-data:verity-data`,
-    `${resources.prefix}-previous-db:verity-db`,
+    `${resources.prefix}-previous-db:${databaseVolume}`,
     `${resources.prefix}-previous-managed:verity-managed-deployment`,
   ]);
   if (!allowed.has(`${options.source}:${options.destination}`))

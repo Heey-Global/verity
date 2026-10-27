@@ -3,8 +3,6 @@ import type { RestoreJob } from './restore-job.js';
 import type { RestorePreviousInstallation } from './restore-promotion.js';
 import { restoreDatabaseResources } from './restore-database-runtime.js';
 
-const VOLUMES = ['verity-data', 'verity-db', 'verity-managed-deployment'];
-
 /** Freeze names, restart policies and running intent before touching any previous container. */
 export class RestorePreviousRuntime {
   constructor(
@@ -12,16 +10,20 @@ export class RestorePreviousRuntime {
       docker: DockerClient;
       job: Pick<RestoreJob, 'id'>;
       composeProject: string;
+      databaseVolume: string;
     },
   ) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(options.composeProject))
       throw new Error('Invalid previous Compose project');
+    if (!/^[a-z0-9][a-z0-9_-]{0,127}_verity-db$/.test(options.databaseVolume))
+      throw new Error('Invalid restored database volume');
   }
 
   async inspect(hostConfiguration: boolean): Promise<RestorePreviousInstallation> {
     const { docker, job, composeProject } = this.options;
     if (!docker.listContainers || !docker.listVolumes)
       throw new Error('Previous installation inspection unavailable');
+    const VOLUMES = ['verity-data', this.options.databaseVolume, 'verity-managed-deployment'];
     const containers: RestorePreviousInstallation['containers'] = [];
     for (const candidate of await docker.listContainers()) {
       if (candidate.labels?.['verity.restore-job'] === job.id) continue;

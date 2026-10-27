@@ -15,6 +15,9 @@ const fake = vi.hoisted(() => ({
   initialize: vi.fn(),
   verify: vi.fn(),
 }));
+vi.mock('./restore-compose-volume.js', () => ({
+  restoreComposeDatabaseVolume: async () => 'verity_verity-db',
+}));
 vi.mock('./restore-preparation.js', () => ({
   createRestorePreparation: () => ({
     verify: fake.verify,

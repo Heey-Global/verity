@@ -1,3 +1,4 @@
+import { restoreComposeDatabaseVolume } from './restore-compose-volume.js';
 import { join } from 'node:path';
 import type { DockerClient } from '../docker.js';
 import type { RestoreJob } from './restore-job.js';
@@ -17,7 +18,7 @@ export class RestorePromotionStorage {
     },
   ) {}
 
-  private volumes(previous: RestorePreviousInstallation) {
+  private async volumes(previous: RestorePreviousInstallation) {
     const resources = restoreDatabaseResources(this.options.job);
     return [
       {
@@ -27,7 +28,7 @@ export class RestorePromotionStorage {
         existed: previous.dataVolume,
       },
       {
-        live: 'verity-db',
+        live: await restoreComposeDatabaseVolume(this.options.root, this.options.job),
         saved: resources.prefix + '-previous-db',
         staged: resources.volume,
         existed: previous.databaseVolume,
@@ -56,7 +57,7 @@ export class RestorePromotionStorage {
     const { job, root, hostRoot } = this.options;
     signal?.throwIfAborted();
     await saveRestoreHostState(hostRoot, join(root, job.id, 'previous-host'), job.id);
-    for (const volume of this.volumes(previous)) {
+    for (const volume of await this.volumes(previous)) {
       signal?.throwIfAborted();
       if (!volume.existed) continue;
       await this.ensureOwned(volume.saved);
@@ -74,7 +75,7 @@ export class RestorePromotionStorage {
   async publish(previous: RestorePreviousInstallation, signal?: AbortSignal): Promise<void> {
     const { docker, job, root, hostRoot } = this.options;
     if (!docker.listVolumes) throw new Error('Restore volume inspection unavailable');
-    for (const volume of this.volumes(previous)) {
+    for (const volume of await this.volumes(previous)) {
       signal?.throwIfAborted();
       if (!volume.existed) await this.ensureOwned(volume.live);
       await copyRestoreVolume({
@@ -94,14 +95,14 @@ export class RestorePromotionStorage {
       throw new Error('Restore volume cleanup unavailable');
     const volumes = await docker.listVolumes();
     // Validate the entire rollback source before changing canonical volumes.
-    for (const volume of this.volumes(previous)) {
+    for (const volume of await this.volumes(previous)) {
       const source = volumes.find(
         (candidate) => candidate.name === (volume.existed ? volume.saved : volume.live),
       );
       if ((volume.existed && !source) || (source && source.labels['verity.restore-job'] !== job.id))
         throw new Error('Restore rollback volume ownership mismatch');
     }
-    for (const volume of this.volumes(previous)) {
+    for (const volume of await this.volumes(previous)) {
       signal?.throwIfAborted();
       if (volume.existed)
         await copyRestoreVolume({

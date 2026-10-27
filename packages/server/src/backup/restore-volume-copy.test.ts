@@ -67,7 +67,10 @@ it('uses the actual cold-copy command to preserve symlinks, modes and original d
     waitContainer: async () => 0,
   } as unknown as DockerClient;
   try {
+    await mkdir(join(root, job.id, 'host'), { recursive: true });
+    await writeFile(join(root, job.id, 'host/compose-project'), 'verity');
     const options = {
+      root,
       docker,
       job,
       source: 'verity-data',

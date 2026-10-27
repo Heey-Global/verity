@@ -1,3 +1,4 @@
+import { restoreComposeDatabaseVolume } from './restore-compose-volume.js';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,6 +46,7 @@ export async function withCanonicalRestoreClient<T>(
   const { docker, job, signal } = options;
   if (!job.verified) throw new Error('Verified canonical restore required');
   const resources = restoreDatabaseResources(job);
+  const databaseVolume = await restoreComposeDatabaseVolume(options.root, job);
   const saved = await credentials(options);
   const inspected = await docker.inspectContainer(resources.container);
   const address = inspected.networks?.[options.network]?.ipAddress;
@@ -56,7 +58,7 @@ export async function withCanonicalRestoreClient<T>(
     !inspected.mounts?.some(
       (mount) =>
         mount.type === 'volume' &&
-        mount.name === 'verity-db' &&
+        mount.name === databaseVolume &&
         mount.destination === '/var/lib/postgresql' &&
         mount.readWrite,
     )
@@ -103,7 +105,8 @@ export async function startCanonicalRestoreDatabase(options: Options): Promise<v
   if (!job.verified || !docker.listContainers || !docker.listVolumes)
     throw new Error('Verified canonical restore required');
   const resources = restoreDatabaseResources(job);
-  if (!(await docker.listVolumes()).some((volume) => volume.name === 'verity-db'))
+  const databaseVolume = await restoreComposeDatabaseVolume(options.root, job);
+  if (!(await docker.listVolumes()).some((volume) => volume.name === databaseVolume))
     throw new Error('Published canonical database volume is missing');
   const saved = await credentials(options);
   const bundled = await readBundledPostgresImage(docker, job.verified.image);
@@ -120,7 +123,7 @@ export async function startCanonicalRestoreDatabase(options: Options): Promise<v
       inspected.mounts?.some(
         (mount) =>
           mount.type === 'volume' &&
-          mount.name === 'verity-db' &&
+          mount.name === databaseVolume &&
           mount.destination === '/var/lib/postgresql' &&
           mount.readWrite,
       )
@@ -155,7 +158,7 @@ export async function startCanonicalRestoreDatabase(options: Options): Promise<v
       `POSTGRES_PASSWORD=${saved.password}`,
       'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256',
     ],
-    volumeMounts: [{ volume: 'verity-db', target: '/var/lib/postgresql' }],
+    volumeMounts: [{ volume: databaseVolume, target: '/var/lib/postgresql' }],
     command: ['postgres', '-c', 'max_connections=8', '-c', 'shared_buffers=16MB'],
     restartPolicy: 'no',
     cpuShares: 2,

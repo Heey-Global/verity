@@ -16,7 +16,8 @@ it('refuses an unrelated canonical database before connecting or replacing any c
   const root = await mkdtemp(join(tmpdir(), 'canonical-runtime-'));
   const job = { id: randomUUID(), verified: { image: 'pinned' } } as RestoreJob;
   const resources = restoreDatabaseResources(job);
-  await mkdir(join(root, job.id));
+  await mkdir(join(root, job.id, 'host'), { recursive: true });
+  await writeFile(join(root, job.id, 'host/compose-project'), 'verity');
   await writeFile(
     join(root, job.id, 'database'),
     JSON.stringify({
@@ -37,7 +38,12 @@ it('refuses an unrelated canonical database before connecting or replacing any c
       labels: { 'verity.restore-job': randomUUID() },
       networks: { [resources.prefix]: { ipAddress: '127.0.0.1' } },
       mounts: [
-        { type: 'volume', name: 'verity-db', destination: '/var/lib/postgresql', readWrite: true },
+        {
+          type: 'volume',
+          name: 'verity_verity-db',
+          destination: '/var/lib/postgresql',
+          readWrite: true,
+        },
       ],
     }),
     listContainers: async () => [],

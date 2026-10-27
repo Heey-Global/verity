@@ -83,6 +83,7 @@ it('keeps previous container IDs and restart intent across interrupted stop and 
     docker,
     job,
     composeProject: 'verity',
+    databaseVolume: 'verity_verity-db',
   });
   const previous = await runtime.inspect(true);
   expect(previous.containers).toHaveLength(2);

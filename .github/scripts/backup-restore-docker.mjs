@@ -382,7 +382,7 @@ async function restore() {
   if (action === 'seed-compose') {
     assert.equal(job, null);
     await docker.ensureVolume('verity-data');
-    await docker.ensureVolume('verity-db');
+    await docker.ensureVolume('verity-recovery-compose_verity-db');
     await exec('docker', [
       'run',
       '--rm',
@@ -391,7 +391,7 @@ async function restore() {
       '--volume',
       'verity-data:/data',
       '--volume',
-      'verity-db:/database',
+      'verity-recovery-compose_verity-db:/database',
       '--entrypoint',
       'sh',
       image,
@@ -414,11 +414,14 @@ async function restore() {
             image,
             user: '0:0',
             entrypoint: ['sh', '-c', 'while :; do sleep 60; done'],
-            volumes: ['verity-db:/var/lib/postgresql'],
+            volumes: ['verity-recovery-compose_verity-db:/var/lib/postgresql'],
             restart: 'unless-stopped',
           },
         },
-        volumes: { 'verity-data': { external: true }, 'verity-db': { external: true } },
+        volumes: {
+          'verity-data': { external: true },
+          'verity-recovery-compose_verity-db': { external: true },
+        },
       }),
     );
     await exec('docker', [
@@ -556,7 +559,7 @@ async function restore() {
         '--volume',
         'verity-data:/data:ro',
         '--volume',
-        'verity-db:/database:ro',
+        'verity-recovery-compose_verity-db:/database:ro',
         '--entrypoint',
         'sh',
         image,

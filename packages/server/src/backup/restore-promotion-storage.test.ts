@@ -86,8 +86,10 @@ it('retains all previous volume contents across publication retries and restores
     managedVolume: true,
     hostConfiguration: true,
   };
-  const live = ['verity-data', 'verity-db', 'verity-managed-deployment'];
+  const live = ['verity-data', 'recovered_verity-db', 'verity-managed-deployment'];
   try {
+    await mkdir(join(root, job.id, 'host'), { recursive: true });
+    await writeFile(join(root, job.id, 'host/compose-project'), 'recovered');
     for (const name of live) {
       await ensure(name);
       await writeFile(join(root, name, 'original'), name);
@@ -112,6 +114,23 @@ it('retains all previous volume contents across publication retries and restores
       join(root, job.id, 'previous-host'),
       '/host',
       job.id,
+    );
+    // A different installation's database must survive fresh-target retries and abort.
+    await ensure('other_verity-db');
+    await writeFile(join(root, 'other_verity-db', 'original'), 'unrelated database');
+    await docker.removeVolume!('recovered_verity-db');
+    const fresh = { ...previous, databaseVolume: false };
+    await storage.save(fresh);
+    await storage.publish(fresh);
+    await storage.publish(fresh);
+    expect(await readFile(join(root, 'recovered_verity-db', 'recovered'), 'utf8')).toBe(
+      resources.volume,
+    );
+    await storage.rollback(fresh);
+    await storage.rollback(fresh);
+    expect(volumes.has('recovered_verity-db')).toBe(false);
+    expect(await readFile(join(root, 'other_verity-db', 'original'), 'utf8')).toBe(
+      'unrelated database',
     );
     // A colliding checkpoint must fail before any other canonical volume is rewritten.
     volumes.get(resources.prefix + '-previous-managed')!.labels = {};
