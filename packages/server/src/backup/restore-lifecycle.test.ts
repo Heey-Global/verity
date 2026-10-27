@@ -99,7 +99,7 @@ vi.mock('./restore-database-runtime.js', async (original) => ({
   },
 }));
 
-it.each(['accept', 'abort', 'abort-resume'] as const)(
+it.each(['accept', 'abort', 'abort-resume', 'abort-promoted'] as const)(
   'composes restart-safe %s without publishing before the original installation is checkpointed',
   async (outcome) => {
     fake.events.length = 0;
@@ -144,7 +144,7 @@ it.each(['accept', 'abort', 'abort-resume'] as const)(
       });
       for (let n = 0; n < 4; n++) await manager().advance(job.id, 'recovery-secret');
       expect(fake.events).toEqual(['fence-previous', 'staged-trial']);
-      if (outcome !== 'accept')
+      if (outcome !== 'accept' && outcome !== 'abort-promoted')
         fake.publish.mockImplementationOnce(async () => {
           fake.events.push('publish');
           throw new Error('interrupted publication');
@@ -171,9 +171,11 @@ it.each(['accept', 'abort', 'abort-resume'] as const)(
         expect(fake.events.filter((event) => event === 'publish')).toHaveLength(1);
         expect(fake.events.slice(-2)).toEqual(['final-authentication', 'initialize']);
       } else {
-        await expect(manager().advance(job.id, 'recovery-secret')).rejects.toThrow(
-          'interrupted publication',
-        );
+        if (outcome === 'abort-promoted') await manager().advance(job.id, 'recovery-secret');
+        else
+          await expect(manager().advance(job.id, 'recovery-secret')).rejects.toThrow(
+            'interrupted publication',
+          );
         if (outcome === 'abort-resume') {
           fake.resume.mockRejectedValueOnce(new Error('interrupted after resume'));
           await expect(manager().abort(job.id)).rejects.toThrow('interrupted after resume');

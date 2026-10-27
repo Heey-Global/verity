@@ -265,10 +265,8 @@ export class InstallerRestoreJob {
     return this.locked(async (root) => {
       const job = await this.read(root);
       if (!job || job.id !== id) throw new Error('Restore job not found');
-      if (['accepted', 'promoted', 'accepting'].includes(job.phase))
-        throw new Error(
-          'Accepted or promoted restore requires explicit recovery, not staging deletion',
-        );
+      if (job.phase === 'accepted')
+        throw new Error('Accepted restore requires explicit recovery, not staging deletion');
       if (job.phase === 'aborted') return job;
       const pending = record.parse({ ...job, phase: 'aborting', updatedAt: Date.now() });
       await writeDurable(join(root, 'job'), Buffer.from(JSON.stringify(pending)), false);

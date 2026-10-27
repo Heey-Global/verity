@@ -198,7 +198,7 @@ run_driver verify-api
 echo '--- recovery: interrupted rollback refences resumed managed writers'
 new_identity=1
 prepare_reviewed
-expect_interruption promote
+run_driver advance
 set +e
 run_driver abort rollback-resume >"$work/rollback-interruption.log" 2>&1
 rollback_status=$?

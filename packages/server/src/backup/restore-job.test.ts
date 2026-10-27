@@ -173,3 +173,23 @@ it('archives an accepted restore only after its installation activation has comp
     await f.remove();
   }
 });
+
+it.each(['promoted', 'accepting'] as const)(
+  'allows rollback before durable acceptance from %s',
+  async (phase) => {
+    const f = await fixture();
+    try {
+      const job = await f.manager.begin(f.input);
+      for (let n = 0; n < 5; n++) await f.manager.advance(job.id, 'key');
+      if (phase === 'accepting') {
+        vi.mocked(f.adapters.accept).mockRejectedValueOnce(new Error('authorization changed'));
+        await expect(f.manager.advance(job.id, 'key')).rejects.toThrow('authorization changed');
+      }
+      expect((await f.manager.status())!.phase).toBe(phase);
+      expect((await f.manager.abort(job.id)).phase).toBe('aborted');
+      expect(f.adapters.abort).toHaveBeenCalledOnce();
+    } finally {
+      await f.remove();
+    }
+  },
+);
