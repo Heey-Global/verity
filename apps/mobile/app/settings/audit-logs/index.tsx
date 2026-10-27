@@ -72,6 +72,8 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   const load = useCallback(() => {
     const request = ++latest.current;
     setError(undefined);
+    // A cursor from the previous filter must not page the new one.
+    setNextBefore(null);
     client
       .auditOperations({
         ...(filter === 'all' ? {} : { domain: filter }),

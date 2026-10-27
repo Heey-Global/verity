@@ -43,8 +43,17 @@ const operationDetailSchema = operationSummarySchema.extend({
 });
 export type AuditOperationDetail = z.infer<typeof operationDetailSchema>;
 
+/** A newer Server may add kinds, statuses or initiators this app does not know. Those
+ *  entries are skipped instead of failing the whole page. */
+const tolerantOperations = z.array(z.unknown()).transform((items) =>
+  items.flatMap((item) => {
+    const parsed = operationSummarySchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  }),
+);
+
 export const auditOperationListSchema = z.object({
-  operations: z.array(operationSummarySchema),
+  operations: tolerantOperations,
   nextBefore: z.string().nullable(),
   oldestRecordedAt: z.string().nullable(),
 });

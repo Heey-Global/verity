@@ -5995,7 +5995,8 @@ export class ProvisionerImpl implements Provisioner {
           ...(forceRebuild ? { noCache: true } : {}),
         });
       } catch (cause) {
-        await audit?.failed();
+        // Best-effort: the build error, not an audit error, is what the caller reports.
+        await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.
         // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
@@ -6009,7 +6010,9 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       if (audit !== undefined)
-        await audit.succeeded(await this.builtImageIdentity(derivedTag, baseImageRef));
+        await audit
+          .succeeded(await this.builtImageIdentity(derivedTag, baseImageRef))
+          .catch(() => undefined);
       return {
         imageRef: derivedTag,
         usesDevcontainerImage: true,
@@ -6049,8 +6052,15 @@ export class ProvisionerImpl implements Provisioner {
     const image = await safely(imageTag);
     const pinned = /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
     const base = pinned === undefined ? await safely(baseImageRef) : undefined;
+    // Only a digest of the base image's own repository: a re-tagged copy can carry
+    // digests of other repositories.
+    const repository = baseImageRef.replace(/@.*$/, '').replace(/:[^/:]+$/, '');
     const baseDigest =
-      pinned ?? base?.repoDigests.map((d) => /@(sha256:[0-9a-f]{64})$/.exec(d)?.[1]).find(Boolean);
+      pinned ??
+      base?.repoDigests
+        .filter((d) => d.startsWith(`${repository}@`))
+        .map((d) => /@(sha256:[0-9a-f]{64})$/.exec(d)?.[1])
+        .find(Boolean);
     return {
       imageId: image?.id ?? null,
       sizeBytes: image?.sizeBytes ?? null,

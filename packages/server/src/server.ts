@@ -7666,11 +7666,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { code: 404, body: { error: `project ${id} not found` } };
       }
       // Before the image cleanup, so the trail reads deletion first, removals second.
-      await deps.audit?.recorder.projectDeleted({
-        projectId: id,
-        projectLabel: `${project.owner}/${project.repo}`,
-        initiator: { kind: 'user', userId: request.localUserId },
-      });
+      // Best-effort: the deletion has happened, and a lost record becomes a write gap.
+      try {
+        await deps.audit?.recorder.projectDeleted({
+          projectId: id,
+          projectLabel: `${project.owner}/${project.repo}`,
+          initiator: { kind: 'user', userId: request.localUserId },
+        });
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project deletion not audited');
+      }
       try {
         await deps.onProjectHidden?.(id);
       } catch (error) {

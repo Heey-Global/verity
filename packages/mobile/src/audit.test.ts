@@ -52,6 +52,22 @@ describe('audit client', () => {
     expect(await c.auditHealth()).toBeNull();
   });
 
+  // Server and app ship separately: one entry of a kind this app does not know must
+  // not take the whole list down with it.
+  it('skips entries of unknown kinds instead of failing the page', async () => {
+    const { client: c } = client(
+      () =>
+        new Response(
+          JSON.stringify({
+            operations: [summary, { ...summary, operationId: 'op-2', kind: 'secret_used' }],
+            nextBefore: null,
+            oldestRecordedAt: null,
+          }),
+        ),
+    );
+    expect((await c.auditOperations())?.operations.map((o) => o.operationId)).toEqual(['op-1']);
+  });
+
   it('reads one operation and the audit health', async () => {
     const { calls, client: c } = client((url) =>
       url.pathname === '/audit/health'

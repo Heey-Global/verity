@@ -3438,24 +3438,28 @@ export async function buildEmbeddedServer(
   const imageReferences = createProjectImageReferences(db);
   // Durable audit trail for project image builds (ADR 0028). The Server generation is
   // read from this container's own label once; outside a managed deployment it is null.
-  let auditServer: Promise<AuditServerIdentity> | undefined;
+  let auditServer: AuditServerIdentity | undefined;
   const auditLog = createPostgresAuditLog(db);
   const auditRecorder = createAuditRecorder(auditLog, {
-    server: () =>
-      (auditServer ??= (async () => {
-        const generation = await (async (): Promise<number | null> => {
-          try {
-            const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
-              'verity.generation'
-            ];
-            const parsed = label === undefined ? Number.NaN : Number(label);
-            return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-          } catch {
-            return null;
-          }
-        })();
-        return { release: runtimeServerVersion(), generation };
-      })()),
+    server: async () => {
+      if (auditServer !== undefined) return auditServer;
+      let generation: number | null = null;
+      let settled = true;
+      try {
+        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+          'verity.generation'
+        ];
+        const parsed = label === undefined ? Number.NaN : Number(label);
+        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+      } catch {
+        // Recorded as unknown this time, and asked again next time: a transient
+        // failure must neither block a build nor stick for the life of the process.
+        settled = false;
+      }
+      const identity = { release: runtimeServerVersion(), generation };
+      if (settled) auditServer = identity;
+      return identity;
+    },
     onError: (error, kind) => {
       console.warn(`verity: audit event ${kind} could not be recorded`, error);
     },
