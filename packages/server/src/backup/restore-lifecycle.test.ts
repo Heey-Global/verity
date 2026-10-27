@@ -9,6 +9,8 @@ import { createRestoreLifecycle } from './restore-lifecycle.js';
 
 const fake = vi.hoisted(() => ({
   events: [] as string[],
+  previousRunning: false,
+  resume: vi.fn(),
   publish: vi.fn(),
   initialize: vi.fn(),
   verify: vi.fn(),
@@ -39,9 +41,12 @@ vi.mock('./restore-previous-runtime.js', () => ({
     }
     async stop() {
       fake.events.push('fence-previous');
+      fake.previousRunning = false;
     }
     async resume() {
       fake.events.push('resume-previous');
+      fake.previousRunning = true;
+      await fake.resume();
     }
   },
 }));
@@ -52,6 +57,7 @@ vi.mock('./restore-promotion-storage.js', () => ({
     }
     publish = fake.publish;
     async rollback() {
+      expect(fake.previousRunning).toBe(false);
       fake.events.push('restore-original');
     }
   },
@@ -93,10 +99,12 @@ vi.mock('./restore-database-runtime.js', async (original) => ({
   },
 }));
 
-it.each(['accept', 'abort'] as const)(
+it.each(['accept', 'abort', 'abort-resume'] as const)(
   'composes restart-safe %s without publishing before the original installation is checkpointed',
   async (outcome) => {
     fake.events.length = 0;
+    fake.previousRunning = false;
+    fake.resume.mockReset().mockResolvedValue(undefined);
     fake.publish.mockReset().mockImplementation(async () => {
       fake.events.push('publish');
     });
@@ -136,7 +144,7 @@ it.each(['accept', 'abort'] as const)(
       });
       for (let n = 0; n < 4; n++) await manager().advance(job.id, 'recovery-secret');
       expect(fake.events).toEqual(['fence-previous', 'staged-trial']);
-      if (outcome === 'abort')
+      if (outcome !== 'accept')
         fake.publish.mockImplementationOnce(async () => {
           fake.events.push('publish');
           throw new Error('interrupted publication');
@@ -166,8 +174,15 @@ it.each(['accept', 'abort'] as const)(
         await expect(manager().advance(job.id, 'recovery-secret')).rejects.toThrow(
           'interrupted publication',
         );
+        if (outcome === 'abort-resume') {
+          fake.resume.mockRejectedValueOnce(new Error('interrupted after resume'));
+          await expect(manager().abort(job.id)).rejects.toThrow('interrupted after resume');
+          expect(fake.previousRunning).toBe(true);
+          expect((await manager().status())!.phase).toBe('aborting');
+        }
         await manager().abort(job.id);
-        expect(fake.events.slice(-5)).toEqual([
+        expect(fake.events.slice(-6)).toEqual([
+          'fence-previous',
           'stop-trial',
           'remove-job-database',
           'restore-original',

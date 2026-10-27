@@ -117,6 +117,8 @@ export function createRestoreLifecycle(
         await trial.reviewed(job);
       },
       rollback: async (previous, from, signal) => {
+        // A prior attempt may have resumed these writers before its completion was checkpointed.
+        await previousRuntime(job).stop(previous, signal);
         await stopRestoreTrialRuntime(runtime);
         await removeRestoreDatabase(options.docker, job);
         if (

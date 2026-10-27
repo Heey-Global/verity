@@ -344,7 +344,21 @@ async function restore() {
     initialize: createInstallerRestoreInitializer(config, docker, signal),
   });
   const fault = process.env.VERITY_RESTORE_TEST_INTERRUPT;
-  if (fault) {
+  if (fault === 'rollback-resume') {
+    const start = docker.startContainer;
+    docker.startContainer = async (id) => {
+      await start(id);
+      const current = JSON.parse(await readFile(join(stateRoot, 'job'), 'utf8'));
+      const promotion = JSON.parse(
+        await readFile(join(stateRoot, current.id, 'promotion'), 'utf8'),
+      );
+      if (
+        promotion.phase === 'rolling-back' &&
+        promotion.previous.containers.some((container) => container.id === id)
+      )
+        process.kill(process.pid, 'SIGKILL');
+    };
+  } else if (fault) {
     const run = adapters[fault];
     assert.equal(typeof run, 'function');
     adapters[fault] = async (...args) => {
@@ -362,6 +376,61 @@ async function restore() {
       kind: 'manual',
       newIdentity: false,
     });
+  if (action === 'seed-compose') {
+    assert.equal(job, null);
+    await docker.ensureVolume('verity-data');
+    await docker.ensureVolume('verity-db');
+    await exec('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '0:0',
+      '--volume',
+      'verity-data:/data',
+      '--volume',
+      'verity-db:/database',
+      '--entrypoint',
+      'sh',
+      image,
+      '-c',
+      'printf previous-data > /data/previous-sentinel; printf previous-database > /database/previous-sentinel',
+    ]);
+    const compose = join(root, 'previous-compose.json');
+    await writeFile(
+      compose,
+      JSON.stringify({
+        services: {
+          server: {
+            image,
+            user: '0:0',
+            entrypoint: ['sh', '-c', 'while :; do sleep 60; done'],
+            volumes: ['verity-data:/srv/verity'],
+            restart: 'unless-stopped',
+          },
+          database: {
+            image,
+            user: '0:0',
+            entrypoint: ['sh', '-c', 'while :; do sleep 60; done'],
+            volumes: ['verity-db:/var/lib/postgresql'],
+            restart: 'unless-stopped',
+          },
+        },
+        volumes: { 'verity-data': { external: true }, 'verity-db': { external: true } },
+      }),
+    );
+    await exec('docker', [
+      'compose',
+      '--project-name',
+      'verity-recovery-compose',
+      '--file',
+      compose,
+      'up',
+      '--detach',
+    ]);
+    await writeFile(join(hostRoot, 'compose-project'), 'verity-recovery-compose');
+    console.log('Existing Compose runtime and volume sentinels prepared.');
+    return;
+  }
   if (action === 'begin') {
     job = await manager.begin({
       source: join(root, 'backup'),
@@ -471,6 +540,30 @@ async function restore() {
         );
       },
     );
+  } else if (action === 'assert-aborted') {
+    assert.equal(job.phase, 'aborted');
+    const previous = JSON.parse(
+      await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),
+    ).previous;
+    assert.ok(previous.containers.some((container) => container.running));
+    if (previous.containers.length === 2) {
+      const result = await exec('docker', [
+        'run',
+        '--rm',
+        '--volume',
+        'verity-data:/data:ro',
+        '--volume',
+        'verity-db:/database:ro',
+        '--entrypoint',
+        'sh',
+        image,
+        '-c',
+        'cat /data/previous-sentinel /database/previous-sentinel',
+      ]);
+      assert.equal(result.stdout, 'previous-dataprevious-database');
+    }
+    for (const container of previous.containers)
+      assert.equal((await docker.inspectContainer(container.id)).running, container.running);
   } else if (action === 'verify-api') {
     const previous = JSON.parse(
       await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),

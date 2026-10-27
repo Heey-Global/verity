@@ -126,6 +126,8 @@ inner push --quiet "$repo:restore-unsupported" >/dev/null
 inside test ! -e "$root/original"
 inside test ! -e "$root/original-index"
 
+run_driver seed-compose
+
 echo '--- recovery: wrong recovery key and retry'
 run_driver begin
 run_driver wrong-key
@@ -165,6 +167,7 @@ echo '--- recovery: interrupted publication and abort restore only owned resourc
 prepare_reviewed
 expect_interruption promote
 run_driver abort
+run_driver assert-aborted
 
 echo '--- recovery: preserved identity, master authentication and restart-safe acceptance'
 prepare_reviewed
@@ -190,6 +193,18 @@ activate_installer() {
 }
 activate_installer
 run_driver verify-api
+
+echo '--- recovery: interrupted rollback refences resumed managed writers'
+new_identity=1
+prepare_reviewed
+expect_interruption promote
+set +e
+run_driver abort rollback-resume >"$work/rollback-interruption.log" 2>&1
+rollback_status=$?
+set -e
+[[ $rollback_status = 137 ]]
+run_driver abort
+run_driver assert-aborted
 
 echo '--- recovery: new identity retains no old device credentials'
 new_identity=1
