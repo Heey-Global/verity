@@ -37,5 +37,11 @@ it.each([
   } finally {
     process.env.NODE_ENV = previous;
   }
-  expect(output?.code).toContain('react-native-unistyles/components/native');
+  if (name === 'ui/Image.tsx') {
+    // This adapter has no native JSX to rewrite. Its binding must survive the
+    // production transform or Expo Image silently loses web dimensions again.
+    expect(output?.code).toMatch(/\.withUnistyles\)\([^)]*\.Image\)/);
+  } else {
+    expect(output?.code).toContain('react-native-unistyles/components/native');
+  }
 });
