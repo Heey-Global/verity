@@ -15,9 +15,14 @@ interface Migration {
   archive: string;
   destination: string;
   sessions: Array<{ id: string; source: string; view: string }>;
+  skipped?: { paths: string[]; count: number };
   stage: 'copying' | 'archived' | 'complete';
 }
 const excluded = new Set(['.git', '.verity-sessions', DOCUMENT_SESSION_DIRECTORY]);
+// Generated directory names from the repository's .gitignore. Do not apply
+// all ignore rules: ignored drafts and other user files must still migrate.
+const generatedDirectories = new Set(['node_modules', 'dist', '.expo', '.cache', 'coverage']);
+const skippedPathLimit = 200;
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
 async function persist(path: string, value: Migration) {
@@ -40,7 +45,12 @@ async function persist(path: string, value: Migration) {
 
 /** Copy with exclusive destinations and byte verification. Originals, including
  * Git history, symlinks and ignored files, also survive in the full archive. */
-async function copyTree(source: string, destination: string, atRoot = true): Promise<void> {
+async function copyTree(
+  source: string,
+  destination: string,
+  skipped: NonNullable<Migration['skipped']>,
+  relativePath = '',
+): Promise<void> {
   await mkdir(destination, { recursive: true });
   const directory = await open(
     source,
@@ -48,15 +58,21 @@ async function copyTree(source: string, destination: string, atRoot = true): Pro
   );
   try {
     for (const entry of await readdir(`/proc/self/fd/${directory.fd}`, { withFileTypes: true })) {
-      if (atRoot && excluded.has(entry.name)) continue;
+      if (!relativePath && excluded.has(entry.name)) continue;
+      const path = join(relativePath, entry.name);
+      if (
+        (entry.isDirectory() && generatedDirectories.has(entry.name)) ||
+        entry.isSymbolicLink() ||
+        (!entry.isFile() && !entry.isDirectory())
+      ) {
+        skipped.count++;
+        if (skipped.paths.length < skippedPathLimit) skipped.paths.push(path);
+        continue;
+      }
       const from = `/proc/self/fd/${directory.fd}/${entry.name}`;
       const to = join(destination, entry.name);
-      if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory()))
-        throw new Error(
-          `Migration requires review of non-regular file: ${entry.name}; originals are unchanged`,
-        );
       if (entry.isDirectory()) {
-        await copyTree(from, to, false);
+        await copyTree(from, to, skipped, path);
         continue;
       }
       const input = await open(from, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -190,14 +206,33 @@ export async function migrateLocalDocuments(input: {
         },
       );
       if (!archived) {
-        await copyTree(workspace, join(documents, migration.destination, 'Project'));
+        const projectSkipped = { paths: [] as string[], count: 0 };
+        const sessionSkipped = { paths: [] as string[], count: 0 };
+        await copyTree(
+          workspace,
+          join(documents, migration.destination, 'Project'),
+          projectSkipped,
+        );
         // Include orphaned session directories as well as live session rows.
         const sessions = join(workspace, '.verity-sessions');
         try {
-          await copyTree(sessions, join(documents, migration.destination, 'Sessions'));
+          await copyTree(
+            sessions,
+            join(documents, migration.destination, 'Sessions'),
+            sessionSkipped,
+          );
         } catch (error) {
           if (!missing(error)) throw error;
         }
+        migration.skipped = {
+          paths: [
+            ...projectSkipped.paths,
+            ...sessionSkipped.paths.map((path) => join('.verity-sessions', path)),
+          ].slice(0, skippedPathLimit),
+          count: projectSkipped.count + sessionSkipped.count,
+        };
+        // Save the report before rename so recovery after a crash retains it.
+        await persist(manifest, migration);
         await mkdir(join(dataRoot, 'document-archives', projectId), {
           recursive: true,
           mode: 0o700,
@@ -210,7 +245,11 @@ export async function migrateLocalDocuments(input: {
     await mkdir(workspace, { recursive: true });
     await mkdir(documents, { recursive: true });
     const note = join(documents, migration.destination, 'migration.md');
-    const description = `# Migrated project files\n\nProject and session files were copied and verified before the repository was archived.\n\nOriginal repository and Git history: ${migration.archive}\n\nSession working directories now contain Documents; historical paths in the conversation refer to the archived workspace.\n`;
+    const skipped = migration.skipped;
+    const report = skipped?.count
+      ? `\n## Preserved only in the archive\n\nSkipped directories (including all contents), symlinks and special files were not copied to Documents. Paths are relative to the original workspace at ${migration.archive}.\n\n${skipped.paths.map((path) => `- ${JSON.stringify(path)}`).join('\n')}\n${skipped.count > skipped.paths.length ? `\n${skipped.count - skipped.paths.length} additional entries omitted.\n` : ''}`
+      : '';
+    const description = `# Migrated project files\n\nProject and session files were copied and verified before the repository was archived.\n\nOriginal repository and Git history: ${migration.archive}\n\nSession working directories now contain Documents; historical paths in the conversation refer to the archived workspace.\n${report}`;
     await mkdir(join(documents, migration.destination), { recursive: true });
     const record = await open(note, 'w', 0o644);
     try {
