@@ -7780,7 +7780,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : project;
       settleBackgroundProvision(
         project.id,
-        deps.provisioner.provision(project.id, { confirmWarnings }),
+        deps.provisioner.provision(project.id, {
+          confirmWarnings,
+          initiator: { kind: 'user', userId: request.localUserId },
+        }),
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
@@ -7913,6 +7916,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
+          initiator: { kind: 'user', userId: request.localUserId },
         });
         await afterProjectProvision(project.id);
       } catch (error) {
@@ -8076,7 +8080,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // to report the link itself as failed.
         if (linked.state !== 'absent' && provisioner.recreateContainer) {
           try {
-            await provisioner.recreateContainer(linked.id, { confirmWarnings: true });
+            await provisioner.recreateContainer(linked.id, {
+              confirmWarnings: true,
+              initiator: { kind: 'user', userId: request.localUserId },
+            });
             await afterProjectProvision(linked.id);
           } catch (error) {
             app.log.warn(

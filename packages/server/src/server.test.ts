@@ -12483,7 +12483,10 @@ describe('POST /sessions with project field (#174)', () => {
       expect(body.project).toHaveProperty('sandboxUpdate');
       expect(body.project).toHaveProperty('toolkitDrift', null);
       // The provisioner was fired asynchronously (fire-and-forget)
-      expect(p.provision).toHaveBeenCalledWith('p-absent', { confirmWarnings: false });
+      expect(p.provision).toHaveBeenCalledWith('p-absent', {
+        confirmWarnings: false,
+        initiator: { kind: 'user', userId: null },
+      });
       // No session was started (we returned early)
       expect(startSession).not.toHaveBeenCalled();
     } finally {
@@ -13209,6 +13212,7 @@ describe('POST /projects/:id/link-github', () => {
       );
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-link', {
         confirmWarnings: true,
+        initiator: { kind: 'user', userId: null },
       });
       // The clone never moves: session worktree paths are persisted under it.
       expect(await ctx.store.getProject('p-link')).toMatchObject({
@@ -15169,7 +15173,10 @@ describe('POST /projects/:id/repair', () => {
         url: '/projects/p-repair/repair',
       });
       expect(res.statusCode).toBe(202);
-      expect(provisioner.provision).toHaveBeenCalledWith('p-repair', { confirmWarnings: false });
+      expect(provisioner.provision).toHaveBeenCalledWith('p-repair', {
+        confirmWarnings: false,
+        initiator: { kind: 'user', userId: null },
+      });
       expect(res.json()).toMatchObject({
         project: { id: 'p-repair', state: 'cloning', provisionError: null },
       });
@@ -15454,6 +15461,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-verity', {
         confirmWarnings: false,
         forceRebuild: false,
+        initiator: { kind: 'user', userId: null },
       });
     } finally {
       await a.close();
@@ -15500,6 +15508,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-recreate', {
         confirmWarnings: false,
         forceRebuild: false,
+        initiator: { kind: 'user', userId: null },
       });
       expect(res.json()).toMatchObject({
         project: { id: 'p-recreate', state: 'container_starting' },
@@ -15536,6 +15545,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(recreateContainer).toHaveBeenCalledWith('p-rebuild', {
         confirmWarnings: true,
         forceRebuild: true,
+        initiator: { kind: 'user', userId: null },
       });
     } finally {
       await a.close();

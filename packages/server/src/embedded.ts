@@ -149,6 +149,9 @@ import {
 } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
+import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
@@ -3433,6 +3436,29 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  // Durable audit trail for project image builds (ADR 0028). The Server generation is
+  // read from this container's own label once; outside a managed deployment it is null.
+  let auditServer: Promise<AuditServerIdentity> | undefined;
+  const auditRecorder = createAuditRecorder(createPostgresAuditLog(db), {
+    server: () =>
+      (auditServer ??= (async () => {
+        const generation = await (async (): Promise<number | null> => {
+          try {
+            const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+              'verity.generation'
+            ];
+            const parsed = label === undefined ? Number.NaN : Number(label);
+            return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+          } catch {
+            return null;
+          }
+        })();
+        return { release: runtimeServerVersion(), generation };
+      })()),
+    onError: (error, kind) => {
+      console.warn(`verity: audit event ${kind} could not be recorded`, error);
+    },
+  });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
@@ -3703,6 +3729,7 @@ export async function buildEmbeddedServer(
     }
     provisioner = new ProvisionerImpl({
       imageReferences,
+      audit: auditRecorder,
       store: eventStore,
       db,
       docker,
@@ -5544,7 +5571,10 @@ export async function buildEmbeddedServer(
   if (starterProvisioner !== undefined) {
     void ensureStarterProject({
       store: eventStore,
-      provision: (projectId) => starterProvisioner.provision(projectId),
+      provision: (projectId) =>
+        starterProvisioner.provision(projectId, {
+          initiator: { kind: 'system', trigger: 'welcome_project' },
+        }),
       log: app.log,
     });
   }

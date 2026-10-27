@@ -49,6 +49,12 @@ export interface ContainerReplacementConfig {
 
 /** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
  * scope: only those endpoints the proxy explicitly allows. */
+export interface DockerImageIdentity {
+  id: string;
+  sizeBytes: number | null;
+  repoDigests: string[];
+}
+
 export interface DockerClient {
   /** Create a container without starting it (Engine `/containers/create`). The
    *  `{ Id }` of the new container is returned, NOT the running state. Rejects
@@ -133,6 +139,9 @@ export interface DockerClient {
    *  running container carries exactly the environment a spec asked for and
    *  nothing else. `undefined` when the daemon does not have the image. */
   inspectImageEnv?(ref: string): Promise<readonly string[] | undefined>;
+  /** Image ID, size and repository digests of a locally-present image (Engine
+   *  `GET /images/{ref}/json`), for the durable audit trail. `undefined` on 404. */
+  inspectImageIdentity?(ref: string): Promise<DockerImageIdentity | undefined>;
   /** Create a user-defined bridge network if absent (Engine `POST /networks/create`),
    *  idempotent — an existing network (409) is a no-op. Used for per-project sandbox
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
@@ -2023,6 +2032,23 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res);
       const json = (await res.json()) as { Config?: { Env?: unknown } };
       return isStringArray(json.Config?.Env) ? json.Config.Env : [];
+    },
+    inspectImageIdentity: async (ref) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/images/${encodeURIComponent(ref)}/json`,
+        'GET',
+        timeoutMs,
+      );
+      if (res.status === 404) return undefined;
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown; Size?: unknown; RepoDigests?: unknown };
+      if (typeof json.Id !== 'string') return undefined;
+      return {
+        id: json.Id,
+        sizeBytes: typeof json.Size === 'number' && Number.isFinite(json.Size) ? json.Size : null,
+        repoDigests: isStringArray(json.RepoDigests) ? json.RepoDigests : [],
+      };
     },
     ensureNetwork: async (name, opts) => {
       // POST /networks/create. A user-defined bridge (egress stays open — H2 blocks
