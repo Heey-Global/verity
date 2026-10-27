@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import pg from '/app/node_modules/pg/lib/index.js';
 import {
   createPostgresDb,
@@ -653,10 +654,8 @@ async function exists(path) {
     throw error;
   }
 }
-async function diagnoseActivation() {
-  console.error(
-    formatRestoreLog(await readFile(join(root, 'install.log'), 'utf8').catch(() => '')),
-  );
+async function diagnoseActivation(emit = console.error) {
+  emit(formatRestoreLog(await readFile(join(root, 'install.log'), 'utf8').catch(() => '')));
   const roles = new Map([
     ['server', 'server'],
     ['gateway', 'gateway'],
@@ -671,15 +670,30 @@ async function diagnoseActivation() {
       container.labels?.['verity.managed-role'] ?? container.labels?.['com.docker.compose.service'];
     if (!roles.has(role)) continue;
     const state = await docker.inspectContainer(container.id);
-    console.error(
+    emit(
       'Restore runtime diagnostic: ' +
         JSON.stringify({ role, running: state.running, restarts: state.restartCount }),
     );
-    console.error(formatRestoreLog(await docker.containerLogs(container.id, 100).catch(() => '')));
+    emit(formatRestoreLog(await docker.containerLogs(container.id, 100).catch(() => '')));
+  }
+}
+async function monitorActivation() {
+  const seen = new Set();
+  const emit = (line) => {
+    if (!seen.has(line)) {
+      seen.add(line);
+      console.error(line);
+    }
+  };
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline && !(await exists(join(root, 'activation-monitor-stop')))) {
+    await diagnoseActivation(emit).catch(() => {});
+    await delay(1000);
   }
 }
 try {
-  if (action === 'diagnose-activation') await diagnoseActivation();
+  if (action === 'monitor-activation') await monitorActivation();
+  else if (action === 'diagnose-activation') await diagnoseActivation();
   else if (action === 'capture') await capture();
   else await restore();
 } catch (error) {
