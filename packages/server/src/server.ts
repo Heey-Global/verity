@@ -3769,13 +3769,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // session. Prompt-only runs need nothing but the conductor, which wakes a
   // sleeping project for the turn itself; only a check script needs the
   // project container directly.
+  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
+    if (!userId) return deps.authRegistry?.isEnabled() !== true;
+    return (
+      projectId !== null &&
+      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
+    );
+  };
   const automationExecutor = createAutomationExecutor({
+    isAuthorized: async (automation, session) => {
+      try {
+        return await canExecuteAs(automation.sponsorUserId, session.projectId);
+      } catch {
+        return false;
+      }
+    },
     isCurrent: async (automation, snapshot) => {
       const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
       const session = await deps.eventStore.getSession(automation.sessionId);
       return (
         current?.id === automation.id &&
         current.status === 'enabled' &&
+        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
         session?.projectId === snapshot.projectId &&
         session.worktree === snapshot.worktree
       );
@@ -3798,7 +3813,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
       ? {
-          runScript: async ({ script, project, session }) => {
+          runScript: async ({ script, project, session, automation }) => {
             const runtime = deps.projectRuntime;
             const cloneRoot = deps.projectCloneRoot;
             if (!runtime?.runAutomationScript || !cloneRoot) {
@@ -3807,6 +3822,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
+            try {
+              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
+                throw new Error('revoked');
+            } catch {
+              throw new ControlPlaneSessionAuthorityError(
+                'The automation sponsor no longer has execution permission.',
+              );
+            }
             return runtime.runAutomationScript(
               project,
               settings ?? emptyProjectSettings(project.id),
@@ -3847,7 +3870,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
     isSkippableError: (error) =>
-      error instanceof SealedError || error instanceof ProjectNotReadyError,
+      error instanceof SealedError ||
+      error instanceof ProjectNotReadyError ||
+      error instanceof ControlPlaneSessionAuthorityError,
   });
 
   const automationScheduler = startAutomationScheduler({
@@ -6356,9 +6381,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      // Runs before the card, so a caller that may not use these tools is turned away without
-      // an operator being asked to read a briefing their answer could not have delivered. The
-      // tools re-check it themselves on the way in; this only decides when it is caught.
+      // Approval cannot restore rights revoked from the initiating user while waiting.
+      authorizeExecution: async (input) => {
+        const running = (await deps.eventStore.listRunningTurns()).find(
+          (t) => t.sessionId === input.sessionId,
+        );
+        if (!running && deps.authRegistry?.isEnabled() !== true) {
+          await gatewayDeps.authorizeExecution?.(input);
+          return;
+        }
+        if (!running || running.turnId !== input.turnId)
+          throw new ControlPlaneSessionAuthorityError('The calling turn is no longer active.');
+        const session = await deps.eventStore.getSession(input.sessionId);
+        const prompt = (
+          await deps.eventStore.getEventsAfter(input.sessionId, running.promptSeq - 1, 1)
+        ).find((event) => event.seq === running.promptSeq)?.event;
+        const userId = prompt?.t === 'prompt' ? prompt.initiatedBy?.userId : undefined;
+        if (
+          session?.projectId !== input.projectId ||
+          !(await canExecuteAs(userId, input.projectId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
+        await gatewayDeps.authorizeExecution?.(input);
+      },
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);

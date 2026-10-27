@@ -1114,6 +1114,7 @@ export interface ManagedDevServersTable {
     string | undefined,
     string
   >;
+  approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,

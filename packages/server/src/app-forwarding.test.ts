@@ -43,6 +43,12 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('passes the Uplink webhook authority through to online meetings', () => {
+    const attendeeEdge = { create: vi.fn(), remove: vi.fn(), isAvailable: () => true };
+    expect(forward({ attendeeEdge }).attendeeEdge).toBe(attendeeEdge);
+    expect(forward({}).attendeeEdge).toBeUndefined();
+  });
+
   it('forwards temporary diagnostic consent and live connector assignment to the API', () => {
     const activation = new ReturnPathActivation(() => ({ enabled: false }));
     const count = () => 2;

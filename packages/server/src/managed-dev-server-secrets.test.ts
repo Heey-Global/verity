@@ -65,3 +65,31 @@ describe('managed dev server secret resolution', () => {
     },
   );
 });
+
+it('rejects a changed provider before retrieving any secret', async () => {
+  const resolveSecret = vi.fn(async () => new Uint8Array([65]));
+  const resolve = createManagedDevServerSecretResolver({
+    getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'production' }),
+    resolveSecret,
+  });
+  await expect(resolve('p1', bindings, JSON.stringify(['demo', 'staging']))).rejects.toThrow(
+    'Could not resolve',
+  );
+  expect(resolveSecret).not.toHaveBeenCalled();
+});
+
+it('discards and zeroizes values when the provider changes during resolution', async () => {
+  const raw = Buffer.from('synthetic');
+  let config = 'staging';
+  const resolve = createManagedDevServerSecretResolver({
+    getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: config }),
+    resolveSecret: async () => {
+      config = 'production';
+      return raw;
+    },
+  });
+  await expect(
+    resolve('p1', bindings.slice(0, 1), JSON.stringify(['demo', 'staging'])),
+  ).rejects.toThrow('Could not resolve');
+  expect(raw.every((byte) => byte === 0)).toBe(true);
+});

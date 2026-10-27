@@ -4617,10 +4617,18 @@ migrations['0166_devcontainer_policy'] = {
   },
 };
 
-// Durable audit events (ADR 0028). One append-only, hash-chained stream per project
-// plus one installation stream. No foreign keys: an operation must stay readable after
-// its project is deleted, which is the case the trail exists to explain.
-migrations['0167_audit_events'] = {
+migrations['0167_managed_server_provider_authority'] = {
+  async up(db) {
+    await sql`alter table managed_dev_servers add column approved_provider_authority text`.execute(
+      db,
+    );
+  },
+  async down(db) {
+    await sql`alter table managed_dev_servers drop column approved_provider_authority`.execute(db);
+  },
+};
+
+migrations['0168_audit_events'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     // The allocation counter lives apart from the event rows, so a sequence is never
     // reissued after its row is gone. The head columns are filled by verification runs.

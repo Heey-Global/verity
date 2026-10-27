@@ -12,6 +12,8 @@ import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createGoogleCalendarTool } from './google-calendar-tool.js';
 import { createGoogleContactsTool } from './google-contacts-tool.js';
+import { createAuthTokenRegistry } from './auth.js';
+import { sql } from 'kysely';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -64,6 +66,19 @@ async function harness(
     worktree: '/tmp/calendar-gateway-s1',
     model: 'claude-opus-5',
   });
+  await sql`insert into users (id, role, status) values ('baseline', 'member', 'active')`.execute(
+    ctx.db,
+  );
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'baseline', true, true, false)`.execute(
+    ctx.db,
+  );
+  const baselinePrompt = await store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Calendar operation',
+    initiatedBy: { userId: 'baseline' },
+  });
+  await store.markTurnRunning({ sessionId: 's1', promptSeq: baselinePrompt.seq });
+  await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'baseline' });
   await store.updateVeritySettings({
     calendarAuthorized: true,
     contactsAuthorized: true,
@@ -107,6 +122,7 @@ async function harness(
     eventStore: store,
     bus: new InMemoryEventBus(),
     secretCipher: cipher,
+    authRegistry: await createAuthTokenRegistry(store, { enabled: true }),
     conductor: { requestExternalPermission: approvals } as unknown as Conductor,
     mcpGateway: {
       servedTools: ['verity_google_calendar', 'verity_google_contacts'],
@@ -218,6 +234,110 @@ it('uses the server standing authorization only for Calendar reads', async () =>
     expect(calendar).toHaveBeenCalledTimes(6);
   });
 });
+
+it.each(['replacement', 'away-and-back', 'credential-rotation'] as const)(
+  'rejects a Calendar approval after %s without dispatching to either account',
+  async (change) => {
+    let changed = false;
+    await harness(
+      async ({ call, calendar, approvals }) => {
+        expect((await call(deletion)).result?.isError).toBe(true);
+        expect(approvals).toHaveBeenCalledOnce();
+        expect(calendar).not.toHaveBeenCalled();
+        // A new card may authorize the new authority; the first rejection must
+        // not merely be a fixture that can never dispatch a Calendar request.
+        expect((await call(deletion)).result?.isError).not.toBe(true);
+        expect(approvals).toHaveBeenCalledTimes(2);
+        expect(calendar).toHaveBeenCalledOnce();
+      },
+      async (store) => {
+        if (changed) return;
+        changed = true;
+        const original = (await store.googleAccounts.list())[0]!;
+        if (change === 'credential-rotation') {
+          await store.googleAccounts.save({
+            email: original.email,
+            clientId: 'client',
+            refreshToken: 'synthetic-rotated',
+            scopes: original.scopes,
+          });
+          return;
+        }
+        const other = await store.googleAccounts.save({
+          email: 'other@example.test',
+          clientId: 'client',
+          refreshToken: 'synthetic-other',
+          scopes: original.scopes,
+        });
+        await store.googleAccounts.setSessionAccess('s1', 'calendar', {
+          mode: 'account',
+          accountId: other.id,
+        });
+        if (change === 'away-and-back')
+          await store.googleAccounts.setSessionAccess('s1', 'calendar', {
+            mode: 'account',
+            accountId: original.id,
+          });
+      },
+    );
+  },
+);
+
+// These final-dispatch assertions currently expose missing user revalidation.
+for (const change of [
+  'unchanged',
+  'membership',
+  'disabled-user',
+  'execute',
+  'lookup-error',
+] as const) {
+  const check = it;
+  check(`checks the initiating user after a pending Calendar approval: ${change}`, async () => {
+    await harness(
+      async ({ call, store, calendar, approvals }) => {
+        await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
+          ctx.db,
+        );
+        await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
+        values ('p1', 'member', true, true, false)`.execute(ctx.db);
+        const prompt = await store.appendEvent('s1', {
+          t: 'prompt',
+          text: 'Change the event',
+          initiatedBy: { userId: 'member' },
+        });
+        await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+        await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'start' });
+        expect(await store.hasProjectPermission('member', 'p1', 'execute')).toBe(true);
+        const result = await call(deletion);
+        expect(approvals).toHaveBeenCalledOnce();
+        if (change === 'unchanged') {
+          expect(result.result?.isError).not.toBe(true);
+          expect(calendar).toHaveBeenCalledOnce();
+        } else {
+          if (change !== 'lookup-error')
+            expect(await store.hasProjectPermission('member', 'p1', 'execute')).toBe(false);
+          expect(calendar).not.toHaveBeenCalled();
+        }
+      },
+      async (store) => {
+        if (change === 'lookup-error')
+          vi.spyOn(store, 'hasProjectPermission').mockRejectedValue(
+            new Error('lookup unavailable'),
+          );
+        if (change === 'execute')
+          await sql`update project_memberships set can_execute = false where project_id = 'p1' and user_id = 'member'`.execute(
+            ctx.db,
+          );
+        if (change === 'membership')
+          await sql`delete from project_memberships where project_id = 'p1' and user_id = 'member'`.execute(
+            ctx.db,
+          );
+        if (change === 'disabled-user')
+          await sql`update users set status = 'disabled' where id = 'member'`.execute(ctx.db);
+      },
+    );
+  });
+}
 
 it('blocks a Calendar change if the session connection is removed while its card is pending', async () => {
   await harness(

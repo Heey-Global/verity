@@ -1,3 +1,7 @@
+import {
+  managedServerApproval,
+  confirmManagedServerApproval,
+} from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
@@ -232,7 +236,8 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
 // URL, so a referenced image loads only when its row is on screen and is cached
 // across reopens — the backlog of images never loads up front.
-import { Image as ExpoImage, type ImageSource } from 'expo-image';
+import type { ImageSource } from 'expo-image';
+import { Image as ExpoImage } from '../../components/ui/Image';
 import { UITextView } from 'react-native-uitextview';
 import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
@@ -988,16 +993,21 @@ export const SessionChat = memo(function SessionChat({
       ).length,
     [session.messages],
   );
-  const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
-    useSessionPreviewReads({
-      client,
-      sessionId,
-      projectId,
-      loaded,
-      completedServerTools,
-      enabled: optionalWorkReady || staticPreviewOpen,
-      devServers: session.devServers,
-    });
+  const {
+    managedByInstance,
+    hasActiveStaticPreview,
+    hasRunningDevServer,
+    refreshStaticPreview,
+    refreshManaged,
+  } = useSessionPreviewReads({
+    client,
+    sessionId,
+    projectId,
+    loaded,
+    completedServerTools,
+    enabled: optionalWorkReady || staticPreviewOpen,
+    devServers: session.devServers,
+  });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
     if (previewOpening !== null) return;
     setPreviewOpening(server.port);
@@ -4190,26 +4200,19 @@ export const SessionChat = memo(function SessionChat({
                 setPreviewOpening(server.port);
                 void (async () => {
                   let current = entry;
+                  const seen = managedServerApproval(current);
                   if (!current.approved || current.instance?.awaitingApproval) {
-                    const allowed = await new Promise<boolean>((resolve) =>
-                      Alert.alert(
-                        `Allow ${current.name} on your network?`,
-                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}${current.secretBindings?.length ? `\n\nSecrets: ${current.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\nAnyone on your network can open it while it runs.`,
-                        [
-                          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-                          { text: 'Allow', onPress: () => resolve(true) },
-                        ],
-                        { cancelable: true, onDismiss: () => resolve(false) },
-                      ),
-                    );
-                    if (!allowed) return;
-                    const approved = await client.approveManagedDevServer(sessionId, current.id, {
-                      command: current.command,
-                      workdir: current.workdir,
-                      ...(current.secretBindings?.length
-                        ? { secretBindings: current.secretBindings }
-                        : {}),
+                    const allowed = await confirmManagedServerApproval(seen, {
+                      title: `Allow ${current.name} on your network?`,
+                      action: 'Allow',
+                      warning: 'Anyone on your network can open it while it runs.',
                     });
+                    if (!allowed) return;
+                    const approved = await client.approveManagedDevServer(
+                      sessionId,
+                      current.id,
+                      seen,
+                    );
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
                   const url = current.instance?.url;
@@ -4234,12 +4237,13 @@ export const SessionChat = memo(function SessionChat({
                     () => router.push('/settings/premium'),
                   );
                 })()
-                  .catch((caught: unknown) =>
+                  .catch(async (caught: unknown) => {
                     Alert.alert(
                       'Could not open preview',
                       caught instanceof Error ? caught.message : 'Try again.',
-                    ),
-                  )
+                    );
+                    await refreshManaged();
+                  })
                   .finally(() => setPreviewOpening(null));
               }}
               onShare={() => {
@@ -7067,7 +7071,9 @@ function AgentMarkdown({
             block.type === 'code' ? (
               <View key={i} style={styles.codeBlock}>
                 {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-                {searchHighlightQuery ? (
+                {/* UITextView's web fallback bypasses the route's Unistyles
+                    Text transform, losing the code's theme color. */}
+                {Platform.OS === 'web' || searchHighlightQuery ? (
                   <Text style={styles.codeText} selectable>
                     <HighlightedSearchText text={block.content} />
                   </Text>

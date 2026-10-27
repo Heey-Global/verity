@@ -210,6 +210,12 @@ export interface McpGatewayDeps {
    * the early refusal and nothing else — the tool still refuses the call itself. So this must
    * never be the only place a check lives.
    */
+  /** Revalidate execution rights after approval and before adapter dispatch. */
+  authorizeExecution?(input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<void>;
   authorizeCall?(
     input: McpGatewayCaller & {
       projectId: string;
@@ -951,6 +957,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // release cannot interleave there. A turn that settles once the call is on the wire is
       // not a window any check could close — the request has left. What bounds that case is
       // the tool's own at-most-once fence, which keys on the turn this bearer named.
+      await deps.authorizeExecution?.({ projectId, sessionId, turnId });
       const still =
         token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
       if (still === undefined || still.sessionId !== sessionId || still.turnId !== turnId) {
