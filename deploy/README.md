@@ -66,6 +66,12 @@ current generation keeps serving. The candidate's own `/healthz` does not guard 
 probe accepts a `degraded` 503 on purpose. A host installed before the host component existed is
 told to re-run the Verity installer (the Quick start command below) once; no insecure compatibility mode is available.
 
+The gVisor devcontainer builder follows the release in the same way: during an update, the Updater
+asks the host component `verity-host-builder` to install the builder the target image ships. The
+component verifies the image's release signature itself and leaves an unchanged builder running. A
+builder that cannot be updated keeps the previous one and does not fail the update; see
+[`deploy/buildkit`](buildkit/README.md#builder-updates).
+
 That's it — Verity's data lives on the Docker-managed `verity-data` volume, which
 the daemon creates on first use and initializes with the right owner (the image
 pre-creates `/srv/verity` as uid 1000). There is **no host directory to create or
@@ -1016,10 +1022,17 @@ those would mean recreating every Sandbox on any deployment that runs without
 egress projection. So turning egress on for a deployment that already has
 Sandboxes repairs nothing and logs nothing; recreate those Sandboxes yourself.
 
-Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` on
-the configured Docker daemon. Verity injects the bundled
+Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` through
+the dedicated [gVisor BuildKit service](buildkit/README.md). The resulting image is
+loaded into the configured project Docker daemon. Missing or unavailable builders
+fail the build without falling back to the Docker daemon’s default runtime. Verity injects the bundled
 `verity-sandbox-toolkit` Feature into that build so project-specific
 devcontainers still receive the shared agent tooling. Runtime-only
 `devcontainer.json` keys that Verity's Docker create path does not yet apply
 (`remoteUser`, `containerEnv`, `mounts`, `runArgs`, and related settings) fail
 closed instead of being silently ignored.
+
+Repository devcontainers can be disabled per project through
+`PATCH /projects/:id/settings` with `{"devcontainerEnabled":false}`. This skips
+repository build and lifecycle configuration and uses the configured base image
+on the next provisioning/recreation. Existing running containers are unaffected.

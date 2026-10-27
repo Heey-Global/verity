@@ -1,3 +1,5 @@
+import { createProjectImageReferences } from './derived-image-references.js';
+import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -118,7 +120,7 @@ import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
+import { startDockerGcScheduler, runDockerGc, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -1766,12 +1768,13 @@ export function devcontainerProvisionerOptionsForDockerBaseUrl(
  * project keeps the old behavior (the branch service decides).
  */
 export async function branchRenameAppliesToSession(
-  session: { projectId: string | null },
+  session: { projectId: string | null; worktree?: string },
   getProject: (projectId: string) => Promise<Pick<ProjectRecord, 'kind'> | undefined>,
 ): Promise<boolean> {
+  if (session.worktree?.split('/').includes('.verity-document-sessions')) return false;
   if (session.projectId === null) return true;
   const project = await getProject(session.projectId);
-  return project?.kind !== 'control_plane';
+  return project?.kind !== 'control_plane' && project?.kind !== 'local';
 }
 
 /** Project-scoped admission used by embedded session backends. It serializes
@@ -3426,7 +3429,8 @@ export async function buildEmbeddedServer(
     (typeof configuredDevcontainerFeatureRef === 'string'
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+  const imageReferences = createProjectImageReferences(db);
+  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
           resolveToolkitFeatureRef(
@@ -3439,6 +3443,15 @@ export async function buildEmbeddedServer(
           publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
           devcontainerFeatureRefConfigured,
         );
+  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+    selectedDevcontainerFeature === undefined
+      ? undefined
+      : async () =>
+          pinToolkitFeature(
+            typeof selectedDevcontainerFeature === 'function'
+              ? await selectedDevcontainerFeature()
+              : selectedDevcontainerFeature,
+          );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -3686,6 +3699,7 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      imageReferences,
       store: eventStore,
       db,
       docker,
@@ -4767,9 +4781,9 @@ export async function buildEmbeddedServer(
             defaultProjectImage,
             defaultProjectImageVersion: config.defaultProjectImageVersion,
             toolkitFeatureRef:
-              typeof devcontainerFeature === 'function'
-                ? async () => (await devcontainerFeature())?.ref
-                : devcontainerFeature?.ref,
+              devcontainerFeature === undefined
+                ? undefined
+                : async () => (await devcontainerFeature())?.ref,
           }),
         }
       : {}),
@@ -4826,6 +4840,19 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    ...(projectDocker === undefined
+      ? {}
+      : {
+          onProjectHidden: async () => {
+            await runDockerGc({
+              docker: projectDocker,
+              log: app.log,
+              imageReferences,
+              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
+              imagesOnly: true,
+            });
+          },
+        }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
@@ -5588,6 +5615,7 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      imageReferences,
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

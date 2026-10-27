@@ -28,7 +28,11 @@ independent opening reads, rather than promising no status refresh at all.
 Older servers without `googleStatus` use one delayed sequence of the four
 existing status reads per focus. They do not load the account catalog or watch
 the new endpoint. All asynchronous results are scoped to the server and session;
-local mutation results invalidate older reads.
+local mutation results invalidate older reads. Google action ownership ends on
+blur or unmount independently of history readiness. Returning to the same chat
+does not revive an old action. Account discovery, OAuth and session grants check
+that ownership between asynchronous steps; late failures do not display alerts
+on a different screen. Requests already sent to the server are not rolled back.
 
 Scoped hook, API, store-backed route and resource-observer tests cover these
 contracts. Device latency still requires a delivered client and before/after

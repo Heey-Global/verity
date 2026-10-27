@@ -1,0 +1,7 @@
+{
+  "name": "Devcontainer build network egress probe",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  }
+}

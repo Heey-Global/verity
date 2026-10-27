@@ -1,7 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, DockerClient } from '../docker.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
+import {
+  readDevcontainerBuilderCapability,
+  reconcileDevcontainerBuilder,
+} from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   readManagedDeployment,
 } from './managed-deployment.js';
@@ -325,13 +331,29 @@ export async function dockerUpdatePreparation(
     runPreflight,
     reconcileHostRuntimes: async (journal) => {
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
-      if (requirements === undefined) return;
-      await reconcileHostRuntimes({
+      if (requirements !== undefined) {
+        await reconcileHostRuntimes({
+          docker,
+          requirements,
+          requestId: journal.updateId,
+          ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+        });
+      }
+      // After the runtimes: the builder runs its steps on the runsc they register.
+      // Nothing about the builder may fail the update, an unexpected error included.
+      const builder = await reconcileDevcontainerBuilder({
         docker,
-        requirements,
+        image: journal.targetDigest,
         requestId: journal.updateId,
         ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
-      });
+      }).catch((error: unknown) => ({
+        state: 'failed' as const,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+      if (builder.state === 'failed')
+        (options.log ?? console.warn)(
+          `Devcontainer builder not updated; the previous builder keeps running. ${builder.message}`,
+        );
     },
     prepareStandby: async (journal) => {
       // A legacy Server cannot be reconciled in place after gaining these
@@ -383,6 +405,33 @@ export async function dockerUpdatePreparation(
             (diagnostics.state === 'unsupported'
               ? 'Rerun the verified installer once to provision host diagnostics.'
               : 'Check the host diagnostics exporter and timer.'),
+        );
+      }
+      // Same shape as the diagnostic bind: only an installer-verified builder
+      // adds the socket, and never to a generation whose standby already exists.
+      const builder = await readDevcontainerBuilderCapability(options.hostRuntimeDir);
+      if (
+        builder.state === 'available' &&
+        !migrated.spec.mounts.some(
+          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+        )
+      ) {
+        if ((await findNamed(docker, candidateName(journal, STANDBY_ROLE))) === null) {
+          migrated = await migrateManagedDevcontainerBuilder({
+            root: options.managedRoot,
+            deploymentId: migrated.spec.deploymentId,
+            image: migrated.spec.image,
+            gid: builder.gid,
+          });
+          if (!migrated.managed) throw new Error(migrated.reason);
+        } else {
+          (options.log ?? console.warn)(
+            'Devcontainer builder migration deferred until the next update; this standby already exists',
+          );
+        }
+      } else if (builder.state === 'invalid') {
+        (options.log ?? console.warn)(
+          'Devcontainer builder receipt is invalid; rerun the verified installer to repair it',
         );
       }
       base = await managedServerContainerSpec(

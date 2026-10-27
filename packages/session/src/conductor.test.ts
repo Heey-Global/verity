@@ -405,6 +405,71 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
+  it('does not claim a turn when pre-admission migration fails', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const prepare = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('migration interrupted'))
+      .mockResolvedValue(undefined);
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+      prepareSession: prepare,
+    });
+    await expect(conductor.sendTurn('s1', 'Continue')).rejects.toThrow('migration interrupted');
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+    await conductor.sendTurn('s1', 'Retry');
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('prepares Documents before execution and awaits publication before releasing the turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const order: string[] = [];
+    const fake = scriptedBackend({
+      during: () => {
+        order.push('run');
+      },
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+      prepareWorkspace: async () => {
+        order.push('prepare');
+      },
+      settleWorkspace: async () => {
+        order.push('publish');
+      },
+    });
+    await conductor.sendTurn('s1', 'Write a document');
+    expect(order).toEqual(['prepare', 'run', 'publish']);
+    expect(conductor.isBusy('s1')).toBe(false);
+  });
+
+  it('releases the turn when Documents publication fails and retries on the next turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const settle = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('publication interrupted'))
+      .mockResolvedValue(undefined);
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+      settleWorkspace: settle,
+    });
+    await expect(conductor.sendTurn('s1', 'Write a document')).rejects.toThrow(
+      'publication interrupted',
+    );
+    expect(conductor.isBusy('s1')).toBe(false);
+    await conductor.sendTurn('s1', 'Continue');
+    expect(settle).toHaveBeenCalledTimes(2);
+  });
+
   it('shows a short action label while sending the full instruction to the backend', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const fake = scriptedBackend({ text: 'saved' });
@@ -4837,15 +4902,9 @@ describe('Conductor.startSession', () => {
     // `toContain` alone would pass on a template that interpolated it twice.
     expect(appended).toContain(SANDBOX_RESOURCES_SYSTEM_PROMPT);
     expect(appended.split(SANDBOX_RESOURCES_SYSTEM_PROMPT)).toHaveLength(2);
-    // Neither of these is remote-bound the way the pull-request rule is: a local
-    // project still branches and commits, and it can be linked to GitHub later —
-    // the window LOCAL_PROJECT_SYSTEM_PROMPT names its own expiry condition for.
-    // Dropping them here would leave the session that outlives the link naming
-    // branches the Issue chip cannot parse.
-    expect(appended).toContain(REPO_CONVENTIONS_SYSTEM_PROMPT);
-    expect(appended).toContain(CODE_REVIEW_SYSTEM_PROMPT);
-    expect(appended.split(REPO_CONVENTIONS_SYSTEM_PROMPT)).toHaveLength(2);
-    expect(appended.split(CODE_REVIEW_SYSTEM_PROMPT)).toHaveLength(2);
+    // Document sessions do not create branches, commits or code-review receipts.
+    expect(appended).not.toContain(REPO_CONVENTIONS_SYSTEM_PROMPT);
+    expect(appended).not.toContain(CODE_REVIEW_SYSTEM_PROMPT);
   });
 
   it('keeps the pull-request directive for a GitHub-backed project', async () => {
@@ -4919,8 +4978,9 @@ describe('Conductor.startSession', () => {
       expect(run.appendSystemPrompt).not.toContain(LOCAL_PROJECT_SYSTEM_PROMPT);
       expect(run.appendSystemPrompt).not.toContain(PULL_REQUEST_SYSTEM_PROMPT);
     }
-    // The directive carries its own expiry condition for exactly that window.
-    expect(LOCAL_PROJECT_SYSTEM_PROMPT).toContain('git remote -v');
+    expect(LOCAL_PROJECT_SYSTEM_PROMPT).toContain(
+      'Existing document sessions remain document workspaces',
+    );
     // A fresh context in the same session now classifies as GitHub-backed.
     const relinked = await ctx.store.getProject('project-linked');
     expect(relinked).toMatchObject({ kind: 'github', owner: 'acme' });

@@ -1,0 +1,10 @@
+{
+  "name": "Devcontainer build isolation probe",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "features": {
+    "./features/isolation-probe": {}
+  }
+}

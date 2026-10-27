@@ -485,7 +485,7 @@ services:
     # no password to store, generate, or configure. The network isolation is the
     # boundary, and Verity's own secrets are additionally encrypted at rest.
     # renovate: datasource=docker depName=postgres
-    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
     mem_limit: ${VERITY_POSTGRES_MEMORY:-1g}
     memswap_limit: ${VERITY_POSTGRES_MEMORY_SWAP:-1g}
@@ -553,6 +553,10 @@ services:
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
       VERITY_HOST_DIAGNOSTIC_DIR: ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}
+      # Set by verity-install only after it verified the gVisor builder. Empty
+      # leaves the sealed spec without the builder socket. Not a VERITY_* name
+      # inside the container: older images forward those into the sealed spec.
+      DEVCONTAINER_BUILDER_GID: ${VERITY_DEVCONTAINER_BUILDER_GID:-}
       VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment
