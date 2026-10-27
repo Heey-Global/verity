@@ -33,6 +33,7 @@ class SmokeTLSAdmissionTest(unittest.TestCase):
                 '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(cert, key)
             server = SmokeServer(('127.0.0.1', 0), Handler, context)
             serving = threading.Thread(target=server.serve_forever, daemon=True)
@@ -42,6 +43,7 @@ class SmokeTLSAdmissionTest(unittest.TestCase):
                 # Trust policy is covered by the Apple tests; this test isolates
                 # accept-loop starvation by withholding the first ClientHello.
                 client_context = ssl.create_default_context(cafile=str(cert))
+                client_context.minimum_version = ssl.TLSVersion.TLSv1_2
                 with socket.create_connection(server.server_address, timeout=2) as raw:
                     with client_context.wrap_socket(raw, server_hostname='localhost') as client:
                         client.sendall(b'GET / HTTP/1.0\r\nHost: localhost\r\n\r\n')
