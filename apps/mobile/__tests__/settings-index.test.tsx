@@ -119,6 +119,27 @@ describe('settings index — destinations', () => {
     expect(mockPush).toHaveBeenCalledWith(href);
   });
 
+  // Members' devices and Servers without the trail must not see a dead entry; a
+  // trail that is losing writes must be visible without opening it.
+  it('shows Audit logs only to administrators and flags lost writes', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    const { unmount } = render(<SettingsIndexScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(rowLabel('Audit logs'))).toBeNull();
+    unmount();
+
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        auditHealth: jest.fn().mockResolvedValue({ status: 'degraded', pendingFailedWrites: 2 }),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    const row = await screen.findByLabelText(rowLabel('Audit logs'));
+    expect(screen.getByText('Needs review')).toBeOnTheScreen();
+    fireEvent.press(row);
+    expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');
+  });
+
   it('keeps update channel preferences inside server update', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);

@@ -149,7 +149,7 @@ it('shows a listening state before speech and numbered voices as they are recogn
     return jest.fn();
   });
   render(<MeetingScreen />);
-  expect(await screen.findByText('Listening for voices…')).toBeOnTheScreen();
+  expect(await screen.findByText('No one has spoken yet.')).toBeOnTheScreen();
   act(() =>
     publish({
       ...meeting,

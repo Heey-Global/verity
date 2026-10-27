@@ -1416,7 +1416,7 @@ export default function MeetingScreen() {
       ? 'Speaker labels unavailable; transcription continues.'
       : meeting?.speakerStatus === 'loading'
         ? 'Preparing speaker recognition…'
-        : 'Listening for voices…'
+        : 'No one has spoken yet.'
     : 'No speaker labels yet.';
 
   const completedAnswerCount = allMeetingAnswers.filter((card) => card.status === 'ready').length;
@@ -2094,7 +2094,7 @@ export default function MeetingScreen() {
     const statusLine = [
       stateWord,
       paused || preparing ? null : elapsed(meeting.startedAt, now),
-      meeting.engine === 'attendee' ? 'Online meeting' : 'In this room',
+      meeting.engine === 'attendee' ? 'Online meeting' : null,
       meeting.serverId === null ? 'Saved only on this device' : null,
     ]
       .filter(Boolean)
@@ -2190,8 +2190,20 @@ export default function MeetingScreen() {
               </View>
               {speakers.length ? (
                 <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
-              ) : (
+              ) : !active || meeting.speakerStatus === 'unavailable' ? (
                 <Text style={styles.hint}>{speakerStatus}</Text>
+              ) : (
+                // Holds the first speaker's place so the row does not jump when they appear.
+                <View style={styles.avatarRow}>
+                  <SpeakerAvatar
+                    initial=""
+                    tone={colors.textFaint}
+                    dashed
+                    size={44}
+                    caption={meeting.speakerStatus === 'loading' ? 'Preparing…' : 'No one yet'}
+                    accessibilityLabel={speakerStatus}
+                  />
+                </View>
               )}
               {restoreMerged}
               {showTranscript ? (
@@ -2645,7 +2657,9 @@ const styles = StyleSheet.create((theme) => {
     roomHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     roomLabel: { ...theme.typography.label, color: colors.textMuted },
     transcriptSwitch: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    transcriptPane: { flexGrow: 0, maxHeight: '45%' },
+    // Splits the bounded column evenly with the notes card (also flex: 1), so the
+    // transcript scrolls inside its half instead of pushing the notes down word by word.
+    transcriptPane: { flex: 1 },
     transcriptTurns: { gap: theme.spacing.lg },
     turn: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.md },
     turnName: { ...theme.typography.row, color: colors.text },

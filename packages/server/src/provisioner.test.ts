@@ -93,6 +93,18 @@ import {
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
+import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+
+/** Recreates the relay reconciler and turn repair start, with the initiator each records. */
+const RECONCILE = {
+  confirmWarnings: true,
+  initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+};
+const TURN_REPAIR = {
+  confirmWarnings: true,
+  initiator: { kind: 'session', sessionId: 'requesting-session' },
+};
 
 const verifiedNodeVersion = readFileSync(
   new URL('../../../.nvmrc', import.meta.url),
@@ -5261,6 +5273,141 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  describe('project image build audit (ADR 0028)', () => {
+    function auditLog(failing: boolean) {
+      const appended: AuditEventInput[] = [];
+      const log: AuditLog = {
+        append: (input) => {
+          if (failing) return Promise.reject(new Error('audit storage down'));
+          appended.push(input);
+          return Promise.resolve({} as AuditEvent);
+        },
+        listOperations: () => Promise.resolve({ operations: [], nextBefore: null }),
+        operation: () => Promise.resolve([]),
+        oldestRecordedAt: () => Promise.resolve(null),
+      };
+      return { log, appended };
+    }
+
+    async function devcontainerProvisioner(root: string, failing: boolean) {
+      const devcontainerDir = join(root, 'example-org-example-repo', '.devcontainer');
+      mkdirSync(devcontainerDir, { recursive: true });
+      writeFileSync(join(devcontainerDir, 'devcontainer.json'), '{ "image": "node:24" }');
+      const id = await seedProject('active');
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client } = fakeDocker({
+        imageExists: vi.fn(async () => false),
+        createdContainerId: 'cid-audited',
+      });
+      const audit = auditLog(failing);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: {
+          ...client,
+          inspectImageIdentity: async () => ({
+            id: 'sha256:built',
+            sizeBytes: 42,
+            repoDigests: [`node@sha256:${'a'.repeat(64)}`],
+          }),
+        },
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: {
+          ref: '/opt/verity-features/verity-sandbox-toolkit',
+          version: '1.0.0',
+          identity: 'sha256:toolkit-v1',
+        },
+        audit: createAuditRecorder(audit.log, {
+          server: () => Promise.resolve({ release: '1.2.3', generation: 7 }),
+        }),
+      });
+      return { id, build, provisioner, appended: audit.appended };
+    }
+
+    // The whole point of the intent is that an unexplained image cannot appear:
+    // when it cannot be written, nothing may have been built.
+    it('refuses to build when the intent cannot be recorded', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-refuse-'));
+      try {
+        const { id, build, provisioner } = await devcontainerProvisioner(root, true);
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
+          'Audit storage is unavailable',
+        );
+        expect(build).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('records who started the build and the image it produced', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-record-'));
+      try {
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(root, false);
+        await provisioner.recreateContainer(id, {
+          forceRebuild: true,
+          initiator: { kind: 'user', userId: 'admin-1' },
+        });
+        expect(build).toHaveBeenCalledOnce();
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.succeeded']);
+        const [requested, succeeded] = appended;
+        expect(requested).toMatchObject({
+          projectId: id,
+          initiator: { kind: 'user', userId: 'admin-1' },
+          server: { release: '1.2.3', generation: 7 },
+          payload: {
+            forceRebuild: true,
+            baseImageRef: 'node:24',
+            imageTag: build.mock.calls[0]?.[0].imageName,
+          },
+        });
+        expect(succeeded).toMatchObject({
+          operationId: requested!.operationId,
+          imageId: 'sha256:built',
+          payload: { imageId: 'sha256:built', sizeBytes: 42, baseImageDigest: null },
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    // A Dockerfile's base cannot be inferred from the configured Verity default.
+    it('leaves unresolved Dockerfile provenance unknown', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-base-'));
+      try {
+        const { id, provisioner, appended } = await devcontainerProvisioner(root, false);
+        const dir = join(root, 'example-org-example-repo', '.devcontainer');
+        writeFileSync(
+          join(dir, 'devcontainer.json'),
+          '{ "build": { "dockerfile": "Dockerfile" } }',
+        );
+        writeFileSync(join(dir, 'Dockerfile'), 'FROM node:24\n');
+        await provisioner.recreateContainer(id, { forceRebuild: true });
+        expect(appended[0]!.payload).toMatchObject({ baseImageRef: null });
+        expect(appended[1]!.payload).toMatchObject({ baseImageDigest: null });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('records a failed build without its output', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-fail-'));
+      try {
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(root, false);
+        build.mockRejectedValueOnce(new Error('RUN failed: secret=hunter2'));
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow();
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.failed']);
+        expect(JSON.stringify(appended)).not.toContain('hunter2');
+        expect(appended[0]!.initiator).toEqual({ kind: 'unknown' });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('forceRebuild rebuilds a cached devcontainer image with --no-cache; a plain recreate reuses it', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-recreate-rebuild-'));
     try {
@@ -8945,7 +9092,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     const migrated: string[] = [];
     await provisioner.reconcileRelays([p], { onMigrated: (id) => migrated.push(id) });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toEqual([p.id]);
   });
 
@@ -8968,7 +9115,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await provisioner.reconcileRelays([p], {
       onMigrated: (id, info) => migrated.push({ id, envDrift: info.envDrift }),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toEqual([{ id: p.id, envDrift: true }]);
   });
 
@@ -9082,7 +9229,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await provisioner.reconcileRelays([p], {
       onMigrated: (id, info) => migrated.push({ id, envDrift: info.envDrift }),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Not blamed on drift either — with drift out of scope there is no drift reason.
     expect(migrated).toEqual([{ id: p.id, envDrift: false }]);
   });
@@ -9389,7 +9536,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       onRepaired: (id) => repaired.push(id),
       onMigrated: (id) => migrated.push(id),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Reported as a repair, not a migration — the two have different causes and a
     // lost relay is worth a louder log line than a planned migration.
     expect(repaired).toEqual([p.id]);
@@ -9430,7 +9577,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       onMigrated: migrated,
     });
 
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toHaveBeenCalledWith(p.id, {
       envDrift: false,
       imageUpdate: true,
@@ -9553,7 +9700,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
 
       busy = false;
       await tick();
-      expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+      expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
       expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
     });
   });
@@ -9675,7 +9822,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     // report rather than leave it up until a later pass reclassifies.
     busy.mockResolvedValue(false);
     await provisioner.reconcileRelays([p]);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect([...provisioner.disconnectedSandboxProjects()]).toEqual([]);
   });
 
@@ -9963,7 +10110,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(deferred).toHaveLength(ORPHAN_DEFER_TICK_LIMIT);
 
     await tick();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Reported as an interruption so the log says a turn was taken, not just that
     // a relay was replaced.
     expect(repaired).toEqual([{ id: p.id, interruptedTurn: true }]);
@@ -10016,7 +10163,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     }
     expect(recreate).not.toHaveBeenCalled();
     await provisioner.reconcileRelays([p]);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
   });
 
   it('never spends the window when the busy probe cannot answer', async () => {
@@ -10099,7 +10246,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     await provisioner.reconcileRelays([p]);
     expect(isHealthy).not.toHaveBeenCalled();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
   });
 
   it('never recreates a foreign container', async () => {
@@ -10265,7 +10412,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await expect(provisioner.repairSandboxForTurn(p.id, 'requesting-session')).resolves.toBe(true);
     expect(busyProbe).toHaveBeenCalledWith(p.id, new Set(['requesting-session']));
     expect(recreate).toHaveBeenCalledOnce();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, TURN_REPAIR);
   });
 
   it('coalesces concurrent turn-time repairs for the same sandbox', async () => {
@@ -10474,7 +10621,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
         requireFreshAgentGatewayIdentity: true,
       }),
     ).resolves.toBe(true);
-    expect(recreate).toHaveBeenCalledWith(migrated.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(migrated.id, TURN_REPAIR);
   });
 
   it('repairs an env-drifted sandbox during turn preparation', async () => {
@@ -10510,7 +10657,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     });
 
     await expect(provisioner.repairSandboxForTurn(p.id, 'requesting-session')).resolves.toBe(true);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, TURN_REPAIR);
   });
 
   it('stops rebuilding a sandbox for turns once the drift budget is spent', async () => {

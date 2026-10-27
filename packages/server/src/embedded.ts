@@ -149,6 +149,9 @@ import {
 } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
+import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
@@ -3433,6 +3436,34 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  // Durable audit trail for project image builds (ADR 0028). The Server generation is
+  // read from this container's own label once; outside a managed deployment it is null.
+  let auditServer: AuditServerIdentity | undefined;
+  const auditLog = createPostgresAuditLog(db);
+  const auditRecorder = createAuditRecorder(auditLog, {
+    server: async () => {
+      if (auditServer !== undefined) return auditServer;
+      let generation: number | null = null;
+      let settled = true;
+      try {
+        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+          'verity.generation'
+        ];
+        const parsed = label === undefined ? Number.NaN : Number(label);
+        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+      } catch {
+        // Recorded as unknown this time, and asked again next time: a transient
+        // failure must neither block a build nor stick for the life of the process.
+        settled = false;
+      }
+      const identity = { release: runtimeServerVersion(), generation };
+      if (settled) auditServer = identity;
+      return identity;
+    },
+    onError: (error, kind) => {
+      console.warn(`verity: audit event ${kind} could not be recorded`, error);
+    },
+  });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
@@ -3703,6 +3734,7 @@ export async function buildEmbeddedServer(
     }
     provisioner = new ProvisionerImpl({
       imageReferences,
+      audit: auditRecorder,
       store: eventStore,
       db,
       docker,
@@ -4849,6 +4881,7 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    audit: { recorder: auditRecorder, log: auditLog },
     ...(projectDocker === undefined
       ? {}
       : {
@@ -4859,6 +4892,8 @@ export async function buildEmbeddedServer(
               imageReferences,
               ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
               imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
             });
           },
         }),
@@ -5550,7 +5585,10 @@ export async function buildEmbeddedServer(
   if (starterProvisioner !== undefined) {
     void ensureStarterProject({
       store: eventStore,
-      provision: (projectId) => starterProvisioner.provision(projectId),
+      provision: (projectId) =>
+        starterProvisioner.provision(projectId, {
+          initiator: { kind: 'system', trigger: 'welcome_project' },
+        }),
       log: app.log,
     });
   }
@@ -5633,6 +5671,8 @@ export async function buildEmbeddedServer(
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
       imageReferences,
+      onProjectImageRemoved: (image) =>
+        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

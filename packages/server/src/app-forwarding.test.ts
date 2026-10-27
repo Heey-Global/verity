@@ -62,6 +62,16 @@ describe('buildControlPlane dependency forwarding', () => {
     expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);
   });
 
+  // Both were dropped here once: deleted projects kept their images on disk, and the
+  // audit routes and deletion events never reached the route layer.
+  it('passes post-delete image cleanup and the audit trail through', () => {
+    const onProjectHidden = vi.fn(async () => {});
+    const audit = { recorder: {}, log: {} } as NonNullable<ServerDeps['audit']>;
+    const got = forward({ onProjectHidden, audit });
+    expect(got.onProjectHidden).toBe(onProjectHidden);
+    expect(got.audit).toBe(audit);
+  });
+
   it('passes the Knowledge data root through to the session file routes', () => {
     const got = forward({ dataRoot: '/srv/verity' });
     expect(got.dataRoot).toBe('/srv/verity');

@@ -3,8 +3,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { tint } from './tint';
 
-/** The four status intents (docs/design-system.md § 8). */
-export type StatusIntent = 'ready' | 'needsSetup' | 'optional' | 'transient';
+/** The five status intents (docs/design-system.md § 8). */
+export type StatusIntent = 'ready' | 'needsSetup' | 'optional' | 'transient' | 'unknown';
 
 /**
  * The state of a single element as a small uppercase word on a tinted ground
@@ -108,7 +108,9 @@ function describe(intent: StatusIntent): string {
       ? 'needs attention'
       : intent === 'transient'
         ? 'in progress'
-        : 'optional';
+        : intent === 'unknown'
+          ? 'outcome unknown'
+          : 'optional';
 }
 
 const styles = StyleSheet.create((theme) => ({

@@ -1,4 +1,13 @@
 import {
+  auditHealthSchema,
+  auditOperationListSchema,
+  auditOperationResponseSchema,
+  type AuditHealth,
+  type AuditOperationDetail,
+  type AuditOperationList,
+  type AuditOperationQuery,
+} from './audit.js';
+import {
   vulnerabilitySettingsSchema,
   vulnerabilityProjectSchema,
   vulnerabilitySessionSchema,
@@ -3191,6 +3200,48 @@ export class VerityClient {
     try {
       const res = await this.request('/connections', { method: 'GET' });
       return forgeConnectionListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  /** Audit operations, newest first. `null` when this device is not an
+   *  administrator's or the Server has no audit trail (403/404). */
+  async auditOperations(query: AuditOperationQuery = {}): Promise<AuditOperationList | null> {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
+      return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditOperation(operationId: string): Promise<AuditOperationDetail> {
+    const res = await this.request(`/audit/operations/${encodeURIComponent(operationId)}`, {
+      method: 'GET',
+    });
+    return auditOperationResponseSchema.parse(await res.json()).operation;
+  }
+
+  /** `null` when audit logs are not available to this device (403/404). */
+  async auditHealth(): Promise<AuditHealth | null> {
+    try {
+      const res = await this.request('/audit/health', { method: 'GET' });
+      return auditHealthSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
