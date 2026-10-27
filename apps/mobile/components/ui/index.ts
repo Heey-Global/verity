@@ -8,3 +8,5 @@ export { StatusDot, StatusTag } from './Status';
 export { Text } from './Text';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
+
+export { useTextPrompt } from './TextPrompt';

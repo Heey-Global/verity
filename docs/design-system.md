@@ -550,3 +550,15 @@ can never drift because there is only one copy of it.
 The visual workbench used to reach these decisions is
 [`design-system/index.html`](./design-system/index.html). It shows every component and pattern
 rendered with the decided values.
+
+### Meeting result page
+
+The ended meeting uses shared Card, Text, Button, Row and SectionHeader components.
+An editable title and a single date/time/duration/people line replace metric tiles.
+Summary, decisions, proposed tasks, open questions and answers form the main column;
+notes, people, Transcript and Share form the side column at iPad widths (900 points and up).
+Phones stack both columns. Continue in chat appears once in the header.
+
+Working results show a progress indicator and “Verity is summarizing…”. Failed results
+offer Retry summary while notes and transcript stay available. Task suggestions use
+Add task and Not a task; added suggestions display their confirmation state.

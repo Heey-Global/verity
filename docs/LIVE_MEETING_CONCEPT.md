@@ -402,3 +402,24 @@ The existing completed-file upload and transcription workflow is reusable refere
 an already durable live-meeting service. It must not be presented as implementing this concept.
 
 Resolved question evidence is retained internally and excluded from visible insights, preventing late periodic analysis from recreating an answered question. Periodic insights are published under the meeting revision lock.
+
+### Derived meeting result
+
+After a terminal upload is filed, a tool-free model pass reads the complete speaker-attributed
+transcript and proposes a title, summary, decisions, tasks and unresolved questions in the
+meeting's language. Personal notes remain separate. Every decision, task and question must
+carry an exact transcript quote; speaker and time come from the matching transcript line,
+with ambiguous attribution left unknown. Three failed attempts produce a retryable failed state.
+
+Results are persisted per meeting revision. Corrections reject stale model responses and
+trigger a fresh result. Explicit meeting titles take precedence over suggested titles.
+Confirmed or dismissed task proposals retain their state when the same evidence survives
+a revision. Tasks are created only after an explicit confirmation, linked to the originating
+session's project and accompanied by their transcript evidence.
+
+The result page shows the summary, decisions, task proposals, unresolved questions and
+existing answers. Notes can be edited, speakers renamed, and the transcript searched by text
+or speaker. iPad uses two columns; phones stack the sections. Share exports the filed Markdown
+or a PDF rendered from that same document. Continue in chat returns to the originating session,
+where the saved meeting card includes the summary. Derived sections also appear in the filed
+meeting source without replacing its transcript.

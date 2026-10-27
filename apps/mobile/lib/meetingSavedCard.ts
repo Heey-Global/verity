@@ -7,6 +7,7 @@ export interface SavedMeetingCard {
   people?: number;
   answers?: number;
   notes?: number;
+  summary?: string;
 }
 
 /** Recognize the server's complete notice, never arbitrary links in an answer. */
@@ -35,8 +36,28 @@ export function meetingSavedCard(text: string): SavedMeetingCard | null {
       people: count('people'),
       answers: count('answers'),
       notes: count('notes'),
+      ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
     };
   } catch {
     return base;
   }
+}
+
+/** Filing updates append notices; the chat keeps only the newest card for each meeting. */
+export function latestMeetingCards(
+  rows: readonly import('@verity/mobile').Row[],
+): import('@verity/mobile').Row[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (row.kind !== 'message' || row.message.kind !== 'agent-text') return true;
+    const card = meetingSavedCard(row.message.text);
+    if (!card) return true;
+    const key =
+      card.meetingId && card.sessionId
+        ? JSON.stringify([card.sessionId, card.meetingId])
+        : card.link;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
