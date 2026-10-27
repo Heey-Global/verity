@@ -432,9 +432,48 @@ describe('host maintenance admission', () => {
     mkdirSync(join(gate, 'runsc'), { recursive: true });
     rmSync(f.report);
     const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
-    expect(manager.admit()).toBeUndefined();
+    const lease = manager.admit();
+    expect(lease.directory).toBe(tmpdir());
+    expect(() => lease.reserveBuild()).not.toThrow();
+    lease.dispose();
     expect(() => manager.acquire()).toThrow('predates managed build admission');
     expect(existsSync(join(gate, 'leases'))).toBe(false);
+  });
+  // A Repair can provision the host while an unmanaged attempt is still staging.
+  // Without a second look, its solve would start without the lock and host
+  // maintenance would see no lease and restart the worker underneath it.
+  it('takes the host lock for remote work once a Repair provisions mid-attempt', async () => {
+    const { spawn, spawnSync } = await import('node:child_process');
+    const { readdirSync } = await import('node:fs');
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(gate);
+    const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
+    const lease = manager.admit();
+    await lease.run('true', [], commandOptions);
+    expect(existsSync(join(gate, 'leases'))).toBe(false);
+
+    mkdirSync(join(gate, 'leases'));
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    const lock = join(gate, 'build-admission.lock');
+    // Its own process group: the sleeping child inherits the lock and must end too.
+    const maintenance = spawn('flock', ['-x', lock, 'sleep', '5'], { detached: true });
+    try {
+      await setTimeout(200);
+      await expect(
+        lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' }),
+      ).rejects.toThrow('maintenance is in progress');
+    } finally {
+      process.kill(-(maintenance.pid ?? 0), 'SIGKILL');
+      await once(maintenance, 'exit');
+    }
+
+    await lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' });
+    expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(1);
+    expect(readdirSync(join(gate, 'leases'))).toHaveLength(1);
+    lease.dispose();
+    expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(0);
+    expect(readdirSync(join(gate, 'leases'))).toHaveLength(0);
   });
   it('fails closed on partial provisioning, pending recovery and held maintenance', async () => {
     const { spawn } = await import('node:child_process');

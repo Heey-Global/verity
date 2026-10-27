@@ -201,7 +201,11 @@ admission. Such a host shows neither `build-admission.lock` nor `leases` in
 `not-provisioned`. Its repository builds keep the unmanaged path they used before
 storage management existed: no host lock, no host storage report and no storage
 admission, as on releases before contract 2. The Server logs this once, and the
-Updater names the installer Repair the host needs.
+Updater names the installer Repair the host needs. Such a build looks again before
+its BuildKit solve and its image import: if a Repair has provisioned the host in
+the meantime, it holds the shared lock and a lease marker like a managed build, so
+snapshotter maintenance waits for it, or it fails with a retry while maintenance
+already holds the lock.
 
 Every other state stays closed. A directory with only one of the two markers is
 `incomplete`, a `migration-pending` marker or an exclusively held lock pauses new

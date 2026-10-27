@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -15,10 +15,13 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 
 const GiB = 1024 ** 3;
+const execFileAsync = promisify(execFile);
 const reportSchema = z.object({
   schemaVersion: z.literal(1),
   observedAt: z.iso.datetime(),
@@ -223,13 +226,13 @@ export class BuildStorage {
   }
 
   /**
-   * The Provisioner's entry point. Returns no lease on a host without managed
-   * admission: the build then takes the unmanaged path it took before
-   * admission existed. Host storage reports and the lock come from the same
-   * host installation, so neither can be required where the other was never
-   * provisioned. Every other state that is not a held shared lock fails closed.
+   * The Provisioner's entry point. On a host without managed admission the
+   * build takes the unmanaged path it took before admission existed: host
+   * storage reports and the lock come from the same host installation, so
+   * neither can be required where the other was never provisioned. Every other
+   * state that is not a held shared lock fails closed.
    */
-  admit(): BuildStorageLease | undefined {
+  admit(): BuildStorageLease {
     if (this.admissionDirectory !== undefined) {
       const admission = this.admissionState(this.admissionDirectory);
       if (admission.state === 'not-provisioned') {
@@ -237,10 +240,69 @@ export class BuildStorage {
           this.warnedUnprovisioned = true;
           console.warn(builderAdmissionMessage(admission));
         }
-        return undefined;
+        return this.unmanagedLease(this.admissionDirectory);
       }
     }
     return this.acquire();
+  }
+
+  /**
+   * A Repair can provision the host while this attempt is still staging. Remote
+   * work therefore looks again before it starts and, once the lock exists,
+   * holds it shared like any managed build, so host maintenance waits for it
+   * instead of restarting the worker underneath it.
+   */
+  private unmanagedLease(admissionDirectory: string): BuildStorageLease {
+    let admissionFd: number | undefined;
+    let admissionMarker: string | undefined;
+    const enterProvisionedHost = () => {
+      const admission = this.admissionState(admissionDirectory);
+      if (admission.state === 'not-provisioned') return;
+      if (admission.state !== 'provisioned')
+        throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
+      const fd = openSync(join(admissionDirectory, 'build-admission.lock'), 'r');
+      try {
+        const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
+          stdio: ['ignore', 'ignore', 'pipe', fd],
+          timeout: 5000,
+        });
+        if (locked.status !== 0)
+          throw new Error(
+            'Builder admission unavailable: the host was provisioned during this build and its maintenance is in progress; retry the build',
+          );
+        if (existsSync(join(admissionDirectory, 'migration-pending')))
+          throw new Error(
+            'Builder admission unavailable: builder migration recovery is pending; retry the build',
+          );
+        admissionMarker = mkdtempSync(join(admissionDirectory, 'leases', 'attempt-'));
+      } catch (cause) {
+        closeSync(fd);
+        throw cause;
+      }
+      admissionFd = fd;
+    };
+    return {
+      directory: tmpdir(),
+      retainArtifacts: false,
+      reserveBuild: () => {},
+      run: async (command, args, options) => {
+        if (options.remoteOperation !== undefined && admissionFd === undefined)
+          enterProvisionedHost();
+        return execFileAsync(command, args, {
+          env: options.env,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          timeout: options.timeout,
+          maxBuffer: options.maxBuffer,
+          encoding: 'utf8',
+        });
+      },
+      dispose: () => {
+        if (admissionMarker !== undefined) rmSync(admissionMarker, { recursive: true });
+        if (admissionFd !== undefined) closeSync(admissionFd);
+        admissionMarker = undefined;
+        admissionFd = undefined;
+      },
+    };
   }
 
   private admissionState(directory: string): BuilderAdmissionState {
