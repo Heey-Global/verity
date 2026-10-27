@@ -1,20 +1,22 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const fixture = fileURLToPath(
-  new URL('../../../scripts/fixtures/fake-claude-recreate-smoke.mjs', import.meta.url),
-);
 const sessionId = '00000000-0000-4000-8000-000000000001';
 
-describe('Claude recreation fixture control handshake', () => {
-  it.each([false, true])(
-    'answers title requests before completing the turn (combined=%s)',
-    async (combined) => {
+describe('Claude smoke fixture control handshake', () => {
+  it.each(
+    ['recreate', 'live'].flatMap((kind) => [false, true].map((combined) => ({ kind, combined }))),
+  )(
+    'answers title requests before completing the turn ($kind, combined=$combined)',
+    async ({ kind, combined }) => {
+      const fixture = fileURLToPath(
+        new URL(`../../../scripts/fixtures/fake-claude-${kind}-smoke.mjs`, import.meta.url),
+      );
       const root = await mkdtemp(join(tmpdir(), 'claude-recreate-fixture-'));
       const home = join(root, 'claude');
       const child = spawn(
@@ -74,9 +76,15 @@ describe('Claude recreation fixture control handshake', () => {
         expect(response.response).toEqual({
           subtype: 'success',
           request_id: 'title-1',
-          response: { title: 'Sandbox recreation smoke' },
+          response: { title: kind === 'live' ? 'Sandbox live smoke' : 'Sandbox recreation smoke' },
         });
         expect((await next()).type).toBe('assistant');
+        if (kind === 'live') {
+          send({ ...title, request_id: 'title-during-restart' });
+          expect((await next()).response?.request_id).toBe('title-during-restart');
+          await writeFile(join(root, 'continue'), 'ready\n');
+          expect((await next()).type).toBe('assistant');
+        }
         expect((await next()).type).toBe('result');
         send({ ...title, request_id: 'title-after-result' });
         expect((await next()).response?.request_id).toBe('title-after-result');
@@ -84,12 +92,14 @@ describe('Claude recreation fixture control handshake', () => {
         const exitCode = await new Promise<number | null>((resolve) => child.once('exit', resolve));
         expect(exitCode).toBe(0);
         expect(stderr).toBe('');
-        const transcript = await readFile(
-          join(home, 'projects', root.replaceAll('/', '-'), `${sessionId}.jsonl`),
-          'utf8',
-        );
-        expect(transcript.trim().split('\n')).toHaveLength(1);
-        expect(JSON.parse(transcript).type).toBe('user');
+        if (kind === 'recreate') {
+          const transcript = await readFile(
+            join(home, 'projects', root.replaceAll('/', '-'), `${sessionId}.jsonl`),
+            'utf8',
+          );
+          expect(transcript.trim().split('\n')).toHaveLength(1);
+          expect(JSON.parse(transcript).type).toBe('user');
+        }
       } finally {
         child.kill();
         lines.close();
