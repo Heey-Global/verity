@@ -3138,13 +3138,18 @@ export class VerityClient {
   /** Audit operations, newest first. `null` when this device is not an
    *  administrator's or the Server has no audit trail (403/404). */
   async auditOperations(query: AuditOperationQuery = {}): Promise<AuditOperationList | null> {
-    const params = new URLSearchParams();
-    if (query.domain !== undefined) params.set('domain', query.domain);
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
-      params.set('q', query.search.trim());
-    if (query.before !== undefined) params.set('before', query.before);
-    if (query.limit !== undefined) params.set('limit', String(query.limit));
-    const suffix = params.size > 0 ? `?${params.toString()}` : '';
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
     try {
       const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
       return auditOperationListSchema.parse(await res.json());

@@ -563,7 +563,10 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
             report.imagesRemoved.push(entry.ref);
             report.estimatedImageBytes += entry.size;
             if (entry.ref.startsWith(DEVCONTAINER_IMAGE_PREFIX)) {
-              await deps.onProjectImageRemoved?.({ ref: entry.ref, imageId: entry.imageId });
+              // The image is gone either way; a failed report is not a failed removal.
+              await deps
+                .onProjectImageRemoved?.({ ref: entry.ref, imageId: entry.imageId })
+                .catch(() => undefined);
             }
           } catch (err) {
             // Most commonly a 409: a container grabbed the image between the

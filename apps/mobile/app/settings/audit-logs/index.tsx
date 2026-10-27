@@ -110,9 +110,10 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
         setOperations((current) => [...(current ?? []), ...list.operations]);
         setNextBefore(list.nextBefore);
       })
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : 'Could not load more entries.'),
-      )
+      .catch((cause: unknown) => {
+        if (request !== latest.current) return;
+        setError(cause instanceof Error ? cause.message : 'Could not load more entries.');
+      })
       .finally(() => setLoadingMore(false));
   };
 

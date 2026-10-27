@@ -158,7 +158,7 @@ export interface AuditOperationQuery {
   domain?: AuditDomain | undefined;
   /** Operation ID, image ID/digest fragment or project label fragment. */
   search?: string | undefined;
-  /** Only operations that started before this instant (cursor). */
+  /** `nextBefore` of the previous page. */
   before?: string | undefined;
   limit?: number | undefined;
 }
@@ -213,7 +213,9 @@ async function appendWithin(exec: Kysely<Database>, input: AuditEventInput): Pro
     .limit(1)
     .executeTakeFirst();
   // Database time, so events written by different Server processes order on one clock.
-  const now = await sql<{ now: Date | string }>`select now() as now`.execute(exec);
+  // `clock_timestamp()`, not `now()`: the transaction may have waited on the lock, and
+  // its start time would sort this event before its chain predecessor.
+  const now = await sql<{ now: Date | string }>`select clock_timestamp() as now`.execute(exec);
   const base: Omit<AuditEvent, 'eventHash'> = {
     schemaVersion: AUDIT_SCHEMA_VERSION,
     eventId: randomUUID(),
@@ -277,6 +279,29 @@ function groupByOperation(events: AuditEvent[], order: string[]): AuditEvent[][]
   });
 }
 
+/** Opaque paging cursor: the last operation's start time and ID. */
+function encodeCursor(at: string, operationId: string): string {
+  return Buffer.from(JSON.stringify([at, operationId]), 'utf8').toString('base64url');
+}
+
+function decodeCursor(cursor: string | undefined): { at: string; operationId: string } | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (
+      Array.isArray(value) &&
+      value.length === 2 &&
+      typeof value[0] === 'string' &&
+      typeof value[1] === 'string'
+    ) {
+      return { at: value[0], operationId: value[1] };
+    }
+  } catch {
+    // Fall through: an unreadable cursor starts from the newest entry.
+  }
+  return undefined;
+}
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
@@ -290,15 +315,15 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
 
     async listOperations(query) {
       const limit = Math.min(Math.max(query.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-      let starts = db
-        .selectFrom('audit_events')
-        .select(['operation_id', (eb) => eb.fn.min('recorded_at').as('started_at')])
-        .groupBy('operation_id');
-      if (query.domain !== undefined) starts = starts.where('domain', '=', query.domain);
+      // Filters select operations; the start time is still taken over ALL their events,
+      // so a filtered list sorts and groups by day exactly like the unfiltered one.
+      let matching = db.selectFrom('audit_events').select('operation_id');
+      const filtered = query.domain !== undefined || Boolean(query.search?.trim());
+      if (query.domain !== undefined) matching = matching.where('domain', '=', query.domain);
       const search = query.search?.trim();
       if (search) {
         const fragment = `%${search.replace(/^sha256:/i, '').replace(/[\\%_]/g, '\\$&')}%`;
-        starts = starts.where((eb) =>
+        matching = matching.where((eb) =>
           eb.or([
             eb('operation_id', '=', search),
             eb('image_id', 'ilike', fragment),
@@ -306,12 +331,25 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
           ]),
         );
       }
-      if (query.before !== undefined) {
-        const before = query.before;
-        starts = starts.having((eb) => eb.fn.min('recorded_at'), '<', before as never);
+      let starts = db
+        .selectFrom('audit_events')
+        .select([
+          'operation_id',
+          // Text keeps the microseconds a JavaScript Date would drop from the cursor.
+          sql<string>`min(recorded_at)::text`.as('started_at'),
+        ])
+        .groupBy('operation_id');
+      if (filtered) starts = starts.where('operation_id', 'in', matching);
+      const cursor = decodeCursor(query.before);
+      if (cursor !== undefined) {
+        // Compound cursor: operations that started at the same instant are neither
+        // skipped nor repeated across pages.
+        starts = starts.having(
+          sql<boolean>`(min(recorded_at), operation_id) < (${cursor.at}::timestamptz, ${cursor.operationId})`,
+        );
       }
       const rows = await starts
-        .orderBy('started_at', 'desc')
+        .orderBy(sql`min(recorded_at)`, 'desc')
         .orderBy('operation_id', 'desc')
         .limit(limit + 1)
         .execute();
@@ -330,7 +368,10 @@ export function createPostgresAuditLog(db: Kysely<Database>): AuditLog {
       const last = page.at(-1);
       return {
         operations: groupByOperation(events, ids),
-        nextBefore: rows.length > limit && last !== undefined ? iso(last.started_at) : null,
+        nextBefore:
+          rows.length > limit && last !== undefined
+            ? encodeCursor(last.started_at, last.operation_id)
+            : null,
       };
     },
 

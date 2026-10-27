@@ -178,7 +178,7 @@ const listQuerySchema = z
   .object({
     domain: z.enum(AUDIT_DOMAINS as [string, ...string[]]).optional(),
     q: z.string().trim().max(200).optional(),
-    before: z.string().datetime().optional(),
+    before: z.string().max(500).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
   })
   .strict();

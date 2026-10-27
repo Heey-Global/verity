@@ -104,6 +104,40 @@ describe('audit recorder', () => {
     expect(fake.appended).toEqual([]);
   });
 
+  // The Settings screen checks health on every visit; two checks in flight must not
+  // record the same lost writes twice.
+  it('records one write-gap event for concurrent health checks', async () => {
+    const fake = fakeLog();
+    const audit = recorder(fake.log);
+    fake.setFailing(true);
+    await audit.imageRemoved({ imageRef: 'verity-devc-x:1' });
+    fake.setFailing(false);
+    await Promise.all([audit.health(), audit.health(), audit.health()]);
+    expect(fake.appended.filter((e) => e.kind === 'audit.write_gap')).toHaveLength(1);
+  });
+
+  // A deletion or a finished build must never fail because its audit record did.
+  it('never rejects a best-effort record, even when error reporting throws', async () => {
+    const fake = fakeLog();
+    const audit = createAuditRecorder(fake.log, {
+      server: () => Promise.resolve({ release: '1.0.0', generation: null }),
+      onError: () => {
+        throw new Error('logger broken');
+      },
+    });
+    const build = await audit.beginBuild(intent);
+    fake.setFailing(true);
+    await expect(
+      audit.projectDeleted({
+        projectId: 'p1',
+        projectLabel: 'org/repo',
+        initiator: { kind: 'user', userId: 'u1' },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(build.failed()).resolves.toBeUndefined();
+    await expect(audit.imageRemoved({ imageRef: 'x' })).resolves.toBeUndefined();
+  });
+
   it('flushes outstanding gaps when health is checked', async () => {
     const fake = fakeLog();
     const audit = recorder(fake.log);

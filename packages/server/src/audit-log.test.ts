@@ -128,4 +128,34 @@ describe('audit log', () => {
     expect(second.nextBefore).toBeNull();
     expect(await log.oldestRecordedAt()).toBe((await log.operation('op-1'))[0]!.recordedAt);
   });
+
+  // A time-only cursor drops every operation that started in the same instant as the
+  // last one on the page.
+  it('neither skips nor repeats operations that started at the same instant', async () => {
+    for (const id of ['op-a', 'op-b', 'op-c']) await log.append(requested(id));
+    await ctx.db
+      .updateTable('audit_events')
+      .set({ recorded_at: '2026-10-27T10:00:00Z' } as never)
+      .execute();
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (let page = 0; page < 4; page++) {
+      const result = await log.listOperations({ limit: 1, before });
+      seen.push(...result.operations.map((ops) => ops[0]!.operationId));
+      if (result.nextBefore === null) break;
+      before = result.nextBefore;
+    }
+    expect(seen).toEqual(['op-c', 'op-b', 'op-a']);
+  });
+
+  // A filter that matches only a later event must not move the operation in the
+  // list: it started when its first event was written.
+  it('orders filtered operations by when they started', async () => {
+    await log.append(requested('op-first'));
+    await log.append(requested('op-second'));
+    await log.append(succeeded('op-second', 'sha256:feed01'));
+    await log.append(succeeded('op-first', 'sha256:feed02'));
+    const found = await log.listOperations({ search: 'feed0' });
+    expect(found.operations.map((ops) => ops[0]!.operationId)).toEqual(['op-second', 'op-first']);
+  });
 });

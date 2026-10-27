@@ -101,19 +101,49 @@ export function createAuditRecorder(
     gaps.set(streamId, gap);
   }
 
+  /** Put an unwritten gap back, merged with failures counted meanwhile. */
+  function restoreGap(streamId: string, gap: Gap): void {
+    const current = gaps.get(streamId);
+    if (current === undefined) {
+      gaps.set(streamId, gap);
+      return;
+    }
+    current.failedWrites += gap.failedWrites;
+    for (const [kind, count] of Object.entries(gap.kinds)) {
+      current.kinds[kind] = (current.kinds[kind] ?? 0) + count;
+    }
+    if (gap.firstFailureAt < current.firstFailureAt) current.firstFailureAt = gap.firstFailureAt;
+    if (gap.lastFailureAt > current.lastFailureAt) current.lastFailureAt = gap.lastFailureAt;
+  }
+
   async function flushGap(streamId: string, server: AuditServerIdentity): Promise<void> {
+    // Detached before the write, so concurrent callers (health checks, appends on the
+    // same stream) cannot record the same failures twice.
     const gap = gaps.get(streamId);
     if (gap === undefined) return;
-    await log.append({
-      kind: 'audit.write_gap',
-      payload: { ...gap, kinds: { ...gap.kinds } },
-      operationId: randomUUID(),
-      streamId,
-      projectId: streamId.startsWith('project:') ? streamId.slice('project:'.length) : null,
-      initiator: UNKNOWN_INITIATOR,
-      server,
-    });
     gaps.delete(streamId);
+    try {
+      await log.append({
+        kind: 'audit.write_gap',
+        payload: { ...gap, kinds: { ...gap.kinds } },
+        operationId: randomUUID(),
+        streamId,
+        projectId: streamId.startsWith('project:') ? streamId.slice('project:'.length) : null,
+        initiator: UNKNOWN_INITIATOR,
+        server,
+      });
+    } catch (error) {
+      restoreGap(streamId, gap);
+      throw error;
+    }
+  }
+
+  function report(error: unknown, kind: string): void {
+    try {
+      options.onError?.(error, kind);
+    } catch {
+      // Reporting must not turn a best-effort write into a failure of the action.
+    }
   }
 
   /** The recovering process writes its gap event before any other event of its own. */
@@ -126,7 +156,7 @@ export function createAuditRecorder(
     } catch (error) {
       if (mode === 'fail-closed') throw new AuditUnavailableError(error);
       countFailure(draft.streamId, draft.kind);
-      options.onError?.(error, draft.kind);
+      report(error, draft.kind);
       return false;
     }
   }
@@ -227,7 +257,7 @@ export function createAuditRecorder(
           const server = await options.server();
           for (const streamId of [...gaps.keys()]) await flushGap(streamId, server);
         } catch (error) {
-          options.onError?.(error, 'audit.write_gap');
+          report(error, 'audit.write_gap');
         }
       }
       let pending = 0;
