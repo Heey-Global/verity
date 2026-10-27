@@ -4675,6 +4675,7 @@ export async function buildEmbeddedServer(
       serverContainerId: config.diagnosticServerContainerId,
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
+      builderAdmissionDirectory: '/run/verity-buildkit',
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
