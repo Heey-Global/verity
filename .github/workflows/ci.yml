@@ -531,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs)
+                deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -1018,6 +1018,13 @@ jobs:
       # installer refuses a non-root caller (`must run as root`) by invoking it
       # outside `unshare -r`. As root in the container that case would pass the check
       # it exists to fail, and the assertion would silently invert.
+      - name: Build installer test tools
+        run: |
+          set -euo pipefail
+          fixture="verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --file deploy/installer-ci.Dockerfile \
+            --build-arg "VERITY_INSTALLER_BASE_IMAGE=$VERITY_INSTALLER_IMAGE" --tag "$fixture" .
+          echo "VERITY_INSTALLER_IMAGE=$fixture" >> "$GITHUB_ENV"
       - name: Ensure unprivileged user namespaces are available in the test container
         run: |
           set -euo pipefail
@@ -1039,6 +1046,10 @@ jobs:
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
             node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs docs/website/site/install.test.mjs
+
+      - name: Clean installer test tools
+        if: always()
+        run: docker image rm "verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   runner-postgres-race:
     needs: changes

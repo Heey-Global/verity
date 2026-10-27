@@ -49,8 +49,11 @@ export type CaptureEntry =
   | { kind: 'symlink'; path: string; target: string };
 
 async function syncDirectory(path: string): Promise<void> {
+  // A held directory FD is an intentional procfs capability, not a user-supplied symlink.
+  // Keep it an intermediate component so O_NOFOLLOW still protects the final directory.
+  const target = /^\/proc\/self\/fd\/[0-9]+$/.test(path) ? path + '/.' : path;
   const directory = await open(
-    path,
+    target,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
   );
   try {

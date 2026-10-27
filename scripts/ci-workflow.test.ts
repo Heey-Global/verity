@@ -2388,6 +2388,15 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(
+      job?.steps?.some((step) =>
+        step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
+      ),
+    ).toBe(true);
+    expect(readFileSync('deploy/installer-ci.Dockerfile', 'utf8')).toMatch(
+      /apt-get install[^\n]+\bjq\b/,
+    );
+
     const suite = (job?.steps ?? []).find((step) =>
       step.run?.includes('node --test deploy/bin/verity-install.test.mjs'),
     );
