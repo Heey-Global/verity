@@ -724,5 +724,6 @@ try {
   else if (action === 'capture') await capture();
   else await restore();
 } catch (error) {
+  if (action === 'verify-api') await diagnoseActivation().catch(() => {});
   process.stderr.write(formatRestoreFailure(error) + '\n', () => process.exit(1));
 }
