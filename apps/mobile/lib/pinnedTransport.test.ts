@@ -14,6 +14,11 @@ const mockAddSocketListener = jest.fn(
 );
 const mockRequest = jest.fn();
 const mockRequestV2 = jest.fn();
+const mockRequestV3 = jest.fn();
+const mockPrepareRequestV3 = jest.fn();
+const mockCancelRequestV3 = jest.fn();
+let mockRequestV3Enabled = false;
+let mockV3CancellationEnabled = true;
 let mockRequestV2Enabled = false;
 let mockTransportLanesEnabled = false;
 let mockNativeTimings: (() => unknown) | undefined;
@@ -45,6 +50,15 @@ jest.mock('./remoteControlTransport', () => ({
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({
     request: mockRequest,
+    get requestV3() {
+      return mockRequestV3Enabled ? mockRequestV3 : undefined;
+    },
+    get prepareRequestV3() {
+      return mockRequestV3Enabled ? mockPrepareRequestV3 : undefined;
+    },
+    get cancelRequestV3() {
+      return mockRequestV3Enabled && mockV3CancellationEnabled ? mockCancelRequestV3 : undefined;
+    },
     get supportsTransportLanes() {
       return mockTransportLanesEnabled ? () => true : undefined;
     },
@@ -206,6 +220,11 @@ describe('pinned native file transport', () => {
   });
 
   beforeEach(() => {
+    mockRequestV3Enabled = false;
+    mockV3CancellationEnabled = true;
+    mockRequestV3.mockReset();
+    mockPrepareRequestV3.mockReset().mockReturnValue(true);
+    mockCancelRequestV3.mockReset();
     mockRequest.mockReset();
     mockRequestV2.mockReset();
     mockRequestV2Enabled = false;
@@ -222,6 +241,121 @@ describe('pinned native file transport', () => {
     mockDirectKnownReachable.mockReset().mockReturnValue(false);
     mockRecoverRemoteRead.mockReset().mockResolvedValue(0);
     mockReportDirectSuccess.mockReset();
+  });
+
+  it.each(['/sessions/s', '/sessions/s/events?after=1', '/sessions/s/history/v1?limit=150'])(
+    'uses reserved native queue admission for interactive GET %s',
+    async (path) => {
+      mockRequestV3Enabled = true;
+      mockRequestV3.mockResolvedValue({ status: 200, headers: {}, bodyText: '{}' });
+      await createPinnedFetch('pin')(`https://core.example${path}`, {
+        transportLane: 'interactive',
+      } as RequestInit);
+      const id = mockRequestV3.mock.calls[0]![0];
+      expect(mockPrepareRequestV3).toHaveBeenCalledWith(id);
+      expect(mockPrepareRequestV3.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRequestV3.mock.invocationCallOrder[0]!,
+      );
+      expect(mockRequest).not.toHaveBeenCalled();
+      expect(mockRequestV2).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['/sessions/s', { transportLane: 'background' }],
+    ['/sessions/s/activity', { transportLane: 'interactive' }],
+    ['/models', { transportLane: 'interactive' }],
+    ['/sessions/s', { transportLane: 'interactive', method: 'POST', body: '{}' }],
+  ])('keeps non-opening requests on the compatible path: %s %j', async (path, init) => {
+    mockRequestV3Enabled = true;
+    mockRequestV2Enabled = true;
+    mockRequestV2.mockResolvedValue({ status: 200, headers: {}, bodyText: '{}' });
+    await createPinnedFetch('pin')(`https://core.example${path}`, init as RequestInit);
+    expect(mockRequestV2).toHaveBeenCalledTimes(1);
+    expect(mockPrepareRequestV3).not.toHaveBeenCalled();
+    expect(mockRequestV3).not.toHaveBeenCalled();
+  });
+
+  it('requires the complete queue/cancellation capability and preserves old native builds', async () => {
+    mockRequestV3Enabled = true;
+    mockV3CancellationEnabled = false;
+    mockRequestV2Enabled = true;
+    mockRequestV2.mockResolvedValue({ status: 200, headers: {}, bodyText: '{}' });
+    await createPinnedFetch('pin')('https://core.example/sessions/s', {
+      transportLane: 'interactive',
+    } as RequestInit);
+    expect(mockRequestV2).toHaveBeenCalledTimes(1);
+    expect(mockRequestV3).not.toHaveBeenCalled();
+  });
+
+  it.each(['async', 'sync', 'reservation'])(
+    'does not replay a failed queued request via V2: %s',
+    async (failure) => {
+      mockRequestV3Enabled = true;
+      mockRequestV2Enabled = true;
+      if (failure === 'reservation') mockPrepareRequestV3.mockReturnValue(false);
+      else
+        mockRequestV3.mockImplementation(() => {
+          if (failure === 'sync') throw new Error('queue failed');
+          return Promise.reject(new Error('queue failed'));
+        });
+      await expect(
+        createPinnedFetch('pin')('https://core.example/sessions/s', {
+          transportLane: 'interactive',
+        } as RequestInit),
+      ).rejects.toThrow();
+      expect(mockRequestV3).toHaveBeenCalledTimes(failure === 'reservation' ? 0 : 1);
+      expect(mockRequestV2).not.toHaveBeenCalled();
+      expect(mockRequest).not.toHaveBeenCalled();
+      expect(mockCancelRequestV3).toHaveBeenCalledTimes(failure === 'reservation' ? 0 : 1);
+    },
+  );
+
+  it('cancels the reserved request synchronously while queued and never sends a pre-aborted request', async () => {
+    mockRequestV3Enabled = true;
+    const controller = new AbortController();
+    const init = { transportLane: 'interactive', signal: controller.signal } as RequestInit;
+    let reject!: (error: Error) => void;
+    mockRequestV3.mockImplementation(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const pending = createPinnedFetch('pin')('https://core.example/sessions/s', init);
+    await Promise.resolve();
+    expect(mockRequestV3).toHaveBeenCalledTimes(1);
+    controller.abort();
+    expect(mockCancelRequestV3).toHaveBeenCalledWith(mockRequestV3.mock.calls[0]![0]);
+    expect(mockCancelRequest).not.toHaveBeenCalled();
+    reject(new Error('cancelled'));
+    await expect(pending).rejects.toThrow();
+    mockPrepareRequestV3.mockClear();
+    await expect(
+      createPinnedFetch('pin')('https://core.example/sessions/s', init),
+    ).rejects.toThrow();
+    expect(mockPrepareRequestV3).not.toHaveBeenCalled();
+  });
+
+  it('discards a queued success delivered after the screen aborts', async () => {
+    mockRequestV3Enabled = true;
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    mockRequestV3.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = createPinnedFetch('pin')('https://core.example/sessions/s', {
+      transportLane: 'interactive',
+      signal: controller.signal,
+    } as RequestInit);
+    await Promise.resolve();
+    controller.abort();
+    resolve({ status: 200, headers: {}, bodyText: '{}' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockRequestV3).toHaveBeenCalledTimes(1);
   });
 
   // Sharing-only pairings must not fabricate a failed Uplink leg.
@@ -1017,6 +1151,8 @@ it('exports bounded native metrics without leaking unknown fields or requiring a
       metricsAvailable: true,
       url: 'secret-url',
       nativeResumeMs: 4,
+      nativePromiseResolveWallMs: 123,
+      nativeWorkEntryWallMs: 100,
       route: 'direct',
       transactions: Array.from({ length: 10 }, () => ({
         protocol: 'h2',
@@ -1030,6 +1166,10 @@ it('exports bounded native metrics without leaking unknown fields or requiring a
   expect(result.records).toHaveLength(32);
   expect(result.records[0]?.transactions).toHaveLength(4);
   expect(result.omitted).toBe(7);
+  expect(result.records[0]).toMatchObject({
+    nativePromiseResolveWallMs: 123,
+    nativeWorkEntryWallMs: 100,
+  });
   expect(JSON.stringify(result)).not.toContain('secret');
   mockNativeTimings = undefined;
 });
