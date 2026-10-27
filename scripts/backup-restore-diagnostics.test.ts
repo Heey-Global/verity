@@ -1,5 +1,4 @@
 import { expect, it } from 'vitest';
-// @ts-expect-error -- the standalone Docker fixture imports this JavaScript helper directly.
 import {
   formatRestoreFailure,
   formatRestoreLog,

@@ -16,7 +16,9 @@ const safeCodes = new Set([
   '42703',
 ]);
 
-// Recovery failures can carry private input in messages, causes and process output.
+/** Recovery failures can carry private input in messages, causes and process output.
+ * @param {{ code?: string, stack?: string } | null | undefined} error
+ */
 export function formatRestoreFailure(error) {
   const code = safeCodes.has(error?.code) ? error.code : 'unknown';
   const sites = [
@@ -36,7 +38,9 @@ const activationFailures = [
   'verity-compose: existing managed topology could not be reconciled',
 ];
 
-/** Return static failure markers and code positions from private installer/container output. */
+/** Return static failure markers and code positions from private installer/container output.
+ * @param {unknown} contents
+ */
 export function formatRestoreLog(contents) {
   const text = String(contents).slice(-1024 * 1024);
   const failures = activationFailures.filter((message) => text.includes(message));
