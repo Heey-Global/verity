@@ -674,7 +674,17 @@ async function diagnoseActivation(emit = console.error) {
       'Restore runtime diagnostic: ' +
         JSON.stringify({ role, running: state.running, restarts: state.restartCount }),
     );
-    emit(formatRestoreLog(await docker.containerLogs(container.id, 100).catch(() => '')));
+    try {
+      emit(formatRestoreLog(await docker.containerLogs(container.id, 100)));
+    } catch (error) {
+      emit(formatRestoreFailure(error));
+      // The CLI is an independent fallback if the bounded API decoder cannot read the log.
+      const logs = await exec('docker', ['logs', '--tail', '100', container.id], {
+        maxBuffer: 128 * 1024,
+        timeout: 5000,
+      }).catch(() => ({ stdout: '', stderr: '' }));
+      emit(formatRestoreLog(logs.stdout + logs.stderr));
+    }
   }
 }
 async function monitorActivation() {

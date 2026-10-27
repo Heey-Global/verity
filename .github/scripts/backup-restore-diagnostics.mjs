@@ -36,6 +36,16 @@ const activationFailures = [
   'verity-compose: existing managed topology failed readiness',
   'verity-compose: managed topology failed to start; restoring the legacy Server',
   'verity-compose: existing managed topology could not be reconciled',
+  'another Server holds the PostgreSQL control-plane process lock',
+  'FATAL: DATABASE_URL is required',
+  'FATAL: project-scoped Doppler credentials are forbidden',
+  'verity: failed to start',
+  'MODULE_NOT_FOUND',
+  'Cannot find module',
+  'permission denied',
+  'heap out of memory',
+  'ECONNREFUSED',
+  '28P01',
 ];
 
 /** Return static failure markers and code positions from private installer/container output.
@@ -63,5 +73,8 @@ export function formatRestoreLog(contents) {
       /* Plain installer output is scanned only for the static markers above. */
     }
   }
-  return 'Restore activation diagnostic: ' + JSON.stringify({ failures, sites, codes: [...codes] });
+  return (
+    'Restore activation diagnostic: ' +
+    JSON.stringify({ bytes: Buffer.byteLength(text), failures, sites, codes: [...codes] })
+  );
 }
