@@ -6066,23 +6066,10 @@ export class ProvisionerImpl implements Provisioner {
       }
     };
     const image = await safely(imageTag);
-    if (baseImageRef === null)
-      return {
-        imageId: image?.id ?? null,
-        sizeBytes: image?.sizeBytes ?? null,
-        baseImageDigest: null,
-      };
-    const pinned = /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
-    const base = pinned === undefined ? await safely(baseImageRef) : undefined;
-    // Only a digest of the base image's own repository: a re-tagged copy can carry
-    // digests of other repositories.
-    const repository = baseImageRef.replace(/@.*$/, '').replace(/:[^/:]+$/, '');
+    // A daemon's local tag can differ from the image resolved by BuildKit.
+    // Only an explicitly pinned digest establishes the base's identity here.
     const baseDigest =
-      pinned ??
-      base?.repoDigests
-        .filter((d) => d.startsWith(`${repository}@`))
-        .map((d) => /@(sha256:[0-9a-f]{64})$/.exec(d)?.[1])
-        .find(Boolean);
+      baseImageRef === null ? null : /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
     return {
       imageId: image?.id ?? null,
       sizeBytes: image?.sizeBytes ?? null,

@@ -5308,7 +5308,7 @@ describe('ProvisionerImpl (#174)', () => {
           inspectImageIdentity: async () => ({
             id: 'sha256:built',
             sizeBytes: 42,
-            repoDigests: [],
+            repoDigests: [`node@sha256:${'a'.repeat(64)}`],
           }),
         },
         projectTokenMint: async () => 'tok',
@@ -5367,7 +5367,7 @@ describe('ProvisionerImpl (#174)', () => {
         expect(succeeded).toMatchObject({
           operationId: requested!.operationId,
           imageId: 'sha256:built',
-          payload: { imageId: 'sha256:built', sizeBytes: 42 },
+          payload: { imageId: 'sha256:built', sizeBytes: 42, baseImageDigest: null },
         });
       } finally {
         rmSync(root, { recursive: true, force: true });
