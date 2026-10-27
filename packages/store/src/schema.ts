@@ -984,6 +984,38 @@ interface SecretAuditEventsTable {
   recorded_at: ColumnType<Date, string, never>;
 }
 
+/** Allocation counter and verification state of one durable audit stream (ADR 0028). */
+interface AuditStreamsTable {
+  stream_id: string;
+  next_sequence: number;
+  head_sequence: number | null;
+  head_hash: string | null;
+  unverified: boolean;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/**
+ * Append-only, hash-chained audit event (ADR 0028). `event_json` is the canonical
+ * envelope `event_hash` is computed over; the other columns are denormalized from it
+ * for grouping and search and are never trusted without it.
+ */
+interface AuditEventsTable {
+  stream_id: string;
+  sequence: number;
+  event_id: string;
+  schema_version: number;
+  recorded_at: ColumnType<Date, string, never>;
+  operation_id: string;
+  domain: string;
+  kind: string;
+  project_id: string | null;
+  project_label: string | null;
+  image_id: string | null;
+  event_json: string;
+  prev_hash: string;
+  event_hash: string;
+}
+
 /**
  * Server-held keys the MCP gateway takes request MACs under (ADR 0014 D3).
  *
@@ -1617,6 +1649,8 @@ export interface Database {
   secret_revocations: SecretRevocationsTable;
   secret_audit_events: SecretAuditEventsTable;
   audit_mac_keys: AuditMacKeysTable;
+  audit_streams: AuditStreamsTable;
+  audit_events: AuditEventsTable;
   secret_job_frames: SecretJobFramesTable;
   trusted_cli_outputs: TrustedCliOutputsTable;
   secret_jobs: SecretJobsTable;

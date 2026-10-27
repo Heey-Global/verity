@@ -1,0 +1,131 @@
+import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+
+import {
+  AUDIT_GENESIS_HASH,
+  AUDIT_INSTALLATION_STREAM,
+  auditEventHash,
+  createPostgresAuditLog,
+  projectAuditStream,
+  type AuditEventInput,
+  type AuditLog,
+} from './audit-log.js';
+
+let ctx: TestDb;
+let log: AuditLog;
+
+beforeAll(async () => {
+  ctx = await createTestDb();
+  log = createPostgresAuditLog(ctx.db);
+});
+afterEach(async () => truncateAll(ctx.db));
+afterAll(async () => ctx.close());
+
+const server = { release: '4.57.3', generation: 14 };
+
+function requested(operationId: string, projectId = 'p1', label = 'org/repo'): AuditEventInput {
+  return {
+    kind: 'build.requested',
+    operationId,
+    streamId: projectAuditStream(projectId),
+    projectId,
+    projectLabel: label,
+    initiator: { kind: 'session', sessionId: 's1', userId: 'u1' },
+    server,
+    payload: {
+      imageTag: 'verity-devc-org-repo:abc123def456',
+      forceRebuild: false,
+      commit: '9c1e4a7',
+      baseImageRef: 'ghcr.io/heey-global/verity-sandbox:4.57.0',
+      configFingerprint: 'abcdef0123456789',
+      features: ['ghcr.io/devcontainers/features/node:1'],
+    },
+  };
+}
+
+function succeeded(operationId: string, imageId: string, projectId = 'p1'): AuditEventInput {
+  return {
+    kind: 'build.succeeded',
+    operationId,
+    streamId: projectAuditStream(projectId),
+    projectId,
+    projectLabel: 'org/repo',
+    imageId,
+    initiator: { kind: 'session', sessionId: 's1', userId: 'u1' },
+    server,
+    payload: { imageId, sizeBytes: 11_700_000_000, baseImageDigest: null, durationMs: 1000 },
+  };
+}
+
+describe('audit log', () => {
+  it('chains each stream on its own counter and hashes the stored envelope', async () => {
+    const a = await log.append(requested('op-a'));
+    const b = await log.append(succeeded('op-a', 'sha256:3f9a'));
+    const other = await log.append(requested('op-b', 'p2'));
+    expect([a.sequence, b.sequence, other.sequence]).toEqual([0, 1, 0]);
+    expect(a.prevHash).toBe(AUDIT_GENESIS_HASH);
+    expect(b.prevHash).toBe(a.eventHash);
+    const { eventHash, ...rest } = b;
+    expect(auditEventHash(rest)).toBe(eventHash);
+    const streams = await ctx.db.selectFrom('audit_streams').selectAll().execute();
+    expect(Object.fromEntries(streams.map((s) => [s.stream_id, s.next_sequence]))).toEqual({
+      [projectAuditStream('p1')]: 2,
+      [projectAuditStream('p2')]: 1,
+    });
+  });
+
+  // The allowlist is the only thing keeping build output or credentials out of a
+  // durable store; an extra key must be refused, not silently dropped.
+  it('refuses payload fields outside the allowlist', async () => {
+    const input = requested('op-x');
+    await expect(
+      log.append({ ...input, payload: { ...input.payload, buildLog: 'token=…' } } as never),
+    ).rejects.toThrow();
+    expect(await ctx.db.selectFrom('audit_events').selectAll().execute()).toEqual([]);
+  });
+
+  it('keeps an operation readable without its project row', async () => {
+    await log.append(requested('op-a', 'deleted-project'));
+    const events = await log.operation('op-a');
+    expect(events.map((e) => e.kind)).toEqual(['build.requested']);
+    expect(events[0]!.projectLabel).toBe('org/repo');
+  });
+
+  it('lists operations newest first, filters by domain and finds an image', async () => {
+    await log.append(requested('op-old'));
+    await log.append(succeeded('op-old', 'sha256:3f9ac21'));
+    await log.append({
+      kind: 'image.removed',
+      operationId: 'op-gc',
+      streamId: AUDIT_INSTALLATION_STREAM,
+      imageId: 'sha256:aaaa',
+      initiator: { kind: 'system', trigger: 'image_cleanup' },
+      server,
+      payload: { imageRef: 'verity-devc-org-repo:old', reason: 'cleanup' },
+    });
+    const all = await log.listOperations({});
+    expect(all.operations.map((ops) => ops[0]!.operationId)).toEqual(['op-gc', 'op-old']);
+    expect(all.operations[1]!.map((e) => e.kind)).toEqual(['build.requested', 'build.succeeded']);
+
+    const builds = await log.listOperations({ domain: 'builds' });
+    expect(builds.operations.map((ops) => ops[0]!.operationId)).toEqual(['op-old']);
+
+    // A search that matches one event of an operation returns the whole operation.
+    const found = await log.listOperations({ search: 'sha256:3f9a' });
+    expect(found.operations.map((ops) => ops.length)).toEqual([2]);
+    expect((await log.listOperations({ search: 'org/re' })).operations).toHaveLength(1);
+    expect((await log.listOperations({ search: 'op-gc' })).operations).toHaveLength(1);
+    expect((await log.listOperations({ search: '%' })).operations).toHaveLength(0);
+  });
+
+  it('pages with a cursor and reports the retention boundary', async () => {
+    for (const id of ['op-1', 'op-2', 'op-3']) await log.append(requested(id));
+    const first = await log.listOperations({ limit: 2 });
+    expect(first.operations).toHaveLength(2);
+    expect(first.nextBefore).not.toBeNull();
+    const second = await log.listOperations({ limit: 2, before: first.nextBefore! });
+    expect(second.operations.map((ops) => ops[0]!.operationId)).toEqual(['op-1']);
+    expect(second.nextBefore).toBeNull();
+    expect(await log.oldestRecordedAt()).toBe((await log.operation('op-1'))[0]!.recordedAt);
+  });
+});
