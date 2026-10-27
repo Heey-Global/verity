@@ -184,8 +184,8 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
   process.stdin.setEncoding('utf8');
   let bufferedInput = '';
   let receivedUserPrompt = false;
-  let answeredTitle = false;
-  let completed = false;
+  let receivedTitleRequest = false;
+  let emittedTurn = false;
   for await (const chunk of process.stdin) {
     if (typeof chunk !== 'string') continue;
     bufferedInput += chunk;
@@ -280,20 +280,20 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             response: { title: 'Sandbox recreate smoke' },
           },
         });
-        answeredTitle = true;
+        receivedTitleRequest = true;
       } else if (frame.type === 'user') {
         receivedUserPrompt = true;
       }
-      // ACP requests a title asynchronously after queueing these smoke prompts.
-      // Ending the query first rejects that pending request during SDK teardown.
-      if (receivedUserPrompt && answeredTitle && !completed) {
-        completed = true;
+      // The pinned ACP adapter asks for a title asynchronously after queueing
+      // the prompt. Finishing first closes the query with that request pending.
+      if (receivedUserPrompt && receivedTitleRequest && !emittedTurn) {
+        emittedTurn = true;
         emitTurn();
       }
     }
   }
   if (!receivedUserPrompt) throw new Error('stream-json input ended before a user prompt');
-  if (!completed) throw new Error('stream-json input ended before the title request');
+  if (!receivedTitleRequest) throw new Error('stream-json input ended before a title request');
 } else {
   emitTurn();
 }

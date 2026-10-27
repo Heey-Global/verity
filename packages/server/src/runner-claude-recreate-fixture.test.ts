@@ -1,105 +1,116 @@
 import { AcpClaudeBackend, nodeSpawner } from '@verity/session';
 import { createTestDb } from '@verity/store/testing';
+import { unexpectedStderrLines } from './runner-claude-live-stderr.js';
+import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { expect, it, vi } from 'vitest';
-import { unexpectedStderrLines } from './runner-claude-live-stderr.js';
+import { describe, expect, it } from 'vitest';
 
-it.each([false, true])(
-  'answers a post-prompt title request (same input write: %s)',
-  async (sameChunk) => {
-    const root = await mkdtemp(join(tmpdir(), 'recreate-title-'));
-    const child = spawn(
-      process.execPath,
-      [
-        resolve('scripts/fixtures/fake-claude-recreate-smoke.mjs'),
-        '--session-id',
-        'fixture-title',
-        '--input-format',
-        'stream-json',
-      ],
-      {
-        env: {
-          PATH: process.env.PATH,
-          CLAUDE_CONFIG_DIR: join(root, 'claude'),
-          VERITY_LIVE_SMOKE_WORKTREE: root,
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    );
-    const closed = once(child, 'close');
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    const frame = (value: unknown) => `${JSON.stringify(value)}\n`;
-    try {
-      await vi.waitFor(() => expect(stdout).toContain('"subtype":"init"'), { timeout: 5_000 });
-      const user = frame({
-        type: 'user',
-        message: { role: 'user', content: 'seed before sandbox recreate' },
-      });
-      const title = frame({
-        type: 'control_request',
-        request_id: 'title-after-user',
-        request: {
-          subtype: 'generate_session_title',
-          description: 'Sandbox recreate smoke',
-          persist: true,
-        },
-      });
-      if (sameChunk) child.stdin.write(user + title);
-      else {
-        child.stdin.write(
-          user +
-            frame({
-              type: 'control_request',
-              request_id: 'before-title',
-              request: { subtype: 'get_context_usage' },
-            }),
-        );
-        // Observe a response after the user frame before sending the title request.
-        await vi.waitFor(() => expect(stdout).toContain('"request_id":"before-title"'), {
-          timeout: 5_000,
-        });
-        expect(stdout).not.toContain('"type":"result"');
-        child.stdin.write(title);
-      }
-      await vi.waitFor(() => expect(stdout).toContain('"request_id":"title-after-user"'), {
-        timeout: 5_000,
-      });
-      await vi.waitFor(() => expect(stdout).toContain('"type":"result"'), { timeout: 5_000 });
-      const lines = stdout.trim().split('\n');
-      const response = lines.find((line) => line.includes('"request_id":"title-after-user"'))!;
-      expect(JSON.parse(response)).toEqual({
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: 'title-after-user',
-          response: { title: 'Sandbox recreate smoke' },
-        },
-      });
-      expect(lines.indexOf(response)).toBeLessThan(
-        lines.findIndex((line) => line.includes('"type":"result"')),
+const sessionId = '00000000-0000-4000-8000-000000000001';
+
+describe('Claude smoke fixture control handshake', () => {
+  it.each(
+    ['recreate', 'live'].flatMap((kind) => [false, true].map((combined) => ({ kind, combined }))),
+  )(
+    'answers title requests before completing the turn ($kind, combined=$combined)',
+    async ({ kind, combined }) => {
+      const fixture = fileURLToPath(
+        new URL(`../../../scripts/fixtures/fake-claude-${kind}-smoke.mjs`, import.meta.url),
       );
-      child.stdin.end();
-      expect((await closed)[0], stderr).toBe(0);
-      expect(stderr).toBe('');
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
-      await closed;
-      await rm(root, { recursive: true, force: true });
-    }
-  },
-);
+      const root = await mkdtemp(join(tmpdir(), 'claude-recreate-fixture-'));
+      const home = join(root, 'claude');
+      const child = spawn(
+        process.execPath,
+        [fixture, '--session-id', sessionId, '--input-format', 'stream-json'],
+        {
+          env: {
+            PATH: process.env.PATH,
+            CLAUDE_CONFIG_DIR: home,
+            VERITY_LIVE_SMOKE_WORKTREE: root,
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      );
+      const lines = createInterface({ input: child.stdout });
+      const iterator = lines[Symbol.asyncIterator]();
+      const next = async () => {
+        const line = await iterator.next();
+        expect(line.done).toBe(false);
+        return JSON.parse(line.value!) as {
+          type: string;
+          response?: { request_id: string; response: { title?: string } };
+        };
+      };
+      const send = (value: unknown) => child.stdin.write(`${JSON.stringify(value)}\n`);
+      let stderr = '';
+      child.stderr.setEncoding('utf8').on('data', (data: string) => {
+        stderr += data;
+      });
+      try {
+        expect((await next()).type).toBe('system');
+        const user = {
+          type: 'user',
+          message: { role: 'user', content: 'seed before sandbox recreate' },
+        };
+        const title = {
+          type: 'control_request',
+          request_id: 'title-1',
+          request: { subtype: 'generate_session_title' },
+        };
+        if (combined) {
+          child.stdin.write(`${JSON.stringify(user)}\n${JSON.stringify(title)}\n`);
+        } else {
+          send(user);
+          // A synchronized control response proves the fixture read beyond the
+          // user frame, rather than relying on both frames sharing an OS chunk.
+          send({
+            type: 'control_request',
+            request_id: 'barrier',
+            request: { subtype: 'set_permission_mode' },
+          });
+          expect((await next()).response?.request_id).toBe('barrier');
+          send(title);
+        }
+        const response = await next();
+        expect(response.type).toBe('control_response');
+        expect(response.response).toEqual({
+          subtype: 'success',
+          request_id: 'title-1',
+          response: { title: kind === 'live' ? 'Sandbox live smoke' : 'Sandbox recreate smoke' },
+        });
+        expect((await next()).type).toBe('assistant');
+        if (kind === 'live') {
+          send({ ...title, request_id: 'title-during-restart' });
+          expect((await next()).response?.request_id).toBe('title-during-restart');
+          await writeFile(join(root, 'continue'), 'ready\n');
+          expect((await next()).type).toBe('assistant');
+        }
+        expect((await next()).type).toBe('result');
+        send({ ...title, request_id: 'title-after-result' });
+        expect((await next()).response?.request_id).toBe('title-after-result');
+        child.stdin.end();
+        const exitCode = await new Promise<number | null>((resolve) => child.once('exit', resolve));
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe('');
+        if (kind === 'recreate') {
+          const transcript = await readFile(
+            join(home, 'projects', root.replaceAll('/', '-'), `${sessionId}.jsonl`),
+            'utf8',
+          );
+          expect(transcript.trim().split('\n')).toHaveLength(1);
+          expect(JSON.parse(transcript).type).toBe('user');
+        }
+      } finally {
+        child.kill();
+        lines.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 it('serves title requests through the pinned ACP adapter before and after transcript restore', async () => {
   const ctx = await createTestDb();
