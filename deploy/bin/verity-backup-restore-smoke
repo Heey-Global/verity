@@ -72,7 +72,7 @@ start_host() {
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
   local -a mounts=(--mount "type=bind,src=$root,dst=$root")
-  if [[ $action != capture ]]; then
+  if [[ $action != capture && $action != diagnose-activation ]]; then
     if [[ $action != late-revoke ]]; then mounts+=(--mount "type=bind,src=$root/backup,dst=$root/backup,readonly"); fi
     if [[ $action = no-space ]]; then mounts+=(--mount "type=tmpfs,dst=$root/host/restore,tmpfs-size=33554432,tmpfs-mode=0700"); fi
     if inside test -f "$root/host/restore/job"; then
@@ -196,7 +196,7 @@ activate_installer() {
   inside jq -r '.recoveryKey,.masterPassword' "$root/input" \
     | host_docker exec -i --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
         --env VERITY_API_HOST_PORT=0 --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
-        sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" --restore "$2/backup" --restore-action accept --restore-secrets-stdin >"$2/install.log" 2>&1' sh "$digest" "$root"
+        sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" --restore "$2/backup" --restore-action accept --restore-secrets-stdin >"$2/install.log" 2>&1' sh "$digest" "$root" || { run_driver diagnose-activation >&2 || true; return 1; }
 }
 activate_installer
 run_driver verify-api

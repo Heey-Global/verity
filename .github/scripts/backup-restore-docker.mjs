@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { formatRestoreFailure } from './backup-restore-diagnostics.mjs';
+import { formatRestoreFailure, formatRestoreLog } from './backup-restore-diagnostics.mjs';
 import { execFile } from 'node:child_process';
 import {
   createHash,
@@ -653,8 +653,34 @@ async function exists(path) {
     throw error;
   }
 }
+async function diagnoseActivation() {
+  console.error(
+    formatRestoreLog(await readFile(join(root, 'install.log'), 'utf8').catch(() => '')),
+  );
+  const roles = new Map([
+    ['server', 'server'],
+    ['gateway', 'gateway'],
+    ['postgres', 'postgres'],
+    ['updater', 'updater'],
+    ['verity', 'server'],
+    ['verity-managed-gateway', 'gateway'],
+    ['verity-updater', 'updater'],
+  ]);
+  for (const container of await docker.listContainers()) {
+    const role =
+      container.labels?.['verity.managed-role'] ?? container.labels?.['com.docker.compose.service'];
+    if (!roles.has(role)) continue;
+    const state = await docker.inspectContainer(container.id);
+    console.error(
+      'Restore runtime diagnostic: ' +
+        JSON.stringify({ role, running: state.running, restarts: state.restartCount }),
+    );
+    console.error(formatRestoreLog(await docker.containerLogs(container.id, 100).catch(() => '')));
+  }
+}
 try {
-  if (action === 'capture') await capture();
+  if (action === 'diagnose-activation') await diagnoseActivation();
+  else if (action === 'capture') await capture();
   else await restore();
 } catch (error) {
   process.stderr.write(formatRestoreFailure(error) + '\n', () => process.exit(1));
