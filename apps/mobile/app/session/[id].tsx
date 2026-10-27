@@ -232,7 +232,8 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
 // URL, so a referenced image loads only when its row is on screen and is cached
 // across reopens — the backlog of images never loads up front.
-import { Image as ExpoImage, type ImageSource } from 'expo-image';
+import type { ImageSource } from 'expo-image';
+import { Image as ExpoImage } from '../../components/ui/Image';
 import { UITextView } from 'react-native-uitextview';
 import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
@@ -7067,7 +7068,9 @@ function AgentMarkdown({
             block.type === 'code' ? (
               <View key={i} style={styles.codeBlock}>
                 {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-                {searchHighlightQuery ? (
+                {/* UITextView's web fallback bypasses the route's Unistyles
+                    Text transform, losing the code's theme color. */}
+                {Platform.OS === 'web' || searchHighlightQuery ? (
                   <Text style={styles.codeText} selectable>
                     <HighlightedSearchText text={block.content} />
                   </Text>
