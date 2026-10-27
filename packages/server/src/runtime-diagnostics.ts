@@ -107,7 +107,16 @@ const containerSchema = z.object({
     records: z.array(runtimeEvidenceSchema).max(100),
   }),
 });
+const builderMigrationSchema = z
+  .object({
+    version: z.literal(1),
+    state: z.enum(['deferred', 'migrating', 'converged', 'rolled-back', 'blocked']),
+    message: z.string().max(200),
+    observedAt: timestamp,
+  })
+  .strict();
 export const runtimeDiagnosticSnapshotSchema = z.object({
+  builderMigration: builderMigrationSchema.optional(),
   observedAt: timestamp,
   window: z.object({ since: timestamp, until: timestamp }),
   resources: z.object({
@@ -461,6 +470,7 @@ export function createRuntimeDiagnostics(deps: {
   serverContainerId?: string | undefined;
   dataRoot?: string | undefined;
   hostSnapshotPath?: string | undefined;
+  builderMigrationPath?: string | undefined;
   readHostSnapshot?: (() => Promise<string>) | undefined;
   now?: () => number;
 }) {
@@ -857,7 +867,20 @@ export function createRuntimeDiagnostics(deps: {
         }
       }
     }
+    let builderMigration: z.infer<typeof builderMigrationSchema> | undefined;
+    if (deps.builderMigrationPath !== undefined) {
+      try {
+        const parsed = builderMigrationSchema.parse(
+          JSON.parse(await readSmallFile(deps.builderMigrationPath)),
+        );
+        const age = now - Date.parse(parsed.observedAt);
+        if (age >= -5000 && age <= 120_000) builderMigration = parsed;
+      } catch {
+        /* Missing or stale host evidence never implies convergence. */
+      }
+    }
     return runtimeDiagnosticSnapshotSchema.parse({
+      ...(builderMigration === undefined ? {} : { builderMigration }),
       observedAt: new Date(now).toISOString(),
       window,
       resources,

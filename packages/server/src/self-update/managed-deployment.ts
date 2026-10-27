@@ -112,6 +112,14 @@ export async function readManagedHostDiagnosticBackup(
   return readManagedBackup(rootPath, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE);
 }
 
+export const MANAGED_BUILDER_ADMISSION_BACKUP_FILE =
+  'server-deployment.before-builder-admission.json';
+export async function readManagedBuilderAdmissionBackup(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  return readManagedBackup(rootPath, MANAGED_BUILDER_ADMISSION_BACKUP_FILE);
+}
+
 /** The authority as it was before {@link migrateManagedDevcontainerBuilder}. */
 export async function readManagedDevcontainerBuilderBackup(
   rootPath: string,
@@ -379,11 +387,11 @@ export async function migrateManagedHostDiagnostics(options: {
   }
 }
 
-/** The read-only builder socket bind a migrated or freshly sealed spec carries. */
+/** The builder socket and admission bind a migrated or freshly sealed spec carries. */
 export const DEVCONTAINER_BUILDER_MOUNT: ServerDeploymentSpecBody['mounts'][number] = {
   source: { kind: 'bind', path: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY },
   target: DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
-  readOnly: true,
+  readOnly: false,
 };
 
 /**
@@ -421,17 +429,29 @@ export async function migrateManagedDevcontainerBuilder(options: {
       (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
     );
     const grouped = existing.spec.user.supplementaryGids.includes(options.gid);
-    if (sealed && grouped) return existing;
+    const writable = existing.spec.mounts.some(
+      (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY && !mount.readOnly,
+    );
+    if (sealed && grouped && writable) return existing;
     // A sealed bind without this group was not written by this migration: the
     // socket group changed, and guessing which one the Server should join would
     // be granting authority nobody verified.
-    if (sealed) throw new Error('devcontainer builder group differs from sealed authority');
+    if (sealed && !grouped)
+      throw new Error('devcontainer builder group differs from sealed authority');
+    const backupFile = sealed
+      ? MANAGED_BUILDER_ADMISSION_BACKUP_FILE
+      : MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE;
     const body: ServerDeploymentSpecBody = {
       schemaVersion: existing.spec.schemaVersion,
       deploymentId: existing.spec.deploymentId,
       image: existing.spec.image,
       environment: existing.spec.environment,
-      mounts: [...existing.spec.mounts, DEVCONTAINER_BUILDER_MOUNT],
+      mounts: [
+        ...existing.spec.mounts.filter(
+          (mount) => mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+        ),
+        DEVCONTAINER_BUILDER_MOUNT,
+      ],
       user: {
         uid: existing.spec.user.uid,
         gid: existing.spec.user.gid,
@@ -447,13 +467,8 @@ export async function migrateManagedDevcontainerBuilder(options: {
     };
     const validated = parseServerDeploymentSpec(sealDeploymentSpec(body));
     if (validated === null) throw new Error('devcontainer builder mount is not allowlisted');
-    const backup = await readJson(join(pinnedRoot, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE));
-    if (backup === undefined)
-      await writeAtomicExclusive(
-        pinnedRoot,
-        MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
-        existing.spec,
-      );
+    const backup = await readJson(join(pinnedRoot, backupFile));
+    if (backup === undefined) await writeAtomicExclusive(pinnedRoot, backupFile, existing.spec);
     else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
       throw new Error('devcontainer builder authority backup is invalid');
     await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, validated);

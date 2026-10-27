@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -127,6 +127,7 @@ export class BuildStorage {
       const stats = statfsSync(this.root);
       return { availableBytes: stats.bavail * stats.bsize, freeInodes: stats.ffree };
     },
+    private readonly admissionDirectory?: string,
   ) {}
 
   private check(bytes: number, host: boolean): void {
@@ -173,6 +174,50 @@ export class BuildStorage {
   }
 
   acquire(): BuildStorageLease {
+    let admissionFd: number | undefined;
+    let admissionMarker: string | undefined;
+    if (this.admissionDirectory !== undefined) {
+      try {
+        admissionFd = openSync(join(this.admissionDirectory, 'build-admission.lock'), 'r');
+        const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
+          stdio: ['ignore', 'ignore', 'pipe', admissionFd],
+          timeout: 5000,
+        });
+        if (locked.status !== 0) throw new Error('builder maintenance is in progress');
+        if (existsSync(join(this.admissionDirectory, 'migration-pending')))
+          throw new Error('builder migration recovery is pending');
+        // The shared descriptor fences the check/create race with the host's exclusive lock.
+        // The marker survives a Server crash or ambiguous remote cancellation.
+        admissionMarker = mkdtempSync(join(this.admissionDirectory, 'leases', 'attempt-'));
+      } catch (cause) {
+        if (admissionFd !== undefined) closeSync(admissionFd);
+        throw new Error(
+          'Builder admission unavailable; retry after managed maintenance completes',
+          { cause },
+        );
+      }
+    }
+    try {
+      return this.acquireLease(
+        () => {
+          if (admissionMarker !== undefined) rmSync(admissionMarker, { recursive: true });
+          if (admissionFd !== undefined) closeSync(admissionFd);
+        },
+        () => {
+          if (admissionFd !== undefined) closeSync(admissionFd);
+        },
+      );
+    } catch (cause) {
+      if (admissionMarker !== undefined) rmSync(admissionMarker, { recursive: true });
+      if (admissionFd !== undefined) closeSync(admissionFd);
+      throw cause;
+    }
+  }
+
+  private acquireLease(
+    releaseAdmission: () => void,
+    retainAdmission: () => void,
+  ): BuildStorageLease {
     if (this.held)
       throw new Error(
         'Build storage busy: another project is staging, building or importing an image. Retry when it finishes.',
@@ -394,6 +439,8 @@ export class BuildStorage {
         if (disposed) return;
         if (running) throw new Error('Cannot release storage while a build command is running');
         if (!existsSync(remoteRecord)) rmSync(directory, { recursive: true, force: true });
+        if (existsSync(remoteRecord)) retainAdmission();
+        else releaseAdmission();
         disposed = true;
         this.held = false;
       },

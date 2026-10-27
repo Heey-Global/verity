@@ -391,6 +391,7 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{
 # bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
 # contract value equal in all three places.
 LABEL org.verity.devcontainer-builder="2"
+LABEL org.verity.build-admission="1"
 
 # The Google Drive OAuth iOS client id (ADR 0009), injected by release.yml as a
 # build-arg so the running server has it WITHOUT runtime Doppler access (the

@@ -392,3 +392,45 @@ it('refuses remote work without host identity before starting any command', asyn
   lease.dispose();
   expect(existsSync(lease.directory)).toBe(false);
 });
+
+describe('host maintenance admission', () => {
+  function admission() {
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(join(gate, 'leases'), { recursive: true });
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
+    return { ...f, gate, manager };
+  }
+  it('holds a shared host lock until disposal and removes only its own marker', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const { readdirSync } = await import('node:fs');
+    const f = admission();
+    const lease = f.manager.acquire();
+    const tryMaintenance = () =>
+      spawnSync('flock', ['-xn', join(f.gate, 'build-admission.lock'), 'true']);
+    expect(tryMaintenance().status).toBe(1);
+    expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(1);
+    lease.dispose();
+    expect(tryMaintenance().status).toBe(0);
+    expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(0);
+  });
+  it('refuses admission while recovery is pending and leaves no phantom lease', async () => {
+    const { readdirSync } = await import('node:fs');
+    const f = admission();
+    writeFileSync(join(f.gate, 'migration-pending'), '');
+    expect(() => f.manager.acquire()).toThrow('Builder admission unavailable');
+    expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(0);
+  });
+  it('keeps a durable host blocker after an ambiguous remote failure', async () => {
+    const { readdirSync } = await import('node:fs');
+    const f = admission();
+    const lease = f.manager.acquire();
+    await expect(
+      lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+    ).rejects.toThrow();
+    lease.dispose();
+    expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(1);
+    expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
+  });
+});

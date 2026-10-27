@@ -1,3 +1,4 @@
+import { DEVCONTAINER_BUILDER_CONTRACT } from './devcontainer-builder.js';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -330,9 +331,7 @@ describe('Docker update preparation', () => {
       await actions.prepareStandby!(journal);
       await actions.ensureStandby(journal);
       const created = docker.createContainer.mock.calls.at(-1)?.[0] as ContainerSpec;
-      expect(created.binds?.includes('/run/verity-buildkit:/run/verity-buildkit:ro')).toBe(
-        expected,
-      );
+      expect(created.binds?.includes('/run/verity-buildkit:/run/verity-buildkit')).toBe(expected);
       expect(created.groupAdd?.includes('1102')).toBe(expected);
     } finally {
       await rm(hostRuntimeDir, { recursive: true, force: true });
@@ -438,7 +437,9 @@ describe('Docker update preparation', () => {
       );
       // The request cannot be written at all: an error, not a host answer.
       await mkdir(join(hostRuntimeDir, 'builder-request.json'));
-      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+      }));
       await expect(
         resumeUpdatePreparation(
           root,
@@ -473,7 +474,9 @@ describe('Docker update preparation', () => {
         join(hostRuntimeDir, 'agent.json'),
         JSON.stringify({ version: 1, trigger: 'systemd-path' }),
       );
-      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      docker.inspectImageLabels = vi.fn(async () => ({
+        'org.verity.devcontainer-builder': DEVCONTAINER_BUILDER_CONTRACT,
+      }));
       await expect(
         resumeUpdatePreparation(
           root,

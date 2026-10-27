@@ -413,7 +413,7 @@ export async function dockerUpdatePreparation(
       if (
         builder.state === 'available' &&
         !migrated.spec.mounts.some(
-          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY && !mount.readOnly,
         )
       ) {
         if ((await findNamed(docker, candidateName(journal, STANDBY_ROLE))) === null) {

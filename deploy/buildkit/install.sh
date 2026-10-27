@@ -7,6 +7,20 @@ source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 buildkit_image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
 builder_gid=${VERITY_BUILDKIT_GID:-1102}
 [[ $builder_gid =~ ^[0-9]+$ && $builder_gid -gt 0 && $builder_gid -lt 65535 ]] || { echo 'Invalid VERITY_BUILDKIT_GID' >&2; exit 1; }
+# Serialize release installation with the separately scheduled snapshotter transaction.
+install -d -m 0700 /var/lib/verity/buildkit-snapshotter
+if [[ ${VERITY_BUILDKIT_RELEASE_LOCK_HELD:-} == 1 ]]; then
+    # FD 6 is held by the root bridge and inherited with its admission fence.
+    flock -n 6 || { echo 'Missing inherited release lock' >&2; exit 1; }
+    exec 7>&6
+else
+    exec 7>/var/lib/verity/buildkit-snapshotter/lock
+fi
+flock -w 60 7 || { echo 'Snapshotter maintenance is still running; retry the update.' >&2; exit 1; }
+# Recover an interrupted configuration transaction before replacing its backup.
+if [[ -x /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh ]]; then
+    /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh recover
+fi
 # Validate storage policy before changing binaries, service files or runtimes.
 rendered_config=$(bash "$source_dir/storage-policy.sh" "$source_dir/buildkitd.toml" \
     /etc/verity-buildkit/buildkitd.toml /etc/verity-buildkit/storage-policy.conf "$builder_gid")
@@ -42,7 +56,7 @@ chmod 0755 /usr/local/libexec/verity-buildkit/buildkitd.new
 /usr/local/libexec/verity-buildkit/buildkitd.new --version
 mv /usr/local/libexec/verity-buildkit/buildkitd.new /usr/local/libexec/verity-buildkit/buildkitd
 ln -sfn "/opt/verity/runsc/$RUNSC_RELEASE/runsc" /usr/local/libexec/verity-buildkit/runsc-real
-install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" /usr/local/libexec/verity-buildkit/
+install -m 0755 "$source_dir/runsc" "$source_dir/runsc-buildkit-args.sh" "$source_dir/runsc-netns.sh" "$source_dir/network.sh" "$source_dir/storage-report.sh" "$source_dir/publish-storage-report.sh" "$source_dir/snapshotter-migrate.sh" /usr/local/libexec/verity-buildkit/
 # CNI plugins for the per-step build network. The pinned archive is verified and
 # extracted afresh every run, replacing any earlier or partial copy as a whole,
 # so a hand-installed or interrupted directory is adopted rather than trusted.
@@ -89,9 +103,13 @@ printf '%s\n' "$storage_unit" > /etc/systemd/system/verity-build-storage.service
 chmod 0644 /etc/systemd/system/verity-build-storage.service.new
 mv /etc/systemd/system/verity-build-storage.service.new /etc/systemd/system/verity-build-storage.service
 install -m 0644 "$source_dir/verity-build-storage.timer" /etc/systemd/system/
+install -m 0644 "$source_dir/snapshotter-policy.conf" /etc/verity-buildkit/
+install -m 0644 "$source_dir/verity-buildkit-snapshotter.service" "$source_dir/verity-buildkit-snapshotter.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
+/usr/local/libexec/verity-buildkit/snapshotter-migrate.sh init
+systemctl enable --now verity-buildkit-snapshotter.timer
 systemctl enable --now verity-build-storage.timer
 systemctl start verity-build-storage.service
 # Snapshotter state is not an installer artifact. Old workers can hold references

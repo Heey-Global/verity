@@ -124,6 +124,7 @@ esac`,
     VERITY_HOST_BUILDER_COSIGN: join(bin, 'cosign'),
     VERITY_HOST_RUNTIME_DIR: state,
     VERITY_HOST_BUILDER_DIR: join(root, 'host-builder'),
+    VERITY_SNAPSHOTTER_STATE: join(root, 'snapshotter-state'),
     VERITY_BUILDKIT_RUN_DIR: runDir,
     VERITY_BUILDKIT_READY_TIMEOUT: '1',
     VERITY_BUILDKIT_CONFIG_DIR: config,
@@ -158,6 +159,8 @@ esac`,
     result,
     callsOf,
     config,
+    libexec,
+    runDir,
     unit,
     storageUnit,
     storageTimer,
@@ -168,6 +171,19 @@ esac`,
 }
 
 describeHost('deploy/host/verity-host-builder', () => {
+  it('defers a changed bundle before touching files when build termination is unknown', async () => {
+    const h = await host();
+    writeFileSync(join(h.libexec, 'snapshotter-migrate.sh'), '#!/bin/sh\nexit 1\n', {
+      mode: 0o755,
+    });
+    writeFileSync(join(h.runDir, 'build-admission.lock'), '');
+    h.request('busy-1');
+    expect(h.run('apply-request').status).not.toBe(0);
+    expect(h.result().message).toContain('deferred without restarting');
+    expect(h.callsOf('systemctl').some((call) => call.includes('restart'))).toBe(false);
+    expect(readFileSync(join(h.config, 'buildkitd.toml'), 'utf8')).toBe('previous\n');
+  });
+
   it('installs the bundle of a verified release image with the installer-recorded group', async () => {
     const h = await host();
     h.request('update-1');

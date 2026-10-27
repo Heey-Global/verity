@@ -12,6 +12,8 @@ cleanup() {
     set +e
     sudo journalctl -u verity-buildkit --no-pager > "$PROBE_EVIDENCE/service.log"
     sudo cp -R /var/lib/verity-buildkit/evidence/. "$PROBE_EVIDENCE/runtime/"
+    sudo systemctl disable --now verity-buildkit-snapshotter.timer
+    sudo systemctl stop verity-buildkit-snapshotter.service
     sudo systemctl disable --now verity-buildkit
     sudo systemctl disable --now verity-build-storage.timer
     sudo systemctl stop verity-build-storage.service
@@ -26,6 +28,17 @@ cleanup() {
 }
 trap cleanup EXIT
 sudo bash deploy/buildkit/install.sh
+# Exercise the production migration on this disposable host, before any client builds.
+sudo systemctl stop verity-buildkit-snapshotter.timer
+sudo sed -i 's/snapshotter = "auto"/snapshotter = "native"/' /etc/verity-buildkit/buildkitd.toml
+sudo systemctl restart verity-buildkit
+sudo /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
+sudo cat /run/verity-buildkit/migration-status.json > "$PROBE_EVIDENCE/snapshotter-migration.json"
+jq -e '.state == "converged"' "$PROBE_EVIDENCE/snapshotter-migration.json"
+# A repeated run must not restart the worker or perform another migration.
+before_pid=$(sudo systemctl show verity-buildkit -p MainPID --value)
+sudo /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
+[[ $(sudo systemctl show verity-buildkit -p MainPID --value) == "$before_pid" ]]
 sudo /usr/local/libexec/verity-buildkit/runsc-real --version > "$PROBE_EVIDENCE/runsc-version.txt"
 # Instrument the host-side call, then delegate to the unmodified production adapter.
 sudo mkdir -p /var/lib/verity-buildkit/evidence/{bundles,runsc}

@@ -3708,6 +3708,10 @@ export async function buildEmbeddedServer(
             join(tmpdir(), 'verity'),
           'build-storage',
         ),
+        undefined,
+        undefined,
+        undefined,
+        '/run/verity-buildkit',
       ),
       imageReferences,
       store: eventStore,
@@ -4629,6 +4633,7 @@ export async function buildEmbeddedServer(
       dataRoot: config.dataVolumeRoot,
       serverContainerId: config.diagnosticServerContainerId,
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true

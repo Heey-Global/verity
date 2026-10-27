@@ -434,3 +434,64 @@ gVisor sandbox starts, and an agent responds. Confirm owned archive cleanup as
 well. A completed export, an existing image tag or a running control-plane
 container alone does not demonstrate project recovery. Deployment, host data
 cleanup and snapshotter changes remain separate maintenance actions.
+
+### Managed snapshotter convergence
+
+Releases ship `snapshotter-policy.conf` as versioned desired state. The verified
+builder installer installs a systemd reconciler and timer; users of a managed
+installation do not run SSH commands to switch snapshotters. The installer still
+preserves an existing snapshotter. The separate reconciler applies the explicit
+`overlayfs` policy only after compatible clients have drained. It retries deferred
+work every minute, including after the new Server has been promoted.
+
+The Server image declares admission protocol 1. Its fixed builder-directory bind
+is writable so the dedicated builder group can create markers **only inside the
+`leases` subdirectory**; the directory, lock, configuration and status remain
+root-owned. Legacy read-only seals remain valid and are migrated during guarded
+Server replacement, with a separate authority backup. The host checks all running
+containers exposing the builder socket; an unknown or legacy consumer defers the
+migration. This coordinates managed clients, not arbitrary host-root processes.
+
+Every build holds a shared `flock` descriptor from context staging through image
+import. An exclusive host lock pauses new admissions and waits at most 30 seconds
+for current work. A host-visible lease marker remains after an ambiguous remote
+failure or Server crash. Such markers are not deleted by the migration: uncertain
+work defers it. A boot clears the runtime markers only after the old processes and
+daemons have ended; persistent Server storage reservations retain their separate
+offline reconciliation requirements. The existing conservative build estimate is
+unchanged; snapshotter convergence does not calibrate a full provisioning budget.
+
+Before switching, the reconciler requires 20 GiB free, no in-use BuildKit cache
+records, the supported state root, and actual overlay copy-up on that filesystem
+in a private mount namespace. It changes only the OCI snapshotter, restarts the
+dedicated service, verifies its worker labels, and executes a bounded, network-free
+gVisor RUN using the installed static buildctl binary. It neither imports an
+image into Docker nor deletes native state, project volumes or rollback data.
+The free-space check is headroom, not a quota or a guarantee against concurrent
+host allocations.
+
+A root-only, synced configuration backup and journal under
+`/var/lib/verity/buildkit-snapshotter` protect this configuration transaction.
+Validation failure restores and verifies the prior worker. `ExecStartPre` restores
+an interrupted transaction before the next service start, and the timer recovers
+an interrupted transaction on the same boot. A failed restoration retains the
+journal and blocks new admissions. This is configuration rollback; daemon metadata
+is shared and it is not a full state backup. Old native state is retained and is
+never treated as disposable merely because overlayfs is running.
+
+Control diagnostics include fresh `builderMigration` evidence with `deferred`,
+`migrating`, `converged`, `rolled-back` or `blocked` status, a bounded explanation
+and observation time. Missing or stale evidence does not imply success. The
+underlying root-owned report is `/run/verity-buildkit/migration-status.json`.
+
+Hosts that already have the managed host-builder bridge receive the reconciler
+from a signed release through the existing updater. Hosts without that bridge
+cannot bootstrap host-root execution from a Server container: they need their
+existing infrastructure-management channel to install the verified host component
+once. No SSH fallback is added to the app. Upgraded host bridges also acquire the release lock and admission fence before
+installing a changed builder bundle. Older bridges retain their historical
+bundle-install restart semantics, including the first introduction of this
+protocol; snapshotter convergence itself always requires the compatible-client
+fence. A failed migration revision is latched until its versioned policy or helper
+changes, rather than restarting the builder every minute. Periodic timer retries
+of a deferred transaction do not restart it.
