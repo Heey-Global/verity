@@ -4119,6 +4119,17 @@ describe('managed installer CI acceptance', () => {
     entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
   );
 
+  it('runs the interruption driver below a container init so SIGKILL terminates it', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const command = source
+      .replaceAll('\\\n', ' ')
+      .split('\n')
+      .find((line) => line.includes('--entrypoint node') && line.includes('"$root/driver.mjs"'));
+    expect(command).toBeDefined();
+    expect(command).toMatch(/\binner run\b/);
+    expect(command).toMatch(/(?:^|\s)--init(?:\s|$)/);
+  });
+
   it('keeps restore daemon sockets within the Linux Unix-socket path limit', () => {
     const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
     const assignment = source.match(/^ {2}local socket_dir=(.+)$/m)?.[0];

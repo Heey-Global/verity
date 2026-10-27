@@ -84,7 +84,8 @@ run_driver() {
       mounts+=(--mount type=volume,src=verity-data,dst=/restore-live --mount type=volume,src=verity-data,dst=/srv/verity)
     fi
   fi
-  inner run --rm --user 0:0 --network host --label "verity.restore-job=$job" \
+  # Keep the driver out of PID 1 so self-SIGKILL exercises a real abrupt exit.
+  inner run --rm --init --user 0:0 --network host --label "verity.restore-job=$job" \
     --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock "${mounts[@]}" \
     --env VERITY_RESTORE_DOCKER_ACCEPTANCE=1 --env "VERITY_RESTORE_TEST_DAEMON_ID=$daemon_id" \
     --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \

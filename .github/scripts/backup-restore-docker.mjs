@@ -345,6 +345,7 @@ async function restore() {
     initialize: createInstallerRestoreInitializer(config, docker, signal),
   });
   const fault = process.env.VERITY_RESTORE_TEST_INTERRUPT;
+  if (fault) assert.notEqual(process.pid, 1, 'Interruption driver requires a container init');
   if (fault === 'rollback-resume') {
     const start = docker.startContainer;
     docker.startContainer = async (id) => {
