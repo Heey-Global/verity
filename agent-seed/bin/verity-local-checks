@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Records the operator's answer to the pre-push hook's dependency question.
+#
+# The hook runs the repository's lint and format scripts before a push. In a
+# fresh session worktree node_modules does not exist, and installing it runs
+# code from the registry — a decision for the operator, not for a hook. The hook
+# therefore stops and offers two ways on: install the dependencies, or skip lint
+# and format for this session. This tool records the second answer.
+#
+# Usage:
+#   verity-local-checks skip     # skip lint/format while dependencies are missing
+#   verity-local-checks reset    # forget that decision; the hook asks again
+#   verity-local-checks status   # exit 0 skip active, 1 none, 3 stale (inputs changed)
+#
+# The marker (.agents/.local-checks-skip, never committed) carries a fingerprint
+# of package.json and the lockfile. When either changes, the recorded answer no
+# longer covers what would be installed, so the marker is stale and the hook
+# asks again. Once node_modules exists the hook ignores the marker and runs the
+# checks; the marker only ever stands in for dependencies that are not there.
+# Secret scan and code review are not affected by it.
+set -euo pipefail
+
+usage() {
+  sed -n '10,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "verity-local-checks: not inside a git repository" >&2
+  exit 1
+}
+MARKER="${VERITY_LOCAL_CHECKS_MARKER:-$REPO_ROOT/.agents/.local-checks-skip}"
+
+# One line per input file that exists: "<name> <blob id>". `git hash-object` is
+# available wherever the hook runs and content-addresses the file without
+# needing sha256sum or node; the manifest decides what `npm ci`/`npm install`
+# would do, so these three are the inputs the answer is bound to.
+fingerprint() {
+  local f
+  for f in package.json package-lock.json npm-shrinkwrap.json; do
+    [ -f "$REPO_ROOT/$f" ] || continue
+    printf '%s %s\n' "$f" "$(git hash-object -- "$REPO_ROOT/$f")"
+  done
+}
+
+case "${1:-}" in
+  skip)
+    mkdir -p "${MARKER%/*}"
+    fingerprint >"$MARKER"
+    echo "Lint and format are skipped for this session while dependencies are missing. Secret scan and code review still run." >&2
+    echo "Recorded in $MARKER; 'verity-local-checks reset' forgets it." >&2
+    ;;
+  reset)
+    rm -f "$MARKER"
+    echo "Lint and format run again on the next push (or the hook asks again while dependencies are missing)." >&2
+    ;;
+  status)
+    [ -f "$MARKER" ] || exit 1
+    if [ "$(cat "$MARKER")" = "$(fingerprint)" ]; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  -h | --help | help) usage ;;
+  *) usage ;;
+esac

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Runtime-neutral pre-push code review + secret gate for Verity agent containers.
+# Runtime-neutral pre-push secret, lint/format and code review gate for Verity
+# agent containers. Every branch is gated the same way; protected branches are
+# maintained through PRs, and a direct push to one is exactly where an
+# un-reviewed or un-linted commit would land without any other check in front.
 
 set -euo pipefail
 
@@ -17,13 +20,28 @@ BASE_REF="${VERITY_CODE_REVIEW_BASE_REF:-origin/main}"
 # seconds later — CI (the org gitleaks ruleset on main/staging) can only report it
 # after the fact.
 #
-# Deliberately ABOVE the protected-branch early exit below: skipping review on
-# main/staging/release is a workflow choice, but a secret pushed to a protected
-# branch is the worst case, not an exempt one.
-#
 # Placed ahead of lint/format so a leaked credential is never hidden behind an
 # unrelated ESLint failure. All policy lives in verity-secret-scan; this hook
 # only resolves it, picks the ranges, and renders the block message.
+# Locate a sibling agent-seed tool: next to this hook, in the baked seed, then
+# on PATH. Pure parameter expansion, no `dirname`: a hook must not assume
+# coreutils are on PATH (git runs it with whatever environment the caller had).
+resolve_sibling() {
+  local name="$1" hook_dir="." candidate
+  case "$0" in
+    */*) hook_dir="${0%/*}" ;;
+  esac
+  for candidate in \
+    "$hook_dir/../bin/$name" \
+    "/opt/agent-seed/bin/$name"; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  command -v "$name" 2>/dev/null || return 1
+}
+
 resolve_secret_scan() {
   if [ -n "${VERITY_SECRET_SCAN_BIN:-}" ]; then
     if [ -x "$VERITY_SECRET_SCAN_BIN" ]; then
@@ -32,25 +50,7 @@ resolve_secret_scan() {
     fi
     return 1
   fi
-
-  # Pure parameter expansion, no `dirname`: a hook must not assume coreutils are
-  # on PATH (git runs it with whatever environment the caller had).
-  local hook_dir="."
-  case "$0" in
-    */*) hook_dir="${0%/*}" ;;
-  esac
-
-  local candidate
-  for candidate in \
-    "$hook_dir/../bin/verity-secret-scan" \
-    /opt/agent-seed/bin/verity-secret-scan; do
-    if [ -x "$candidate" ]; then
-      printf '%s' "$candidate"
-      return 0
-    fi
-  done
-
-  command -v verity-secret-scan 2>/dev/null || return 1
+  resolve_sibling verity-secret-scan
 }
 
 if ! SECRET_SCAN=$(resolve_secret_scan); then
@@ -121,10 +121,7 @@ while read -r _local_ref local_sha remote_ref remote_sha _rest; do
   fi
   TIPS+=("$local_sha")
   BASES+=("${remote_sha:-}")
-  case "$remote_ref" in
-    refs/heads/main|refs/heads/master|refs/heads/staging|refs/heads/release/*) ;;
-    *) REVIEW_TIPS+=("$local_sha") ;;
-  esac
+  REVIEW_TIPS+=("$local_sha")
 done <<<"$STDIN_REFS"
 
 # No refs on stdin means the hook was invoked outside a real push (tests, manual
@@ -180,10 +177,6 @@ existed outside this container.
 
 False positive? Add the reported fingerprint to .gitleaksignore with a comment
 saying why; CI scans the same fingerprints.
-
-Bypass only in a real emergency with:
-
-    git push --no-verify
 ============================================================
 EOF
   exit 2
@@ -199,17 +192,9 @@ EOF
   exit 2
 fi
 
-# ─── Protected branches: skip the review and lint gates ──────────────────────
-# Those branches are maintained through PRs, so a direct push to them is either
-# a release automation step or an operator action whose content already passed
-# both gates on the source branch. The secret gate above deliberately ran first
-# and is NOT skipped here.
-if [ -n "$STDIN_REFS" ]; then
-  [ "${#REVIEW_TIPS[@]}" -gt 0 ] || exit 0
-else
-  case "$BRANCH" in
-    main|master|staging|release/*) exit 0 ;;
-  esac
+# A push that only deletes remote branches carries no new content to check.
+if [ -n "$STDIN_REFS" ] && [ "${#REVIEW_TIPS[@]}" -eq 0 ]; then
+  exit 0
 fi
 PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
 
@@ -219,7 +204,7 @@ PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
 # is even evaluated. Run the same two checks locally here and fail the push
 # before it reaches CI. Each check runs only when the root package.json actually
 # defines that script, so this stays a no-op in every OTHER project the global
-# hook is installed into. Bypass in a pinch with `git push --no-verify`.
+# hook is installed into.
 #
 # Scope, when the repo opts in: whole-repo `eslint .` / `prettier --check .` is
 # O(repo size) in BOTH time and memory — type-aware linting loads the whole
@@ -231,10 +216,19 @@ PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
 # cross-file finding a scoped run cannot see is still caught there. Repos without
 # the `:changed` scripts keep the exact full-repo behavior below, unchanged.
 #
-# Fail closed when the repository declares either check. Silently deferring to
-# CI when the local dependencies are incomplete defeats the purpose of this
-# gate. Node is provided by Verity's project image and lets the shared hook
-# inspect package.json without mistaking unrelated keys for npm scripts.
+# Node and npm are provided by Verity's project image; node lets the shared hook
+# inspect package.json without mistaking unrelated keys for npm scripts, and a
+# missing npm is a provisioning bug rather than a choice anyone made.
+#
+# Missing node_modules is different: a fresh session worktree has no dependencies
+# until somebody installs them, and installing runs code from the registry. That
+# is the operator's call, not the hook's and not the agent's. The hook therefore
+# stops with the two options spelled out — install (scripts disabled) or skip
+# lint/format for this session — and `verity-local-checks skip` records the
+# second one in `.agents/.local-checks-skip` together with a fingerprint of
+# package.json and the lockfile. The skip holds for this checkout until one of
+# those files changes, at which point the question is asked again. With
+# node_modules present the marker is ignored and the checks run.
 if [ -f "${REPO_ROOT}/package.json" ]; then
   if ! command -v node >/dev/null 2>&1; then
     echo "pre-push: PUSH BLOCKED - package.json exists but node is unavailable" >&2
@@ -250,18 +244,86 @@ if [ -f "${REPO_ROOT}/package.json" ]; then
       "${REPO_ROOT}/package.json" "$1" >/dev/null 2>&1
   }
 
-  if (has_script lint || has_script format) \
-    && { ! command -v npm >/dev/null 2>&1 || [ ! -d "${REPO_ROOT}/node_modules" ]; }; then
-    cat >&2 <<'EOF'
+  LOCAL_CHECKS="run"
+  if has_script lint || has_script format; then
+    if ! command -v npm >/dev/null 2>&1; then
+      cat >&2 <<'EOF'
 ============================================================
-PUSH BLOCKED - local lint/format toolchain unavailable
+PUSH BLOCKED - npm unavailable
 
-This repository declares a lint or format check, but npm or node_modules is
-unavailable. Restore the repo-managed dependencies before
-pushing; CI must not be the first place these checks run.
+This repository declares a lint or format check, but npm is not on PATH. Node
+is, so this is a provisioning bug in the project image: report it and rebuild
+the container rather than pushing unchecked commits.
 ============================================================
 EOF
-    exit 2
+      exit 2
+    fi
+
+    if [ ! -d "${REPO_ROOT}/node_modules" ]; then
+      if ! LOCAL_CHECKS_BIN=$(resolve_sibling verity-local-checks); then
+        cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - local checks helper missing
+
+The agent-seed pre-push hook is installed but verity-local-checks could not be
+located. The two ship together, so this is a container-provisioning bug: report
+it and rebuild the container rather than pushing unchecked commits.
+============================================================
+EOF
+        exit 2
+      fi
+      SKIP_STATUS=0
+      "$LOCAL_CHECKS_BIN" status >/dev/null 2>&1 || SKIP_STATUS=$?
+      if [ -f "${REPO_ROOT}/package-lock.json" ] || [ -f "${REPO_ROOT}/npm-shrinkwrap.json" ]; then
+        INSTALL_CMD="npm ci --ignore-scripts"
+      else
+        INSTALL_CMD="npm install --ignore-scripts"
+      fi
+      case "$SKIP_STATUS" in
+        0)
+          echo "pre-push: Lint and format skipped (your choice for this session). Secret scan and code review still run." >&2
+          LOCAL_CHECKS="skip"
+          ;;
+        3)
+          cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - dependencies or check config changed
+
+Lint and format were skipped for this session, but package.json or the
+lockfile changed since, and the dependencies are still not installed.
+Ask the operator again — install the dependencies, or skip lint and format
+for this session — and run the matching command before pushing again:
+
+    Install and run checks:          (cd "$REPO_ROOT" && $INSTALL_CMD)
+    Skip lint/format this session:   verity-local-checks skip
+
+Secret scan and code review run either way. Do not bypass the hook.
+============================================================
+EOF
+          exit 2
+          ;;
+        *)
+          cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - lint and format checks can't run: dependencies are not installed
+
+This repository declares a lint or format check, but node_modules is missing.
+Installing runs code from the registry, so that is the operator's decision.
+Ask which one to do, then run the matching command and push again:
+
+    Install and run checks:          (cd "$REPO_ROOT" && $INSTALL_CMD)
+    Skip lint/format this session:   verity-local-checks skip
+
+The install disables lifecycle scripts; the checks themselves still execute
+project code. The skip is remembered for this checkout until package.json or
+the lockfile changes. Secret scan and code review run either way. Do not
+bypass the hook.
+============================================================
+EOF
+          exit 2
+          ;;
+      esac
+    fi
   fi
 
   # Run a repo check scoped to changed files when the repo defines a `<name>:changed`
@@ -320,7 +382,7 @@ EOF
     (cd "$REPO_ROOT" && npm run --silent "$full" >&2)
   }
 
-  if has_script lint; then
+  if [ "$LOCAL_CHECKS" = "run" ] && has_script lint; then
     if ! run_lint_or_format lint lint:changed '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$' \
       '(^|/)(eslint\.config\.[cm]?[jt]s|\.eslintrc[^/]*|package\.json|package-lock\.json|tsconfig[^/]*\.json)$'; then
       cat >&2 <<'EOF'
@@ -329,27 +391,21 @@ PUSH BLOCKED - lint failed
 
 Fix the ESLint errors above (CI would fail the required `lint` job on
 the same errors — CI lints the whole repo, so also run `npm run lint`
-locally if a cross-file rule may be involved). Bypass only in a real
-emergency with:
-
-    git push --no-verify
+locally if a cross-file rule may be involved).
 ============================================================
 EOF
       exit 2
     fi
   fi
 
-  if has_script format; then
+  if [ "$LOCAL_CHECKS" = "run" ] && has_script format; then
     if ! run_lint_or_format format format:changed '' \
       '(^|/)(\.prettierrc[^/]*|prettier\.config\.[cm]?[jt]s|\.prettierignore|\.editorconfig|package\.json|package-lock\.json)$'; then
       cat >&2 <<'EOF'
 ============================================================
 PUSH BLOCKED - format check failed
 
-Run `npm run format:write` to auto-fix, then re-commit. Bypass only in a
-real emergency with:
-
-    git push --no-verify
+Run `npm run format:write` to auto-fix, then re-commit.
 ============================================================
 EOF
       exit 2

@@ -673,6 +673,10 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/
 # with the container capability; inert without VERITY_PROJECT_REPO_URL.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-repo" /opt/agent-seed/bin/verity-repo
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
+# Records the operator's "skip lint/format while dependencies are missing" answer
+# for the pre-push hook; the hook resolves it as a sibling, the symlink below
+# lets the agent run the command the hook prints.
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -695,6 +699,7 @@ ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
+ln -sf /opt/agent-seed/bin/verity-local-checks /usr/local/bin/verity-local-checks
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan

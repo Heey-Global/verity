@@ -2,7 +2,11 @@
 # Verity git wrapper: worktree lifecycle belongs to the server. A shared
 # repository can contain live sessions invisible in this mount namespace;
 # prune would delete their indices even though their checkouts still exist.
-# This is defense in depth, not a filesystem isolation boundary.
+# It also keeps `git push` from stepping around the agent-seed pre-push gate
+# (`--no-verify`, or a one-off `core.hooksPath`): the gate offers a way through
+# every block it raises, so bypassing it is never the next step for an agent.
+# This is defense in depth, not a filesystem isolation boundary; the enforced
+# boundary is branch protection on the code host.
 # VERITY_GIT_GUARD_DISABLE=1 is an explicit administrative escape hatch.
 set -euo pipefail
 
@@ -33,6 +37,16 @@ fi
 args=("$@")
 n=${#args[@]}
 effective_cwd="$PWD"
+hooks_override=""
+
+# A `core.hooksPath` given on the command line displaces the installed seed
+# hooks for this one invocation. Keys are case-insensitive in git, so compare
+# lowercased; only the key matters, any value is a displacement.
+note_config_arg() {
+  case "${1,,}" in
+    core.hookspath=* | core.hookspath) hooks_override=1 ;;
+  esac
+}
 
 # --- find the subcommand, skipping git's global options ----------------------
 # Global options that consume the following argument when given separately.
@@ -58,7 +72,22 @@ while [ "$i" -lt "$n" ]; do
       i=$((i + 1))
       continue
       ;;
-    -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env)
+    -c | --config-env)
+      note_config_arg "${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      continue
+      ;;
+    -c?*)
+      note_config_arg "${a#-c}"
+      i=$((i + 1))
+      continue
+      ;;
+    --config-env=*)
+      note_config_arg "${a#--config-env=}"
+      i=$((i + 1))
+      continue
+      ;;
+    --git-dir | --work-tree | --namespace | --super-prefix)
       i=$((i + 2))
       continue
       ;;
@@ -81,6 +110,39 @@ while [ "$i" -lt "$n" ]; do
       ;;
   esac
 done
+
+# --- push: the pre-push gate is not optional ---------------------------------
+# `-n`/`--dry-run` runs no hook and is left alone. Options after `--` are
+# refspecs, not flags.
+if [ "$subcmd" = "push" ]; then
+  no_verify=""
+  j=$((subidx + 1))
+  while [ "$j" -lt "$n" ]; do
+    a="${args[$j]}"
+    case "$a" in
+      --) break ;;
+      --no-verify) no_verify=1 ;;
+    esac
+    j=$((j + 1))
+  done
+  if [ -n "$no_verify" ] || [ -n "$hooks_override" ]; then
+    {
+      if [ -n "$no_verify" ]; then
+        echo "verity git guard: refusing 'git push --no-verify'"
+      else
+        echo "verity git guard: refusing 'git push' with a core.hooksPath override"
+      fi
+      echo
+      echo "The pre-push gate names a way through every block it raises:"
+      echo "  code review     verity-code-review run, then verity-code-review mark"
+      echo "  lint/format     install the dependencies, or verity-local-checks skip"
+      echo "  secret          rewrite the commit, or add the fingerprint to .gitleaksignore"
+      echo "If this is an operator-directed push, re-run with VERITY_GIT_GUARD_DISABLE=1."
+    } >&2
+    exit 1
+  fi
+  exec "$REAL_GIT" "$@"
+fi
 
 if [ "$subcmd" != "worktree" ]; then
   exec "$REAL_GIT" "$@"
