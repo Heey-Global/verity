@@ -1412,7 +1412,7 @@ export class EventStore implements EventSink {
   ) {
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
-    this.liveMeetings = new LiveMeetingStore(db);
+    this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);

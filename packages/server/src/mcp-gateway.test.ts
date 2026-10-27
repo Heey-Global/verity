@@ -668,15 +668,17 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
     });
   });
 
-  it('refuses a call whose bearer now belongs to a different turn', async () => {
-    // The same string resolving to another turn is the reuse case: a released bearer whose
-    // digest was minted again is not the credential this call was admitted on.
-    let turnId = 'turn-1';
+  it.each([
+    { label: 'session', sessionId: 'sess-2', turnId: 'turn-1', allowed: false },
+    { label: 'turn', sessionId: 'sess-1', turnId: 'turn-2', allowed: false },
+    { label: 'unchanged caller', sessionId: 'sess-1', turnId: 'turn-1', allowed: true },
+  ])('revalidates $label after approval', async ({ sessionId, turnId, allowed }) => {
+    // A reused bearer must not transfer a parked approval to another session or turn.
+    let caller = { sessionId: 'sess-1', turnId: 'turn-1' };
     const { gateway, records, invokeTool } = harness({
-      resolveCaller: async ({ token }) =>
-        token === 'session-token' ? { sessionId: 'sess-1', turnId } : undefined,
+      resolveCaller: async ({ token }) => (token === 'session-token' ? caller : undefined),
       requestApproval: vi.fn(async () => {
-        turnId = 'turn-2';
+        caller = { sessionId, turnId };
         return ALLOW;
       }),
     });
@@ -685,9 +687,15 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
       token: 'session-token',
       body: call(),
     });
-    expect(response.status).toBe(401);
-    expect(invokeTool).not.toHaveBeenCalled();
-    expect(records.at(-1)).toMatchObject({ rejection: 'unauthenticated' });
+    if (allowed) {
+      expect(response.status).toBe(200);
+      expect(invokeTool).toHaveBeenCalledTimes(1);
+      expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ sessionId, turnId }));
+    } else {
+      expect(response.status).toBe(401);
+      expect(invokeTool).not.toHaveBeenCalled();
+      expect(records.at(-1)).toMatchObject({ rejection: 'unauthenticated' });
+    }
   });
 
   it('does not ask, and does not run, when the received record cannot be written', async () => {

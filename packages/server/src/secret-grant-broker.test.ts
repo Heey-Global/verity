@@ -95,13 +95,27 @@ describe('fake secret grant broker', () => {
     );
   });
 
-  it('burns the capability on a context mismatch', async () => {
+  it.each([
+    { label: 'request', overrides: { requestHash: 'b'.repeat(64) } },
+    { label: 'grant', overrides: { grantId: 'another-grant' } },
+  ])('burns the capability on a $label context mismatch', async ({ overrides }) => {
+    const service = broker();
+    const issued = await service.issue(claims());
+    await expect(service.redeem(issued.capability, redemption(overrides))).rejects.toThrow(
+      /context mismatch/,
+    );
+    await expect(service.redeem(issued.capability, redemption())).rejects.toThrow(/consumed/);
+  });
+
+  it('rejects inconsistent workload identity before consuming a valid capability', async () => {
     const service = broker();
     const issued = await service.issue(claims());
     await expect(
-      service.redeem(issued.capability, redemption({ requestHash: 'b'.repeat(64) })),
-    ).rejects.toThrow(/context mismatch/);
-    await expect(service.redeem(issued.capability, redemption())).rejects.toThrow(/consumed/);
+      service.redeem(issued.capability, redemption({ jobId: 'another-job' })),
+    ).rejects.toThrow(/job identity mismatch/);
+    await expect(service.redeem(issued.capability, redemption())).resolves.toMatchObject({
+      jobId: 'job-1',
+    });
   });
 
   it('allows only one winner under concurrent redemption', async () => {

@@ -64,6 +64,7 @@ describe.skipIf(!adminUrl)('restored database startup safety', () => {
             "SELECT git_user_name,transcribe_api_key FROM verity_settings WHERE id='global'",
           )
         ).rows[0];
+        if (!settings) throw new Error('Restored global settings row missing');
         expect(settings.git_user_name).toBe('Recovery fixture');
         expect(cipher.decrypt(settings.transcribe_api_key)).toBe('restored credential');
         expect([...result.revokedIds].sort()).toEqual(['journal', 'outbox']);

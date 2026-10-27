@@ -361,7 +361,10 @@ export class AttendeeMeetings {
   async edit(
     sessionId: string,
     id: string,
-    edits: Pick<LiveMeetingSyncRecord, 'speakerNames' | 'speakerCorrections' | 'speakerMerges'>,
+    edits: Pick<
+      LiveMeetingSyncRecord,
+      'title' | 'speakerNames' | 'speakerCorrections' | 'speakerMerges'
+    >,
   ) {
     return this.serial(async () => {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);

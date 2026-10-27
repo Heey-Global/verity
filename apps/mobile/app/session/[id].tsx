@@ -25,7 +25,7 @@ import {
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { Button } from '../../components/ui/Button';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
-import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
@@ -1276,7 +1276,10 @@ export const SessionChat = memo(function SessionChat({
   // the fix is a screen-reader mode that renders chronologically — those users
   // navigate by element focus, where the paging jumps this inversion removes barely
   // matter — not a per-row patch here.
-  const data = useMemo(() => [...chronologicalData].reverse(), [chronologicalData]);
+  const data = useMemo(
+    () => latestMeetingCards([...chronologicalData].reverse()),
+    [chronologicalData],
+  );
   const latestTranscriptRowKey =
     transcriptData.length > 0 ? rowKey(transcriptData[transcriptData.length - 1]) : null;
   const dataRef = useRef<Row[]>([]);

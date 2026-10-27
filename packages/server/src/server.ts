@@ -2281,7 +2281,8 @@ async function fileLiveMeeting(input: {
     if (!meeting || meeting.state === 'active') return null;
     const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
     const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
-    return { meeting, notes, insights: insights ?? [] };
+    const result = await input.eventStore.liveMeetings.result(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [], result };
   };
   const first = await load();
   if (!first) return;
@@ -2289,7 +2290,10 @@ async function fileLiveMeeting(input: {
   const meetingDir = knowledge
     ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
     : await ensureLegacyMeetingDirectory(session.worktree);
-  const title = liveMeetingTitle(first.meeting);
+  const title = liveMeetingTitle({
+    ...first.meeting,
+    title: first.meeting.title || first.result?.title || null,
+  });
   const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
   const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
   const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
@@ -2328,6 +2332,7 @@ async function fileLiveMeeting(input: {
         people: liveMeetingPeopleCount(current.meeting),
         notes: current.notes.length,
         answers: liveMeetingAnswerCount(events, current.meeting.id),
+        ...(current.result?.summary ? { summary: current.result.summary } : {}),
       };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
@@ -8462,6 +8467,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
+    onTasksChanged: () => resources.invalidate('/tasks'),
+    onResultChanged: (sessionId, meetingId) =>
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      ),
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -8494,7 +8504,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
       if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
-        return directMeetingQuery({ model, prompt, signal });
+        return directMeetingQuery({
+          model,
+          prompt,
+          signal,
+          maxOutputTokens: prompt.startsWith('Write a meeting result') ? 12000 : 2048,
+        });
       return conductor.query({
         prompt,
         model,
