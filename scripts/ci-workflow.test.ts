@@ -4097,6 +4097,29 @@ describe('managed installer CI acceptance', () => {
     entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
   );
 
+  it('keeps restore daemon sockets within the Linux Unix-socket path limit', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const assignment = source.match(/^ {2}local socket_dir=(.+)$/m)?.[0];
+    expect(assignment).toBeDefined();
+    const workTemplate = source.match(/^work=\$\(mktemp -d "(.+)"\)$/m)?.[1];
+    expect(workTemplate).toBeDefined();
+    const paths = ['original', 'fresh'].map((host) =>
+      execFileSync(
+        'bash',
+        [
+          '-c',
+          `RUNNER_TEMP=/home/runner/work/_temp; work="${workTemplate}"; daemon_name="$1"; socket_path() { ${assignment}; printf '%s' "$socket_dir/docker.sock"; }; socket_path`,
+          'socket-guard',
+          `verity-backup-restore-dind-40510879161-1-${host}`,
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    expect(new Set(paths).size).toBe(2);
+    // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
+    for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
+  });
+
   it('runs the candidate through the installer in a separate disposable daemon', () => {
     // A green legacy Compose smoke does not exercise the managed installer.
     // It gets its own matrix leg of the candidate image job, and no other gate.
