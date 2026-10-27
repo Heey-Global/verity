@@ -3,8 +3,8 @@
 // answers those three questions is shown (ADR 0028, "Presentation").
 import type { AuditOperationDetail, VerityClient } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams, type Href } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -62,7 +62,7 @@ export function AuditOperationView({
         setError(cause instanceof Error ? cause.message : 'Could not load this entry.'),
       );
   }, [client, operationId]);
-  useEffect(load, [load]);
+  useFocusEffect(load);
 
   if (operation === undefined) {
     return (

@@ -173,5 +173,17 @@ describe('audit operation screen', () => {
     expect(screen.getByText('4.57.3 · generation 14')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Fix login'));
     expect(mockPush).toHaveBeenCalledWith('/session/s1');
+    // Returning from the linked session must refresh an outcome that changed there.
+    auditOperation.mockResolvedValue({
+      ...op({ status: 'failed' }),
+      server: { release: '4.57.3', generation: 14 },
+      build: null,
+      imageRef: null,
+      gapWindow: null,
+      events: [],
+    });
+    await act(async () => refocus());
+    expect(await screen.findByText('Failed')).toBeOnTheScreen();
+    expect(auditOperation).toHaveBeenCalledTimes(2);
   });
 });
