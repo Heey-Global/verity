@@ -486,7 +486,7 @@ WRITTEN_PATHS+=("$GITCONFIG")
 # .gitignore. Git auto-loads ~/.config/git/ignore (no core.excludesFile).
 GIT_IGNORE_DIR="$REMOTE_HOME/.config/git"
 mkdir -p "$GIT_IGNORE_DIR"
-printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' > "$GIT_IGNORE_DIR/ignore"
+printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
 # Chown only the git subdir we own — NOT the `.config` parent, which on an
 # arbitrary base (python:3.12 etc.) may already hold other tooling whose
 # ownership a recursive chown would silently clobber.

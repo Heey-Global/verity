@@ -12,7 +12,8 @@
 #   verity-local-checks reset    # forget that decision; the hook asks again
 #   verity-local-checks status   # exit 0 skip active, 1 none, 3 stale (inputs changed)
 #
-# The marker (.agents/.local-checks-skip, never committed) carries a fingerprint
+# The marker (.agents/.local-checks-skip, listed in the sandbox's global git
+# ignore file next to the review marker, never committed) carries a fingerprint
 # of package.json and the lockfile. When either changes, the recorded answer no
 # longer covers what would be installed, so the marker is stale and the hook
 # asks again. Once node_modules exists the hook ignores the marker and runs the

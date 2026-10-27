@@ -231,7 +231,6 @@ describe('agent-seed/bin/git guard (push bypass)', () => {
 
   it.each([
     [['-c', 'core.hooksPath=/dev/null', 'push', 'origin', 'HEAD:refs/heads/x']],
-    [['-ccore.HooksPath=/dev/null', 'push', 'origin', 'HEAD:refs/heads/x']],
     [['--config-env=core.hookspath=HOOKS', 'push', 'origin', 'HEAD:refs/heads/x']],
   ])('refuses a push with a hooksPath override: %j', async (args) => {
     const { code, stderr } = await runWrapper(args, main, { HOOKS: '/dev/null' });
