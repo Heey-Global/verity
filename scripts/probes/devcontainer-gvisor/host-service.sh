@@ -83,7 +83,8 @@ run_probe() {
     sudo systemctl restart verity-build-storage.service
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
-        env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
+        env PATH="$PWD/node_modules/.bin:$PATH" GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+        VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
         PROBE_STORAGE_ROOT="$work/build-storage" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
         PROBE_EVIDENCE="$PROBE_EVIDENCE" PROBE_WARM="${PROBE_WARM:-0}" \
         node "$@"
