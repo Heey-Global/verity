@@ -21,10 +21,21 @@ function databaseUrl(admin: string, database: string): string {
 }
 const SCHEMA = `CREATE TABLE z_parent (id integer PRIMARY KEY, payload bytea NOT NULL, nullable text, document jsonb);
 CREATE TABLE a_child (id serial PRIMARY KEY, parent integer NOT NULL REFERENCES z_parent(id), value text NOT NULL);
-CREATE TABLE no_key (value text, n integer);`;
+CREATE TABLE no_key (value text, n integer);
+CREATE TABLE a_membership (parent integer PRIMARY KEY);
+CREATE FUNCTION add_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN INSERT INTO a_membership VALUES (NEW.id); RETURN NEW; END $$;
+CREATE TRIGGER create_membership AFTER INSERT ON z_parent FOR EACH ROW EXECUTE FUNCTION add_membership();
+CREATE FUNCTION passthrough() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+CREATE TRIGGER always_trigger BEFORE INSERT ON z_parent FOR EACH ROW EXECUTE FUNCTION passthrough();
+ALTER TABLE z_parent ENABLE ALWAYS TRIGGER always_trigger;
+CREATE TRIGGER replica_trigger BEFORE INSERT ON z_parent FOR EACH ROW EXECUTE FUNCTION passthrough();
+ALTER TABLE z_parent ENABLE REPLICA TRIGGER replica_trigger;
+CREATE TRIGGER disabled_trigger BEFORE INSERT ON z_parent FOR EACH ROW EXECUTE FUNCTION passthrough();
+ALTER TABLE z_parent DISABLE TRIGGER disabled_trigger;`;
 
 describe.skipIf(!adminUrl)('real PostgreSQL backup COPY round trip', () => {
-  it('preserves bytea, nulls, escaped text, sequence state and non-deferrable foreign keys', async () => {
+  it('preserves data, sequences, foreign keys and trigger modes without replaying trigger side effects', async () => {
     const admin = new pg.Pool({ connectionString: adminUrl!, max: 1 });
     const suffix = randomBytes(16).toString('hex');
     const original = 'verity_source_' + suffix;
@@ -95,6 +106,14 @@ describe.skipIf(!adminUrl)('real PostgreSQL backup COPY round trip', () => {
         (await restored.query("INSERT INTO a_child(parent,value) VALUES (1,'next') RETURNING id"))
           .rows[0].id,
       ).toBe(2);
+      expect((await restored.query('SELECT * FROM a_membership')).rows).toEqual([{ parent: 1 }]);
+      const triggers =
+        'SELECT tgname, tgenabled FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname';
+      expect((await restored.query(triggers)).rows).toEqual((await source.query(triggers)).rows);
+      await restored.query('INSERT INTO z_parent(id,payload) VALUES (2,$1)', [Buffer.from('next')]);
+      expect(
+        (await restored.query('SELECT parent FROM a_membership ORDER BY parent')).rows,
+      ).toEqual([{ parent: 1 }, { parent: 2 }]);
       await expect(
         restored.query("INSERT INTO a_child(parent,value) VALUES (999,'invalid')"),
       ).rejects.toThrow();
@@ -114,7 +133,9 @@ it.skipIf(!adminUrl)('rolls back a COPY interrupted by a probe cancellation', as
   const pool = new pg.Pool({ connectionString: databaseUrl(adminUrl!, name), max: 1 });
   try {
     await pool.query(
-      'CREATE TABLE test_data(id integer PRIMARY KEY); INSERT INTO test_data VALUES (42)',
+      `CREATE TABLE test_data(id integer PRIMARY KEY); INSERT INTO test_data VALUES (42);
+       CREATE FUNCTION cancellation_trigger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+       CREATE TRIGGER keep_enabled BEFORE INSERT ON test_data FOR EACH ROW EXECUTE FUNCTION cancellation_trigger();`,
     );
     const exported = await beginDatabaseExport(await pool.connect());
     const catalog = exported.catalog;
@@ -145,6 +166,9 @@ it.skipIf(!adminUrl)('rolls back a COPY interrupted by a probe cancellation', as
       controller.abort();
       await failed;
       expect((await writer.query('SELECT id FROM test_data')).rows).toEqual([{ id: 42 }]);
+      expect(
+        (await writer.query("SELECT tgenabled FROM pg_trigger WHERE tgname='keep_enabled'")).rows,
+      ).toEqual([{ tgenabled: 'O' }]);
     } finally {
       writer.release();
     }

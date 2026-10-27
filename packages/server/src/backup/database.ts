@@ -152,6 +152,15 @@ export async function importDatabaseExport(
   await client.query('BEGIN');
   try {
     await client.query(SETTINGS);
+    // COPY restores trigger-produced rows too; replaying user triggers duplicates those effects.
+    // Preserve each pinned trigger mode and let transaction rollback restore it on any failure.
+    const triggers = await client.query<{ table: string; name: string; mode: 'O' | 'A' | 'R' }>(
+      "SELECT c.relname AS table, t.tgname AS name, t.tgenabled AS mode FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled <> 'D' ORDER BY c.relname,t.tgname",
+    );
+    for (const trigger of triggers.rows)
+      await client.query(
+        `ALTER TABLE public.${identifier(trigger.table)} DISABLE TRIGGER ${identifier(trigger.name)}`,
+      );
     const names = catalog.tables.map((table) => `public.${identifier(table.name)}`);
     // Migrations may seed rows. Clear the entire application schema atomically before COPY.
     if (names.length) await client.query(`TRUNCATE ${names.join(',')} RESTART IDENTITY`);
@@ -184,6 +193,13 @@ export async function importDatabaseExport(
       await client.query(
         `ALTER TABLE ${constraint.table} ADD CONSTRAINT ${identifier(constraint.name)} ${constraint.definition.replace(/\s+NOT VALID$/i, '')}`,
       );
+    for (const trigger of triggers.rows) {
+      const mode =
+        trigger.mode === 'A' ? 'ENABLE ALWAYS' : trigger.mode === 'R' ? 'ENABLE REPLICA' : 'ENABLE';
+      await client.query(
+        `ALTER TABLE public.${identifier(trigger.table)} ${mode} TRIGGER ${identifier(trigger.name)}`,
+      );
+    }
     for (const sequence of catalog.sequences) {
       if (!/^-?[0-9]+$/.test(sequence.value)) throw new Error('Invalid backup sequence value');
       await client.query('SELECT setval($1::regclass, $2::bigint, $3::boolean)', [
