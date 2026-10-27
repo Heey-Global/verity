@@ -175,3 +175,15 @@ it('offers questions Verity noticed in its pane and turns them into research the
   );
   expect(await within(pane).findByText('Researching…')).toBeOnTheScreen();
 });
+
+it("holds the first speaker's place and keeps the status line to state and time", async () => {
+  client();
+  render(<MeetingScreen />);
+  expect(await screen.findByTestId('verity-pane')).toBeOnTheScreen();
+  // A dashed placeholder stands where the first speaker will appear, not a sentence.
+  expect(screen.getByText('No one yet')).toBeOnTheScreen();
+  expect(screen.getByLabelText('No one has spoken yet.')).toBeOnTheScreen();
+  const status = screen.getByTestId('meeting-live-status');
+  expect(status).toHaveTextContent(/^Recording · \d+:\d\d/);
+  expect(status).not.toHaveTextContent('In this room');
+});
