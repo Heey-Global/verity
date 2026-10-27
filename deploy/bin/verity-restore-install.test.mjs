@@ -63,7 +63,7 @@ verity_restore_install
 `;
   try {
     const child = spawn(
-      'bash',
+      '/bin/bash',
       ['-c', script, 'restore-shell', state, source, resolve('deploy/bin/verity-restore-install')],
       {
         env: {
@@ -100,7 +100,7 @@ verity_restore_install
     assert.equal(job.phase, 'trial');
     const before = await readFile(log, 'utf8');
     const mismatch = spawn(
-      'bash',
+      '/bin/bash',
       [
         '-c',
         script.replace('opt_restore_snapshot=7', 'opt_restore_snapshot=8'),

@@ -34,35 +34,39 @@ export function createRestoreTrial(adapters: RestoreTrialAdapters, now = Date.no
       done();
     });
     app.get('/health', () => Promise.resolve({ mode: 'recovery-trial' }));
-    app.post('/recovery/authenticate', async (request, reply) => {
-      const parsed = z
-        .object({ password: z.string().min(1).max(4096) })
-        .strict()
-        .safeParse(request.body);
-      request.body = undefined;
-      if (!parsed.success) return reply.code(400).send({ error: 'Invalid recovery request' });
-      if (authenticating || now() < nextAttempt)
-        return reply.code(429).send({ error: 'Recovery authentication rate limited' });
-      authenticating = true;
-      nextAttempt = now() + 5000;
-      try {
-        if (!(await adapters.authenticate(parsed.data.password)))
-          return reply.code(401).send({ error: 'Recovery authentication failed' });
-        const current = await adapters.review.load();
-        if (current?.status === 'complete')
-          return reply.code(409).send({ error: 'Device review already complete' });
-        const inventory = await adapters.inventory();
-        const token = await adapters.review.create(
-          inventory.devices,
-          inventory.revokedIds,
-          inventory.findings,
-        );
-        return { token };
-      } finally {
-        parsed.data.password = '';
-        authenticating = false;
-      }
-    });
+    app.post(
+      '/recovery/authenticate',
+      { config: { rateLimit: { max: 30, timeWindow: 60000 } } },
+      async (request, reply) => {
+        const parsed = z
+          .object({ password: z.string().min(1).max(4096) })
+          .strict()
+          .safeParse(request.body);
+        request.body = undefined;
+        if (!parsed.success) return reply.code(400).send({ error: 'Invalid recovery request' });
+        if (authenticating || now() < nextAttempt)
+          return reply.code(429).send({ error: 'Recovery authentication rate limited' });
+        authenticating = true;
+        nextAttempt = now() + 5000;
+        try {
+          if (!(await adapters.authenticate(parsed.data.password)))
+            return reply.code(401).send({ error: 'Recovery authentication failed' });
+          const current = await adapters.review.load();
+          if (current?.status === 'complete')
+            return reply.code(409).send({ error: 'Device review already complete' });
+          const inventory = await adapters.inventory();
+          const token = await adapters.review.create(
+            inventory.devices,
+            inventory.revokedIds,
+            inventory.findings,
+          );
+          return { token };
+        } finally {
+          parsed.data.password = '';
+          authenticating = false;
+        }
+      },
+    );
     const session = (header: string | undefined): string => {
       if (!header || !/^Bearer [A-Za-z0-9_-]{43}$/.test(header)) return '';
       return header.slice(7);
