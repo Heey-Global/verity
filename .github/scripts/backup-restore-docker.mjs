@@ -670,14 +670,31 @@ async function diagnoseActivation(emit = console.error) {
       container.labels?.['verity.managed-role'] ?? container.labels?.['com.docker.compose.service'];
     if (!roles.has(role)) continue;
     const state = await docker.inspectContainer(container.id);
+    const processState = await exec(
+      'docker',
+      ['inspect', '--format', '{{json .State}}', container.id],
+      {
+        maxBuffer: 16384,
+        timeout: 5000,
+      },
+    )
+      .then(({ stdout }) => JSON.parse(stdout))
+      .catch(() => ({}));
     emit(
       'Restore runtime diagnostic: ' +
-        JSON.stringify({ role, running: state.running, restarts: state.restartCount }),
+        JSON.stringify({
+          role,
+          running: state.running,
+          restarts: state.restartCount,
+          exitCode: Number.isSafeInteger(processState.ExitCode) ? processState.ExitCode : null,
+          oomKilled: processState.OOMKilled === true,
+          processError: typeof processState.Error === 'string' && processState.Error.length > 0,
+        }),
     );
     try {
       emit(formatRestoreLog(await docker.containerLogs(container.id, 100)));
     } catch (error) {
-      emit(formatRestoreFailure(error));
+      emit('Restore log diagnostic: ' + formatRestoreFailure(error));
       // The CLI is an independent fallback if the bounded API decoder cannot read the log.
       const logs = await exec('docker', ['logs', '--tail', '100', container.id], {
         maxBuffer: 128 * 1024,
