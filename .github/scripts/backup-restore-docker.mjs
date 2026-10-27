@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { formatRestoreFailure } from './backup-restore-diagnostics.mjs';
 import { execFile } from 'node:child_process';
 import {
   createHash,
@@ -651,5 +652,9 @@ async function exists(path) {
     throw error;
   }
 }
-if (action === 'capture') await capture();
-else await restore();
+try {
+  if (action === 'capture') await capture();
+  else await restore();
+} catch (error) {
+  process.stderr.write(formatRestoreFailure(error) + '\n', () => process.exit(1));
+}

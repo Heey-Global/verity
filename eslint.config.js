@@ -125,6 +125,7 @@ export default tseslint.config(
       'deploy/bin/*.mjs',
       '.github/scripts/backup-docker-smoke.mjs',
       '.github/scripts/backup-restore-docker.mjs',
+      '.github/scripts/backup-restore-diagnostics.mjs',
     ],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {

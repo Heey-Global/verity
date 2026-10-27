@@ -531,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs)
+                deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
                   lint=true
                   test=true
                   installer=true

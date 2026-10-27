@@ -67,6 +67,7 @@ start_host() {
   inner pull --quiet "$digest" >/dev/null
   inside mkdir -p "$root"
   host_docker cp "$repo_root/.github/scripts/backup-restore-docker.mjs" "$daemon_name:$root/driver.mjs"
+  host_docker cp "$repo_root/.github/scripts/backup-restore-diagnostics.mjs" "$daemon_name:$root/backup-restore-diagnostics.mjs"
 }
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
@@ -96,7 +97,11 @@ expect_interruption() {
   run_driver advance "$effect" >"$work/interruption.log" 2>&1
   status=$?
   set -e
-  [[ $status = 137 ]] || { echo "expected process interruption during $effect, got $status" >&2; exit 1; }
+  if [[ $status != 137 ]]; then
+    sed -n '/^Restore fixture failure: /p' "$work/interruption.log" >&2
+    echo "expected process interruption during $effect, got $status" >&2
+    exit 1
+  fi
 }
 prepare_reviewed() {
   run_driver begin
