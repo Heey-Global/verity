@@ -1049,6 +1049,7 @@ describe('native iOS compile gate', () => {
     expect(detector).toContain('scripts/enrollment-proof');
     expect(detector).toContain("'scripts/ios-pinned-tls-smoke*'");
     expect(detector).toContain('scripts/pinned-http-pool-smoke.swift');
+    expect(detector).toContain("'scripts/*ios_pinned_tls_server.py'");
     expect(detector).toContain('scripts/remote-control-tunnel');
     expect(detector).not.toMatch(/git diff[^;]*mobile-native-verify\.yml[\s\S]*compile=true/u);
     expect(named('Verify enrollment reference model and macOS Keychain probe')?.if).toContain(
