@@ -49,8 +49,12 @@ if [[ -x $client ]]; then
         workers=null
     fi
 fi
-jq -n --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson roots "$roots" \
+host_identity=
+if [[ -s /etc/machine-id ]]; then host_identity=$(sha256sum /etc/machine-id | cut -d' ' -f1); fi
+jq -n --arg hostBootId "$(cat /proc/sys/kernel/random/boot_id)" \
+    --arg hostIdentity "$host_identity" \
+    --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson roots "$roots" \
     --arg workerState "$worker_state" --argjson workers "$workers" \
-    '{schemaVersion:1,observedAt:$observedAt,roots:$roots,
+    '{schemaVersion:1,observedAt:$observedAt,hostBootId:$hostBootId,roots:$roots,
       accounting:"Root tree totals may overlap. Do not sum them or add logical cache/image sizes to them.",
-      worker:{state:$workerState,records:$workers},activeSolves:{state:"unavailable"}}'
+      worker:{state:$workerState,records:$workers},activeSolves:{state:"unavailable"}} + (if $hostIdentity == "" then {} else {hostIdentity:$hostIdentity} end)'

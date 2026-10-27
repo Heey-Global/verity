@@ -5,6 +5,10 @@ on:
     paths:
       - '.github/workflows/devcontainer-host-builder.yml'
       - 'scripts/probes/devcontainer-gvisor/**'
+      - 'scripts/build-storage-reconcile*'
+      - 'packages/server/src/build-storage.test.ts'
+      - 'packages/server/src/devcontainer-builder.test.ts'
+      - 'packages/server/src/provisioner.test.ts'
       - 'deploy/gvisor-ci.Dockerfile'
       - 'deploy/gvisor/versions.env'
       - 'features/verity-sandbox-toolkit/npm/devcontainers/**'
@@ -41,6 +45,10 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build the Server and dependencies
         run: npx tsc -b packages/server
+      - name: Check production storage reservation and offline recovery guards
+        run: |
+          npx vitest run packages/server/src/build-storage.test.ts packages/server/src/devcontainer-builder.test.ts scripts/build-storage-reconcile.test.ts --maxWorkers=1
+          npx vitest run packages/server/src/provisioner.test.ts --maxWorkers=1 -t 'retains the production snapshot'
       - name: Check runtime adapter and evidence rejection paths
         run: node --test scripts/probes/devcontainer-gvisor/*.test.mjs
       - name: Exercise Dockerfile and Feature builds with a runsc worker

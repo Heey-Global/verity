@@ -17,7 +17,7 @@ const compiled = new URL('../../../packages/server/dist/build-storage.js', impor
 // The host-service job builds the Server first. Container-only probes install
 // only the devcontainer CLI and cannot run the Server integration fixture.
 test(
-  'Server CI spawner records cold/warm phases and releases every owned attempt',
+  'Server CI spawner records cold/warm phases and releases successful attempts and retains uncertain remote failures',
   { skip: !existsSync(compiled) },
   () => {
     const root = mkdtempSync(join(tmpdir(), 'storage-spawner-'));
@@ -46,6 +46,8 @@ console.log('fixture build');
         report,
         JSON.stringify({
           schemaVersion: 1,
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
           observedAt,
           roots: ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
             kind,
@@ -115,7 +117,50 @@ process.exit(1);
       assert.equal(failure.status, 1);
       assert.match(failure.stderr, /runsc-real unavailable/);
       assert.match(failure.stderr, /Devcontainer build\/export failed/);
-      assert.deepEqual(readdirSync(join(root, 'owned')), []);
+      const retained = readdirSync(join(root, 'owned'));
+      assert.equal(retained.length, 1);
+      assert.equal(
+        JSON.parse(readFileSync(join(root, 'owned', retained[0], 'remote-operation.json'), 'utf8'))
+          .operation,
+        'build-export',
+      );
+      const crashRoot = join(root, 'crash-owned');
+      writeFileSync(
+        join(bin, 'devcontainer'),
+        `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const record = path.join(path.dirname(process.env.DOCKER_CONFIG), 'remote-operation.json');
+if (!fs.existsSync(record)) process.exit(9);
+fs.writeFileSync(path.join(process.env.DOCKER_CONFIG, 'image.tar'), 'possibly remotely owned');
+process.kill(process.ppid, 'SIGKILL');
+process.exit(1);
+`,
+        { mode: 0o755 },
+      );
+      const restartEnv = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        PROBE_STORAGE_ROOT: crashRoot,
+        PROBE_STORAGE_REPORT: report,
+        VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: 'unix:///fixture/buildkit.sock',
+      };
+      const invoke = () =>
+        spawnSync(
+          process.execPath,
+          [new URL('./server-spawner.mjs', import.meta.url).pathname, root, 'fixture:crash'],
+          { env: restartEnv, encoding: 'utf8', timeout: 15000 },
+        );
+      const crashed = invoke();
+      assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+      const attempts = readdirSync(crashRoot);
+      assert.equal(attempts.length, 1);
+      const attempt = join(crashRoot, attempts[0]);
+      assert(existsSync(join(attempt, 'remote-operation.json')));
+      const restarted = invoke();
+      assert.equal(restarted.status, 1, restarted.stderr);
+      assert.match(restarted.stderr, /termination is unconfirmed/);
+      assert(existsSync(join(attempt, 'remote-operation.json')));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -250,18 +250,62 @@ container creation, independently of disk admission.
 
 Contexts, temporary registry credentials and TARs live below the Server data
 root's private `build-storage/attempt-*` directories, rather than container
-`/tmp`. Successful, failed, timed-out and cancelled attempts remove their own
-files. Commands run in tracked process groups; timeouts terminate their
-descendants before releasing the attempt. No project volume, clone, worktree,
+`/tmp`. Confirmed successful operations and failures before remote work remove
+their owned files normally. Commands run in tracked process groups, but stopping
+a client does **not** establish that a remote solve or Engine import has stopped.
+
+Before each remote build/export or import, the Server durably records the
+operation, host identity and host boot ID. Only a successful command completion
+clears that record. Failure, timeout, cancellation or Server crash retains the
+reservation **and all potentially in-use owned artifacts**, including private
+registry configuration. These files remain private (directory mode 0700,
+credential mode 0600); reconciliation removes them. A subsequent successful
+client cleanup command does not clear uncertainty. Admission remains blocked
+across Server restarts, missing PIDs, changed PID namespaces and arbitrary age.
+The host storage reporter must supply identity fields; Repair an older builder
+installation before attempting a build with this Server version.
+
+Attempts with no pending remote operation may still be recovered when their
+recorded local owner and command groups are definitively gone in the same PID
+namespace. Unknown records remain blocked. No project volume, clone, worktree,
 rollback image or BuildKit snapshot is an owned attempt artifact.
 
-Before another attempt, recovery removes abandoned directories only when their
-recorded owner and command groups are definitively gone in the same PID
-namespace. A live group, unreadable record or changed namespace retains the
-files and blocks admission. For a container replacement, verify host builds and
-imports have stopped before reconciling only the reported owned attempt
-directory. Do not remove the entire data root or infer inactivity from a missing
-Server PID in a different namespace.
+### Offline reconciliation after an uncertain operation
+
+This conservative recovery path requires a **maintenance outage of the build
+host**, not just a Server restart. Do not delete marker files or infer remote
+termination from client PIDs, cache usage, image presence or elapsed time. No
+automatic reconciliation is attempted.
+
+1. Record the reported `attempt-*` name and locate its **host-side** directory
+   under the Server data volume's `build-storage` root. Keep the reviewed
+   repository checkout and a compatible Node.js executable available on the host.
+2. Arrange console access and reboot that same host into systemd emergency mode
+   (the one-boot kernel argument `systemd.unit=emergency.target`). This ends all
+   work from the recorded boot and prevents normal runtime/socket activation.
+   This interrupts every workload on the host; schedule it deliberately.
+3. In the host console, with the data filesystem mounted writable, run from the
+   reviewed checkout:
+
+   ```sh
+   sudo node scripts/build-storage-reconcile.mjs --attempt /absolute/server-data/build-storage/attempt-ID
+   ```
+
+   The tool verifies the same machine identity and a different boot ID, active
+   emergency mode, inactive normal/socket targets, stopped BuildKit/Docker/
+   containerd services, and absence of Server/runtime processes. It refuses
+   ambiguous evidence. It deletes only the selected owned attempt directory;
+   no daemon, image, cache, project or other attempt is selected. Run separately
+   for each reported pending attempt. A malformed or missing host identity
+   requires investigation; the tool deliberately provides no force flag.
+
+4. Return the host to its normal boot target using the host's established
+   maintenance procedure, refresh storage diagnostics, and retry the build.
+   Normal disk/inode admission still applies.
+
+This path does not cancel a live remote operation and does not prove that a
+smaller storage estimate is sufficient. Automated live reconciliation and
+representative native-workload sizing remain separate acceptance work.
 
 | Setting                     | Default | Meaning                                                                                |
 | --------------------------- | ------- | -------------------------------------------------------------------------------------- |

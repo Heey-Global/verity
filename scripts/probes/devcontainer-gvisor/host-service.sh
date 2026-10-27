@@ -85,7 +85,7 @@ run_probe() {
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" GITHUB_ACTIONS="$GITHUB_ACTIONS" \
         VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
-        PROBE_STORAGE_ROOT="$work/build-storage" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
+        PROBE_STORAGE_ROOT="${PROBE_STORAGE_ROOT_OVERRIDE:-$work/build-storage}" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
         PROBE_EVIDENCE="$PROBE_EVIDENCE" PROBE_WARM="${PROBE_WARM:-0}" \
         node "$@"
 }
@@ -188,5 +188,7 @@ expect_rejection "$name:missing" "$PROBE_EVIDENCE/missing-runtime.log"
 grep -F runsc-real "$PROBE_EVIDENCE/missing-runtime.log" > /dev/null
 sudo mv /usr/local/libexec/verity-buildkit/runsc-disabled /usr/local/libexec/verity-buildkit/runsc-real
 sudo systemctl stop verity-buildkit
-expect_rejection "$name:stopped" "$PROBE_EVIDENCE/stopped-builder.log"
+# Independent disposable admission root: the previous negative build intentionally
+# retains its uncertain reservation. Never release it merely to run another probe.
+PROBE_STORAGE_ROOT_OVERRIDE="$work/stopped-build-storage" expect_rejection "$name:stopped" "$PROBE_EVIDENCE/stopped-builder.log"
 printf 'Real Server spawner: host service built with gVisor, loaded image, and rejected both worker failures.\n' > "$PROBE_EVIDENCE/result.txt"

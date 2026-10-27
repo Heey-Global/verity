@@ -33,6 +33,8 @@ function fixture() {
       report,
       JSON.stringify({
         schemaVersion: 1,
+        hostBootId: '11111111-1111-4111-8111-111111111111',
+        hostIdentity: 'a'.repeat(64),
         observedAt: new Date(Date.now() - age).toISOString(),
         roots: ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
           kind,
@@ -313,4 +315,80 @@ describe('owned attempt recovery and cancellation', () => {
     f.local.availableBytes = 100 * GiB;
     manager.acquire().dispose();
   });
+});
+
+describe('durable remote operation guard', () => {
+  it.each(['timeout', 'abort', 'failure'] as const)(
+    'retains reservation and artifacts after remote %s',
+    async (reason) => {
+      const f = fixture();
+      const storage = f.manager();
+      const lease = storage.acquire();
+      const controller = new AbortController();
+      const archive = join(lease.directory, 'image.tar');
+      writeFileSync(archive, 'possibly in use remotely');
+      const pending = lease.run(
+        process.execPath,
+        ['-e', reason === 'failure' ? 'process.exit(1)' : 'setInterval(() => {}, 1000)'],
+        {
+          ...commandOptions,
+          timeout: reason === 'timeout' ? 50 : 5000,
+          signal: controller.signal,
+          remoteOperation: 'image-import',
+        },
+      );
+      if (reason === 'abort') controller.abort();
+      await expect(pending).rejects.toThrow();
+      lease.dispose();
+      expect(readFileSync(archive, 'utf8')).toBe('possibly in use remotely');
+      expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+      expect(() => f.manager().acquire()).toThrow('termination is unconfirmed');
+    },
+  );
+
+  it('does not reconcile a crash during remote work from a dead local owner', () => {
+    const f = fixture();
+    const lease = f.manager().acquire();
+    writeFileSync(
+      join(lease.directory, 'remote-operation.json'),
+      JSON.stringify({
+        version: 1,
+        operation: 'build-export',
+        startedAt: '2000-01-01T00:00:00.000Z',
+      }),
+    );
+    writeFileSync(
+      join(lease.directory, 'owner.json'),
+      JSON.stringify({
+        version: 1,
+        pid: 2147483647,
+        start: '0',
+        namespace: readlinkSync('/proc/self/ns/pid'),
+      }),
+    );
+    expect(() => f.manager().acquire()).toThrow('termination is unconfirmed');
+    expect(existsSync(lease.directory)).toBe(true);
+  });
+});
+
+it('refuses remote work without host identity before starting any command', async () => {
+  const f = fixture();
+  const data = JSON.parse(readFileSync(f.report, 'utf8'));
+  delete data.hostIdentity;
+  writeFileSync(f.report, JSON.stringify(data));
+  const lease = f.manager().acquire();
+  const marker = join(f.directory, 'command-started');
+  await expect(
+    lease.run(
+      process.execPath,
+      ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`],
+      {
+        ...commandOptions,
+        remoteOperation: 'build-export',
+      },
+    ),
+  ).rejects.toThrow('host identity is missing');
+  expect(existsSync(marker)).toBe(false);
+  lease.dispose();
+  expect(existsSync(lease.directory)).toBe(false);
 });

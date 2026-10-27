@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -54,6 +54,9 @@ test('read-only report attributes real filesystems and preserves unavailable evi
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.schemaVersion, 1);
+    assert.match(report.hostBootId, /^[a-f0-9-]{36}$/);
+    if (existsSync('/etc/machine-id')) assert.match(report.hostIdentity, /^[a-f0-9]{64}$/);
+    else assert.equal(report.hostIdentity, undefined);
     assert(report.roots.slice(0, 3).every((entry) => entry.state === 'available'));
     assert(Number.isFinite(Date.parse(report.roots[0].observedAt)));
     assert.equal(new Set(report.roots.slice(0, 3).map((entry) => entry.filesystemId)).size, 1);

@@ -566,6 +566,7 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
       {
         env,
         ...(signal === undefined ? {} : { signal }),
+        remoteOperation: 'build-export',
         timeout: 30 * 60_000,
         maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES,
       },
@@ -574,12 +575,19 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     await run('docker', ['load', '--input', archive], {
       env,
       ...(signal === undefined ? {} : { signal }),
+      remoteOperation: 'image-import',
       timeout: 15 * 60_000,
       maxBuffer: 1024 * 1024,
     });
     return built;
   } catch (cause) {
-    throw new Error(`Devcontainer ${phase} failed: ${buildFailureMessage(cause)}`, { cause });
+    throw new Error(
+      `Devcontainer ${phase} failed: ${buildFailureMessage(cause)}` +
+        (storageLease?.retainArtifacts
+          ? '. Remote termination is unconfirmed; further builds are blocked and owned files retained. Follow deploy/buildkit/README.md offline reconciliation; do not delete reservation records.'
+          : ''),
+      { cause },
+    );
   } finally {
     // Removing a remote driver only removes this private client record, never worker state.
     await run('docker', ['buildx', 'rm', builderName], {
@@ -588,7 +596,7 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
     }).catch(() => undefined);
-    rmSync(dockerConfigDir, { recursive: true, force: true });
+    if (!storageLease?.retainArtifacts) rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
 
@@ -5997,7 +6005,7 @@ export class ProvisionerImpl implements Provisioner {
       };
     } finally {
       try {
-        await snapshot?.dispose();
+        if (!storageLease?.retainArtifacts) await snapshot?.dispose();
       } finally {
         storageLease?.dispose();
       }

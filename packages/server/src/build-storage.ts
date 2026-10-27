@@ -1,5 +1,10 @@
 import { spawn } from 'node:child_process';
 import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  unlinkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,13 +14,18 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 const GiB = 1024 ** 3;
 const reportSchema = z.object({
   schemaVersion: z.literal(1),
   observedAt: z.iso.datetime(),
+  hostBootId: z.uuid().optional(),
+  hostIdentity: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   roots: z.array(
     z.object({
       kind: z.enum(['buildkit', 'docker', 'containerd', 'export', 'project']),
@@ -84,12 +94,15 @@ export function buildStoragePolicy(
 
 export interface BuildStorageLease {
   directory: string;
+  /** Remote work may still use the context or archive; preserve both and admission. */
+  readonly retainArtifacts: boolean;
   reserveBuild(): void;
   run(
     this: void,
     command: string,
     args: string[],
     options: {
+      remoteOperation?: 'build-export' | 'image-import';
       env: NodeJS.ProcessEnv;
       signal?: AbortSignal;
       timeout: number;
@@ -170,6 +183,10 @@ export class BuildStorage {
       if (!entry.name.startsWith('attempt-')) continue;
       if (!entry.isDirectory() || entry.isSymbolicLink()) unavailable('unrecognized attempt entry');
       const directory = join(this.root, entry.name);
+      if (existsSync(join(directory, 'remote-operation.json')))
+        unavailable(
+          `remote build/import termination is unconfirmed for ${entry.name}; admission and owned files remain reserved, including across restart. Follow deploy/buildkit/README.md offline reconciliation; do not delete reservation records`,
+        );
       try {
         const owner = ownerSchema.parse(
           JSON.parse(readFileSync(join(directory, 'owner.json'), 'utf8')),
@@ -218,8 +235,20 @@ export class BuildStorage {
     let running = false;
     let disposed = false;
     let reserved = false;
+    const remoteRecord = join(directory, 'remote-operation.json');
+    const syncDirectory = () => {
+      const fd = openSync(directory, 'r');
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    };
     return {
       directory,
+      get retainArtifacts() {
+        return existsSync(remoteRecord);
+      },
       reserveBuild: () => {
         if (disposed) throw new Error('Build storage lease was released');
         this.check(this.policy.estimateBytes, true);
@@ -227,96 +256,136 @@ export class BuildStorage {
       },
       run: async (command, args, options) => {
         if (disposed || running) throw new Error('Build storage command lease is not available');
+        if (options.remoteOperation !== undefined) {
+          if (existsSync(remoteRecord))
+            throw new Error(
+              'Remote operation termination is unconfirmed; offline reconciliation is required',
+            );
+          // Persist before spawning: a Server crash must never turn an unknown
+          // remote solve/import into a positively abandoned local-only attempt.
+          const report = reportSchema.parse(JSON.parse(readFileSync(this.reportFile, 'utf8')));
+          if (report.hostBootId === undefined || report.hostIdentity === undefined)
+            unavailable(
+              'host identity is missing; repair the host storage reporter before remote work',
+            );
+          writeFileSync(
+            remoteRecord,
+            JSON.stringify({
+              version: 1,
+              operation: options.remoteOperation,
+              hostBootId: report.hostBootId,
+              hostIdentity: report.hostIdentity,
+              startedAt: new Date().toISOString(),
+            }),
+            { mode: 0o600, flag: 'wx', flush: true },
+          );
+          syncDirectory();
+          for (const path of [this.root, dirname(this.root)]) {
+            const rootFd = openSync(path, 'r');
+            try {
+              fsyncSync(rootFd);
+            } finally {
+              closeSync(rootFd);
+            }
+          }
+        }
         running = true;
         try {
-          return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-            // The child records its group before executing any command. If the
-            // Server dies before that write, recovery can remove the attempt:
-            // set -e then prevents a late child from starting unreserved work.
-            const child = spawn(
-              'bash',
-              [
-                '-c',
-                'set -e; printf "%s\\n" "$$" > "$1"; shift; exec "$@"',
-                'verity-build-command',
-                join(directory, `child-${commandIndex++}`),
-                command,
-                ...args,
-              ],
-              {
-                env: options.env,
-                ...(options.signal === undefined ? {} : { signal: options.signal }),
-                detached: true,
-                stdio: ['ignore', 'pipe', 'pipe'],
-              },
-            );
-            let failure: unknown;
-            const stdout: Buffer[] = [];
-            const stderr: Buffer[] = [];
-            let outputBytes = 0;
-            const terminate = () => {
-              if (child.pid === undefined) return;
-              try {
-                process.kill(-child.pid, 'SIGKILL');
-              } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure ??= error;
-              }
-            };
-            const collect = (chunks: Buffer[], chunk: Buffer) => {
-              const remaining = Math.max(0, options.maxBuffer - outputBytes);
-              outputBytes += chunk.length;
-              if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
-              if (outputBytes > options.maxBuffer) {
-                failure ??= new Error('Build command output exceeded its buffer limit');
-                terminate();
-              }
-            };
-            child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk));
-            child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk));
-            child.once('error', (error) => {
-              failure ??= error;
-              // AbortSignal only sends SIGTERM to the leader. Terminate the
-              // whole group even when that leader ignores the signal.
-              terminate();
-            });
-            const timeout = setTimeout(() => {
-              failure ??= new Error('Build command timed out');
-              terminate();
-            }, options.timeout);
-            timeout.unref();
-            const monitor = setInterval(() => {
-              if (!reserved) return;
-              try {
-                this.check(0, true);
-              } catch (error) {
-                failure ??= error;
-                terminate();
-              }
-            }, 2000);
-            monitor.unref();
-            // Kill descendants even if the command's leader exits first.
-            child.once('exit', terminate);
-            child.once('close', (code, signal) => {
-              clearTimeout(timeout);
-              clearInterval(monitor);
-              const output = {
-                stdout: Buffer.concat(stdout).toString('utf8'),
-                stderr: Buffer.concat(stderr).toString('utf8'),
+          const result = await new Promise<{ stdout: string; stderr: string }>(
+            (resolve, reject) => {
+              // The child records its group before executing any command. If the
+              // Server dies before that write, recovery can remove the attempt:
+              // set -e then prevents a late child from starting unreserved work.
+              const child = spawn(
+                'bash',
+                [
+                  '-c',
+                  'set -e; printf "%s\\n" "$$" > "$1"; shift; exec "$@"',
+                  'verity-build-command',
+                  join(directory, `child-${commandIndex++}`),
+                  command,
+                  ...args,
+                ],
+                {
+                  env: options.env,
+                  ...(options.signal === undefined ? {} : { signal: options.signal }),
+                  detached: true,
+                  stdio: ['ignore', 'pipe', 'pipe'],
+                },
+              );
+              let failure: unknown;
+              const stdout: Buffer[] = [];
+              const stderr: Buffer[] = [];
+              let outputBytes = 0;
+              const terminate = () => {
+                if (child.pid === undefined) return;
+                try {
+                  process.kill(-child.pid, 'SIGKILL');
+                } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure ??= error;
+                }
               };
-              if (failure !== undefined || code !== 0) {
-                const reason =
-                  failure instanceof Error
-                    ? failure
-                    : new Error(`Build command exited ${code ?? signal}`);
-                reject(
-                  Object.assign(reason, {
-                    ...output,
-                    stderr: `${output.stderr}\n${reason.message}`,
-                  }),
-                );
-              } else resolve(output);
-            });
-          });
+              const collect = (chunks: Buffer[], chunk: Buffer) => {
+                const remaining = Math.max(0, options.maxBuffer - outputBytes);
+                outputBytes += chunk.length;
+                if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+                if (outputBytes > options.maxBuffer) {
+                  failure ??= new Error('Build command output exceeded its buffer limit');
+                  terminate();
+                }
+              };
+              child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk));
+              child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk));
+              child.once('error', (error) => {
+                failure ??= error;
+                // AbortSignal only sends SIGTERM to the leader. Terminate the
+                // whole group even when that leader ignores the signal.
+                terminate();
+              });
+              const timeout = setTimeout(() => {
+                failure ??= new Error('Build command timed out');
+                terminate();
+              }, options.timeout);
+              timeout.unref();
+              const monitor = setInterval(() => {
+                if (!reserved) return;
+                try {
+                  this.check(0, true);
+                } catch (error) {
+                  failure ??= error;
+                  terminate();
+                }
+              }, 2000);
+              monitor.unref();
+              // Kill descendants even if the command's leader exits first.
+              child.once('exit', terminate);
+              child.once('close', (code, signal) => {
+                clearTimeout(timeout);
+                clearInterval(monitor);
+                const output = {
+                  stdout: Buffer.concat(stdout).toString('utf8'),
+                  stderr: Buffer.concat(stderr).toString('utf8'),
+                };
+                if (failure !== undefined || code !== 0) {
+                  const reason =
+                    failure instanceof Error
+                      ? failure
+                      : new Error(`Build command exited ${code ?? signal}`);
+                  reject(
+                    Object.assign(reason, {
+                      ...output,
+                      stderr: `${output.stderr}\n${reason.message}`,
+                    }),
+                  );
+                } else resolve(output);
+              });
+            },
+          );
+          if (options.remoteOperation !== undefined) {
+            unlinkSync(remoteRecord);
+            syncDirectory();
+          }
+          return result;
         } finally {
           running = false;
         }
@@ -324,7 +393,7 @@ export class BuildStorage {
       dispose: () => {
         if (disposed) return;
         if (running) throw new Error('Cannot release storage while a build command is running');
-        rmSync(directory, { recursive: true, force: true });
+        if (!existsSync(remoteRecord)) rmSync(directory, { recursive: true, force: true });
         disposed = true;
         this.held = false;
       },

@@ -1,3 +1,4 @@
+import { BuildStorage } from './build-storage.js';
 import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID } from 'node:crypto';
 import {
@@ -6832,6 +6833,69 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
     return { root, clonePath };
   }
+
+  it('retains the production snapshot and admission after uncertain remote failure', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const report = join(root, 'report.json');
+      writeFileSync(
+        report,
+        JSON.stringify({
+          schemaVersion: 1,
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
+          observedAt: new Date().toISOString(),
+          roots: [],
+        }),
+      );
+      const storage = new BuildStorage(
+        join(root, 'build-storage'),
+        report,
+        { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+        () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+      );
+      // Host admission is independently tested; give this integration a fresh full report.
+      const data = JSON.parse(readFileSync(report, 'utf8'));
+      data.roots = ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+        kind,
+        observedAt: data.observedAt,
+        state: 'available',
+        filesystemId: 'fixture',
+        availableBytes: 1e12,
+        freeInodes: 1e9,
+      }));
+      writeFileSync(report, JSON.stringify(data));
+      let snapshot = '';
+      const build: DevcontainerBuildSpawner = async ({ storageLease, workspaceFolder }) => {
+        snapshot = workspaceFolder;
+        return await storageLease!.run(process.execPath, ['-e', 'process.exit(1)'], {
+          env: process.env,
+          timeout: 1000,
+          maxBuffer: 1024,
+          remoteOperation: 'build-export',
+        });
+      };
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow();
+      expect(snapshot).not.toBe('');
+      expect(existsSync(join(snapshot, '.devcontainer', 'devcontainer.json'))).toBe(true);
+      expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it.each(['build', 'cached', 'failure'] as const)(
     'reserves images before cache lookup through container creation, then releases (%s)',

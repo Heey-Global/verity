@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultDevcontainerBuildSpawner, devcontainerBuilderEndpoint } from './provisioner.js';
+import { BuildStorage, type BuildStorageLease } from './build-storage.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 
 const roots: string[] = [];
@@ -35,11 +36,14 @@ if (${JSON.stringify(fail)} === 'load' && args[0] === 'load') process.exit(1);`,
   vi.stubEnv('BUILDX_BUILDER', 'ambient-unsafe-builder');
   vi.stubEnv('BUILDKIT_HOST', 'tcp://unsafe:1234');
   return {
-    run: () =>
+    root,
+    run: (storageLease?: BuildStorageLease, signal?: AbortSignal) =>
       defaultDevcontainerBuildSpawner({
         workspaceFolder: root,
         imageName: 'probe:test',
         dockerHost: 'unix:///target/docker.sock',
+        ...(storageLease === undefined ? {} : { storageLease }),
+        ...(signal === undefined ? {} : { signal }),
       }),
     calls: () =>
       readFileSync(log, 'utf8')
@@ -131,3 +135,128 @@ describe('secure devcontainer builder selection', () => {
     },
   );
 });
+
+describe('production spawner remote reservation lifecycle', () => {
+  it.each(['build', 'load', undefined] as const)(
+    'preserves uncertain remote artifacts on %s and releases confirmed success',
+    async (failure) => {
+      const f = fixture(failure);
+      const root = join(f.root, 'build-storage');
+      const report = join(f.root, 'report.json');
+      writeFileSync(
+        report,
+        JSON.stringify({
+          schemaVersion: 1,
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
+          observedAt: new Date().toISOString(),
+          roots: ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+            kind,
+            state: 'available',
+            observedAt: new Date().toISOString(),
+            filesystemId: 'test',
+            availableBytes: 1e12,
+            freeInodes: 1e9,
+          })),
+        }),
+      );
+      const manager = () =>
+        new BuildStorage(
+          root,
+          report,
+          { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+          () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+        );
+      const storage = manager();
+      const lease = storage.acquire();
+      lease.reserveBuild();
+      if (failure === undefined) await f.run(lease);
+      else await expect(f.run(lease)).rejects.toThrow('failed');
+      const calls = f.calls();
+      const config = calls[0]!.env.DOCKER_CONFIG!;
+      expect(lease.retainArtifacts).toBe(failure !== undefined);
+      lease.dispose();
+      if (failure === undefined) {
+        expect(existsSync(config)).toBe(false);
+        storage.acquire().dispose();
+        manager().acquire().dispose();
+      } else {
+        expect(existsSync(config)).toBe(true);
+        expect(
+          JSON.parse(readFileSync(join(lease.directory, 'remote-operation.json'), 'utf8')),
+        ).toMatchObject({ operation: failure === 'build' ? 'build-export' : 'image-import' });
+        // Recovery must not trust local process death, namespace replacement or age.
+        writeFileSync(
+          join(lease.directory, 'owner.json'),
+          JSON.stringify({
+            version: 1,
+            pid: 2147483647,
+            start: '0',
+            namespace: 'previous-server',
+          }),
+        );
+        expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+        expect(() => manager().acquire()).toThrow('termination is unconfirmed');
+        expect(existsSync(config)).toBe(true);
+      }
+    },
+  );
+});
+
+it.each([
+  ['build', 'timeout'],
+  ['build', 'abort'],
+  ['load', 'timeout'],
+  ['load', 'abort'],
+] as const)(
+  'production %s %s retains admission after client termination',
+  async (phase, reason) => {
+    const f = fixture();
+    const ready = join(f.root, 'remote-started');
+    const script = `#!/usr/bin/env node
+const fs = require('node:fs');
+if (${JSON.stringify(phase)} === 'build' || process.argv[2] === 'load') {
+  fs.writeFileSync(${JSON.stringify(ready)}, 'started');
+  setInterval(() => {}, 1000);
+}
+`;
+    writeFileSync(join(f.root, phase === 'build' ? 'devcontainer' : 'docker'), script, {
+      mode: 0o755,
+    });
+    const report = join(f.root, 'report.json');
+    writeFileSync(
+      report,
+      JSON.stringify({
+        schemaVersion: 1,
+        observedAt: new Date().toISOString(),
+        hostBootId: '11111111-1111-4111-8111-111111111111',
+        hostIdentity: 'a'.repeat(64),
+        roots: [],
+      }),
+    );
+    const storage = new BuildStorage(
+      join(f.root, 'build-storage'),
+      report,
+      { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+      () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+    );
+    const lease = storage.acquire();
+    const run = lease.run;
+    lease.run = (command, args, options) =>
+      run(command, args, {
+        ...options,
+        timeout: reason === 'timeout' && options.remoteOperation ? 150 : options.timeout,
+      });
+    const controller = new AbortController();
+    const pending = f.run(lease, controller.signal);
+    const rejected = expect(pending).rejects.toThrow(reason === 'abort' ? 'aborted' : 'timed out');
+    if (reason === 'abort') {
+      await expect.poll(() => existsSync(ready), { timeout: 3000 }).toBe(true);
+      controller.abort();
+    }
+    await rejected;
+    expect(lease.retainArtifacts).toBe(true);
+    lease.dispose();
+    expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+  },
+);
