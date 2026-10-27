@@ -65,7 +65,9 @@ export class BackupDeviceReview {
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw new Error('Recovery review state invalid; device access remains blocked');
+      throw new Error('Recovery review state invalid; device access remains blocked', {
+        cause: error,
+      });
     }
   }
   private authorize(
