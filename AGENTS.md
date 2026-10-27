@@ -85,14 +85,18 @@ Treat the checked-in `maxWorkers` / `-j` / `--parallel` values as an upper
 bound, never a target; when a run exhausts memory, narrow it to fewer files
 rather than giving it more heap.
 
-Pushing runs the gate in `agent-seed/hooks/pre-push`: a gitleaks scan on every
-branch, then a code review whose receipt is `.agents/.last-code-review-sha` — a
-per-checkout marker, never committed. Run `verity-code-review run` and
-`verity-code-review mark` rather than reaching for `--no-verify`. The scan is
-the last point at which a leaked credential is still local; once pushed it is
-burned and has to be rotated, whoever force-updates the branch afterwards. Do
-not commit credentials, private deployment data, generated local state, or
-`.env` files in the first place.
+Pushing runs the gate in `agent-seed/hooks/pre-push` on every branch: a
+gitleaks scan, the repository's lint and format scripts, then a code review
+whose receipt is `.agents/.last-code-review-sha` — a per-checkout marker, never
+committed. Run `verity-code-review run` and `verity-code-review mark`; the
+sandbox git wrapper refuses `git push --no-verify`. When the dependencies are
+not installed, the hook stops and asks: the operator chooses between installing
+them (`npm ci --ignore-scripts`) and skipping lint and format for the session
+(`verity-local-checks skip`, remembered per checkout until `package.json` or
+the lockfile changes). The scan is the last point at which a leaked credential
+is still local; once pushed it is burned and has to be rotated, whoever
+force-updates the branch afterwards. Do not commit credentials, private
+deployment data, generated local state, or `.env` files in the first place.
 
 In the final reply, briefly state what changed, which checks passed, and any
 relevant verification gaps. Describe scoped checks accurately; do not imply

@@ -1,3 +1,5 @@
+import { sessionGoogleStatus } from './session-google-status.js';
+import { ForgeMergePermissionError } from './forge-provider.js';
 import {
   createCachedProjectTokenMint,
   createGitHubAppProjectTokenMint,
@@ -6176,6 +6178,7 @@ describe('PATCH /projects/:id/settings', () => {
       method: 'PATCH',
       url: '/projects/p-settings/settings',
       payload: {
+        devcontainerEnabled: false,
         dopplerProject: ' verity ',
         dopplerConfig: ' prod ',
         defaultBranch: ' main ',
@@ -6187,6 +6190,7 @@ describe('PATCH /projects/:id/settings', () => {
     expect(res.json()).toMatchObject({
       settings: {
         projectId: 'p-settings',
+        devcontainerEnabled: false,
         dopplerProject: 'verity',
         dopplerConfig: 'prod',
         defaultBranch: 'main',
@@ -6693,6 +6697,7 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
+      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
       sessionId: 's1',
       worktree: '/wt/s1',
       model: 'm',
@@ -9895,7 +9900,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it('returns 409 and asks the agent to fix the PR when GitHub rejects the merge', async () => {
+  it('returns 409 without an agent turn when merge rejection has no confirmed repairable cause', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const withMerge = buildServer({
       eventStore: ctx.store,
@@ -9914,13 +9919,116 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('#119') });
     // A rejected merge posts no marker (nothing landed).
     expect(emitMerged).not.toHaveBeenCalled();
-    expect(dispatchTurn).toHaveBeenCalledWith(
-      's1',
-      expect.stringContaining('GitHub rejected the merge for pull request #119'),
-      undefined,
-      { displayPrompt: 'Fix merge for PR #119' },
-    );
+    expect(dispatchTurn).not.toHaveBeenCalled();
     await withMerge.close();
+  });
+
+  it.each([true, false])(
+    'never dispatches an agent for permission or unknown thrown errors: %s',
+    async (permission) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        mergePr: vi
+          .fn()
+          .mockRejectedValue(
+            permission ? new ForgeMergePermissionError() : new Error('network failed'),
+          ),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(permission ? 403 : 409);
+        if (permission) expect(response.json().error).toContain('maintainer');
+        expect(dispatchTurn).not.toHaveBeenCalled();
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it.each([
+    { mergeState: 'dirty', pipeline: 'unknown', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'clean', pipeline: 'failure', viewerCanMerge: undefined, repair: true },
+    { mergeState: 'unstable', pipeline: 'failure', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'clean', pipeline: 'unknown', viewerCanMerge: undefined, repair: false },
+    { mergeState: 'dirty', pipeline: 'failure', viewerCanMerge: false, repair: false },
+  ] as const)(
+    'only dispatches a repair for confirmed fixable rejection: %j',
+    async ({ repair, viewerCanMerge, ...status }) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feature');
+      let calls = 0;
+      const withMerge = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<
+          Parameters<typeof buildServer>[0]['branches']
+        >,
+        branchPrStatus: vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(
+              prStatus(
+                ++calls === 1
+                  ? { pipeline: 'success', mergeable: true }
+                  : { ...status, ...(viewerCanMerge === undefined ? {} : { viewerCanMerge }) },
+              ),
+            ),
+          ),
+        mergePr: vi.fn().mockResolvedValue(false),
+      });
+      try {
+        const response = await withMerge.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(409);
+        expect(dispatchTurn).toHaveBeenCalledTimes(repair ? 1 : 0);
+        if (repair)
+          expect(dispatchTurn.mock.calls[0]?.[1]).toContain('Do not change repository permissions');
+      } finally {
+        await withMerge.close();
+      }
+    },
+  );
+
+  it('does not call the merge provider when its credential explicitly lacks permission', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feature');
+    const mergePr = vi.fn().mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi
+        .fn()
+        .mockResolvedValue(
+          prStatus({ pipeline: 'unknown', mergeable: true, viewerCanMerge: false }),
+        ),
+      mergePr,
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe('merge_permission_denied');
+      expect(mergePr).not.toHaveBeenCalled();
+      expect(dispatchTurn).not.toHaveBeenCalled();
+    } finally {
+      await withMerge.close();
+    }
   });
 
   it.each([
@@ -12582,6 +12690,7 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'verity-__local__--my-project',
       state: 'active',
     });
+    const dataRoot = mkdtempSync(join(worktreeRoot, 'local-documents-'));
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/__local__-my-project/.verity-sessions/agent-local',
@@ -12591,7 +12700,8 @@ describe('POST /sessions with project field (#174)', () => {
       bus,
       conductor,
       provisioner: fakeProvisioner(),
-      projectCloneRoot: '/data/dev',
+      dataRoot,
+      projectCloneRoot: join(dataRoot, 'workspaces'),
       projectBackend: fakeProjectBackend,
       projectWorktrees: () => projectWorktrees,
     });
@@ -12603,11 +12713,12 @@ describe('POST /sessions with project field (#174)', () => {
       });
 
       expect(res.statusCode).toBe(201);
+      expect(projectWorktrees.add).not.toHaveBeenCalled();
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({
         sessionId,
         projectId: 'p-local-active',
-        worktree: '/data/dev/__local__-my-project/.verity-sessions/agent-local',
+        worktree: expect.stringContaining('/__local__-my-project/.verity-document-sessions/'),
       });
     } finally {
       await a.close();
@@ -14021,6 +14132,40 @@ describe('DELETE /projects/:id', () => {
       })),
     };
   }
+
+  it.each([false, true])(
+    'runs image cleanup only after hiding, without making cleanup failure undo deletion (%s)',
+    async (fail) => {
+      await ctx.store.upsertProject({
+        id: 'p-image-delete',
+        owner: 'org',
+        repo: 'repo',
+        containerName: 'dev-image-delete',
+        state: 'active',
+      });
+      let hiddenAtCleanup: Date | null | undefined;
+      const cleanup = vi.fn(async (id: string) => {
+        hiddenAtCleanup = (await ctx.store.getProject(id))?.hiddenAt;
+        if (fail) throw new Error('image busy');
+      });
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        deprovisioner: fakeDeprovisioner(),
+        onProjectHidden: cleanup,
+      });
+      try {
+        const res = await a.inject({ method: 'DELETE', url: '/projects/p-image-delete' });
+        expect(res.statusCode).toBe(200);
+        expect(cleanup).toHaveBeenCalledExactlyOnceWith('p-image-delete');
+        expect(hiddenAtCleanup).toBeInstanceOf(Date);
+        expect((await ctx.store.getProject('p-image-delete'))?.hiddenAt).toBeInstanceOf(Date);
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({
@@ -16769,7 +16914,7 @@ describe('vulnerability scan session integration', () => {
         >();
         expect(sessions.find((s) => s.sessionId === 'vuln-session')?.attention).toContainEqual({
           code: 'vulnerability_new',
-          message: '1 new vulnerability',
+          message: '1 new vulnerable package',
         });
       });
       const projects = (await server.inject('/projects')).json<

@@ -1,3 +1,7 @@
+import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
+import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
+import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
+import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import {
@@ -8,7 +12,8 @@ import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
-import type { FindingGroup, ProjectDriveFolder, VulnerabilityFinding } from '@verity/mobile';
+import type { ProjectDriveFolder } from '@verity/mobile';
+import type { PackageFindings } from '../../components/vulnerability/PackageFindings';
 import {
   useGoogleAccountPicker,
   googleAccountSupports,
@@ -288,9 +293,10 @@ import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
-  hasConnectedGoogleAccount,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
+  chatAccountPickAction,
+  GOOGLE_SERVICE_NAMES,
   type GoogleService,
 } from '../../lib/sessionGoogleAccess';
 import {
@@ -621,6 +627,9 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   worktree: 'folder',
   knowledge: KNOWLEDGE_ICON,
   shared: KNOWLEDGE_ICON,
+  documents: 'folder',
+  sources: KNOWLEDGE_ICON,
+  drafts: 'folder',
 };
 
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
@@ -692,6 +701,8 @@ export const SessionChat = memo(function SessionChat({
     name,
     model: currentModel,
     projectId,
+    googleStatus,
+    detailLoaded,
     switchingModel,
     modelSwitchPending,
     terminationUnconfirmed,
@@ -740,58 +751,33 @@ export const SessionChat = memo(function SessionChat({
   const [contactsConnection, setContactsConnection] = useState<ContactsSessionConnection | null>(
     null,
   );
-  useFocusEffect(
-    useCallback(() => {
-      if (!loaded) return;
-      let active = true;
-      setLinkedSessions([]);
-      const refresh = () => {
-        return client
-          .listSessionLinks(sessionId)
-          .then((links) => {
-            if (active) setLinkedSessions(links);
-          })
-          .catch(() => undefined);
-      };
-      const detach = subscribeLiveRefresh(
-        client,
-        refresh,
-        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
-        [{ path: `/sessions/${encodeURIComponent(sessionId)}/links` }],
-        { initial: true },
-      );
-      return () => {
-        active = false;
-        detach();
-      };
-    }, [client, sessionId, loaded]),
+  useEffect(() => {
+    setLinkedSessions([]);
+    setPendingLinkedMessages([]);
+  }, [client, sessionId]);
+  const readLinks = useCallback(
+    async (signal: AbortSignal) => {
+      const links = await client.listSessionLinks(sessionId, signal);
+      if (!signal.aborted) setLinkedSessions(links);
+    },
+    [client, sessionId],
   );
-  useFocusEffect(
-    useCallback(() => {
-      if (!loaded) return;
-      let active = true;
-      setPendingLinkedMessages([]);
-      const refresh = () => {
-        return client
-          .listPendingLinkedMessages(sessionId)
-          .then((items) => {
-            if (active) setPendingLinkedMessages(items);
-          })
-          .catch(() => undefined);
-      };
-      const detach = subscribeLiveRefresh(
-        client,
-        refresh,
-        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
-        [{ path: `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals` }],
-        { initial: true },
-      );
-      return () => {
-        active = false;
-        detach();
-      };
-    }, [client, sessionId, loaded]),
+  const readApprovals = useCallback(
+    async (signal: AbortSignal) => {
+      const items = await client.listPendingLinkedMessages(sessionId, signal);
+      if (!signal.aborted) setPendingLinkedMessages(items);
+    },
+    [client, sessionId],
   );
+  useFocusedSessionRead(client, sessionId, 'links', optionalWorkReady, readLinks);
+  useFocusedSessionRead(
+    client,
+    sessionId,
+    'linked-message-approvals',
+    optionalWorkReady,
+    readApprovals,
+  );
+
   const decideLinkedMessage = (id: string, decision: PermissionDecision): void => {
     setDecidingLinkedMessage(id);
     void client
@@ -856,8 +842,19 @@ export const SessionChat = memo(function SessionChat({
     modelOrder,
     moreModels,
     allowedAgents,
-    refresh: refreshModels,
-  } = useModels(client, optionalWorkReady, projectId);
+    loading: modelsLoading,
+    error: modelsError,
+    cancel: cancelModelRead,
+  } = useModels(client, enginePickerOpen, projectId);
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        cancelModelRead();
+        setEnginePickerOpen(false);
+      },
+      [cancelModelRead, sessionId],
+    ),
+  );
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
   const [automationReady, setAutomationReady] = useState(false);
@@ -980,9 +977,7 @@ export const SessionChat = memo(function SessionChat({
   }, [applyAutomation, automation, client, sessionId]);
 
   const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
-  const [mainFixGroups, setMainFixGroups] = useState<FindingGroup<VulnerabilityFinding>[] | null>(
-    null,
-  );
+  const [mainFixGroups, setMainFixGroups] = useState<PackageFindings[] | null>(null);
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
@@ -1412,9 +1407,9 @@ export const SessionChat = memo(function SessionChat({
   }, [messages.length]);
   const reportScrollDebug = useCallback(
     (event: string, data: Record<string, unknown> = {}) => {
-      const seq = (scrollDebugSeqRef.current += 1);
-      void client
-        .reportScrollDiagnostic(sessionId, {
+      reportRecordedScrollDiagnostic(() => {
+        const seq = (scrollDebugSeqRef.current += 1);
+        return client.reportScrollDiagnostic(sessionId, {
           event,
           seq,
           at: Date.now(),
@@ -1429,8 +1424,8 @@ export const SessionChat = memo(function SessionChat({
             userScrollActive: userScrollActiveRef.current,
             ...data,
           },
-        })
-        .catch(() => undefined);
+        });
+      });
     },
     [client, sessionId],
   );
@@ -2594,49 +2589,24 @@ export const SessionChat = memo(function SessionChat({
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
   const [chooseGoogleAccount, googleAccountSheet] = useGoogleAccountPicker();
-  const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      setGoogleConnected(false);
-      void hasConnectedGoogleAccount(client, sessionId)
-        .then((connection) => {
-          if (active) setGoogleConnected(connection);
-        })
-        .catch(() => undefined);
-      void client
-        .getSessionGoogleWorkspaceFile(sessionId)
-        .then((file) => {
-          if (active) setWorkspaceFile(file);
-        })
-        .catch(() => undefined);
-      void client
-        .getSessionGmailConnection(sessionId)
-        .then((connection) => {
-          if (active) setGmailConnection(connection);
-        })
-        .catch(() => undefined);
-      void client
-        .getSessionCalendarConnection(sessionId)
-        .then((connection) => {
-          if (active) setCalendarConnection(connection);
-        })
-        .catch(() => undefined);
-      void client
-        .getSessionContactsConnection(sessionId)
-        .then((connection) => {
-          if (active) setContactsConnection(connection);
-        })
-        .catch(() => undefined);
-      return () => {
-        active = false;
-      };
-    }, [client, projectId, sessionId]),
-  );
+  const { status: effectiveGoogleStatus, invalidate: invalidateGoogleStatus } =
+    useSessionGoogleStatus(
+      client,
+      sessionId,
+      googleStatus,
+      detailLoaded === true,
+      optionalWorkReady,
+    );
+  useEffect(() => {
+    setWorkspaceFile(effectiveGoogleStatus?.workspaceFile ?? null);
+    setGmailConnection(effectiveGoogleStatus?.gmail ?? null);
+    setCalendarConnection(effectiveGoogleStatus?.calendar ?? null);
+    setContactsConnection(effectiveGoogleStatus?.contacts ?? null);
+  }, [effectiveGoogleStatus]);
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
   const dead = resumable === false;
@@ -2891,6 +2861,11 @@ export const SessionChat = memo(function SessionChat({
   // Cap on attachments per turn — mirrors the server's MAX_ATTACHMENTS so the UI
   // never lets the operator build a turn the server will 400.
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const {
+    connected: googleConnected,
+    loading: googleCatalogLoading,
+    error: googleCatalogError,
+  } = useGoogleAccountAvailability(client, sessionId, attachMenuOpen);
   // Screen position of the composer's paperclip, so the attach menu docks to it.
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
@@ -3231,24 +3206,49 @@ export const SessionChat = memo(function SessionChat({
   }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
+      const isCurrent = invalidateGoogleStatus();
+      if (!isCurrent()) return;
       setAttachMenuOpen(false);
       void (async () => {
         const accounts = (await client.listGoogleAccounts()).filter((account) =>
           googleAccountSupports(account, service),
         );
-        const status = await client.getSessionGoogleAccess(sessionId, service);
-        const choice = await chooseGoogleAccount({
+        if (!isCurrent()) return;
+        const [status, project] = await Promise.all([
+          client.getSessionGoogleAccess(sessionId, service),
+          // The project grant only decides inherit versus pin, so an unreadable
+          // one must not block choosing an account for this chat.
+          projectId
+            ? client.getProjectGoogleConnection(projectId, service).catch(() => null)
+            : null,
+        ]);
+        const currentId = status.enabled ? status.accountId : null;
+        const projectAccountId = project?.enabled ? (project.accountId ?? null) : null;
+        if (!isCurrent()) return;
+        const accountId = await chooseGoogleAccount({
           accounts,
-          sessionOptions: status.enabled || status.mode !== 'inherit',
+          title: `${GOOGLE_SERVICE_NAMES[service]} account`,
+          selectedId: currentId,
         });
-        if (!choice) return;
-        if (choice.kind === 'inherit' || choice.kind === 'disabled') {
-          await client.setSessionGoogleAccess(sessionId, service, { mode: choice.kind });
+        if (!isCurrent()) return;
+        const action = chatAccountPickAction({
+          accountId,
+          supportingAccounts: accounts.length,
+          currentId,
+          projectAccountId,
+          inheriting: status.mode === 'inherit' && status.enabled,
+        });
+        if (action === 'none') return;
+        if (action === 'inherit') {
+          await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
+          if (!isCurrent()) return;
           const [gmail, calendar, contacts] = await Promise.all([
             client.getSessionGmailConnection(sessionId),
             client.getSessionCalendarConnection(sessionId),
             client.getSessionContactsConnection(sessionId),
           ]);
+          if (!isCurrent()) return;
+          invalidateGoogleStatus();
           setGmailConnection(gmail);
           setCalendarConnection(calendar);
           setContactsConnection(contacts);
@@ -3258,21 +3258,25 @@ export const SessionChat = memo(function SessionChat({
           client,
           sessionId,
           service,
-          choice.kind === 'account' ? choice.accountId : null,
+          accountId,
+          isCurrent,
         );
+        if (!isCurrent()) return;
+        invalidateGoogleStatus();
         if (result.kind === 'session') {
           setGmailConnection(result.connections.gmail);
           setCalendarConnection(result.connections.calendar);
           setContactsConnection(result.connections.contacts);
         }
-      })().catch((error: unknown) =>
+      })().catch((error: unknown) => {
+        if (!isCurrent()) return;
         Alert.alert(
           'Could not connect Google service',
           error instanceof Error ? error.message : String(error),
-        ),
-      );
+        );
+      });
     },
-    [client, sessionId, chooseGoogleAccount],
+    [client, projectId, sessionId, chooseGoogleAccount, invalidateGoogleStatus],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),
@@ -3288,8 +3292,11 @@ export const SessionChat = memo(function SessionChat({
   );
   const disableGoogleService = useCallback(
     (service: GoogleService) => {
+      const isCurrent = invalidateGoogleStatus();
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
+          if (!isCurrent()) return;
+          invalidateGoogleStatus();
           if (service === 'gmail')
             setGmailConnection((current) =>
               current === null
@@ -3334,7 +3341,7 @@ export const SessionChat = memo(function SessionChat({
           ),
         );
     },
-    [client, projectId, sessionId],
+    [client, projectId, sessionId, invalidateGoogleStatus],
   );
   const disableGmail = useCallback(() => disableGoogleService('gmail'), [disableGoogleService]);
   const disableCalendar = useCallback(
@@ -3356,9 +3363,15 @@ export const SessionChat = memo(function SessionChat({
           text: 'End editing',
           style: 'destructive',
           onPress: () => {
+            const isCurrent = invalidateGoogleStatus();
+            if (!isCurrent()) return;
             void client
               .clearSessionGoogleWorkspaceFile(sessionId)
-              .then(() => setWorkspaceFile(null))
+              .then(() => {
+                if (!isCurrent()) return;
+                invalidateGoogleStatus();
+                setWorkspaceFile(null);
+              })
               .catch((error: unknown) =>
                 Alert.alert(
                   'Could not end editing',
@@ -3369,7 +3382,7 @@ export const SessionChat = memo(function SessionChat({
         },
       ],
     );
-  }, [client, sessionId, workspaceFile]);
+  }, [client, sessionId, workspaceFile, invalidateGoogleStatus]);
   const onAttach = useCallback((anchor: AttachAnchor) => {
     setAttachAnchor(anchor);
     setAttachMenuOpen(true);
@@ -4354,6 +4367,8 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {enginePickerOpen ? (
         <EngineSwitcherSheet
+          loading={modelsLoading}
+          error={modelsError}
           models={selectableModels}
           modelOrder={selectableModelOrder}
           moreModels={selectableMoreModels}
@@ -4786,15 +4801,7 @@ export const SessionChat = memo(function SessionChat({
         onPauseVoiceCountdown={voice.pauseCountdown}
         engineLabel={modelDisplayName(effectiveModel)}
         engineBusy={switchingModel}
-        onEnginePress={() => {
-          // Re-fetch /models each time the picker opens so a catalog the server
-          // discovered after this screen mounted (e.g. Codex models that surfaced
-          // once the secret store was unlocked) shows up without a screen remount.
-          // The hook keeps the current list while loading, so this never blanks the
-          // sheet.
-          refreshModels();
-          setEnginePickerOpen(true);
-        }}
+        onEnginePress={() => setEnginePickerOpen(true)}
         bottomInset={keyboardHeight === null ? insets.bottom : 0}
         horizontalInsets={
           embedded ? { left: 0, right: 0 } : { left: insets.left, right: insets.right }
@@ -4821,6 +4828,8 @@ export const SessionChat = memo(function SessionChat({
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
+        googleCatalogLoading={googleCatalogLoading}
+        googleCatalogError={googleCatalogError}
         googleConnected={googleConnected}
         googleAccess={{
           gmail: gmailConnection,
@@ -5089,7 +5098,9 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
-  const compactRootLabels = Platform.OS === 'ios' && !Platform.isPad;
+  const [documentSession, setDocumentSession] = useState(false);
+  const [documentStatus, setDocumentStatus] = useState<{ pending: boolean; running: boolean }>();
+  const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
@@ -5190,6 +5201,20 @@ function SessionFilesSheet({
       .listSessionFiles(sessionId, path, root)
       .then((dir) => {
         if (!active) return;
+        setDocumentStatus(dir.documentStatus);
+        if (dir.workspaceKind) {
+          setDocumentSession(dir.workspaceKind === 'documents');
+          if (
+            !workspaceClassified.current &&
+            dir.workspaceKind === 'documents' &&
+            !initialFilePath &&
+            initialRoot === 'worktree'
+          ) {
+            setRoot('documents');
+            setPath('');
+          }
+          workspaceClassified.current = true;
+        }
         setEntries(dir.entries);
         setTruncated(dir.truncated);
       })
@@ -5205,7 +5230,7 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, driveActive, sessionId, path, root, reloadKey]);
+  }, [client, driveActive, sessionId, path, root, reloadKey, initialFilePath, initialRoot]);
 
   useEffect(() => {
     if (!driveActive || !projectId) return;
@@ -5990,6 +6015,21 @@ function SessionFilesSheet({
           },
         ];
 
+  const navigateRoot = (candidate: typeof root): void => {
+    if (mutating || (!driveActive && candidate === root && path === '')) return;
+    previewRequest.current += 1;
+    endSelection();
+    setDriveActive(false);
+    setRoot(candidate);
+    setPath('');
+    setEntries([]);
+    setTruncated(false);
+    setLoading(true);
+    setPreview(null);
+    setPreviewLoading(false);
+    setError(null);
+  };
+
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
@@ -6037,6 +6077,7 @@ function SessionFilesSheet({
                     busy={uploading}
                     disabled={
                       mutating ||
+                      root === 'drafts' ||
                       error !== null ||
                       (driveActive && (driveUnconfigured || !driveCanWrite))
                     }
@@ -6059,54 +6100,65 @@ function SessionFilesSheet({
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', compactRootLabels ? 'Repo' : 'Repository'],
-                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge'],
-                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge'],
+                ['worktree', documentSession ? 'My edits' : 'Code'],
+                ['sources', 'Sources'],
+                ['documents', 'Documents'],
+                ['shared', 'Global'],
               ] as const
-            ).map(([candidate, label]) => (
-              <Pressable
-                key={candidate}
-                disabled={mutating}
-                onPress={() => {
-                  if (mutating || (!driveActive && candidate === root && path === '')) return;
-                  previewRequest.current += 1;
-                  endSelection();
-                  setDriveActive(false);
-                  setRoot(candidate);
-                  setPath('');
-                  setEntries([]);
-                  setTruncated(false);
-                  setLoading(true);
-                  setPreview(null);
-                  setPreviewLoading(false);
-                  setError(null);
-                }}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: !driveActive && root === candidate }}
-                accessibilityLabel={label}
-                style={[
-                  styles.filesRootButton,
-                  !driveActive && root === candidate ? styles.filesRootButtonActive : null,
-                ]}
-              >
-                <Icon
-                  name={FILE_ROOT_ICON[candidate]}
-                  size={14}
-                  color={
-                    !driveActive && root === candidate ? theme.colors.text : theme.colors.textMuted
-                  }
-                />
-                <Text
-                  style={
-                    !driveActive && root === candidate
-                      ? styles.filesRootLabelActive
-                      : styles.filesRootLabel
-                  }
+            )
+              .filter(([candidate]) => !(documentSession && candidate === 'worktree'))
+              .map(([candidate, label]) => (
+                <Pressable
+                  key={candidate}
+                  disabled={mutating}
+                  onPress={() => {
+                    navigateRoot(candidate);
+                  }}
+                  accessibilityRole="tab"
+                  accessibilityState={{
+                    selected:
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree')))),
+                  }}
+                  accessibilityLabel={label}
+                  style={[
+                    styles.filesRootButton,
+                    !driveActive &&
+                    (root === candidate ||
+                      (candidate === 'documents' &&
+                        (root === 'drafts' || (documentSession && root === 'worktree'))))
+                      ? styles.filesRootButtonActive
+                      : null,
+                  ]}
                 >
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
+                  <Icon
+                    name={FILE_ROOT_ICON[candidate]}
+                    size={14}
+                    color={
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree'))))
+                        ? theme.colors.text
+                        : theme.colors.textMuted
+                    }
+                  />
+                  <Text
+                    style={
+                      !driveActive &&
+                      (root === candidate ||
+                        (candidate === 'documents' &&
+                          (root === 'drafts' || (documentSession && root === 'worktree'))))
+                        ? styles.filesRootLabelActive
+                        : styles.filesRootLabel
+                    }
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
             {projectId ? (
               <Pressable
                 disabled={mutating}
@@ -6159,10 +6211,18 @@ function SessionFilesSheet({
             rootIcon={FILE_ROOT_ICON[root]}
             rootLabel={
               root === 'worktree'
-                ? 'Repository'
-                : root === 'knowledge'
-                  ? 'Project Knowledge'
-                  : 'Global Knowledge'
+                ? documentSession
+                  ? 'My edits'
+                  : 'Code'
+                : root === 'sources'
+                  ? 'Sources'
+                  : root === 'documents'
+                    ? 'Documents'
+                    : root === 'drafts'
+                      ? 'Session edits'
+                      : root === 'knowledge'
+                        ? 'Project'
+                        : 'Global'
             }
             segments={breadcrumbSegments(path).map((segment) => ({
               key: segment.path,
@@ -6170,6 +6230,32 @@ function SessionFilesSheet({
             }))}
             disabled={mutating || selecting}
             onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
+          />
+        ) : null}
+        {!driveActive && documentSession && (root === 'documents' || root === 'worktree') ? (
+          <HeaderTextButton
+            label={
+              root === 'worktree'
+                ? 'Back to Documents'
+                : documentStatus?.running
+                  ? 'My working copy (session running)'
+                  : documentStatus?.pending
+                    ? 'My edits (not yet published)'
+                    : 'My working copy (published)'
+            }
+            disabled={mutating}
+            onPress={() => navigateRoot(root === 'worktree' ? 'documents' : 'worktree')}
+          />
+        ) : null}
+        {!driveActive && (root === 'documents' || root === 'drafts') ? (
+          <HeaderTextButton
+            label={
+              root === 'drafts'
+                ? 'Back to Documents'
+                : 'Session edits (including retained sessions)'
+            }
+            disabled={mutating}
+            onPress={() => navigateRoot(root === 'drafts' ? 'documents' : 'drafts')}
           />
         ) : null}
         {driveActive ? (
@@ -6320,7 +6406,7 @@ function SessionFilesSheet({
             ) : (
               <DropZone
                 style={styles.filesDropZone}
-                enabled={!uploading}
+                enabled={!uploading && root !== 'drafts'}
                 maxFiles={MAX_DROPPED_UPLOADS}
                 maxFileBytes={MAX_DROPPED_UPLOAD_BYTES}
                 maxTotalBytes={MAX_DROPPED_UPLOAD_TOTAL_BYTES}
@@ -6467,7 +6553,7 @@ function SessionFilesSheet({
                 <HeaderTextButton
                   label="Delete…"
                   emphasis="destructive"
-                  disabled={mutating || selected.length === 0}
+                  disabled={root === 'drafts' || mutating || selected.length === 0}
                   accessibilityLabel="Delete selected files"
                   onPress={deleteSelectedFiles}
                 />
@@ -6478,7 +6564,13 @@ function SessionFilesSheet({
         {menuFor ? (
           <FileActionMenu
             title={fileNameFromPath(menuFor.path)}
-            actions={menuActions}
+            actions={menuActions.filter((action) =>
+              root === 'drafts'
+                ? !['edit', 'rename', 'delete'].includes(action.key)
+                : root === 'sources'
+                  ? action.key !== 'edit'
+                  : true,
+            )}
             onDismiss={() => setMenuFor(null)}
           />
         ) : null}
@@ -6487,12 +6579,16 @@ function SessionFilesSheet({
             title="Add files"
             onDismiss={() => setAdding(false)}
             actions={[
-              {
-                key: 'create',
-                label: 'New Markdown file…',
-                icon: 'file-plus',
-                onPress: () => setCreating(true),
-              },
+              ...(root === 'sources'
+                ? []
+                : [
+                    {
+                      key: 'create',
+                      label: 'New Markdown file…',
+                      icon: 'file-plus' as const,
+                      onPress: () => setCreating(true),
+                    },
+                  ]),
               { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
             ]}
           />
@@ -8541,6 +8637,8 @@ function BranchSwitcherSheet({
 // the new-session ModelPickerSheet but reuses this screen's sheet styles, and each
 // row shows the engine that model routes to so "Claude vs Codex" reads at a glance.
 function EngineSwitcherSheet({
+  loading,
+  error,
   models,
   modelOrder,
   moreModels,
@@ -8551,6 +8649,8 @@ function EngineSwitcherSheet({
   onPick,
   onClose,
 }: {
+  loading: boolean;
+  error: string | undefined;
   models: string[];
   modelOrder: string[];
   moreModels: string[];
@@ -8635,7 +8735,11 @@ function EngineSwitcherSheet({
         <SheetResizeHandle panHandlers={sheet.panHandlers} />
         <Text style={styles.sheetTitle}>Switch model</Text>
         <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
-          {models.length === 0 ? <Text style={styles.sheetEmpty}>No models available.</Text> : null}
+          {loading || error || models.length === 0 ? (
+            <Text style={styles.sheetEmpty}>
+              {loading ? 'Loading models…' : (error ?? 'No models available.')}
+            </Text>
+          ) : null}
           {renderGroups(partitionedModels.primary)}
           {partitionedModels.more.length > 0 ? (
             <Pressable
@@ -9415,6 +9519,7 @@ function PullRequestBar({
   const [merging, setMerging] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   const { checks } = pullRequest;
@@ -9433,6 +9538,7 @@ function PullRequestBar({
         ? 'blocked'
         : 'unknown',
     pullRequest.mergeState ?? 'no-state',
+    String(pullRequest.viewerCanMerge),
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
@@ -9443,7 +9549,12 @@ function PullRequestBar({
   // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
   // `mergeable: null` right after a push means "still computing", not blocked — both
   // are resolved inside `pullRequestMergeButton`.
-  const button = pullRequestMergeButton(pullRequest, { merging, mergeRejected });
+  const button = pullRequestMergeButton(
+    mergeRejected && mergePermissionDenied
+      ? { ...pullRequest, viewerCanMerge: false }
+      : pullRequest,
+    { merging, mergeRejected },
+  );
   const mergeButtonEnabled = button.kind === 'merge';
   // Static on purpose: the waiting states show their spinner on the button, and a
   // second animation beside it only competed with it.
@@ -9458,7 +9569,8 @@ function PullRequestBar({
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
   const prNumber = String(pullRequest.number);
   const blockedLabels: Record<PullRequestBlockReason, string> = {
-    rejected: `Merge blocked because GitHub rejected pull request ${prNumber}`,
+    permission: `A maintainer must merge pull request ${prNumber}`,
+    rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
     conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
     ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
     blocked: `Merge blocked for pull request ${prNumber}`,
@@ -9503,6 +9615,7 @@ function PullRequestBar({
       setMerging(false);
       if (!result.ok) {
         setError(result.message);
+        setMergePermissionDenied(result.permissionDenied === true);
         setMergeRejectedFor(pullRequestStateKey);
         return;
       }
@@ -9986,6 +10099,8 @@ the Claude app — it sits with the composer instead of the nav bar). */}
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
+  googleCatalogLoading,
+  googleCatalogError,
   googleConnected,
   googleAccess,
   visible,
@@ -10001,6 +10116,8 @@ function AttachMenu({
   onClose,
   onDismiss,
 }: {
+  googleCatalogLoading: boolean;
+  googleCatalogError: string | null;
   googleConnected: boolean;
   googleAccess: GoogleMenuAccess;
   visible: boolean;
@@ -10055,6 +10172,10 @@ function AttachMenu({
         accessibilityLabel="Close attachment menu"
       />
       <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
+        {googleCatalogLoading ? (
+          <Text style={styles.menuRowDetail}>Loading Google accounts…</Text>
+        ) : null}
+        {googleCatalogError ? <Text style={styles.menuRowDetail}>{googleCatalogError}</Text> : null}
         {rows.map((row, index) =>
           'section' in row ? (
             <Text key={row.section} style={styles.menuSectionLabel}>

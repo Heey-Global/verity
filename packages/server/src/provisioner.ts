@@ -1,4 +1,9 @@
+import type { DerivedImageReferences } from './derived-image-references.js';
+import { connectDocumentCode } from './document-code.js';
+import { migrateLocalDocuments } from './document-migration.js';
+import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 import {
   createDevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
@@ -84,7 +89,6 @@ import {
   SIGNING_BROKER_TOKEN_HASH_LABEL,
   signingBrokerTokenHash,
 } from './git-signer.js';
-import { signHistoryForPush } from './sign-history.js';
 import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
@@ -251,7 +255,9 @@ export const RUNNER_AGENT_UID = 1000;
 export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
 
-const DEVCONTAINER_NODE_FEATURE_REF = 'ghcr.io/devcontainers/features/node:1';
+// Digest verified against the public OCI manifest; mutable aliases never enter builds.
+export const DEVCONTAINER_NODE_FEATURE_REF =
+  'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
 const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
@@ -415,6 +421,8 @@ export function devcontainerBuildArgs(args: {
   imageName: string;
   additionalFeatures?: string | undefined;
   noCache?: boolean | undefined;
+  /** A buildx `--output` spec replacing the CLI's default `--load`. */
+  output?: string | undefined;
 }): string[] {
   const argv = [
     'build',
@@ -426,6 +434,7 @@ export function devcontainerBuildArgs(args: {
     args.imageName,
   ];
   if (args.noCache === true) argv.push('--no-cache');
+  if (args.output !== undefined) argv.push('--output', args.output);
   if (args.additionalFeatures !== undefined && args.additionalFeatures.length > 0) {
     argv.push(
       '--additional-features',
@@ -436,6 +445,42 @@ export function devcontainerBuildArgs(args: {
     );
   }
   return argv;
+}
+
+/**
+ * The dedicated builder's socket endpoint, or a reason repository builds are
+ * unavailable.
+ *
+ * An explicit `VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT` always wins and is held to
+ * a private Unix socket. Without it, the socket the managed deployment mounts
+ * from its sealed spec is used, but only while that socket actually exists: a
+ * spec sealed before the builder, or a host whose builder is down, reports
+ * builds as unavailable instead of naming an endpoint nothing serves.
+ */
+export function devcontainerBuilderEndpoint(
+  environment: NodeJS.ProcessEnv = process.env,
+  isSocket: (path: string) => boolean = (path) => {
+    try {
+      return statSync(path).isSocket();
+    } catch {
+      return false;
+    }
+  },
+): string {
+  const explicit = environment.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+  if (explicit !== undefined) {
+    if (!/^unix:\/\/\/[^\s\0]+$/.test(explicit))
+      throw new Error(
+        'Devcontainer builds require VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT pointing to the private runsc worker Unix socket',
+      );
+    return explicit;
+  }
+  const mounted = `${DEVCONTAINER_BUILDER_SOCKET_DIRECTORY}/buildkitd.sock`;
+  if (isSocket(mounted)) return `unix://${mounted}`;
+  throw new Error(
+    'Devcontainer builds are unavailable: this Server has no gVisor builder socket. ' +
+      'Run the Verity installer again to repair the host, then update the Server.',
+  );
 }
 
 /** Real devcontainer-build spawner: runs `devcontainer build` with `DOCKER_HOST`
@@ -454,6 +499,8 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   registryToken,
   noCache,
 }) => {
+  const endpoint = devcontainerBuilderEndpoint();
+  const builderName = `verity-build-${randomUUID()}`;
   // Image/feature metadata can also perform localEnv substitution. Validating
   // the repository config alone must not expose the server's environment.
   const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
@@ -462,6 +509,8 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     HOME: dockerConfigDir,
     DOCKER_HOST: dockerHost,
     DOCKER_CONFIG: dockerConfigDir,
+    DOCKER_BUILDKIT: '1',
+    BUILDX_BUILDER: builderName,
   };
   // When we have a token, point the devcontainer CLI at a throwaway docker config
   // that authenticates to ghcr.io as the GitHub App (`x-access-token:<token>`).
@@ -476,12 +525,48 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
         { mode: 0o600 },
       );
     }
-    return await execFileAsync(
-      'devcontainer',
-      devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
-      { env, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
+    // A private buildx record per attempt prevents global selection or concurrent-build races.
+    // Creating a remote driver cannot start a Docker/runc worker on failure.
+    await execFileAsync(
+      'docker',
+      ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
+      { env, timeout: 30_000, maxBuffer: 1024 * 1024 },
     );
+    await execFileAsync('docker', ['buildx', 'inspect', builderName, '--bootstrap'], {
+      env,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    // The image goes to a file, then into the Engine as a second step, rather than
+    // `--load`. With `--load` BuildKit streams the archive through buildx into
+    // `docker load` and records the build as finished only once buildx closes that
+    // stream; on Docker Engine 29 the image was tagged while buildx and BuildKit both
+    // kept waiting until the build timeout. A complete file has no such hand-over.
+    const archive = join(dockerConfigDir, 'image.tar');
+    const built = await execFileAsync(
+      'devcontainer',
+      devcontainerBuildArgs({
+        workspaceFolder,
+        imageName,
+        additionalFeatures,
+        noCache,
+        output: `type=docker,dest=${archive}`,
+      }),
+      { env, timeout: 30 * 60_000, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
+    );
+    await execFileAsync('docker', ['load', '--input', archive], {
+      env,
+      timeout: 15 * 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return built;
   } finally {
+    // Removing a remote driver only removes this private client record, never worker state.
+    await execFileAsync('docker', ['buildx', 'rm', builderName], {
+      env,
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }).catch(() => undefined);
     rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
@@ -629,6 +714,8 @@ export interface ProvisionerOptions {
   imageEvidenceCollector?: ImageEvidenceCollector | undefined;
   /** Bundled toolkit directory whose binaries are the attestation trust root. */
   runnerBoundaryFeatureDir?: string | undefined;
+  /** Plain local workspace allocation; injected by filesystem-free tests. */
+  prepareLocalWorkspace?: ((path: string) => Promise<void>) | undefined;
   /** Test/deployment seam for ownership preparation. Defaults to mkdir/chmod/chown. */
   prepareRunnerRuntime?:
     ((path: string, ownership: { uid: number; gid: number }) => void) | undefined;
@@ -758,6 +845,8 @@ export interface ProvisionerOptions {
    *  every project runs the base image. Injectable so tests
    *  don't spawn a real build. */
   devcontainerBuild?: DevcontainerBuildSpawner | undefined;
+  /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
+  imageReferences?: DerivedImageReferences | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -1592,15 +1681,14 @@ function buildFailureMessage(error: unknown): string {
  *  Caller invariant: `projectId` exists in the store. The worker re-checks
  *  inside the lock tx (race-correct against a concurrent deprovision). */
 export interface Provisioner {
+  /** Migrate an idle legacy local project before allocating or dispatching work. */
+  prepareLocalDocuments?(projectId: string): Promise<void>;
   provision(projectId: string, opts?: { confirmWarnings?: boolean }): Promise<ProjectRecord>;
   /** Fetch and reset the managed project checkout to its configured default branch. */
   syncProjectCheckout?(projectId: string): Promise<void>;
   provisionWarnings?(projectId: string): Promise<string[]>;
-  /** Give a `local` project's clone an `origin` and publish its current branch there,
-   * so the repository Verity created with `git init` becomes a GitHub repository.
-   * An empty target takes the branch directly; a target that already has history gets
-   * an import branch plus a pull request (see {@link LinkCloneToGitHubResult}).
-   * Leaves the clone DIRECTORY where it is — session worktrees live under it. */
+  /** Connect remote Code without publishing Documents or legacy local history.
+   * The existing workspace root is retained for durable document sessions. */
   linkCloneToGitHub?(
     project: ProjectRecord,
     target: { owner: string; repo: string; forgeConnectionId?: string | null },
@@ -3058,6 +3146,32 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
+  private async localDocumentsNeedMigration(project: ProjectRecord): Promise<boolean> {
+    if (!isLocalProject(project) || !this.opts.dataVolumeRoot) return false;
+    const workspace = projectClonePath(this.opts.hostCloneRoot, project);
+    if (existsSync(join(workspace, '.git', 'verity-document-code'))) return false;
+    const manifest = join(
+      this.opts.dataVolumeRoot,
+      'document-migrations',
+      project.id,
+      'manifest.json',
+    );
+    if (existsSync(manifest)) {
+      const { readFile } = await import('node:fs/promises');
+      const state = JSON.parse(await readFile(manifest, 'utf8')) as { stage: string };
+      return state.stage !== 'complete';
+    }
+    return existsSync(join(workspace, '.git'));
+  }
+
+  async prepareLocalDocuments(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (!project || !(await this.localDocumentsNeedMigration(project))) return;
+    await this.withProjectExclusiveMutation(projectId, async () => {
+      await this.recreateContainer(projectId, { confirmWarnings: true });
+    });
+  }
+
   async ensureProjectSandboxAwake(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -4004,6 +4118,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
@@ -4049,6 +4164,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
@@ -4075,7 +4191,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
 
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
       throw new ProvisioningWarning([warning]);
     }
@@ -4156,6 +4272,13 @@ export class ProvisionerImpl implements Provisioner {
         (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
       );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project)))
+        await migrateLocalDocuments({
+          dataRoot: this.opts.dataVolumeRoot,
+          projectId: project.id,
+          workspace: dirs.clonePath,
+          store: this.opts.store,
+        });
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
       // non-destructive preflight above. Keep forcePull true here to retain the
@@ -4192,7 +4315,7 @@ export class ProvisionerImpl implements Provisioner {
   async provisionWarnings(projectId: string): Promise<string[]> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return [];
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     return warning === null ? [] : [warning];
   }
 
@@ -4226,16 +4349,26 @@ export class ProvisionerImpl implements Provisioner {
    *  `projects.state` — the caller is responsible for the `failed` transition
    *  on error. On success, the caller transitions to `container_starting`.
    *
-   *  A `local` project has no remote to clone from, so it gets an empty git repo
-   *  instead — see {@link initLocalRepo}. Once such a project is LINKED to a
-   *  GitHub repo its `kind` flips to `github` and it re-enters the fetch branch
-   *  below, which is why the link path must have set `origin` first. */
+   * Local projects allocate a plain document workspace. Connected projects clone
+   * or fetch their Code repository; document storage never enters that clone. */
   private async doClone(project: ProjectRecord): Promise<void> {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const settings = await this.opts.store.getProjectSettingsRaw(project.id);
     const configuredDefaultBranch = settings?.defaultBranch?.trim() || undefined;
     if (isLocalProject(project)) {
-      await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
+      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project))) {
+        if (await this.isProjectBusy(project.id))
+          throw new ProvisioningError('Finish project activity before migrating local documents');
+        await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+        await migrateLocalDocuments({
+          dataRoot: this.opts.dataVolumeRoot,
+          projectId: project.id,
+          workspace: dirs.clonePath,
+          store: this.opts.store,
+        });
+      }
+      if (this.opts.prepareLocalWorkspace) await this.opts.prepareLocalWorkspace(dirs.clonePath);
+      else await mkdirDocumentRoot(dirs.clonePath, { recursive: true });
       return;
     }
     const access = await this.opts.forgeRepositoryAccess?.(project);
@@ -4405,51 +4538,6 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   /**
-   * Create the empty git repository a project without a GitHub repo starts from.
-   * Idempotent: a re-provision — or a repair after a failed container start —
-   * finds the repo already there and leaves it alone, along with everything
-   * committed into it since.
-   *
-   * The initial commit is not cosmetic. `git worktree add` refuses to branch off
-   * an unborn HEAD, so without it the FIRST session spawned into the project
-   * would fail. It is deliberately EMPTY rather than seeded with a README: the
-   * repository is the operator's, and Verity should not author its first file.
-   *
-   * Identity and signing are pinned per-invocation rather than inherited from
-   * the server's git config — the server container carries no `user.email`, and
-   * an inherited `commit.gpgsign=true` would route this bootstrap commit to a
-   * signing path that holds no key for it.
-   */
-  private async initLocalRepo(clonePath: string, defaultBranch: string): Promise<void> {
-    const repoExists = this.isDir(clonePath) && this.isRepoDir(clonePath);
-    if (repoExists) {
-      try {
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD']);
-        return;
-      } catch {
-        // An interrupted first attempt can leave `.git` behind with an unborn
-        // HEAD. Finish the bootstrap commit instead of treating it as complete.
-      }
-    } else {
-      await this.git(['init', '-b', defaultBranch, clonePath]);
-    }
-    await this.git([
-      '-C',
-      clonePath,
-      '-c',
-      'user.name=Verity',
-      '-c',
-      'user.email=verity@localhost',
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '--allow-empty',
-      '-m',
-      'chore: initialize project',
-    ]);
-  }
-
-  /**
    * Reduce a `local` clone's `.git/config` to {@link FROZEN_LOCAL_CONFIG_KEYS} before
    * the container that gets it read-only is created.
    *
@@ -4508,14 +4596,10 @@ export class ProvisionerImpl implements Provisioner {
 
   /**
    * Point a project's clone at a GitHub repository and publish its history there
-   * (the "connect this local project to GitHub later" path). Runs BEFORE the
-   * project row is rewritten, so a rejected push leaves a still-local project
-   * with no half-applied GitHub identity.
-   *
-   * The push is plain and non-forced. If the target already has history, its
-   * default branch is merged into the local branch first. Unrelated histories
-   * are allowed and local files win conflicting hunks, while conflict-free
-   * remote content and the remote ancestry are retained.
+   * (the "connect this local project to GitHub later" path). Local Documents are
+   * migrated first; the connected Code repository is fetched without importing
+   * project knowledge. Document storage is required so legacy files can be retained
+   * before any Code repository is connected.
    */
   async linkCloneToGitHub(
     project: ProjectRecord,
@@ -4523,373 +4607,41 @@ export class ProvisionerImpl implements Provisioner {
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult> {
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
-    if (!this.isDir(clonePath) || !this.isRepoDir(clonePath)) {
-      throw new ProvisioningError('project clone is missing; repair the project first');
-    }
-    const access = await this.opts.forgeRepositoryAccess?.(target);
-    token = access?.token ?? token;
-    const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
-    const authHeader = access?.authorization ?? gitAuthHeader(token);
-    const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
-    const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
-    const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
-    let originMatchesTarget = false;
-    let originExists = false;
-    try {
-      const existingOrigin = (
-        await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
-      ).stdout.trim();
-      originExists = true;
-      originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
-      if (!originMatchesTarget) {
-        throw new ProvisioningError(
-          'origin already points to another repository; remove or rename it before linking',
-        );
-      }
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-    }
-    let remoteRefs: Awaited<ReturnType<GitRunner>>;
-    try {
-      remoteRefs = await git([
-        '-c',
-        `http.extraheader=${authHeader}`,
-        'ls-remote',
-        '--heads',
-        '--tags',
-        url,
-      ]);
-    } catch (cause) {
-      const safeCause = new Error(
-        redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-      );
-      throw new ProvisioningError('inspecting the existing GitHub repository failed', safeCause);
-    }
-    const refs = remoteRefs.stdout
-      .trim()
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '');
-    const remoteHeads = refs.filter((line) => /\srefs\/heads\//.test(line));
-    let destinationBranch = branch;
-    let mergedExistingHistory = false;
-    if (remoteHeads.length > 0) {
-      const [sha, ref, extra] = refs.length === 1 ? refs[0]!.split(/\s+/) : [];
-      // Crash recovery: the prior attempt may have completed the push but died
-      // before persisting the GitHub identity. Only the exact single branch at
-      // our current HEAD is accepted as that idempotent continuation.
-      if (
-        originMatchesTarget &&
-        extra === undefined &&
-        sha === localHead &&
-        ref === `refs/heads/${branch}`
-      ) {
-        return {};
-      }
-    }
-    if (!originExists) {
-      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
-    }
-    if (remoteHeads.length > 0) {
-      let localStatus: string;
+    if (this.opts.dataVolumeRoot) {
+      if (isLocalProject(project)) await this.doClone(project);
+      const access = await this.opts.forgeRepositoryAccess?.(target);
+      const repositoryToken = access?.token ?? token;
+      const authorization = access?.authorization ?? gitAuthHeader(repositoryToken);
+      const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
+      const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
       try {
-        // Tracked changes only, mirroring `hasTrackedChanges` in branches.ts: the
-        // project clone permanently carries the untracked `.verity-sessions/`
-        // directory its session worktrees live in, so counting untracked files
-        // would block every project that has ever run a session. They are also the
-        // ones not at risk below — `git merge` refuses on its own rather than
-        // clobbering an untracked file, and the `reset --merge` rollback ignores them.
-        localStatus = (
-          await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
-        ).stdout.trim();
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError('checking the local project status failed', safeCause);
-      }
-      if (localStatus !== '') {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        throw new ProvisioningError(
-          'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
-        );
-      }
-      let remoteBranch: string | undefined;
-      try {
-        const remoteHead = await git([
-          '-c',
-          `http.extraheader=${authHeader}`,
-          'ls-remote',
-          '--symref',
+        const { empty } = await connectDocumentCode({
+          workspace: clonePath,
           url,
-          'HEAD',
-        ]);
-        remoteBranch = remoteHead.stdout
-          .split('\n')
-          .map((line) => line.match(/^ref:\s+refs\/heads\/(.+)\s+HEAD$/)?.[1])
-          .find((candidate) => candidate !== undefined);
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError(
-          'determining the GitHub repository default branch failed',
-          safeCause,
-        );
-      }
-      remoteBranch ??= refs
-        .map((line) => line.split(/\s+/))
-        .find(([, ref]) => ref === `refs/heads/${branch}`)?.[1]
-        ?.replace(/^refs\/heads\//, '');
-      if (remoteBranch === undefined) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        throw new ProvisioningError('the GitHub repository default branch could not be determined');
-      }
-      destinationBranch = remoteBranch;
-      try {
-        await git([
-          '-C',
-          clonePath,
-          '-c',
-          `http.extraheader=${authHeader}`,
-          'fetch',
-          'origin',
-          `+refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`,
-        ]);
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError(
-          'fetching the existing GitHub repository history failed',
-          safeCause,
-        );
-      }
-      try {
-        // Identity and signing are pinned per-invocation exactly as `initLocalRepo`
-        // and the session merge in branches.ts pin them: the server container carries
-        // no `user.email`, and an unset one aborts this merge commit outright, while
-        // an inherited `commit.gpgsign=true` would route Verity's own merge through a
-        // signing path that holds no key for it.
-        await git([
-          '-C',
-          clonePath,
-          '-c',
-          'user.name=Verity',
-          '-c',
-          'user.email=verity@localhost',
-          '-c',
-          'commit.gpgsign=false',
-          'merge',
-          '--allow-unrelated-histories',
-          '--no-edit',
-          '-X',
-          'ours',
-          `refs/remotes/origin/${remoteBranch}`,
-        ]);
-        mergedExistingHistory = true;
-      } catch (cause) {
-        // A merge that never started leaves no MERGE_HEAD, and `git merge --abort`
-        // then fails with "there is no merge to abort". Only abort a merge that
-        // actually touched the tree: reporting the abort failure as damage would
-        // send the operator to repair a clone that was never modified.
-        let midMerge = true;
-        try {
-          await git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
-        } catch {
-          midMerge = false;
-        }
-        let abortCause: unknown;
-        if (midMerge) {
-          try {
-            await git(['-C', clonePath, 'merge', '--abort']);
-          } catch (error) {
-            abortCause = error;
-          }
-        }
-        if (abortCause !== undefined) {
-          const failure = `${commandFailureMessage(cause)}; aborting the merge also failed: ${commandFailureMessage(abortCause)}`;
-          const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
-          throw new AmbiguousGitPushError(
-            'merging GitHub history failed and the local project needs repair before retrying',
-            safeCause,
+          authorization,
+          git,
+        });
+        if (empty)
+          await this.bootstrapEmptyGitHubRepo(
+            clonePath,
+            'main',
+            repositoryToken,
+            authorization,
+            git,
           );
-        }
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
+        return {};
+      } catch (cause) {
         throw new ProvisioningError(
-          'merging the existing GitHub repository into the local project failed',
-          safeCause,
-        );
-      }
-    }
-    // Everything about to be pushed has to be verifiable, and until this moment
-    // none of it needed to be: a local project is never pushed, so the commits
-    // Verity writes for it — the bootstrap commit, the session merges, the merge
-    // just above — carry no signature and commit as `verity@localhost`. Against a
-    // repository whose ruleset requires verified signatures that push is rejected
-    // outright, and "retry to recover" cannot help, because every attempt rebuilds
-    // the same unsigned merge. Repair it here, where the history has never been
-    // published and a rewrite still costs nothing.
-    //
-    // Best-effort by design: a fleet without a signing key configured, or with no
-    // git identity to commit under, is a fleet whose repositories do not demand
-    // signatures either. Failing the link over it would block the operators this
-    // does not apply to. When it IS configured and the rewrite fails, the push
-    // below fails on its own and reports what GitHub actually objected to.
-    try {
-      const linkSettings = await this.opts.veritySettings?.();
-      const signingKey = resolveSigningPrivateKey(linkSettings);
-      const committerName = linkSettings?.gitUserName?.trim();
-      const committerEmail = linkSettings?.gitUserEmail?.trim();
-      if (
-        signingKey !== null &&
-        committerName !== undefined &&
-        committerName.length > 0 &&
-        committerEmail !== undefined &&
-        committerEmail.length > 0
-      ) {
-        await signHistoryForPush(
-          this.git,
-          clonePath,
-          { privateKey: signingKey, committerName, committerEmail },
-          // The merge above put the repository's own published history under
-          // HEAD. It has to keep its object ids: rewriting it would leave the
-          // import branch sharing no ancestry with the branch the pull request
-          // targets, and the whole repository would read as republished.
-          mergedExistingHistory
-            ? { publishedRef: `refs/remotes/origin/${destinationBranch}` }
-            : undefined,
-        );
-      }
-    } catch {
-      // ignore — see above; the push is the authority on whether this mattered
-    }
-    // A repository that already has history keeps its default branch under whatever
-    // protection the operator put on it: publish onto an import branch and let a
-    // pull request carry the history in. A straight push onto the default branch is
-    // reserved for the empty repository this flow was written for — there is nothing
-    // to review there, and nothing a ruleset would reject. Where a rule does exist,
-    // the direct push fails with "retry to recover", which no retry ever satisfies.
-    let importBranch: string | undefined;
-    if (mergedExistingHistory) {
-      const mergedHead = (
-        await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-      ).stdout.trim();
-      const remoteShaByBranch = new Map(
-        remoteHeads
-          .map((line) => line.split(/\s+/))
-          .flatMap(([sha, ref]) =>
-            sha !== undefined && ref !== undefined && ref.startsWith('refs/heads/')
-              ? [[ref.slice('refs/heads/'.length), sha] as const]
-              : [],
+          'Connecting Code failed; Documents were retained',
+          new Error(
+            redactSensitive(commandFailureMessage(cause), [repositoryToken, authorization]),
           ),
-      );
-      // Reuse the branch when it already carries this exact merge — a retry after a
-      // pull request that failed to open must not litter the repository with
-      // `-2`, `-3`, … copies of the same import.
-      const base = `verity/import-${branch}`;
-      importBranch = base;
-      for (
-        let attempt = 2;
-        remoteShaByBranch.has(importBranch) && remoteShaByBranch.get(importBranch) !== mergedHead;
-        attempt++
-      ) {
-        importBranch = `${base}-${String(attempt)}`;
+        );
       }
     }
-    const pushTarget =
-      importBranch === undefined
-        ? destinationBranch === branch
-          ? branch
-          : `${branch}:${destinationBranch}`
-        : `HEAD:refs/heads/${importBranch}`;
-    try {
-      await git([
-        '-C',
-        clonePath,
-        '-c',
-        `http.extraheader=${authHeader}`,
-        'push',
-        // `-u` only where the pushed branch IS the project's lasting upstream. The
-        // import branch is transport for one pull request; pointing the local branch
-        // at it would outlive the merge that retires it.
-        ...(importBranch === undefined ? ['-u'] : []),
-        'origin',
-        pushTarget,
-      ]);
-    } catch (cause) {
-      // The push result is ambiguous: GitHub may have accepted it before the
-      // connection failed. Restore the local branch while preserving dirty
-      // working-tree changes, but retain origin + the identity reservation so
-      // a retry can fetch an accepted merge or recreate a rejected one.
-      let rollbackCause: unknown;
-      if (mergedExistingHistory) {
-        try {
-          await git(['-C', clonePath, 'reset', '--merge', localHead]);
-        } catch (error) {
-          rollbackCause = error;
-        }
-      }
-      // Keep a matching origin even when this command reports failure. The
-      // server cannot know whether GitHub accepted the update before the network
-      // broke; the next attempt uses origin + exact remote HEAD to recover.
-      const failure =
-        rollbackCause === undefined
-          ? commandFailureMessage(cause)
-          : `${commandFailureMessage(cause)}; restoring the local branch also failed: ${commandFailureMessage(rollbackCause)}`;
-      const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
-      throw new AmbiguousGitPushError(
-        `pushing ${importBranch ?? branch} to ${target.owner}/${target.repo} failed; retry to recover`,
-        safeCause,
-      );
-    }
-    if (importBranch === undefined) return {};
-    // The branch is published. A pull request that cannot be opened is REPORTED,
-    // never rolled back: the operator can open it by hand from a branch that is
-    // already on GitHub, whereas failing the link here would strand that branch
-    // behind a project that still believes it is local.
-    if (this.opts.openPullRequest === undefined || token === undefined) {
-      return { importBranch, pullRequestError: 'opening pull requests is not configured' };
-    }
-    try {
-      const pullRequest = await this.opts.openPullRequest(target, token, {
-        head: importBranch,
-        base: destinationBranch,
-        title: `Import the ${project.repo} project history`,
-        body:
-          `Verity linked the local project \`${project.repo}\` to this repository.\n\n` +
-          `\`${importBranch}\` carries the project's history, merged with the existing ` +
-          `\`${destinationBranch}\` (unrelated histories; the project's own files win any ` +
-          `conflict). Merging this pull request publishes it.`,
-      });
-      return { importBranch, pullRequest };
-    } catch (cause) {
-      return {
-        importBranch,
-        pullRequestError: redactSensitive(
-          cause instanceof Error ? cause.message : 'opening the pull request failed',
-          [token, authHeader],
-        ),
-      };
-    }
+    throw new ProvisioningError(
+      'Connecting Code requires configured document storage; local history was not published.',
+    );
   }
 
   async syncProjectCheckout(projectId: string): Promise<void> {
@@ -4977,7 +4729,7 @@ export class ProvisionerImpl implements Provisioner {
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
-    const preflightWarning = this.devcontainerWarningForProject(project);
+    const preflightWarning = await this.devcontainerWarningForProject(project);
     if (preflightWarning !== null && opts.confirmWarnings !== true) {
       await this.opts.store.updateProjectState(
         project.id,
@@ -5537,6 +5289,8 @@ export class ProvisionerImpl implements Provisioner {
         await ensureSharedKnowledge(this.opts.dataVolumeRoot);
         await ensureProjectKnowledge(this.opts.dataVolumeRoot, project.id);
         knowledgeBinds = knowledgeSandboxBinds(this.opts.dataVolumeRoot, project.id);
+        if (project.kind !== 'control_plane')
+          knowledgeBinds = knowledgeBinds.filter((bind) => !bind.includes(':/knowledge/insights'));
       } catch (cause) {
         const message = `knowledge folder could not be prepared: ${failureMessage(cause)}`;
         await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -5759,7 +5513,7 @@ export class ProvisionerImpl implements Provisioner {
       // devcontainer that happens to install it is the wrong default for adversarial
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
-        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
+        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
@@ -6102,15 +5856,25 @@ export class ProvisionerImpl implements Provisioner {
     const overrideRef = configuredOverride?.image_override_ref ?? null;
     const usesDefaultImage = overrideRef === null;
     const baseImageRef = overrideRef ?? (await this.defaultImageRef(true));
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     const build = this.opts.devcontainerBuild;
     const dockerHost = this.opts.dockerHostForBuild;
-    if (build === undefined || dockerHost === undefined || !this.isDir(devcontainerDir)) {
+    if (policy?.devcontainer_enabled === false || !this.isDir(devcontainerDir)) {
       return {
         imageRef: baseImageRef,
         usesDevcontainerImage: false,
         usesConfiguredOverride: !usesDefaultImage,
       };
+    }
+    if (build === undefined || dockerHost === undefined) {
+      throw new Error(
+        'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
+      );
     }
     const feature = await this.devcontainerFeature();
     if (feature === undefined) {
@@ -6138,6 +5902,7 @@ export class ProvisionerImpl implements Provisioner {
           (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
       const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      await this.opts.imageReferences?.reserve(project.id, derivedTag);
       // Cache check: the derived tag on the daemon means an identical
       // (devcontainer + base) was already built — reuse it, skip the build.
       // A forced rebuild is precisely the request to not trust that conclusion,
@@ -6176,14 +5941,28 @@ export class ProvisionerImpl implements Provisioner {
       // After the cache check, into the private copy only: the hash above was
       // computed over the project's own configuration.
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
-      await build({
-        workspaceFolder: snapshot.workspaceFolder,
-        imageName: derivedTag,
-        dockerHost,
-        additionalFeatures: feature.ref,
-        ...(registryToken !== undefined ? { registryToken } : {}),
-        ...(forceRebuild ? { noCache: true } : {}),
-      });
+      try {
+        await build({
+          workspaceFolder: snapshot.workspaceFolder,
+          imageName: derivedTag,
+          dockerHost,
+          additionalFeatures: feature.ref,
+          ...(registryToken !== undefined ? { registryToken } : {}),
+          ...(forceRebuild ? { noCache: true } : {}),
+        });
+      } catch (cause) {
+        // The scoped registry token is not in process.env. Remove both forms
+        // before diagnostics escape into persisted project state or request logs.
+        // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
+        throw new Error(
+          redactSensitive(buildFailureMessage(cause), [
+            registryToken,
+            registryToken
+              ? Buffer.from(`x-access-token:${registryToken}`).toString('base64')
+              : undefined,
+          ]),
+        );
+      }
       return {
         imageRef: derivedTag,
         usesDevcontainerImage: true,
@@ -6241,7 +6020,13 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private devcontainerWarningForProject(project: ProjectRecord): string | null {
+  private async devcontainerWarningForProject(project: ProjectRecord): Promise<string | null> {
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
+    if (policy?.devcontainer_enabled === false) return null;
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     if (!this.isDir(devcontainerDir)) return null;

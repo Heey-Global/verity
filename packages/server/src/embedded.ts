@@ -1,3 +1,6 @@
+import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+import { createProjectImageReferences } from './derived-image-references.js';
+import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -118,7 +121,7 @@ import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
+import { startDockerGcScheduler, runDockerGc, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -1766,12 +1769,13 @@ export function devcontainerProvisionerOptionsForDockerBaseUrl(
  * project keeps the old behavior (the branch service decides).
  */
 export async function branchRenameAppliesToSession(
-  session: { projectId: string | null },
+  session: { projectId: string | null; worktree?: string },
   getProject: (projectId: string) => Promise<Pick<ProjectRecord, 'kind'> | undefined>,
 ): Promise<boolean> {
+  if (session.worktree?.split('/').includes('.verity-document-sessions')) return false;
   if (session.projectId === null) return true;
   const project = await getProject(session.projectId);
-  return project?.kind !== 'control_plane';
+  return project?.kind !== 'control_plane' && project?.kind !== 'local';
 }
 
 /** Project-scoped admission used by embedded session backends. It serializes
@@ -1954,9 +1958,7 @@ export async function buildEmbeddedServer(
     const settings = await eventStore.getProjectSettings(projectId);
     const dopplerProject = settings?.dopplerProject?.trim();
     const dopplerConfig = settings?.dopplerConfig?.trim();
-    return dopplerProject === undefined || dopplerConfig === undefined
-      ? undefined
-      : { dopplerProject, dopplerConfig };
+    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
   const resolveBrokerDopplerSecret = async (
     input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
@@ -1975,6 +1977,7 @@ export async function buildEmbeddedServer(
     }
   };
   const brokeredHttpTool = createBrokeredHttpTool({
+    requireApprovalBinding: true,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
@@ -1982,6 +1985,7 @@ export async function buildEmbeddedServer(
   });
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
+    requireApprovalBinding: true,
     outputStore: trustedCliOutput,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
@@ -2065,6 +2069,12 @@ export async function buildEmbeddedServer(
             'verity_recent_session_messages',
           ]
         : [],
+    authorizationSnapshot: async ({ projectId, toolName }) => {
+      if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
+      const binding = await getBrokeredProjectBinding(projectId);
+      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+      return JSON.stringify(binding);
+    },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
       ? {
@@ -2115,11 +2125,7 @@ export async function buildEmbeddedServer(
   const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
     const binding = await getBrokeredProjectBinding(projectId);
     if (binding === undefined) return undefined;
-    return `project-doppler:${createHash('sha256')
-      .update(binding.dopplerProject)
-      .update('\0')
-      .update(binding.dopplerConfig)
-      .digest('hex')}`;
+    return brokeredDopplerBindingId(binding);
   };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
   // stops guessing aliases. Briefly cached; every failure degrades to "no list".
@@ -3426,7 +3432,8 @@ export async function buildEmbeddedServer(
     (typeof configuredDevcontainerFeatureRef === 'string'
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+  const imageReferences = createProjectImageReferences(db);
+  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
           resolveToolkitFeatureRef(
@@ -3439,6 +3446,15 @@ export async function buildEmbeddedServer(
           publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
           devcontainerFeatureRefConfigured,
         );
+  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+    selectedDevcontainerFeature === undefined
+      ? undefined
+      : async () =>
+          pinToolkitFeature(
+            typeof selectedDevcontainerFeature === 'function'
+              ? await selectedDevcontainerFeature()
+              : selectedDevcontainerFeature,
+          );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -3686,6 +3702,7 @@ export async function buildEmbeddedServer(
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
     provisioner = new ProvisionerImpl({
+      imageReferences,
       store: eventStore,
       db,
       docker,
@@ -4767,9 +4784,9 @@ export async function buildEmbeddedServer(
             defaultProjectImage,
             defaultProjectImageVersion: config.defaultProjectImageVersion,
             toolkitFeatureRef:
-              typeof devcontainerFeature === 'function'
-                ? async () => (await devcontainerFeature())?.ref
-                : devcontainerFeature?.ref,
+              devcontainerFeature === undefined
+                ? undefined
+                : async () => (await devcontainerFeature())?.ref,
           }),
         }
       : {}),
@@ -4826,6 +4843,19 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    ...(projectDocker === undefined
+      ? {}
+      : {
+          onProjectHidden: async () => {
+            await runDockerGc({
+              docker: projectDocker,
+              log: app.log,
+              imageReferences,
+              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
+              imagesOnly: true,
+            });
+          },
+        }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
@@ -4857,12 +4887,20 @@ export async function buildEmbeddedServer(
       // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
       checkBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        return bindingId === undefined ? false : brokeredHttpGrants.check({ ...input, bindingId });
+        return bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+          ? false
+          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        if (bindingId === undefined) throw new Error('project Doppler binding is unavailable');
-        await brokeredHttpGrants.grant({ ...input, bindingId });
+        if (
+          bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+        ) {
+          throw new Error('Doppler access changed before saving approval');
+        }
+        await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       // Auto-name an unnamed session from its opening turn: the conductor derives a
       // 2–3 word title from the first chat using the session's OWN model (routed via
@@ -5588,6 +5626,7 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      imageReferences,
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

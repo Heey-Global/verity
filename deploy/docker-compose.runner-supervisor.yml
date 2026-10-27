@@ -167,7 +167,7 @@ services:
       # socket itself.
       - '${VERITY_DOCKER_SOCKET_GID:-999}'
     security_opt:
-      - no-new-privileges:true
+      - no-new-privileges=true
     healthcheck:
       test:
         - CMD-SHELL

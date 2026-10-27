@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
-import type { VerityClient } from '@verity/mobile';
+import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { useProjects } from './useProjects';
 
 let mockFocused = true;
@@ -354,4 +354,141 @@ it('disowns removed-project reads even when cancellation is ignored', async () =
   });
   expect(result.current.previewUrls.has('removed')).toBe(false);
   unmount();
+});
+
+describe('project list recovery', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+  const advance = async (ms = 0) => {
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(ms);
+    });
+  };
+
+  it('distinguishes an unresolved initial list from a successful empty list', async () => {
+    let resolve!: (projects: never[]) => void;
+    const client = {
+      listProjects: jest.fn(
+        () =>
+          new Promise<never[]>((done) => {
+            resolve = done;
+          }),
+      ),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    expect(result.current.listState).toBe('loading');
+    await act(async () => {
+      resolve([]);
+    });
+    expect(result.current.listState).toBe('ready');
+    expect(result.current.error).toBeUndefined();
+    unmount();
+  });
+
+  it('retries a failed initial read without live invalidations, backs off and stops after recovery', async () => {
+    const client = { listProjects: jest.fn().mockRejectedValue(new Error('offline')) };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await advance();
+    expect(result.current.listState).toBe('error');
+    for (const delay of [1000, 2000, 4000, 8000, 15000, 15000]) {
+      const calls = client.listProjects.mock.calls.length;
+      await advance(delay - 1);
+      expect(client.listProjects).toHaveBeenCalledTimes(calls);
+      await advance(1);
+      expect(client.listProjects).toHaveBeenCalledTimes(calls + 1);
+    }
+    client.listProjects.mockResolvedValue([]);
+    await advance(15000);
+    expect(result.current.listState).toBe('ready');
+    expect(result.current.error).toBeUndefined();
+    const calls = client.listProjects.mock.calls.length;
+    await advance(60000);
+    expect(client.listProjects).toHaveBeenCalledTimes(calls);
+    unmount();
+  });
+
+  it('keeps the last successful projects and recovers from a failed live refresh', async () => {
+    const projects = [{ id: 'p1', state: 'absent' }];
+    const client = { listProjects: jest.fn().mockResolvedValue(projects) };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await advance();
+    const previous = result.current.projects;
+    client.listProjects.mockRejectedValueOnce(new VerityApiError(503, 'temporarily unavailable'));
+    await act(async () => {
+      await mockSubscriptions.find(({ filter }) => filter('/projects'))!.refresh();
+    });
+    expect(result.current.projects).toBe(previous);
+    expect(result.current.error).toBe('temporarily unavailable');
+    expect(result.current.listState).toBe('error');
+    await advance(1000);
+    expect(result.current.listState).toBe('ready');
+    expect(result.current.projects).toEqual(projects);
+    unmount();
+  });
+
+  it('pauses retries in the background and retries on foreground without navigation', async () => {
+    const listeners = new Set<(state: AppStateStatus) => void>();
+    jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => {
+      listeners.add(listener);
+      return { remove: () => listeners.delete(listener) };
+    });
+    const changeState = async (state: AppStateStatus) => {
+      await act(async () => {
+        Object.defineProperty(AppState, 'currentState', { configurable: true, value: state });
+        for (const listener of [...listeners]) listener(state);
+      });
+    };
+    const client = { listProjects: jest.fn().mockRejectedValue(new Error('offline')) };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await advance();
+    await changeState('background');
+    await advance(60000);
+    expect(client.listProjects).toHaveBeenCalledTimes(1);
+    client.listProjects.mockResolvedValue([]);
+    await changeState('active');
+    expect(client.listProjects).toHaveBeenCalledTimes(2);
+    expect(result.current.listState).toBe('ready');
+    unmount();
+    expect(listeners.size).toBe(0);
+  });
+
+  it('cancels scheduled retries on unmount', async () => {
+    const client = { listProjects: jest.fn().mockRejectedValue(new Error('offline')) };
+    const { unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await advance();
+    unmount();
+    await advance(60000);
+    expect(client.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not schedule retries when an in-flight request fails after unmount', async () => {
+    let reject!: (error: Error) => void;
+    const client = {
+      listProjects: jest.fn(
+        () =>
+          new Promise((_, fail) => {
+            reject = fail;
+          }),
+      ),
+    };
+    const { unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    unmount();
+    await act(async () => {
+      reject(new Error('offline'));
+    });
+    await advance(60000);
+    expect(client.listProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([401, 403])('does not retry authorization failure %i', async (status) => {
+    const client = {
+      listProjects: jest.fn().mockRejectedValue(new VerityApiError(status, 'Unauthorized')),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await advance();
+    expect(result.current.listState).toBe('error');
+    await advance(60000);
+    expect(client.listProjects).toHaveBeenCalledTimes(1);
+    unmount();
+  });
 });

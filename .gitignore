@@ -45,6 +45,9 @@ coverage
 # Agent code review marker (local review receipt written by `verity-code-review
 # mark`; a per-checkout receipt, never committed — see AGENTS.md).
 .agents/.last-code-review-sha
+# The operator's "skip lint/format while dependencies are missing" answer for the
+# pre-push hook (written by `verity-local-checks skip`), bound to this checkout.
+.agents/.local-checks-skip
 # Scratch copies of `verity-code-review` output, which the tool writes to a temp dir it
 # deletes on exit. Staged in the worktree only so a session can read its own findings.
 .agents/review-capture/

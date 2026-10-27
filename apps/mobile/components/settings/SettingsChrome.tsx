@@ -225,6 +225,7 @@ export function SettingsNavRow({
 export function SettingsChoiceRow({
   title,
   subtitle,
+  icon,
   selected,
   disabled = false,
   onPress,
@@ -232,6 +233,8 @@ export function SettingsChoiceRow({
 }: {
   title: string;
   subtitle?: string;
+  /** A leading glyph, for choices that read as plain text without one. */
+  icon?: IconName;
   selected: boolean;
   disabled?: boolean;
   onPress: () => void;
@@ -241,6 +244,7 @@ export function SettingsChoiceRow({
     <Row
       title={title}
       subtitle={subtitle}
+      leading={icon === undefined ? undefined : { icon }}
       selected={selected}
       disabled={disabled}
       onPress={onPress}

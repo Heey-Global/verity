@@ -197,7 +197,7 @@ function initSpec(
     ],
     restartPolicy: 'no',
     platform: `linux/${architecture}`,
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
   };
 }
 
@@ -234,7 +234,7 @@ function managedMatrixConnectorSpec(
     network: 'verity-net',
     platform: `linux/${architecture}`,
     capDrop: ['ALL'],
-    securityOpt: ['no-new-privileges:true'],
+    securityOpt: ['no-new-privileges=true'],
     pidsLimit: 128,
     memoryBytes: 1024 ** 3,
     memorySwapBytes: 1024 ** 3,

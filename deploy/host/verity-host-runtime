@@ -23,6 +23,10 @@ umask 0022
 DAEMON_JSON="${VERITY_DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}"
 RUNSC_ROOT="${VERITY_RUNSC_ROOT:-/opt/verity/runsc}"
 STATE_DIR="${VERITY_HOST_RUNTIME_DIR:-/var/lib/verity/host-runtime}"
+# Root-only and never mounted into a container, unlike STATE_DIR, which the Updater writes
+# requests into: the lock and the daemon.json backup must not be something a requester can
+# replace with a symbolic link or rewrite before a restore.
+PRIVATE_DIR="${VERITY_HOST_RUNTIME_PRIVATE_DIR:-/var/lib/verity/host-runtime-private}"
 DOCKER_PID_FILE="${VERITY_DOCKER_PID_FILE:-/var/run/docker.pid}"
 SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 RELOAD_TIMEOUT_SECONDS="${VERITY_HOST_RUNTIME_RELOAD_TIMEOUT:-30}"
@@ -167,8 +171,9 @@ apply_requirements() {
   path="$(runsc_path "$release")"
   want="$(desired_runtimes "$requirements" "$path")"
 
-  install -d -m 0700 "$STATE_DIR"
-  exec 9>"$STATE_DIR/.lock"
+  [[ ! -L $PRIVATE_DIR ]] || die "$PRIVATE_DIR must not be a symbolic link"
+  install -d -m 0700 "$PRIVATE_DIR"
+  exec 9>"$PRIVATE_DIR/lock"
   flock -w 900 9 || die 'another host runtime reconciliation is still running'
 
   ensure_binary "$release" "$sha" "$arch"
@@ -190,7 +195,7 @@ apply_requirements() {
       die "Docker rejects the merged $DAEMON_JSON (dockerd --validate); nothing was changed"
     fi
     if [[ -e $DAEMON_JSON ]]; then
-      backup="$STATE_DIR/daemon.json.previous"
+      backup="$PRIVATE_DIR/daemon.json.previous"
       cp -p "$DAEMON_JSON" "$backup"
     fi
     mv -f "$tmp" "$DAEMON_JSON"

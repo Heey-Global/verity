@@ -27,8 +27,14 @@ Project containers mount `/opt/agent-seed` read-only and prepend
 - `bin/git` is a thin wrapper that refuses `git worktree remove` on a Verity
   session worktree (`.verity-sessions/agent-<id>`) — self-removal would delete
   the tree the session runs in and permanently break it ("workspace no longer
-  exists"). Every other git invocation execs the real git verbatim. Set
-  `VERITY_GIT_GUARD_DISABLE=1` for operator-directed removals.
+  exists"). It also refuses `git push --no-verify` (abbreviations included)
+  and a push that overrides `core.hooksPath` through `-c`, `--config-env` or
+  the equivalent `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_KEY_n` variables. That
+  is a guard against the shortcut an agent reaches for, not an enumeration of
+  every way git can be pointed at other configuration; the enforced boundary
+  is branch protection on the code host. Every other git invocation execs the
+  real git verbatim.
+  Set `VERITY_GIT_GUARD_DISABLE=1` for operator-directed removals and pushes.
 - `code-review-prompt.md` is the reviewer prompt used by
   `verity-code-review run`. Keep the full prompt out of the main chat
   transcript; the parent should only receive concise findings.
@@ -40,10 +46,28 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   Claude receives the fenced diff without filesystem tools. Agents must not improvise
   a backend-specific sub-agent for this — no backend registers a `code_review`
   agent, so improvising hangs the turn on a tool call that never returns.
-- `hooks/pre-push` blocks feature-branch pushes until the current HEAD is covered
-  by that marker or each pending commit is explicitly tagged `[skip review]`. It
-  also runs the secret gate over every ref being pushed, before any other check
-  and on protected branches too, where the review gate itself is skipped.
+- `hooks/pre-push` gates every ref being pushed, on every branch: the secret
+  scan first, then the repository's `lint` and `format` scripts where it
+  declares them, then the review marker — the push is blocked until the pushed
+  tip is covered by that marker or each pending commit is explicitly tagged
+  `[skip review]`. When the repository declares lint or format checks but
+  `node_modules` is missing, the hook stops and asks instead of installing:
+  installing runs code from the registry, so the operator chooses between
+  `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a
+  lockfile) and skipping the two checks for the session.
+- `bin/verity-local-checks` records that skip: `skip` writes
+  `.agents/.local-checks-skip` with a fingerprint of `package.json` and the
+  lockfile, `reset` forgets it, `status` reports whether it still applies. The
+  hook honours the marker only while `node_modules` is missing and only while
+  the fingerprint matches; a changed manifest or lockfile makes it ask again.
+  Secret scan and code review are never skipped.
+
+  The gate is a local early warning, not the enforced boundary. It runs inside
+  the sandbox, and an operator can disable the wrapper. What enforces the rules
+  is the code host: branch protection with required status checks on the
+  protected branches, and the organisation's gitleaks ruleset in CI. Keep those
+  in place; the hook only saves the round trip.
+
 - `bin/verity-review-base.sh` resolves the common ancestor used by review and
   push checks. If it is missing in a shallow clone, it fetches only the configured
   base branch and a remote-tracking ancestor of the pushed tip, in up to three
@@ -58,8 +82,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   `.gitleaksignore`. Wherever `gitleaks` is available the scan runs, in every
   repository. A repository's own gitleaks config only decides what a _missing_
   scanner means: fail closed where the repo declares scanning, stay silent in a
-  container that was never provisioned for it. Bypass in a real emergency with
-  `git commit --no-verify` / `git push --no-verify`.
+  container that was never provisioned for it. `git commit --no-verify` remains
+  possible for a commit; the push scan catches it again, and the git wrapper
+  refuses `git push --no-verify`.
 
 - `bin/verity-dev-server` manages dev servers that Verity runs for the agent.
   `add`, `update` and `remove` maintain a project-wide entry (name, command,

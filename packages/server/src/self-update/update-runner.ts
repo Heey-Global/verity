@@ -442,12 +442,14 @@ export async function recoverManagedUpdater(
   const runner = createUpdateRunner(options);
   const verdict = (result: ManagedServerReconcileResult): ManagedServerReconcileVerdict =>
     (result.drift === undefined || result.drift.length === 0) &&
-    result.diagnosticMountPending !== true
+    result.diagnosticMountPending !== true &&
+    result.devcontainerBuilderPending !== true
       ? { status: 'ok' }
       : {
           status: 'drift',
           environment: result.drift ?? [],
           ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+          ...(result.devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
         };
   // `'unknown'` until a reconcile actually returns one. The catch below swallows
   // the failure when an operation is unfinished, and claiming `'ok'` there would
@@ -458,6 +460,10 @@ export async function recoverManagedUpdater(
     if (result.diagnosticMountPending)
       (options.log ?? defaultLog)(
         'the running Server predates the diagnostic mount; its next guarded replacement will apply it',
+      );
+    if (result.devcontainerBuilderPending)
+      (options.log ?? defaultLog)(
+        'the running Server predates the devcontainer builder socket; repository builds stay unavailable until its next guarded replacement applies it',
       );
     if (result.environment.length === 0) return;
     // The Server is up and serving on values the spec now resolves differently.

@@ -248,7 +248,7 @@ describe('pre-push secret gate', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('PUSH BLOCKED - secret detected');
-    expect(result.stderr).not.toContain('lint/format toolchain unavailable');
+    expect(result.stderr).not.toContain('dependencies are not installed');
   });
 
   it('blocks the push when the scan cannot run', () => {
@@ -305,7 +305,7 @@ describe('pre-push secret gate', () => {
     expect(result.stderr).toContain('scanning full history for secrets');
   });
 
-  it('still scans on protected branches, where only the review gate is skipped', () => {
+  it('scans a protected branch and reports the secret, not a later gate', () => {
     const root = repo();
     execFileSync('git', ['-C', root, 'checkout', '-q', '-b', 'main']);
     const finding = stub(root, 'scan-finding', 1);
@@ -314,19 +314,22 @@ describe('pre-push secret gate', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('PUSH BLOCKED - secret detected');
+    expect(result.stderr).not.toContain('code review');
     expect(finding.argv()).not.toBe('');
   });
 
-  it('lets a clean push through on a protected branch without reaching the review gate', () => {
+  it('goes on to the review gate on a protected branch once the scan is clean', () => {
     const root = repo();
     execFileSync('git', ['-C', root, 'checkout', '-q', '-b', 'main']);
     const clean = stub(root, 'scan-clean', 0);
 
     const result = run(prePush, [], root, { VERITY_SECRET_SCAN_BIN: clean.path });
 
-    expect(result.status).toBe(0);
+    // The protected-branch exemption is gone: main is reviewed like any branch.
+    // This fixture has no review base, so the gate stops on the missing boundary.
+    expect(result.status).toBe(2);
     expect(clean.argv()).not.toBe('');
-    expect(result.stderr).not.toContain('code review');
+    expect(result.stderr).toContain('no usable code review boundary');
   });
 });
 

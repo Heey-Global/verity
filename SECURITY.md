@@ -196,3 +196,26 @@ remote access, sharing, official push infrastructure, and future managed
 operations are separate services with their own terms and privacy disclosures.
 With no hosted-service configuration, the Server must not silently enroll a
 self-hosted installation in those services.
+
+### Repository devcontainer builds
+
+Repository Dockerfiles and Feature install scripts run through the dedicated
+[gVisor BuildKit service](deploy/buildkit/README.md). The Server selects a private
+remote BuildKit driver; an unavailable worker fails the build rather than
+starting a Docker worker. The worker has no Docker socket and does not accept
+insecure entitlements. Its private socket grants build authority and must only
+be accessible to the trusted Server and host administrators.
+
+The BuildKit daemon itself runs as host root and is a trusted host component.
+gVisor isolates build commands, not the BuildKit daemon, image parsers, or the
+Server. Host memory/CPU/task limits bound this service collectively. They do not
+provide per-project quotas or prevent build network access. Do not expose this
+socket to project containers or agent sessions.
+
+Server-injected Node and toolkit Features are selected by manifest digest.
+Digest integrity alone is not publisher authentication: the existing runner
+boundary attestation checks toolkit contents against the signed Server bundle.
+A configured foreign toolkit can therefore build successfully and still be
+rejected at the runner boundary. Repository-selected dependencies remain
+project input. Disable repository devcontainers for projects that should only
+use the instance's base image.

@@ -1,18 +1,21 @@
 {
   "schema": 1,
-  "version": "1.77.6",
-  "runtime": "1.77.0",
+  "version": "1.79.1",
+  "runtime": "1.79.0",
   "channel": "production",
-  "commit": "f643c0fa49ab486a76ee44f7e47a1b05366588c0",
-  "tag": "mobile-v1.77.6",
-  "branch": "staging-mobile-v1.77.6-f643c0fa49ab486a76ee44f7e47a1b05366588c0",
-  "baseline": "mobile-v1.77.3",
-  "group": "6d04133d-26e6-4ec0-83c4-3f9efac05dfe",
+  "commit": "9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
+  "tag": "mobile-v1.79.1",
+  "branch": "staging-mobile-v1.79.1-9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
+  "baseline": "mobile-v1.79.0",
+  "group": "39af6fdd-4131-4d34-9621-602fde9aab30",
   "notes": [
-    "classify and group vulnerability scan findings (#1870)",
-    "attribute auxiliary requests and native invocation timing (#1871)",
-    "preserve recording arming after admission completes (#1865)",
-    "expose local connection test failure receipts (#1860)",
-    "expose scoped vulnerability scans to agents (#1854)"
+    "publish session documents automatically without Git (#1841)",
+    "invalidate Google actions when leaving a chat (#1916)",
+    "restore connection provider icons and consistent statuses (#1915)",
+    "defer auxiliary session catalog requests (#1913)",
+    "preserve text field focus when showing focus shadow (#1914)",
+    "frame Google account choices as tappable rows (#1911)",
+    "restrict scroll reports to diagnostic recording (#1908)",
+    "respect credential permissions and prevent unsafe repair turns (#1900)"
   ]
 }

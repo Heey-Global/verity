@@ -708,7 +708,7 @@ describe('settings/services — knowledge sources', () => {
     );
     render(<ServicesSettingsScreen />);
 
-    expect(await screen.findByText('online')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Matrix,.*Connected$/)).toBeOnTheScreen();
     fireEvent.press(screen.getByLabelText(/^Matrix(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
   });
@@ -860,3 +860,28 @@ it.each([false, true])('groups services consistently when connected=%s', async (
   const claude = within(screen.getByLabelText(/^Claude(,|$)/));
   expect(claude.getByLabelText(rowLabel(connected ? 'Connected' : 'Connect'))).toBeOnTheScreen();
 });
+
+it.each([false, true])(
+  'shows consistent Matrix and Attendee statuses when connected=%s',
+  async (connected) => {
+    const client = makeClient('unlocked', {
+      listIntegrations: jest.fn().mockResolvedValue({
+        accounts: connected ? [{ provider: 'matrix', status: 'online' }] : [],
+        sources: [],
+      }),
+    });
+    Object.assign(client, {
+      getAttendeeSettings: jest.fn().mockResolvedValue({ configured: connected }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ConnectionsScreen />);
+    await act(async () => undefined);
+    for (const title of ['Matrix', 'Attendee']) {
+      const row = screen.getByLabelText(rowLabel(title));
+      expect(
+        within(row).getByLabelText(new RegExp(`^${connected ? 'Connected' : 'Connect'}(,|$)`)),
+      ).toBeOnTheScreen();
+    }
+    expect(screen.queryByText('online')).toBeNull();
+  },
+);

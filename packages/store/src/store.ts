@@ -422,6 +422,8 @@ export interface SessionAutomationInput {
 }
 
 export interface ProjectSettingsRecord {
+  /** Absent on older clients; defaults to enabled. Changing it affects the next recreation. */
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -486,6 +488,7 @@ export interface ProjectMcpBindingRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'
@@ -2894,6 +2897,45 @@ export class EventStore implements EventSink {
         .where('session_id', '=', sessionId)
         .where('operation_id', '=', operationId)
         .execute();
+    });
+  }
+
+  /** Replace a legacy local Git workspace after its verified filesystem migration. */
+  async replaceLocalSessionWorkspace(
+    sessionId: string,
+    projectId: string,
+    previous: string,
+    next: string,
+    note: string,
+  ): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      const project = await tx
+        .selectFrom('projects')
+        .select(['kind', 'hidden_at'])
+        .where('id', '=', projectId)
+        .forShare()
+        .executeTakeFirstOrThrow();
+      if (project.kind !== 'local' || project.hidden_at !== null)
+        throw new Error('Local project is unavailable');
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['worktree', 'project_id'])
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!session) return;
+      if (session.project_id !== projectId)
+        throw new Error('Session changed project during migration');
+      if (session.worktree === next) return;
+      if (session.worktree !== previous)
+        throw new Error('Session changed workspace during migration');
+      await tx
+        .updateTable('sessions')
+        .set({ worktree: next })
+        .where('session_id', '=', sessionId)
+        .execute();
+      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
+      await tx.insertInto('session_pending_note').values({ session_id: sessionId, note }).execute();
     });
   }
 
@@ -6640,6 +6682,7 @@ export class EventStore implements EventSink {
   private projectSettingsRowToRecord(
     row: {
       project_id: string;
+      devcontainer_enabled: boolean;
       doppler_token_ref: string | null;
       doppler_token: string | null;
       doppler_project: string | null;
@@ -6661,6 +6704,7 @@ export class EventStore implements EventSink {
   ): ProjectSettingsRecord {
     return {
       projectId: row.project_id,
+      devcontainerEnabled: row.devcontainer_enabled,
       dopplerTokenRef: row.doppler_token_ref,
       dopplerToken: decrypt ? this.decryptSecret(row.doppler_token) : row.doppler_token,
       dopplerProject: row.doppler_project,
@@ -6682,6 +6726,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly projectSettingsColumns = [
+    'devcontainer_enabled',
     'project_id',
     'doppler_token_ref',
     'doppler_token',
@@ -7822,6 +7867,7 @@ export class EventStore implements EventSink {
 
     const values = {
       project_id: projectId,
+      devcontainer_enabled: patch.devcontainerEnabled ?? true,
       doppler_token_ref: normalizeSetting(patch.dopplerTokenRef),
       doppler_token: this.encryptSecret(normalizeSetting(patch.dopplerToken)),
       doppler_project: normalizeSetting(patch.dopplerProject),
@@ -7877,6 +7923,9 @@ export class EventStore implements EventSink {
         .values(values)
         .onConflict((oc) =>
           oc.column('project_id').doUpdateSet({
+            ...(patch.devcontainerEnabled !== undefined
+              ? { devcontainer_enabled: patch.devcontainerEnabled }
+              : {}),
             ...(patch.dopplerTokenRef !== undefined
               ? { doppler_token_ref: normalizeSetting(patch.dopplerTokenRef) }
               : {}),

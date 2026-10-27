@@ -70,7 +70,7 @@ container_id="$(docker create \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16777216 \
   --cap-drop ALL \
-  --security-opt no-new-privileges:true \
+  --security-opt no-new-privileges=true \
   --pids-limit 32 \
   --memory 64m \
   --cpus 0.25 \
@@ -93,7 +93,7 @@ jq --exit-status \
    (.[0].HostConfig.DeviceCgroupRules == null or .[0].HostConfig.DeviceCgroupRules == []) and
    (.[0].HostConfig.Binds == null or .[0].HostConfig.Binds == []) and
    (.[0].HostConfig.Mounts == null or .[0].HostConfig.Mounts == []) and
-   .[0].HostConfig.SecurityOpt == ["no-new-privileges:true"] and
+   (.[0].HostConfig.SecurityOpt | map(if . == "no-new-privileges:true" or . == "no-new-privileges" then "no-new-privileges=true" else . end)) == ["no-new-privileges=true"] and
    .[0].HostConfig.RestartPolicy.Name == "no" and
    .[0].HostConfig.PidsLimit == 32 and
    .[0].HostConfig.Memory == 67108864 and
@@ -134,7 +134,7 @@ docker network create --internal "$project_suffix" >/dev/null
 docker volume create "$project_suffix" >/dev/null
 # The limits leave room for gVisor itself: the sentry's threads and memory are charged to the
 # container's cgroup, so a limit sized for a bare `sh` (the Secret-job smoke) starves node.
-hardening=(--cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 --memory 1g
+hardening=(--cap-drop ALL --security-opt no-new-privileges=true --pids-limit 512 --memory 1g
   --user 65532:65532 --restart no --entrypoint node)
 project_diagnostics() {
   local id="${project_ids[0]:-}"
@@ -148,7 +148,7 @@ project_diagnostics() {
 # volume-nocopy everywhere: Docker otherwise copies the image directory's owner onto the empty
 # volume at first mount, and the chown below would not survive into the Sandbox.
 smoke_mount() { printf 'type=volume,src=%s,dst=%s,volume-nocopy' "$project_suffix" "$1"; }
-docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges:true \
+docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges=true \
   --network none --entrypoint /bin/sh --mount "$(smoke_mount /verity-gvisor-smoke)" "$image" \
   -c 'chown 65532:65532 /verity-gvisor-smoke' >/dev/null
 project_ids+=("$(docker run --detach --runtime runsc-project --network "$project_suffix" \

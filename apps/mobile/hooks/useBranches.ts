@@ -56,7 +56,9 @@ export interface UseBranches {
   switchTo: (
     opts: BranchSwitchRequest,
   ) => Promise<{ ok: true } | { ok: false; dirty: boolean; message: string }>;
-  mergePullRequest: (number: number) => Promise<{ ok: true } | { ok: false; message: string }>;
+  mergePullRequest: (
+    number: number,
+  ) => Promise<{ ok: true } | { ok: false; message: string; permissionDenied?: boolean }>;
   /** The base branch this session can be merged into WITHOUT GitHub, or undefined
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
@@ -330,6 +332,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         }
         return {
           ok: false,
+          permissionDenied: err instanceof VerityApiError && err.code === 'merge_permission_denied',
           message: err instanceof Error ? err.message : String(err),
         };
       }

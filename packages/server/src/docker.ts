@@ -1,3 +1,4 @@
+import { normalizeSecurityOptions } from './docker-security-options.js';
 /**
  * Minimal Docker Engine HTTP client (concept §17, #174). Talks to the Docker
  * socket-proxy via plain fetch — the proxy scopes the surface to the endpoints
@@ -316,7 +317,7 @@ export interface ContainerSpec {
   capDrop?: string[];
   /** Capabilities to add back on top of {@link capDrop} (`HostConfig.CapAdd`). */
   capAdd?: string[];
-  /** `HostConfig.SecurityOpt`, e.g. `['no-new-privileges:true']` to block setuid
+  /** `HostConfig.SecurityOpt`, e.g. `['no-new-privileges=true']` to block setuid
    *  privilege escalation inside the container. */
   securityOpt?: string[];
   /** Max PIDs (`HostConfig.PidsLimit`) — the fork-bomb guard. */
@@ -1362,6 +1363,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       ]),
     );
     const hostConfig = { ...(original.HostConfig ?? {}) };
+    if (isStringArray(hostConfig.SecurityOpt)) {
+      hostConfig.SecurityOpt = normalizeSecurityOptions(hostConfig.SecurityOpt);
+    }
     const configuredMounts = Array.isArray(hostConfig.Mounts)
       ? hostConfig.Mounts.filter(objectRecord)
       : [];
@@ -2101,25 +2105,36 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       const res = await callDocker(doFetch, `${base}/containers/json?all=true`, 'GET', timeoutMs);
       if (!res.ok) throw await toDockerError(res);
       const json = await res.json();
-      if (!Array.isArray(json)) return [];
-      return json.flatMap((entry): DockerContainerSummary[] => {
-        if (typeof entry !== 'object' || entry === null) return [];
+      const invalidInventory = () =>
+        new DockerError({
+          kind: 'other',
+          status: res.status,
+          message: 'Docker container inventory is incomplete or malformed',
+        });
+      if (!Array.isArray(json)) throw invalidInventory();
+      return json.map((entry): DockerContainerSummary => {
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
+          throw invalidInventory();
         const { Id, ImageID, Names, Labels, Created } = entry as Record<string, unknown>;
-        if (typeof Id !== 'string' || typeof ImageID !== 'string') return [];
+        if (
+          typeof Id !== 'string' ||
+          Id.trim() === '' ||
+          typeof ImageID !== 'string' ||
+          ImageID.trim() === ''
+        )
+          throw invalidInventory();
         const names = Array.isArray(Names)
           ? Names.filter((name): name is string => typeof name === 'string').map((name) =>
               name.replace(/^\//, ''),
             )
           : [];
-        return [
-          {
-            id: Id,
-            imageId: ImageID,
-            names,
-            labels: parseDockerLabels(Labels) ?? {},
-            ...(typeof Created === 'number' ? { created: Created } : {}),
-          },
-        ];
+        return {
+          id: Id,
+          imageId: ImageID,
+          names,
+          labels: parseDockerLabels(Labels) ?? {},
+          ...(typeof Created === 'number' ? { created: Created } : {}),
+        };
       });
     },
     listVolumes: async (opts) => {

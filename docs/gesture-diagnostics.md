@@ -142,3 +142,15 @@ restart. Compare subgroup deltas and peaks with timer lateness and correlated
 transport phases. This instrumentation needs no new native API; native timings
 are available only on builds that already expose them. Do not infer a leak or
 choose a scheduling rewrite from request totals alone.
+
+
+## Scroll diagnostic traffic
+
+Session scroll reports (`POST /sessions/:id/debug/scroll`) are sent only while
+interaction diagnostic recording is enabled. Outside recording, no scroll report
+payload is built and no scroll diagnostic request is started. While recording,
+reports share an app-wide limit of one start per second and one request in flight.
+Extra events are dropped, never queued or retried, so server scroll logs are a
+sample rather than a complete event sequence. Turning recording off prevents new
+reports; an already dispatched request may finish. History loading and scroll
+position behavior do not depend on report delivery.
