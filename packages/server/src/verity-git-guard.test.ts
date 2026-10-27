@@ -239,6 +239,33 @@ describe('agent-seed/bin/git guard (push bypass)', () => {
     expect(stderr).toContain('core.hooksPath override');
   });
 
+  it.each([
+    [{ GIT_CONFIG_PARAMETERS: "'core.hooksPath=/dev/null'" }],
+    [
+      {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.HooksPath',
+        GIT_CONFIG_VALUE_0: '/dev/null',
+      },
+    ],
+  ])('refuses a push whose hooksPath override arrives via the environment: %j', async (env) => {
+    const { code, stderr } = await runWrapper(['push', 'origin', 'HEAD:refs/heads/x'], main, env);
+    expect(code).toBe(1);
+    expect(stderr).toContain('core.hooksPath override');
+  });
+
+  it('leaves a push alone when the environment carries only other keys', async () => {
+    // The signing broker hands git its gpg.* settings this way; a guard that
+    // fired on any GIT_CONFIG_* would refuse every signed push.
+    const { code, stderr } = await runWrapper(
+      ['push', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+      { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'gpg.format', GIT_CONFIG_VALUE_0: 'ssh' },
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
   it('lets a dry run and an unrelated -c through', async () => {
     const { code, stderr } = await runWrapper(
       ['-c', 'user.name=t', 'push', '--dry-run', 'origin', 'HEAD:refs/heads/x'],

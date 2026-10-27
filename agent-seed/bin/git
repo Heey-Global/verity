@@ -48,6 +48,24 @@ note_config_arg() {
   esac
 }
 
+# The same one-invocation override can arrive through the environment:
+# GIT_CONFIG_PARAMETERS (what `-c` becomes for child processes) or the
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> pairs. The signing broker sets gpg.*
+# keys this way, so only the hooks key is looked for.
+note_config_env() {
+  case "${GIT_CONFIG_PARAMETERS:-}" in
+    *[Cc][Oo][Rr][Ee].[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]*) hooks_override=1 ;;
+  esac
+  local count="${GIT_CONFIG_COUNT:-}" k name
+  case "$count" in '' | *[!0-9]*) return 0 ;; esac
+  k=0
+  while [ "$k" -lt "$count" ]; do
+    name="GIT_CONFIG_KEY_$k"
+    note_config_arg "${!name:-}"
+    k=$((k + 1))
+  done
+}
+
 # --- find the subcommand, skipping git's global options ----------------------
 # Global options that consume the following argument when given separately.
 # Anything else starting with '-' is treated as a valueless flag. Misparsing
@@ -117,6 +135,7 @@ done
 # one that is not also a prefix of `--no-verbose`, so the three spellings from
 # there up are refused. Options after `--` are refspecs, not flags.
 if [ "$subcmd" = "push" ]; then
+  note_config_env
   no_verify=""
   j=$((subidx + 1))
   while [ "$j" -lt "$n" ]; do

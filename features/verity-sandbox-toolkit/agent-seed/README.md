@@ -28,8 +28,10 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   session worktree (`.verity-sessions/agent-<id>`) — self-removal would delete
   the tree the session runs in and permanently break it ("workspace no longer
   exists"). It also refuses `git push --no-verify` and a push with a
-  `core.hooksPath` override on the command line, the two ways around the
-  pre-push gate below. Every other git invocation execs the real git verbatim.
+  `core.hooksPath` override on the command line or in the `GIT_CONFIG_*`
+  environment, the direct ways around the pre-push gate below; it is a guard
+  against the obvious shortcut, not a complete enumeration of git's
+  configuration routes. Every other git invocation execs the real git verbatim.
   Set `VERITY_GIT_GUARD_DISABLE=1` for operator-directed removals and pushes.
 - `code-review-prompt.md` is the reviewer prompt used by
   `verity-code-review run`. Keep the full prompt out of the main chat
