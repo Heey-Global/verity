@@ -15,6 +15,7 @@ export async function runPinnedProbeMigration(options: {
   network: string;
   signal?: AbortSignal;
   resourcePrefix?: string;
+  resourceLabels?: Record<string, string>;
   timeoutMs?: number;
 }): Promise<void> {
   const { docker, manifest } = options;
@@ -33,6 +34,7 @@ export async function runPinnedProbeMigration(options: {
       ? options.resourcePrefix + '-migrate'
       : 'verity-probe-migrate-' + randomBytes(16).toString('hex'),
     command: ['backup-probe-migrate'],
+    ...(options.resourceLabels ? { labels: options.resourceLabels } : {}),
     network: options.network,
     env: [
       `VERITY_BACKUP_PROBE_DATABASE_URL=${options.databaseUrl}`,

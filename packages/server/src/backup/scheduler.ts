@@ -1,5 +1,5 @@
 export const DEFAULT_BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-export const BACKUP_RUN_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const BACKUP_RUN_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const FIRST_RETRY_MS = 15 * 60 * 1000;
 const DAY = 24 * 60 * 60 * 1000;
 export interface BackupScheduleState {

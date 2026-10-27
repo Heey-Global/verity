@@ -84,6 +84,12 @@ export interface DockerClient {
    *  with the timeout from the daemon default (10s). 404 → `ContainerNotFound`
    *  so deprovision is best-effort idempotent. */
   stopContainer(id: string): Promise<void>;
+  /** Installer recovery retains stopped containers under archived names until acceptance. */
+  renameContainer?(id: string, name: string): Promise<void>;
+  setContainerRestartPolicy?(
+    id: string,
+    policy: { name: 'no' | 'always' | 'unless-stopped' | 'on-failure'; maximumRetryCount: number },
+  ): Promise<void>;
   /** Force-remove a container regardless of running state
    *  (Engine `/containers/{id}?force=true&v=true`). 404 → already gone.
    *
@@ -472,6 +478,7 @@ export interface ContainerInspect {
   capAdd?: string[] | undefined;
   deviceCount?: number | undefined;
   restartPolicy?: string | undefined;
+  restartMaximumRetryCount?: number | undefined;
   entrypoint?: string[] | undefined;
   command?: string[] | undefined;
   init?: boolean | undefined;
@@ -1440,6 +1447,28 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
   return {
     createContainer,
     pullImage,
+    renameContainer: async (id, name) => {
+      const query = new URLSearchParams({ name });
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}/rename?${query.toString()}`,
+        'POST',
+        timeoutMs,
+      );
+      if (!res.ok) throw await toDockerError(res, id);
+    },
+    setContainerRestartPolicy: async (id, policy) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}/update`,
+        'POST',
+        timeoutMs,
+        {
+          RestartPolicy: { Name: policy.name, MaximumRetryCount: policy.maximumRetryCount },
+        },
+      );
+      if (!res.ok) throw await toDockerError(res, id);
+    },
     startContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/start`, 'POST', timeoutMs);
       if (!res.ok) throw await toDockerError(res, id);
@@ -1808,7 +1837,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           GroupAdd?: unknown;
           Devices?: unknown;
           DeviceRequests?: unknown;
-          RestartPolicy?: { Name?: unknown };
+          RestartPolicy?: { Name?: unknown; MaximumRetryCount?: unknown };
           Init?: unknown;
           Mounts?: unknown;
         };
@@ -1955,6 +1984,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(deviceCount !== undefined ? { deviceCount } : {}),
         ...(typeof json.HostConfig?.RestartPolicy?.Name === 'string'
           ? { restartPolicy: json.HostConfig.RestartPolicy.Name }
+          : {}),
+        ...(typeof json.HostConfig?.RestartPolicy?.MaximumRetryCount === 'number'
+          ? { restartMaximumRetryCount: json.HostConfig.RestartPolicy.MaximumRetryCount }
           : {}),
         ...(isStringArray(json.Config?.Entrypoint) ? { entrypoint: json.Config.Entrypoint } : {}),
         ...(isStringArray(json.Config?.Cmd) ? { command: json.Config.Cmd } : {}),

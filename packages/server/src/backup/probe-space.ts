@@ -22,6 +22,7 @@ export async function checkProbeDatabaseSpace(options: {
   requiredBytes: bigint;
   signal?: AbortSignal;
   resourcePrefix?: string;
+  resourceLabels?: Record<string, string>;
   timeoutMs?: number;
 }): Promise<void> {
   const requiredKiB = (options.requiredBytes + 1023n) / 1024n;
@@ -40,6 +41,7 @@ export async function checkProbeDatabaseSpace(options: {
       ? options.resourcePrefix + '-space'
       : 'verity-probe-space-' + randomBytes(16).toString('hex'),
     image: options.image,
+    ...(options.resourceLabels ? { labels: options.resourceLabels } : {}),
     platform: `linux/${options.architecture}`,
     entrypoint: ['sh', '-c'],
     command: [CHECK_SPACE, 'verity-probe-space', requiredKiB.toString()],

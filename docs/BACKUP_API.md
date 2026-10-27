@@ -132,3 +132,14 @@ the container and anonymous volumes on completion, failure, timeout, or shutdown
 The database estimate includes a 256 MiB reserve; staging space is checked
 separately. This is a preflight estimate, not a reservation against other Docker
 workloads consuming space concurrently.
+
+## Full installer recovery
+
+Full recovery is an installer operation, separate from these paired-device API
+routes. See [Installer recovery](INSTALLER_RECOVERY.md) for explicit snapshot
+selection, private key entry, restricted trial, device review, acceptance and
+abort. The restricted runtime exposes only installer-local Unix-socket
+administrator authentication and device inspection/review; it does not register
+the normal application API or start background workers. Its short-lived recovery
+session is consumed by completed device review and is never a paired-device
+token. Ordinary server startup refuses a pending recovery marker.

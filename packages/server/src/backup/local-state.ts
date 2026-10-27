@@ -25,3 +25,20 @@ export function decodeLocalIndex(bytes: Uint8Array, fingerprintKey: string): unk
     throw new Error('Backup index integrity mismatch: start a new repository');
   return JSON.parse(payload) as unknown;
 }
+
+/** The index is a disposable cache; dropping old mappings never drops snapshot object references. */
+export function encodeBoundedLocalIndex(
+  index: Record<string, unknown>,
+  fingerprintKey: string,
+  maximum = 32 * 1024 * 1024,
+): Buffer {
+  if (!Number.isSafeInteger(maximum) || maximum < 256 || maximum > 32 * 1024 * 1024)
+    throw new Error('Invalid backup index budget');
+  for (;;) {
+    const encoded = encodeLocalIndex(index, fingerprintKey);
+    if (encoded.length <= maximum) return encoded;
+    const oldest = Object.keys(index);
+    if (oldest.length === 0) throw new Error('Backup index budget too small');
+    for (const key of oldest.slice(0, Math.max(1, Math.ceil(oldest.length / 2)))) delete index[key];
+  }
+}

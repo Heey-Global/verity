@@ -64,3 +64,14 @@ it('closes a database after migration failure or a mismatched resulting schema',
   await expect(migrateProbeDatabase(environment)).rejects.toThrow('unexpected schema');
   expect(fake.close).toHaveBeenCalledTimes(2);
 });
+
+it('supports an empty installer-owned restore database using the same pinned migration contract', async () => {
+  const restoreName = `verity_restore_${'b'.repeat(32)}`;
+  fake.query.mockResolvedValue({ rows: [{ name: restoreName, objects: '0' }] });
+  await migrateProbeDatabase({
+    ...environment,
+    VERITY_BACKUP_PROBE_DATABASE_URL: `postgres://restore:example@postgres/${restoreName}`,
+  });
+  expect(fake.migrate).toHaveBeenCalledOnce();
+  expect(fake.close).toHaveBeenCalledOnce();
+});

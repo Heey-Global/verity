@@ -32,7 +32,7 @@ function checksum(bytes: Uint8Array): Buffer {
   return createHash('sha256').update(PREFIX).update(bytes).digest().subarray(0, 8);
 }
 
-export function encodeRecoveryKey(key: RecoveryKey): string {
+function encodeRecoveryKey(key: RecoveryKey): string {
   const payload = Buffer.from(JSON.stringify([key.identity, key.verificationKey]));
   return PREFIX + Buffer.concat([payload, checksum(payload)]).toString('base64url');
 }

@@ -37,6 +37,8 @@ export class BackupDeviceReview {
   ): Promise<string> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     return withRepositoryLock(join(this.root, 'review.lock'), async () => {
+      if ((await this.load())?.status === 'complete')
+        throw new Error('Device review already complete');
       const token = randomBytes(32).toString('base64url');
       const state = schema.parse({
         kind: 'backup-device-review',
@@ -48,11 +50,10 @@ export class BackupDeviceReview {
         findings,
         keptIds: [],
       });
-      await writeDurable(
-        join(this.root, 'device-review'),
-        Buffer.from(JSON.stringify(state)),
-        false,
-      );
+      const encoded = Buffer.from(JSON.stringify(state));
+      if (encoded.length > 8 * 1024 * 1024)
+        throw new Error('Device review exceeds readable size limit');
+      await writeDurable(join(this.root, 'device-review'), encoded, false);
       return token;
     });
   }
@@ -104,19 +105,18 @@ export class BackupDeviceReview {
         kept.some((device) => !state.devices.includes(device) || state.revokedIds.includes(device))
       )
         throw new Error('Cannot keep an unknown or journal-revoked device');
-      // Delete first, consume the review second. A crash between them keeps ALL credentials blocked.
-      await removeOtherTokens(kept);
       const complete: BackupDeviceReviewState = {
         ...state,
         status: 'complete',
         keptIds: kept,
         sessionHash: null,
       };
-      await writeDurable(
-        join(this.root, 'device-review'),
-        Buffer.from(JSON.stringify(complete)),
-        false,
-      );
+      const encoded = Buffer.from(JSON.stringify(complete));
+      if (encoded.length > 8 * 1024 * 1024)
+        throw new Error('Device review exceeds readable size limit');
+      // Delete first, consume the review second. A crash between them keeps ALL credentials blocked.
+      await removeOtherTokens(kept);
+      await writeDurable(join(this.root, 'device-review'), encoded, false);
     });
   }
   async blocksDevices(): Promise<boolean> {

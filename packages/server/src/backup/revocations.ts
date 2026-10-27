@@ -14,7 +14,7 @@ const entrySchema = z
     kind: z.literal('revocation'),
     installationId: z.string().uuid(),
     keyGeneration: z.number().int().min(1).max(999999999),
-    sequence: z.number().int().min(1),
+    sequence: z.number().int().min(1).safe(),
     deviceId,
     revokedAt: z.string().datetime({ offset: true }),
     eventId: z.string().uuid(),
@@ -25,8 +25,8 @@ const checkpointSchema = z
     kind: z.literal('revocation-checkpoint'),
     installationId: z.string().uuid(),
     keyGeneration: z.number().int().min(1).max(999999999),
-    lowWater: z.number().int().min(1),
-    highWater: z.number().int().min(0),
+    lowWater: z.number().int().min(1).safe(),
+    highWater: z.number().int().min(0).safe(),
   })
   .strict();
 const queuedSchema = z
@@ -106,7 +106,7 @@ export class BackupRevocationJournal {
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       await withRepositoryLock(join(this.root, 'lock'), async () => {
         let sequence = 0;
-        for (const name of await names(this.root, 100002)) {
+        for await (const { name } of await opendir(this.root)) {
           if (/^[1-9][0-9]*$/.test(name)) {
             const number = Number(name);
             if (!Number.isSafeInteger(number)) throw new Error('Invalid revocation sequence');
@@ -180,6 +180,7 @@ export async function readRevocations(
   backupRoot: string,
   recoveryKey: string,
   signal?: AbortSignal,
+  deviceIds?: ReadonlySet<string>,
 ): Promise<{ revokedIds: Set<string>; findings: string[] }> {
   let pinned;
   try {
@@ -190,7 +191,12 @@ export async function readRevocations(
     throw error;
   }
   try {
-    return await readPinnedRevocations(`/proc/self/fd/${pinned.fd}/.`, recoveryKey, signal);
+    return await readPinnedRevocations(
+      `/proc/self/fd/${pinned.fd}/.`,
+      recoveryKey,
+      signal,
+      deviceIds,
+    );
   } finally {
     await pinned.close();
   }
@@ -200,10 +206,15 @@ async function readPinnedRevocations(
   root: string,
   recoveryKey: string,
   signal?: AbortSignal,
+  deviceIds?: ReadonlySet<string>,
 ): Promise<{ revokedIds: Set<string>; findings: string[] }> {
   const generations = await names(root, 10000);
   const revokedIds = new Set<string>();
   const findings: string[] = [];
+  const addFinding = (finding: string) => {
+    if (findings.length < 9999) findings.push(finding);
+    else if (findings.length === 9999) findings.push('revocation-findings-truncated');
+  };
   for (const generation of generations) {
     signal?.throwIfAborted();
     const match = /^([0-9a-f-]{36})-k([1-9][0-9]{0,8})$/.exec(generation);
@@ -233,10 +244,11 @@ async function readPinnedRevocations(
         )
           throw new Error();
       } catch {
-        findings.push(`${generation}: checkpoint-unreadable`);
+        addFinding(`${generation}: checkpoint-unreadable`);
       }
-      const sequences = new Set<number>();
-      for (const name of await names(directory, 100002)) {
+      signal?.throwIfAborted();
+      let covered = 0;
+      for await (const { name } of await opendir(directory)) {
         signal?.throwIfAborted();
         if (
           name === 'checkpoint' ||
@@ -248,7 +260,8 @@ async function readPinnedRevocations(
         if (!/^[1-9][0-9]*$/.test(name) || !Number.isSafeInteger(Number(name)))
           throw new Error('Invalid revocation entry name');
         const sequence = Number(name);
-        sequences.add(sequence);
+        if (checkpoint && sequence >= checkpoint.lowWater && sequence <= checkpoint.highWater)
+          covered++;
         try {
           const entry = entrySchema.parse(
             JSON.parse(
@@ -267,19 +280,15 @@ async function readPinnedRevocations(
             entry.sequence !== sequence
           )
             throw new Error();
-          revokedIds.add(entry.deviceId);
+          if (!deviceIds || deviceIds.has(entry.deviceId)) revokedIds.add(entry.deviceId);
         } catch {
-          findings.push(`${generation}/${name}: entry-unreadable`);
+          addFinding(`${generation}/${name}: entry-unreadable`);
         }
       }
+      signal?.throwIfAborted();
       if (checkpoint) {
-        if (checkpoint.highWater - checkpoint.lowWater > 100000)
-          throw new Error('Revocation checkpoint range exceeds limit');
-        for (let sequence = checkpoint.lowWater; sequence <= checkpoint.highWater; sequence++)
-          if (!sequences.has(sequence)) {
-            findings.push(`${generation}: sequence-gap`);
-            break;
-          }
+        if (covered !== checkpoint.highWater - checkpoint.lowWater + 1)
+          addFinding(`${generation}: sequence-gap`);
       }
       // A crash after reserving the last sequence must remain visible even when
       // its entry and checkpoint were never committed. This counter is advisory:
@@ -289,14 +298,15 @@ async function readPinnedRevocations(
         if (!/^(0|[1-9][0-9]*)$/.test(reserved) || !Number.isSafeInteger(Number(reserved)))
           throw new Error();
         if (Number(reserved) > (checkpoint?.highWater ?? 0))
-          findings.push(`${generation}: reserved-sequence-gap`);
+          addFinding(`${generation}: reserved-sequence-gap`);
       } catch {
-        findings.push(`${generation}: sequence-counter-unreadable`);
+        addFinding(`${generation}: sequence-counter-unreadable`);
       }
     } finally {
       await pinned.close();
     }
   }
+  signal?.throwIfAborted();
   return { revokedIds, findings };
 }
 

@@ -131,7 +131,12 @@ export async function probeSnapshot(options: BackupProbeOptions): Promise<Backup
     });
     if (!imported) throw new Error('Restore probe database import did not complete');
     await phase('revocations');
-    const journal = await readRevocations(options.backupRoot, options.recoveryKey, options.signal);
+    const journal = await readRevocations(
+      options.backupRoot,
+      options.recoveryKey,
+      options.signal,
+      new Set(),
+    );
     options.signal?.throwIfAborted();
     return {
       repository: manifest.repository,

@@ -55,8 +55,9 @@ export async function sanitizeRestoredDatabase(
     // A snapshot can contain revocations not yet copied to the destination.
     // Read them before clearing host-owned bookkeeping for the new installation.
     const queued = await client.query<{ device_id: string }>(
-      'SELECT device_id FROM backup_revocation_outbox',
+      'SELECT device_id FROM backup_revocation_outbox LIMIT 100001',
     );
+    if (queued.rows.length > 100000) throw new Error('Restore revocation limit exceeded');
     for (const row of queued.rows) revokedIds.add(row.device_id);
     if (revokedIds.size > 100000) throw new Error('Restore revocation limit exceeded');
     await client.query('DELETE FROM backup_revocation_outbox');
@@ -65,7 +66,9 @@ export async function sanitizeRestoredDatabase(
     if (options.newIdentity) await client.query('DELETE FROM auth_tokens');
     else
       await client.query('DELETE FROM auth_tokens WHERE id = ANY($1::text[])', [[...revokedIds]]);
-    const devices = await client.query<{ id: string }>('SELECT id FROM auth_tokens ORDER BY id');
+    const devices = await client.query<{ id: string }>(
+      'SELECT id FROM auth_tokens ORDER BY id LIMIT 10001',
+    );
     if (devices.rows.length > 10000) throw new Error('Restore device limit exceeded');
     const running = await client.query<{ session_id: string }>(
       'SELECT session_id FROM running_turns',

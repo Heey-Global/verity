@@ -15,7 +15,7 @@ import { withRepositoryLock } from './repository-lock.js';
 import { openCaIdentityReceipt } from './identity-receipt.js';
 import { validateReadableIdentity } from './restore-identity.js';
 
-export const IDENTITY_FILES = [
+const IDENTITY_FILES = [
   'deployment-id',
   'pairing-identity.pem',
   'tls-key.pem',

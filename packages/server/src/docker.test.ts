@@ -71,6 +71,38 @@ const sampleSpec: ContainerSpec = {
 };
 
 describe('createDockerClient (#174)', () => {
+  it('preserves complete restart policy and renames retained installer containers through the Engine API', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/retained\/update$/, method: 'POST', resp: res({}, { status: 200 }) },
+      {
+        match: /\/containers\/retained\/rename\?name=previous-server$/,
+        method: 'POST',
+        resp: res({}, { status: 204 }),
+      },
+      {
+        match: /\/containers\/retained\/json$/,
+        method: 'GET',
+        resp: res({
+          Id: 'retained',
+          State: { Running: false },
+          HostConfig: { RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 7 } },
+        }),
+      },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+    await docker.setContainerRestartPolicy!('retained', {
+      name: 'on-failure',
+      maximumRetryCount: 7,
+    });
+    await docker.renameContainer!('retained', 'previous-server');
+    expect(JSON.parse(fetch.calls[0]!.init!.body!)).toEqual({
+      RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 7 },
+    });
+    expect(await docker.inspectContainer('retained')).toMatchObject({
+      restartPolicy: 'on-failure',
+      restartMaximumRetryCount: 7,
+    });
+  });
   it('does not re-add a volume the replacement already inherits through Binds', async () => {
     // The shape every Gateway actually has: compose declares its volumes as Binds,
     // and HostConfig.Mounts is empty. Carrying them over a second time as Mounts

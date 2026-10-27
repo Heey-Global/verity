@@ -12,7 +12,7 @@ export async function migrateProbeDatabase(environment: NodeJS.ProcessEnv): Prom
   const name = url.pathname.slice(1);
   if (
     !['postgres:', 'postgresql:'].includes(url.protocol) ||
-    !/^verity_probe_[a-f0-9]{32}$/.test(name)
+    !/^verity_(?:probe|restore)_[a-f0-9]{32}$/.test(name)
   )
     throw new Error('Restore probe requires a disposable database');
   // Query parameters can override the URL database and redirect a destructive migration.

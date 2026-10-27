@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { CaptureFile } from './repository.js';
 
-export interface BackupDatabaseTable {
+interface BackupDatabaseTable {
   name: string;
   columns: { name: string; type: string; generated: string }[];
   primaryKey: string[];

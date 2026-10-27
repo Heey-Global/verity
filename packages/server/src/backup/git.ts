@@ -206,7 +206,7 @@ export async function runBackupGit(
   });
 }
 
-export async function checkFrozenGit(git: string, privateRoot: string): Promise<boolean> {
+async function checkFrozenGit(git: string, privateRoot: string): Promise<boolean> {
   return runBackupGit(git, privateRoot, 'fsck');
 }
 

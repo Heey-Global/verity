@@ -29,7 +29,15 @@ const REGENERABLE = new Set([
   '.cache',
 ]);
 
-async function excludedSize(parent: FileHandle, name: string, depth: number): Promise<bigint> {
+async function excludedSize(
+  parent: FileHandle,
+  name: string,
+  depth: number,
+  budget: { count: number },
+  signal?: AbortSignal,
+): Promise<bigint> {
+  signal?.throwIfAborted();
+  if (++budget.count > 1000000) throw new Error('Excluded backup path count exceeds limit');
   if (depth > 256) throw new Error('Backup directory depth exceeds limit');
   const path = relative(parent, name);
   const info = await lstat(path, { bigint: true });
@@ -44,7 +52,8 @@ async function excludedSize(parent: FileHandle, name: string, depth: number): Pr
       throw new Error('Backup directory changed during inventory');
     const entries = await opendir(`/proc/self/fd/${directory.fd}`);
     let size = 0n;
-    for await (const entry of entries) size += await excludedSize(directory, entry.name, depth + 1);
+    for await (const entry of entries)
+      size += await excludedSize(directory, entry.name, depth + 1, budget, signal);
     return size;
   } finally {
     await directory.close();
@@ -63,6 +72,7 @@ export async function* captureTree(
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
   );
   let count = 0;
+  const excludedBudget = { count: 0 };
   async function* walk(
     parent: FileHandle,
     prefix: string,
@@ -94,7 +104,10 @@ export async function* captureTree(
         (REGENERABLE.has(entry.name) ||
           (entry.name === 'cache' && posix.basename(prefix) === '.next'))
       ) {
-        options.onExcluded(path, await excludedSize(parent, entry.name, depth));
+        options.onExcluded(
+          path,
+          await excludedSize(parent, entry.name, depth, excludedBudget, options.signal),
+        );
         continue;
       }
       if (info.isSymbolicLink()) {

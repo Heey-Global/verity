@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { readBounded, writeDurable } from './repository.js';
 import type { BackupProbeResult } from './probe.js';
 
-export const probePhase = z.enum([
+const probePhase = z.enum([
   'selecting',
   'release',
   'staging',

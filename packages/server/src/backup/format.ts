@@ -1,9 +1,9 @@
 import { posix } from 'node:path';
 import { captureMetadataSchema, type CaptureMetadata } from './capture-metadata.js';
 
-export const BACKUP_FORMAT_VERSION = 1;
-export const MAX_MANIFEST_ENTRIES = 50000;
-export const MAX_OBJECTS_PER_FILE = 100000;
+const BACKUP_FORMAT_VERSION = 1;
+const MAX_MANIFEST_ENTRIES = 50000;
+const MAX_OBJECTS_PER_FILE = 100000;
 export interface BackupObject {
   id: string;
   digest: string;

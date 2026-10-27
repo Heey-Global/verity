@@ -520,23 +520,8 @@ jobs:
                   typecheck=true
                   mobile_app=true
                   ;;
-                # `test` because the suite reads these as data, not only as build
-                # inputs: gvisor-runtime-config.test.ts reads `.dockerignore`,
-                # renovate-config.test.ts and claude-egress-deployment.test.ts read
-                # `deploy/Dockerfile`, ci-workflow.test.ts parses
-                # release workflows, and runner-supervisor-feature.test.ts and
-                # runner-boundary-attestation.test.ts read the toolkit's install
-                # script and published hashes. Naming a path without running the
-                # job that reads it is the same green-on-nothing as not naming it
-                # at all — scripts/ci-workflow.test.ts holds this arm to that.
-                #
-                # `verity-control-plane-runner-start` belongs here for the image
-                # half of the same rule: it is COPYed into the server image and is
-                # the sole entrypoint of the control-plane Runner, so it is only
-                # ever exercised by the deployment smoke that runs against a built
-                # image. Reaching the catch-all instead left the launcher's
-                # environment — which is what tells the spawn broker which worktree
-                # roots the container has — provable by nothing at all.
+                # Tests read these build inputs directly; runtime entrypoints also
+                # require the built-image smoke. Keep this before the catch-all.
                 .dockerignore|deploy/Dockerfile|deploy/bin/verity-transcribe-meeting|deploy/bin/verity-agent-gateway-deployment-smoke|deploy/bin/verity-control-plane-runner-deployment-smoke|deploy/bin/verity-control-plane-runner-start|features/verity-sandbox-toolkit/*)
                   lint=true
                   test=true
@@ -546,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs)
+                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -1053,7 +1038,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs docs/website/site/install.test.mjs
+            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs docs/website/site/install.test.mjs
 
   runner-postgres-race:
     needs: changes
@@ -1765,6 +1750,10 @@ jobs:
           isolated_id="$(docker --host "$isolated" info --format '{{.ID}}')"
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
+
+          # Keep the memory-heavy daemon fixtures serial. Recovery must never see the source host or its index.
+          docker stop "$VERITY_CI_MANAGED_DIND" >/dev/null
+          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
       - name: Clean Docker smoke artifacts
         if: always()

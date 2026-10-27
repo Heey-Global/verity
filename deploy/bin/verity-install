@@ -42,6 +42,16 @@ opt_advance_unpaired_from=''
 opt_update=0
 opt_reinstall=0
 opt_yes=0
+opt_restore=''
+opt_restore_action='trial'
+opt_restore_repository=''
+opt_restore_snapshot=''
+opt_restore_kind=''
+opt_restore_new_identity=0
+opt_restore_keep_none=0
+opt_restore_secrets_stdin=0
+opt_restore_keep_devices=()
+restore_activation=0
 bootstrap_recovery_only=${VERITY_BOOTSTRAP_RECOVERY_ONLY:-0}
 original_args=("$@")
 
@@ -100,6 +110,16 @@ Options:
   --project NAME       Compose project name. Detected from an existing install,
                        then persisted; defaults to "verity" on a fresh host.
   --backup-dir <path>  Set the dedicated local backup directory (default /var/lib/verity/backups).
+  --restore <path>     Recover from a copied local backup; defaults to a restricted trial.
+  --restore-repository ID  Select the exact repository (required for a new restore).
+  --restore-snapshot N Select the exact snapshot sequence (required for a new restore).
+  --restore-kind KIND  Select manual, scheduled or pre-update (required for a new restore).
+  --new-identity      Generate new pairing identity and retain no previous devices.
+  --restore-action ACTION  trial, status, devices, review, accept or abort.
+  --keep-device ID    Explicitly retain a reviewed device; repeat for each device.
+  --keep-no-devices   Explicitly retain no devices during review.
+  --restore-secrets-stdin  Read recovery key then master password as two stdin lines.
+                       Otherwise credentials are read privately from the terminal.
   --check              Run the preflight and print what would be installed, then
                        stop without touching the deployment.
   --update             Update an existing, not-yet-paired installation to --image
@@ -127,6 +147,15 @@ while [ "$#" -gt 0 ]; do
     --project=*) opt_project="${1#--project=}"; shift ;;
     --backup-dir) [ "$#" -ge 2 ] || die 'option --backup-dir needs a value'; opt_backup_dir="$2"; shift 2 ;;
     --backup-dir=*) opt_backup_dir="${1#--backup-dir=}"; shift ;;
+    --restore) [ "$#" -ge 2 ] || die 'option --restore needs a value'; opt_restore="$2"; shift 2 ;;
+    --restore-repository) [ "$#" -ge 2 ] || die 'option --restore-repository needs a value'; opt_restore_repository="$2"; shift 2 ;;
+    --restore-snapshot) [ "$#" -ge 2 ] || die 'option --restore-snapshot needs a value'; opt_restore_snapshot="$2"; shift 2 ;;
+    --restore-kind) [ "$#" -ge 2 ] || die 'option --restore-kind needs a value'; opt_restore_kind="$2"; shift 2 ;;
+    --restore-action) [ "$#" -ge 2 ] || die 'option --restore-action needs a value'; opt_restore_action="$2"; shift 2 ;;
+    --new-identity) opt_restore_new_identity=1; shift ;;
+    --keep-device) [ "$#" -ge 2 ] || die 'option --keep-device needs a value'; opt_restore_keep_devices+=("$2"); shift 2 ;;
+    --keep-no-devices) opt_restore_keep_none=1; shift ;;
+    --restore-secrets-stdin) opt_restore_secrets_stdin=1; shift ;;
     --check) opt_check=1; shift ;;
     --update) opt_update=1; shift ;;
     --reinstall) opt_reinstall=1; shift ;;
@@ -136,6 +165,16 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+if [ -n "$opt_restore" ]; then
+  [ "$opt_update$opt_reinstall$opt_check" = 000 ] || die '--restore cannot be combined with --update, --reinstall or --check'
+  [ -z "$opt_deployment_id$opt_advance_unpaired_from" ] || die '--restore chooses deployment identity from the authenticated snapshot'
+  case "$opt_restore_action" in trial|status|devices|review|accept|abort) ;; *) die 'invalid --restore-action' ;; esac
+else
+  [ "$opt_restore_new_identity$opt_restore_keep_none$opt_restore_secrets_stdin" = 000 ] && [ "${#opt_restore_keep_devices[@]}" = 0 ] \
+    && [ -z "$opt_restore_repository$opt_restore_snapshot$opt_restore_kind" ] && [ "$opt_restore_action" = trial ] \
+    || die 'restore options require --restore'
+fi
 
 [ "$opt_yes" = 0 ] || [ "$opt_reinstall" = 1 ] \
   || die '--yes is accepted only together with --reinstall'
@@ -359,6 +398,23 @@ if [ "$opt_check" = 0 ]; then
   flock -n 8 || die 'another verity-install is already running on this host'
 fi
 
+if [ -z "$opt_restore" ] && [ -f "$STATE_DIR/restore/job" ]; then
+  recovery_phase=$(jq -er '.phase' "$STATE_DIR/restore/job") || die 'invalid recovery checkpoint; use --restore status'
+  recovery_id=$(jq -er '.id' "$STATE_DIR/restore/job") || die 'invalid recovery checkpoint'
+  case "$recovery_phase" in
+    aborted) ;;
+    accepted)
+      [[ -f $STATE_DIR/restore/activation-complete && ! -L $STATE_DIR/restore/activation-complete && $(cat "$STATE_DIR/restore/activation-complete") = "$recovery_id" ]] \
+        || die 'recovery activation is incomplete; resume --restore-action accept' ;;
+    *) die 'recovery is in progress; use --restore-action status, accept or abort' ;;
+  esac
+fi
+if [ -n "$opt_restore" ]; then
+  source "$script_dir/verity-restore-install"
+  verity_restore_install
+  [ "$restore_activation" = 1 ] || exit 0
+fi
+
 # ── managed Server already present? ────────────────────────────────────────
 # Managed mode gives the Server exactly two name shapes: the base name, and the
 # generation-qualified name a cutover creates (docker-update-preparation.ts:54,
@@ -485,6 +541,7 @@ sealed_volume="$(printf '%s' "$volumes_raw" | grep -Fx "$MANAGED_DEPLOYMENT_VOLU
 # --image the host has never had. The identity is still reused; only the mode differs.
 first_install=0
 if [ -z "$all_managed" ] && [ -z "$sealed_volume" ]; then first_install=1; fi
+if [ "$restore_activation" = 1 ] && [ -z "$all_managed" ]; then first_install=1; fi
 
 # The volume holds a sealed identity that bootstrap will check this run against, and
 # with no state file and no labelled container left there is nothing here that can
@@ -592,7 +649,7 @@ valid_project_name "$compose_project" \
 # mismatch several minutes later. Ask before pairing material is rotated or any
 # migration runs. Non-interactive invocations retain the safe repair behaviour;
 # automation must spell the destructive choice as --reinstall --yes.
-if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && [ "$opt_reinstall" = 0 ]; then
+if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && [ "$opt_reinstall" = 0 ] && [ "$restore_activation" = 0 ]; then
   if ( : </dev/tty && : >/dev/tty ) 2>/dev/null; then
     printf '\nAn existing Verity installation was found.\n' >/dev/tty
     printf '  1) Repair this installation (keep its version and all data)\n' >/dev/tty
@@ -909,12 +966,17 @@ setup_backup_prerequisites "$backup_dir" "$server_image"
 heading 'Device pairing'
 note 'Creating TLS identity and a pairing code valid for 15 minutes'
 pairing_host="$(select_pairing_host)"
+if [ "$restore_activation" = 1 ]; then
+  pairing_uri=''
+  note 'Keeping the reviewed recovery identity and TLS material'
+else
 pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   VERITY_API_HOST_PORT="${VERITY_API_HOST_PORT:-8082}" \
   VERITY_PAIRING_HOST="$pairing_host" \
   VERITY_SERVER_UID="${VERITY_SERVER_UID:-1000}" \
   VERITY_SERVER_GID="${VERITY_SERVER_GID:-1000}" \
   "$repo_root/deploy/bin/verity-pairing-material")"
+fi
 
 # ── host runtime service (ADR 0008 Amendment 2) ────────────────────────────
 # Verity's releases run project Sandboxes and Secret jobs under two Docker runtime
@@ -1100,6 +1162,10 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
 configure_backup_database_role "$postgres_container" "$VERITY_BACKUP_POSTGRES_PASSWORD"
 unset VERITY_BACKUP_POSTGRES_PASSWORD
 
+if [ "$restore_activation" = 1 ]; then
+  heading 'Recovery accepted'
+  note 'Reconnect with a retained device. A new identity requires pairing through a later installer run.'
+else
 heading "$([ "$first_install" = 1 ] && printf 'Pair your device' || printf 'Optional: pair another device')"
 if [ "$first_install" = 1 ]; then
   printf '%s\n' '  1. Open the Verity app.'
@@ -1115,6 +1181,7 @@ printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_ima
 heading 'Cannot scan the QR code?'
 hint 'In the app, tap "Paste pairing code", then copy the entire line below.'
 printf '  %s\n\n' "$pairing_uri"
+fi
 heading 'Keep Verity off the public internet'
 printf '  Do not open or forward port %s or the preview ports %s\n' \
   "${VERITY_API_HOST_PORT:-8082}" "${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}"
@@ -1122,5 +1189,8 @@ printf '%s\n' '  to the internet on your router or cloud firewall.'
 hint 'Connect from your local network or through a VPN such as WireGuard or Tailscale.'
 hint 'Docker-published ports can bypass ufw; verify from a network that should be denied.'
 heading "$([ "$first_install" = 1 ] && printf '✓ Installation complete' || printf '✓ Update complete')"
+if [ "$restore_activation" = 1 ]; then
+  jq -er '.id' "$STATE_DIR/restore/job" | write_state "$STATE_DIR/restore/activation-complete" 0600
+fi
 printf '%s\n' '  Verity is ready.'
 hint 'Run this installer again only to repair this host or pair another device.'

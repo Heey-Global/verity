@@ -25,7 +25,7 @@ import {
 } from './format.js';
 import { withRepositoryLock } from './repository-lock.js';
 
-import { encodeLocalIndex, decodeLocalIndex } from './local-state.js';
+import { encodeLocalIndex, decodeLocalIndex, encodeBoundedLocalIndex } from './local-state.js';
 import type { CaptureMetadata } from './capture-metadata.js';
 import type { BackupDestination } from './destination.js';
 import { GC_GRACE_MS, retainedSnapshots } from './retention.js';
@@ -230,7 +230,7 @@ export class BackupRepository {
                 // Preserve completed work when capture is interrupted before a manifest exists.
                 await this.write(
                   join(this.stateRoot, 'index'),
-                  encodeLocalIndex(state.index, this.host.fingerprintKey),
+                  encodeBoundedLocalIndex(state.index, this.host.fingerprintKey),
                   false,
                 );
               }
@@ -264,7 +264,7 @@ export class BackupRepository {
       }
       await this.write(
         join(this.stateRoot, 'index'),
-        encodeLocalIndex(state.index, this.host.fingerprintKey),
+        encodeBoundedLocalIndex(state.index, this.host.fingerprintKey),
         false,
       );
       const sealed = await sealMetadata(this.host, plaintext);
@@ -388,7 +388,7 @@ export class BackupRepository {
         if (!reachable.has(object.id)) delete state.index[fingerprint];
       await writeDurable(
         join(this.stateRoot, 'index'),
-        encodeLocalIndex(state.index, this.host.fingerprintKey),
+        encodeBoundedLocalIndex(state.index, this.host.fingerprintKey),
         false,
       );
       let removedObjects = 0;

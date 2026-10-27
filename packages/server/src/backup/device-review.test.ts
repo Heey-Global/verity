@@ -41,6 +41,7 @@ describe('mandatory recovery device review', () => {
     expect(await review.blocksDevices()).toBe(false);
     await expect(review.inspect(token)).rejects.toThrow('Invalid or expired');
     expect((await new BackupDeviceReview(root).load())!.keptIds).toEqual(['keep']);
+    await expect(review.create(['discard'], [], [])).rejects.toThrow('already complete');
   });
   it('expires review sessions without enabling any device', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-device-review-'));
