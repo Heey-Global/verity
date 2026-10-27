@@ -186,7 +186,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       caller === undefined
         ? undefined
         : await deps.resolveConnection({ projectId: identity.projectId, connectionId });
-    if (connection === undefined) {
+    if (caller === undefined || connection === undefined) {
       reply.code(401);
       return { error: 'unauthorized' };
     }
@@ -229,18 +229,46 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           )
         : undefined;
       lifetime?.unref();
+      let checkingAuthorization = false;
       const authorizationPoll = response.eventStream
         ? setInterval(() => {
-            void deps
-              .resolveCaller({ projectId: identity.projectId, token })
-              .then((activeCaller) => {
-                if (activeCaller === undefined) {
+            // A live turn does not keep a removed project binding or a replaced
+            // provider credential authorized. Serialize polls so a slow lookup
+            // cannot accumulate concurrent credential resolutions.
+            if (checkingAuthorization || response.body.destroyed) return;
+            checkingAuthorization = true;
+            void (async () => {
+              try {
+                const activeCaller = await deps.resolveCaller({
+                  projectId: identity.projectId,
+                  token,
+                });
+                if (
+                  activeCaller === undefined ||
+                  activeCaller.sessionId !== caller.sessionId ||
+                  activeCaller.turnId !== caller.turnId
+                ) {
                   response.body.destroy(new Error('HTTP MCP proxy authorization expired'));
+                  return;
                 }
-              })
-              .catch(() =>
-                response.body.destroy(new Error('HTTP MCP proxy authorization unavailable')),
-              );
+                const current = await deps.resolveConnection({
+                  projectId: identity.projectId,
+                  connectionId,
+                });
+                if (
+                  current === undefined ||
+                  current.id !== connection.id ||
+                  current.url !== connection.url ||
+                  current.authorization !== connection.authorization
+                ) {
+                  response.body.destroy(new Error('HTTP MCP proxy connection authority changed'));
+                }
+              } catch {
+                response.body.destroy(new Error('HTTP MCP proxy authorization unavailable'));
+              } finally {
+                checkingAuthorization = false;
+              }
+            })();
           }, 1_000)
         : undefined;
       authorizationPoll?.unref();
