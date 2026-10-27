@@ -147,6 +147,8 @@ import {
 } from './gvisor-project-network.js';
 import type { ProjectSandboxLifecycleEvent } from './project-lifecycle-telemetry.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
+import { UNKNOWN_INITIATOR, type AuditInitiator } from './audit-log.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import {
   CONTAINER_GENERATION_LABEL,
   PROJECT_ID_LABEL,
@@ -411,6 +413,21 @@ export interface RecreateContainerOptions {
    *  depends on whether its clone carries a `.devcontainer/`, which the caller
    *  is not required to know. */
   forceRebuild?: boolean;
+  /** Who asked for this; recorded with any project image build it causes (ADR 0028). */
+  initiator?: AuditInitiator;
+}
+
+export type ProvisionOptions = Pick<RecreateContainerOptions, 'confirmWarnings' | 'initiator'>;
+
+/** The agent session a turn-driven repair runs for. Pseudo-ids such as
+ *  `secret-unlock:<project>` name a system path, not a session. */
+function sessionInitiator(
+  sessionIds: ReadonlySet<string> | undefined,
+  fallback: AuditInitiator,
+): AuditInitiator {
+  const sessionId =
+    sessionIds === undefined ? undefined : [...sessionIds].find((id) => !id.includes(':'));
+  return sessionId === undefined ? fallback : { kind: 'session', sessionId };
 }
 
 /** Build the `devcontainer build` argv (pure, exported for behaviour-driven
@@ -878,6 +895,9 @@ export interface ProvisionerOptions {
   buildStorage?: BuildStorage | undefined;
   /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
   imageReferences?: DerivedImageReferences | undefined;
+  /** Durable audit trail for project image builds (ADR 0028). When wired, a build
+   *  whose intent cannot be recorded is refused. */
+  audit?: AuditRecorder | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -1714,7 +1734,7 @@ function buildFailureMessage(error: unknown): string {
 export interface Provisioner {
   /** Migrate an idle legacy local project before allocating or dispatching work. */
   prepareLocalDocuments?(projectId: string): Promise<void>;
-  provision(projectId: string, opts?: { confirmWarnings?: boolean }): Promise<ProjectRecord>;
+  provision(projectId: string, opts?: ProvisionOptions): Promise<ProjectRecord>;
   /** Fetch and reset the managed project checkout to its configured default branch. */
   syncProjectCheckout?(projectId: string): Promise<void>;
   provisionWarnings?(projectId: string): Promise<string[]>;
@@ -3199,7 +3219,10 @@ export class ProvisionerImpl implements Provisioner {
     const project = await this.opts.store.getProject(projectId);
     if (!project || !(await this.localDocumentsNeedMigration(project))) return;
     await this.withProjectExclusiveMutation(projectId, async () => {
-      await this.recreateContainer(projectId, { confirmWarnings: true });
+      await this.recreateContainer(projectId, {
+        confirmWarnings: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      });
     });
   }
 
@@ -3314,7 +3337,10 @@ export class ProvisionerImpl implements Provisioner {
           ): Promise<ProjectRecord> => {
             this.observeSandboxWakeFallback(project.id, reason);
             try {
-              return await this.recreateContainer(project.id, { confirmWarnings: true });
+              return await this.recreateContainer(project.id, {
+                confirmWarnings: true,
+                initiator: { kind: 'system', trigger: 'sandbox_wake' },
+              });
             } catch (cause) {
               // Image preparation can fail before replacement advances the row.
               // Leaving it waking makes later admissions require reconciliation
@@ -3547,7 +3573,13 @@ export class ProvisionerImpl implements Provisioner {
       // the result below rather than starting a competing stop/remove.
       await inFlight.catch(() => undefined);
     } else {
-      await this.recreateContainer(projectId, { confirmWarnings: true });
+      await this.recreateContainer(projectId, {
+        confirmWarnings: true,
+        initiator: sessionInitiator(requestingSessionIds, {
+          kind: 'system',
+          trigger: 'sandbox_reconcile',
+        }),
+      });
       // Charged only for a recreate this path actually performed and completed —
       // not for one it waited on, and not for one that threw.
       if (envDriftOnly) this.noteEnvDriftRecreate(projectId);
@@ -3957,7 +3989,10 @@ export class ProvisionerImpl implements Provisioner {
             driftRecreatesThisPass++;
           }
           attemptedRecreate = true;
-          await this.recreateContainer(project.id, { confirmWarnings: true });
+          await this.recreateContainer(project.id, {
+            confirmWarnings: true,
+            initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+          });
           // Counted only once the recreate actually happened. A recreate that THREW
           // — daemon down, image pull failed — proves nothing about the drift, and
           // charging it would let three unrelated outages disqualify a project from
@@ -4083,7 +4118,7 @@ export class ProvisionerImpl implements Provisioner {
    */
   private async reuseOrMigrateActive(
     project: ProjectRecord,
-    opts: { confirmWarnings?: boolean },
+    opts: ProvisionOptions,
   ): Promise<ProjectRecord> {
     const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
     const busy = await this.isProjectBusy(project.id);
@@ -4133,10 +4168,7 @@ export class ProvisionerImpl implements Provisioner {
    * state-write; the clone/docker calls are unguarded because ON CONFLICT +
    * docker-name-uniqueness are the daemon-level collision backstops.
    */
-  async provision(
-    projectId: string,
-    opts: { confirmWarnings?: boolean } = {},
-  ): Promise<ProjectRecord> {
+  async provision(projectId: string, opts: ProvisionOptions = {}): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
     // Coalesce onto an already-running attempt (see inFlightProvisions). The
     // joining caller's own `opts` are intentionally ignored — it observes the
@@ -4154,10 +4186,7 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private async provisionOnce(
-    projectId: string,
-    opts: { confirmWarnings?: boolean },
-  ): Promise<ProjectRecord> {
+  private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
     const project = await this.claimForCloning(projectId);
@@ -4242,7 +4271,7 @@ export class ProvisionerImpl implements Provisioner {
         PROJECT_IMAGE_REBUILDING_WARNING,
       );
       try {
-        rebuiltImage = await this.resolveOrBuildImage(project, dirs, true);
+        rebuiltImage = await this.resolveOrBuildImage(project, dirs, true, opts.initiator);
       } catch (cause) {
         const detail = redactSensitive(buildFailureMessage(cause), [
           process.env.GITHUB_TOKEN,
@@ -4271,7 +4300,8 @@ export class ProvisionerImpl implements Provisioner {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     let replacementImage: ProjectImage;
     try {
-      replacementImage = rebuiltImage ?? (await this.resolveOrBuildImage(project, dirs, false));
+      replacementImage =
+        rebuiltImage ?? (await this.resolveOrBuildImage(project, dirs, false, opts.initiator));
       if (!replacementImage.usesDevcontainerImage && this.opts.docker.pullImage !== undefined) {
         await this.opts.docker.pullImage(replacementImage.imageRef);
       }
@@ -4773,7 +4803,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       image =
         preparedImage ??
-        (await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true));
+        (await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true, opts.initiator));
     } catch (cause) {
       // The build runs with `{ ...process.env, DOCKER_HOST }`, so its stderr can
       // echo a token that lives in the server env. Redact before it lands in the
@@ -5869,6 +5899,7 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     dirs: ProvisioningDirectory,
     forceRebuild = false,
+    initiator: AuditInitiator = UNKNOWN_INITIATOR,
   ): Promise<ProjectImage> {
     // Resolve the CURRENT default digest (bypassing the resolver's staleness
     // cache) so a freshly created — or recreated — container is pinned to the
@@ -5975,6 +6006,35 @@ export class ProvisionerImpl implements Provisioner {
       // After the cache check, into the private copy only: the hash above was
       // computed over the project's own configuration.
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
+      // Only claim a base we can identify: Dockerfile/Compose bases and variable
+      // substitutions require resolution by the builder and remain unknown here.
+      const rawConfig = readDevcontainerJson(snapshotDevcontainerDir);
+      const configuredImage =
+        rawConfig === undefined ? undefined : topLevelJsonValue(rawConfig, 'image');
+      const directImage = configuredImage?.kind === 'string' ? configuredImage.value : undefined;
+      const auditBaseImageRef = pinsBase
+        ? baseImageRef
+        : directImage &&
+            !directImage.includes('${') &&
+            rawConfig !== undefined &&
+            ['build', 'dockerFile', 'dockerComposeFile'].every(
+              (key) => topLevelJsonValue(rawConfig, key) === undefined,
+            )
+          ? directImage
+          : null;
+      // No build without a recorded intent: this throws before anything runs when
+      // audit storage is unavailable (ADR 0028).
+      const audit = await this.opts.audit?.beginBuild({
+        projectId: project.id,
+        projectLabel: `${project.owner}/${project.repo}`,
+        initiator,
+        imageTag: derivedTag,
+        forceRebuild,
+        commit: await this.checkoutCommit(dirs.clonePath),
+        baseImageRef: auditBaseImageRef,
+        configFingerprint: hash,
+        features: [DEVCONTAINER_NODE_FEATURE_REF, feature.ref],
+      });
       try {
         await build({
           ...(storageLease === undefined ? {} : { storageLease }),
@@ -5986,6 +6046,8 @@ export class ProvisionerImpl implements Provisioner {
           ...(forceRebuild ? { noCache: true } : {}),
         });
       } catch (cause) {
+        // Best-effort: the build error, not an audit error, is what the caller reports.
+        await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.
         // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
@@ -5998,6 +6060,10 @@ export class ProvisionerImpl implements Provisioner {
           ]),
         );
       }
+      if (audit !== undefined)
+        await audit
+          .succeeded(await this.builtImageIdentity(derivedTag, auditBaseImageRef))
+          .catch(() => undefined);
       return {
         imageRef: derivedTag,
         usesDevcontainerImage: true,
@@ -6010,6 +6076,44 @@ export class ProvisionerImpl implements Provisioner {
         storageLease?.dispose();
       }
     }
+  }
+
+  /** The checked-out commit a build reads from; null when the clone has none. */
+  private async checkoutCommit(clonePath: string): Promise<string | null> {
+    try {
+      const head = (
+        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+      ).stdout.trim();
+      return /^[0-9a-f]{7,64}$/.test(head) ? head : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** What a successful build produced, for the audit trail. Missing facts stay null
+   *  rather than being guessed (ADR 0028). */
+  private async builtImageIdentity(
+    imageTag: string,
+    baseImageRef: string | null,
+  ): Promise<{ imageId: string | null; sizeBytes: number | null; baseImageDigest: string | null }> {
+    const docker = this.opts.docker;
+    const safely = async (ref: string) => {
+      try {
+        return await docker.inspectImageIdentity?.(ref);
+      } catch {
+        return undefined;
+      }
+    };
+    const image = await safely(imageTag);
+    // A daemon's local tag can differ from the image resolved by BuildKit.
+    // Only an explicitly pinned digest establishes the base's identity here.
+    const baseDigest =
+      baseImageRef === null ? null : /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
+    return {
+      imageId: image?.id ?? null,
+      sizeBytes: image?.sizeBytes ?? null,
+      baseImageDigest: baseDigest ?? null,
+    };
   }
 
   /** Create the container, pulling the image on demand when it's missing (ADR

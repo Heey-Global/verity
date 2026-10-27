@@ -1049,6 +1049,7 @@ describe('native iOS compile gate', () => {
     expect(detector).toContain('scripts/enrollment-proof');
     expect(detector).toContain("'scripts/ios-pinned-tls-smoke*'");
     expect(detector).toContain('scripts/pinned-http-pool-smoke.swift');
+    expect(detector).toContain("'scripts/*ios_pinned_tls_server.py'");
     expect(detector).toContain('scripts/remote-control-tunnel');
     expect(detector).not.toMatch(/git diff[^;]*mobile-native-verify\.yml[\s\S]*compile=true/u);
     expect(named('Verify enrollment reference model and macOS Keychain probe')?.if).toContain(
@@ -4328,9 +4329,20 @@ describe('Claude ACP sandbox smoke', () => {
       );
       await expect(access(join(worktree, 'before'))).rejects.toThrow();
       const exited = once(child, 'exit', { signal: AbortSignal.timeout(5_000) });
-      child.stdin.end(`${JSON.stringify({ type: 'user', message: 'smoke' })}\n`);
+      child.stdin.end(
+        `${JSON.stringify({ type: 'user', message: 'smoke prompt for session title' })}\n${JSON.stringify(
+          {
+            type: 'control_request',
+            request_id: 'title-smoke',
+            request: { subtype: 'generate_session_title' },
+          },
+        )}\n`,
+      );
       const [code] = (await exited) as [number | null];
       expect(code, stderr).toBe(0);
+      const titleResponse = '"request_id":"title-smoke","response":{"title":"Sandbox live smoke"}';
+      expect(stdout).toContain(titleResponse);
+      expect(stdout.indexOf(titleResponse)).toBeLessThan(stdout.indexOf('"type":"assistant"'));
       expect(stdout).toContain('"subtype":"success"');
       expect(stdout).toContain('"stop_reason":"end_turn"');
       await expect(access(join(worktree, 'before'))).resolves.toBeUndefined();

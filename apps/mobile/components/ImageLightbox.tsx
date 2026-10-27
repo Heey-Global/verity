@@ -14,7 +14,8 @@
 // the UI thread (the JS thread is busy streaming transcript events). The content is
 // wrapped in its own GestureHandlerRootView because a RN `Modal` renders into a
 // separate native view hierarchy that the app-root one doesn't cover.
-import { Image as ExpoImage, type ImageLoadEventData, type ImageSource } from 'expo-image';
+import type { ImageLoadEventData, ImageSource } from 'expo-image';
+import { Image as ExpoImage } from './ui/Image';
 import { useCallback, useEffect } from 'react';
 import { Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';

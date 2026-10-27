@@ -664,3 +664,14 @@ export {
   type VulnerabilityFinding,
   type VulnerabilitySettings,
 } from './vulnerability.js';
+
+export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
+export type {
+  AuditDomain,
+  AuditHealth,
+  AuditInitiator,
+  AuditOperationDetail,
+  AuditOperationList,
+  AuditOperationQuery,
+  AuditOperationSummary,
+} from './audit.js';

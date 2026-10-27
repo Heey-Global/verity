@@ -648,6 +648,27 @@ describe('runDockerGc', () => {
     ]);
   });
 
+  // The audit trail must not claim a removal Docker refused.
+  it('reports only the project images it actually removed', async () => {
+    const docker = fakeDocker({
+      images: [
+        image({ id: 'sha256:new', repoTags: ['verity-devc-acme-web:a'], created: 300 }),
+        image({ id: 'sha256:busy', repoTags: ['verity-devc-acme-web:b'], created: 200 }),
+        image({ id: 'sha256:old', repoTags: ['verity-devc-acme-web:c'], created: 100 }),
+      ],
+      removeImage: (ref) =>
+        ref === 'verity-devc-acme-web:b'
+          ? Promise.reject(new Error('conflict: image is in use'))
+          : Promise.resolve(),
+    });
+    const removed: { ref: string; imageId: string }[] = [];
+    await runDockerGc({
+      ...deps(docker, { policy: { keepImagesPerRepo: 1 } }),
+      onProjectImageRemoved: async (image) => void removed.push(image),
+    });
+    expect(removed).toEqual([{ ref: 'verity-devc-acme-web:c', imageId: 'sha256:old' }]);
+  });
+
   it('does not sweep images at all when the in-use set cannot be read', async () => {
     // Without listContainers there is no way to know which image a live sandbox
     // runs on, so the image step must abstain rather than guess.

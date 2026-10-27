@@ -4,6 +4,7 @@ import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, request } from 'node:http';
@@ -110,6 +111,10 @@ function build(
   const approvals: Harness['approvals'] = [];
   const dispatches: Harness['dispatches'] = [];
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    authorizationSnapshot: async ({ toolName }) =>
+      toolName === 'verity_http_request' || toolName === 'verity_secret_run'
+        ? JSON.stringify({ dopplerProject: 'test-project', dopplerConfig: 'test' })
+        : undefined,
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
       options.vulnerabilityTools === true
@@ -400,6 +405,10 @@ it('implements a submitted plan on the user instruction without another approval
     worktree: '/tmp/verity-planning-s1',
     model: 'claude-opus-5',
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'Passt, leg los',
@@ -657,6 +666,10 @@ it('does not open an extra approval even when another card would have revised th
       ],
     },
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'So umsetzen',

@@ -25,6 +25,85 @@ final class PinnedHTTPRequest: @unchecked Sendable {
   }
 }
 
+/// Registered synchronously before queue admission so cancellation cannot miss a queued start.
+final class PinnedRequestStart: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelled = false
+  private var task: URLSessionTask?
+
+  func check() throws {
+    lock.lock()
+    let stopped = cancelled
+    lock.unlock()
+    if stopped { throw URLError(.cancelled) }
+  }
+
+  func installAndResume(_ task: URLSessionTask) {
+    lock.lock()
+    self.task = task
+    // Serialize resume against cancel: a pre-start cancellation never resumes a task.
+    if cancelled { task.cancel() } else { task.resume() }
+    lock.unlock()
+  }
+
+  func cancel() {
+    lock.lock()
+    cancelled = true
+    let current = task
+    lock.unlock()
+    current?.cancel()
+  }
+
+  func finish() {
+    lock.lock()
+    task = nil
+    lock.unlock()
+  }
+}
+
+final class PinnedRequestStarts: @unchecked Sendable {
+  private let lock = NSLock()
+  private var closed = false
+  private var entries: [String: PinnedRequestStart] = [:]
+
+  func prepare(_ id: String) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !closed, entries[id] == nil, entries.count < 64 else { return false }
+    entries[id] = PinnedRequestStart()
+    return true
+  }
+
+  func get(_ id: String) -> PinnedRequestStart? {
+    lock.lock()
+    defer { lock.unlock() }
+    return entries[id]
+  }
+
+  func finish(_ id: String, start: PinnedRequestStart) {
+    lock.lock()
+    if entries[id] === start { entries.removeValue(forKey: id) }
+    lock.unlock()
+    start.finish()
+  }
+
+  func cancel(_ id: String) {
+    lock.lock()
+    let start = entries.removeValue(forKey: id)
+    lock.unlock()
+    start?.cancel()
+  }
+
+  func shutdown() {
+    lock.lock()
+    closed = true
+    let pending = Array(entries.values)
+    entries.removeAll()
+    lock.unlock()
+    pending.forEach { $0.cancel() }
+  }
+}
+
 enum PinnedHTTPTransportLane: String {
   case interactive
   case background
@@ -230,6 +309,18 @@ final class PinnedTransportTiming: @unchecked Sendable {
     lock.lock()
     fields["nativeResponseReadyMs"] = (ProcessInfo.processInfo.systemUptime - entry) * 1000
     fields["nativeResponseReadyWallMs"] = Date().timeIntervalSince1970 * 1000
+    lock.unlock()
+  }
+
+  func workEntered() {
+    lock.lock()
+    fields["nativeWorkEntryWallMs"] = Date().timeIntervalSince1970 * 1000
+    lock.unlock()
+  }
+
+  func promiseResolving() {
+    lock.lock()
+    fields["nativePromiseResolveWallMs"] = Date().timeIntervalSince1970 * 1000
     lock.unlock()
   }
 

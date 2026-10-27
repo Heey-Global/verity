@@ -1,3 +1,4 @@
+import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
@@ -149,6 +150,9 @@ import {
 } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
+import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
@@ -1958,9 +1962,7 @@ export async function buildEmbeddedServer(
     const settings = await eventStore.getProjectSettings(projectId);
     const dopplerProject = settings?.dopplerProject?.trim();
     const dopplerConfig = settings?.dopplerConfig?.trim();
-    return dopplerProject === undefined || dopplerConfig === undefined
-      ? undefined
-      : { dopplerProject, dopplerConfig };
+    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
   const resolveBrokerDopplerSecret = async (
     input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
@@ -1979,6 +1981,7 @@ export async function buildEmbeddedServer(
     }
   };
   const brokeredHttpTool = createBrokeredHttpTool({
+    requireApprovalBinding: true,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
@@ -1986,6 +1989,7 @@ export async function buildEmbeddedServer(
   });
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
+    requireApprovalBinding: true,
     outputStore: trustedCliOutput,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
@@ -2069,6 +2073,12 @@ export async function buildEmbeddedServer(
             'verity_recent_session_messages',
           ]
         : [],
+    authorizationSnapshot: async ({ projectId, toolName }) => {
+      if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
+      const binding = await getBrokeredProjectBinding(projectId);
+      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+      return JSON.stringify(binding);
+    },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
       ? {
@@ -2119,11 +2129,7 @@ export async function buildEmbeddedServer(
   const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
     const binding = await getBrokeredProjectBinding(projectId);
     if (binding === undefined) return undefined;
-    return `project-doppler:${createHash('sha256')
-      .update(binding.dopplerProject)
-      .update('\0')
-      .update(binding.dopplerConfig)
-      .digest('hex')}`;
+    return brokeredDopplerBindingId(binding);
   };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
   // stops guessing aliases. Briefly cached; every failure degrades to "no list".
@@ -3431,6 +3437,34 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  // Durable audit trail for project image builds (ADR 0028). The Server generation is
+  // read from this container's own label once; outside a managed deployment it is null.
+  let auditServer: AuditServerIdentity | undefined;
+  const auditLog = createPostgresAuditLog(db);
+  const auditRecorder = createAuditRecorder(auditLog, {
+    server: async () => {
+      if (auditServer !== undefined) return auditServer;
+      let generation: number | null = null;
+      let settled = true;
+      try {
+        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+          'verity.generation'
+        ];
+        const parsed = label === undefined ? Number.NaN : Number(label);
+        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+      } catch {
+        // Recorded as unknown this time, and asked again next time: a transient
+        // failure must neither block a build nor stick for the life of the process.
+        settled = false;
+      }
+      const identity = { release: runtimeServerVersion(), generation };
+      if (settled) auditServer = identity;
+      return identity;
+    },
+    onError: (error, kind) => {
+      console.warn(`verity: audit event ${kind} could not be recorded`, error);
+    },
+  });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
@@ -3714,6 +3748,7 @@ export async function buildEmbeddedServer(
         '/run/verity-buildkit',
       ),
       imageReferences,
+      audit: auditRecorder,
       store: eventStore,
       db,
       docker,
@@ -3968,6 +4003,12 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      providerAuthority: async (projectId) => {
+        const binding = await getBrokeredProjectBinding(projectId);
+        return binding
+          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
+          : undefined;
+      },
       resolveSecrets: createManagedDevServerSecretResolver({
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
@@ -4855,6 +4896,7 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    audit: { recorder: auditRecorder, log: auditLog },
     ...(projectDocker === undefined
       ? {}
       : {
@@ -4865,6 +4907,8 @@ export async function buildEmbeddedServer(
               imageReferences,
               ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
               imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
             });
           },
         }),
@@ -4899,12 +4943,20 @@ export async function buildEmbeddedServer(
       // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
       checkBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        return bindingId === undefined ? false : brokeredHttpGrants.check({ ...input, bindingId });
+        return bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+          ? false
+          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        if (bindingId === undefined) throw new Error('project Doppler binding is unavailable');
-        await brokeredHttpGrants.grant({ ...input, bindingId });
+        if (
+          bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+        ) {
+          throw new Error('Doppler access changed before saving approval');
+        }
+        await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       // Auto-name an unnamed session from its opening turn: the conductor derives a
       // 2–3 word title from the first chat using the session's OWN model (routed via
@@ -5548,7 +5600,10 @@ export async function buildEmbeddedServer(
   if (starterProvisioner !== undefined) {
     void ensureStarterProject({
       store: eventStore,
-      provision: (projectId) => starterProvisioner.provision(projectId),
+      provision: (projectId) =>
+        starterProvisioner.provision(projectId, {
+          initiator: { kind: 'system', trigger: 'welcome_project' },
+        }),
       log: app.log,
     });
   }
@@ -5631,6 +5686,8 @@ export async function buildEmbeddedServer(
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
       imageReferences,
+      onProjectImageRemoved: (image) =>
+        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

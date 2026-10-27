@@ -32,6 +32,8 @@ export type SessionProjectGroup = {
   sessions: SessionSummary[];
 };
 
+export type ProjectListState = 'loading' | 'error' | 'ready';
+
 export function projectGroups(
   projects: ProjectRecord[],
   sessions: SessionSummary[],
@@ -40,6 +42,7 @@ export function projectGroups(
   baseUrl: string | null,
   previous: SessionProjectGroup[] = [],
   connections: readonly ForgeConnection[] | null = null,
+  listState: ProjectListState = 'ready',
 ): SessionProjectGroup[] {
   const byProject = new Map<string | null, SessionSummary[]>();
   for (const session of sessions) {
@@ -84,10 +87,20 @@ export function projectGroups(
     if (projectId === null || knownProjects.has(projectId)) continue;
     groups.push({
       id: `orphan:${projectId}`,
-      title: 'Inactive project',
-      subtitle: 'Project unavailable',
+      title:
+        listState === 'ready'
+          ? 'Inactive project'
+          : listState === 'loading'
+            ? 'Loading project'
+            : 'Project unavailable',
+      subtitle:
+        listState === 'loading'
+          ? 'Loading project details'
+          : listState === 'error'
+            ? 'Could not load projects'
+            : 'Project unavailable',
       portLinks: [],
-      inactiveProjectId: projectId,
+      ...(listState === 'ready' ? { inactiveProjectId: projectId } : {}),
       sessions: projectSessions,
     });
   }

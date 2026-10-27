@@ -1,4 +1,13 @@
 import {
+  auditHealthSchema,
+  auditOperationListSchema,
+  auditOperationResponseSchema,
+  type AuditHealth,
+  type AuditOperationDetail,
+  type AuditOperationList,
+  type AuditOperationQuery,
+} from './audit.js';
+import {
   vulnerabilitySettingsSchema,
   vulnerabilityProjectSchema,
   vulnerabilitySessionSchema,
@@ -747,7 +756,13 @@ const sessionDevServerSchema = z.object({
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
+const managedServerProviderSnapshotSchema = z.object({
+  provider: z.literal('doppler'),
+  project: z.string().min(1),
+  config: z.string().min(1),
+});
 const managedDevServerSchema = z.object({
+  providerSnapshot: managedServerProviderSnapshotSchema.nullable().optional(),
   secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),
   id: z.string(),
   name: z.string(),
@@ -2348,6 +2363,33 @@ const liveMeetingInsightSchema = z.object({
     .transform((path) => path ?? null),
   createdAt: z.number(),
 });
+const liveMeetingResultItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  quote: z.string(),
+  speaker: z.number().nullable(),
+  atSeconds: z.number().nullable(),
+});
+export const liveMeetingResultSchema = z.object({
+  meetingId: z.string(),
+  revision: z.number(),
+  status: z.enum(['working', 'ready', 'failed']),
+  title: z.string().nullable(),
+  summary: z.string().nullable(),
+  decisions: z.array(liveMeetingResultItemSchema),
+  tasks: z.array(
+    liveMeetingResultItemSchema.extend({
+      state: z.enum(['proposed', 'added', 'dismissed']),
+      taskId: z.string().nullable(),
+    }),
+  ),
+  openQuestions: z.array(liveMeetingResultItemSchema),
+  model: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+export type LiveMeetingResult = z.infer<typeof liveMeetingResultSchema>;
+
 export type LiveMeeting = z.infer<typeof liveMeetingSchema>;
 export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
@@ -2397,6 +2439,7 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     edits: {
+      title?: string | null;
       speakerNames?: Record<string, string>;
       speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
       speakerMerges?: Record<string, number>;
@@ -2422,6 +2465,43 @@ export class VerityClient {
     this.readListeners.add(listener);
     for (const resource of this.observedReads.values()) listener(resource);
     return () => this.readListeners.delete(listener);
+  }
+
+  async getLiveMeetingResult(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      { method: 'GET' },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async updateLiveMeetingResultTask(
+    sessionId: string,
+    meetingId: string,
+    proposalId: string,
+    body:
+      | { revision: number; state: 'added'; taskId: string }
+      | { revision: number; state: 'dismissed' },
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/tasks/${encodeURIComponent(proposalId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async retryLiveMeetingResult(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/retry`,
+      { method: 'POST' },
+    );
   }
 
   async getLiveMeetingInsights(
@@ -3059,13 +3139,8 @@ export class VerityClient {
   /** Verity projects for the overview. Plain absent GitHub repos are deliberately
    * excluded; paused projects remain listed with `state='absent'`. */
   async listProjects(): Promise<ProjectRecord[]> {
-    try {
-      const res = await this.request('/projects', { method: 'GET' });
-      return z.array(projectRecordSchema).parse(await res.json());
-    } catch (err) {
-      if (err instanceof VerityApiError && err.status === 503) return [];
-      throw err;
-    }
+    const res = await this.request('/projects', { method: 'GET' });
+    return z.array(projectRecordSchema).parse(await res.json());
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
@@ -3125,6 +3200,48 @@ export class VerityClient {
     try {
       const res = await this.request('/connections', { method: 'GET' });
       return forgeConnectionListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  /** Audit operations, newest first. `null` when this device is not an
+   *  administrator's or the Server has no audit trail (403/404). */
+  async auditOperations(query: AuditOperationQuery = {}): Promise<AuditOperationList | null> {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
+      return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditOperation(operationId: string): Promise<AuditOperationDetail> {
+    const res = await this.request(`/audit/operations/${encodeURIComponent(operationId)}`, {
+      method: 'GET',
+    });
+    return auditOperationResponseSchema.parse(await res.json()).operation;
+  }
+
+  /** `null` when audit logs are not available to this device (403/404). */
+  async auditHealth(): Promise<AuditHealth | null> {
+    try {
+      const res = await this.request('/audit/health', { method: 'GET' });
+      return auditHealthSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
@@ -4514,6 +4631,7 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     seen: {
+      providerSnapshot?: z.infer<typeof managedServerProviderSnapshotSchema> | null;
       command: string;
       workdir: string;
       secretBindings?: { secretAlias: string; env: string }[];

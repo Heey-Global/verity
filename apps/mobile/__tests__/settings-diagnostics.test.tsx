@@ -36,6 +36,10 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   expect(mockPush).toHaveBeenCalledWith('/settings/live-meeting-stt');
   fireEvent.press(screen.getByLabelText(/^Export app update logs(,|$)/));
   await waitFor(() => expect(shareUpdateDiagnostics).toHaveBeenCalled());
+  // The first export still owns the shared busy state when its mock is called.
+  await waitFor(() =>
+    expect(screen.getByLabelText(/^Export Remote Control test inputs(,|$)/)).toBeEnabled(),
+  );
   fireEvent.press(screen.getByLabelText(/^Export Remote Control test inputs(,|$)/));
   await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
   expect(screen.getByText('More')).toBeOnTheScreen();

@@ -1,3 +1,7 @@
+import {
+  brokeredDopplerBindingId,
+  parseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import type { SessionFileRootName } from './session-files.js';
 import {
   createDocumentWorkspaceProvisioner,
@@ -370,6 +374,9 @@ import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
+import type { AuditLog } from './audit-log.js';
+import { registerAuditRoutes } from './audit-routes.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
@@ -1412,6 +1419,8 @@ export interface ServerDeps {
   invalidateProjectList?: () => void;
   /** Best-effort image cleanup after a successful project soft-delete. */
   onProjectHidden?: (projectId: string) => Promise<void>;
+  /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
+  audit?: { recorder: AuditRecorder; log: AuditLog } | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -2268,7 +2277,8 @@ async function fileLiveMeeting(input: {
     if (!meeting || meeting.state === 'active') return null;
     const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
     const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
-    return { meeting, notes, insights: insights ?? [] };
+    const result = await input.eventStore.liveMeetings.result(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [], result };
   };
   const first = await load();
   if (!first) return;
@@ -2276,7 +2286,10 @@ async function fileLiveMeeting(input: {
   const meetingDir = knowledge
     ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
     : await ensureLegacyMeetingDirectory(session.worktree);
-  const title = liveMeetingTitle(first.meeting);
+  const title = liveMeetingTitle({
+    ...first.meeting,
+    title: first.meeting.title || first.result?.title || null,
+  });
   const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
   const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
   const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
@@ -2315,6 +2328,7 @@ async function fileLiveMeeting(input: {
         people: liveMeetingPeopleCount(current.meeting),
         notes: current.notes.length,
         answers: liveMeetingAnswerCount(events, current.meeting.id),
+        ...(current.result?.summary ? { summary: current.result.summary } : {}),
       };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
@@ -3760,13 +3774,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // session. Prompt-only runs need nothing but the conductor, which wakes a
   // sleeping project for the turn itself; only a check script needs the
   // project container directly.
+  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
+    if (!userId) return deps.authRegistry?.isEnabled() !== true;
+    return (
+      projectId !== null &&
+      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
+    );
+  };
   const automationExecutor = createAutomationExecutor({
+    isAuthorized: async (automation, session) => {
+      try {
+        return await canExecuteAs(automation.sponsorUserId, session.projectId);
+      } catch {
+        return false;
+      }
+    },
     isCurrent: async (automation, snapshot) => {
       const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
       const session = await deps.eventStore.getSession(automation.sessionId);
       return (
         current?.id === automation.id &&
         current.status === 'enabled' &&
+        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
         session?.projectId === snapshot.projectId &&
         session.worktree === snapshot.worktree
       );
@@ -3789,7 +3818,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
       ? {
-          runScript: async ({ script, project, session }) => {
+          runScript: async ({ script, project, session, automation }) => {
             const runtime = deps.projectRuntime;
             const cloneRoot = deps.projectCloneRoot;
             if (!runtime?.runAutomationScript || !cloneRoot) {
@@ -3798,6 +3827,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
+            try {
+              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
+                throw new Error('revoked');
+            } catch {
+              throw new ControlPlaneSessionAuthorityError(
+                'The automation sponsor no longer has execution permission.',
+              );
+            }
             return runtime.runAutomationScript(
               project,
               settings ?? emptyProjectSettings(project.id),
@@ -3838,7 +3875,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
     isSkippableError: (error) =>
-      error instanceof SealedError || error instanceof ProjectNotReadyError,
+      error instanceof SealedError ||
+      error instanceof ProjectNotReadyError ||
+      error instanceof ControlPlaneSessionAuthorityError,
   });
 
   const automationScheduler = startAutomationScheduler({
@@ -4666,6 +4705,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   });
   registerDiagnosticsMemoryRoute(app);
+  if (deps.audit !== undefined) {
+    registerAuditRoutes(app, {
+      ...deps.audit,
+      sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
+    });
+  }
 
   registerServerUpdateRoutes(app, deps);
 
@@ -6341,9 +6386,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      // Runs before the card, so a caller that may not use these tools is turned away without
-      // an operator being asked to read a briefing their answer could not have delivered. The
-      // tools re-check it themselves on the way in; this only decides when it is caught.
+      // Approval cannot restore rights revoked from the initiating user while waiting.
+      authorizeExecution: async (input) => {
+        const running = (await deps.eventStore.listRunningTurns()).find(
+          (t) => t.sessionId === input.sessionId,
+        );
+        if (!running && deps.authRegistry?.isEnabled() !== true) {
+          await gatewayDeps.authorizeExecution?.(input);
+          return;
+        }
+        if (!running || running.turnId !== input.turnId)
+          throw new ControlPlaneSessionAuthorityError('The calling turn is no longer active.');
+        const session = await deps.eventStore.getSession(input.sessionId);
+        const prompt = (
+          await deps.eventStore.getEventsAfter(input.sessionId, running.promptSeq - 1, 1)
+        ).find((event) => event.seq === running.promptSeq)?.event;
+        const userId = prompt?.t === 'prompt' ? prompt.initiatedBy?.userId : undefined;
+        if (
+          session?.projectId !== input.projectId ||
+          !(await canExecuteAs(userId, input.projectId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
+        await gatewayDeps.authorizeExecution?.(input);
+      },
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
@@ -6547,7 +6614,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+      authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
+          const snapshot = await gatewayDeps.authorizationSnapshot?.({
+            sessionId,
+            turnId,
+            projectId,
+            toolName,
+            request,
+          });
+          if (snapshot === undefined) throw new Error('approved Doppler binding is unavailable');
+          return JSON.stringify(parseBrokeredDopplerBinding(snapshot));
+        }
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
@@ -6905,6 +6983,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         callId,
         invocationId,
+        authorizationSnapshot,
         requestMac,
         macKeyId,
         toolName,
@@ -6943,6 +7022,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             toolName,
             input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
+            ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+            authorizationSnapshot !== undefined
+              ? {
+                  brokeredGrantBindingId: brokeredDopplerBindingId(
+                    parseBrokeredDopplerBinding(authorizationSnapshot),
+                  ),
+                }
+              : {}),
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
@@ -7630,6 +7717,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!hidden) {
         return { code: 404, body: { error: `project ${id} not found` } };
       }
+      // Before the image cleanup, so the trail reads deletion first, removals second.
+      // Best-effort: the deletion has happened, and a lost record becomes a write gap.
+      try {
+        await deps.audit?.recorder.projectDeleted({
+          projectId: id,
+          projectLabel: `${project.owner}/${project.repo}`,
+          initiator: { kind: 'user', userId: request.localUserId },
+        });
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project deletion not audited');
+      }
       try {
         await deps.onProjectHidden?.(id);
       } catch (error) {
@@ -7756,7 +7854,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : project;
       settleBackgroundProvision(
         project.id,
-        deps.provisioner.provision(project.id, { confirmWarnings }),
+        deps.provisioner.provision(project.id, {
+          confirmWarnings,
+          initiator: { kind: 'user', userId: request.localUserId },
+        }),
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
@@ -7889,6 +7990,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
+          initiator: { kind: 'user', userId: request.localUserId },
         });
         await afterProjectProvision(project.id);
       } catch (error) {
@@ -8052,7 +8154,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // to report the link itself as failed.
         if (linked.state !== 'absent' && provisioner.recreateContainer) {
           try {
-            await provisioner.recreateContainer(linked.id, { confirmWarnings: true });
+            await provisioner.recreateContainer(linked.id, {
+              confirmWarnings: true,
+              initiator: { kind: 'user', userId: request.localUserId },
+            });
             await afterProjectProvision(linked.id);
           } catch (error) {
             app.log.warn(
@@ -8342,6 +8447,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
+    onTasksChanged: () => resources.invalidate('/tasks'),
+    onResultChanged: (sessionId, meetingId) =>
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      ),
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -8374,7 +8484,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
       if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
-        return directMeetingQuery({ model, prompt, signal });
+        return directMeetingQuery({
+          model,
+          prompt,
+          signal,
+          maxOutputTokens: prompt.startsWith('Write a meeting result') ? 12000 : 2048,
+        });
       return conductor.query({
         prompt,
         model,

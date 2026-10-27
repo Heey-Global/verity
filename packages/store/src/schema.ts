@@ -984,6 +984,38 @@ interface SecretAuditEventsTable {
   recorded_at: ColumnType<Date, string, never>;
 }
 
+/** Allocation counter and verification state of one durable audit stream (ADR 0028). */
+interface AuditStreamsTable {
+  stream_id: string;
+  next_sequence: number;
+  head_sequence: number | null;
+  head_hash: string | null;
+  unverified: boolean;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/**
+ * Append-only, hash-chained audit event (ADR 0028). `event_json` is the canonical
+ * envelope `event_hash` is computed over; the other columns are denormalized from it
+ * for grouping and search and are never trusted without it.
+ */
+interface AuditEventsTable {
+  stream_id: string;
+  sequence: number;
+  event_id: string;
+  schema_version: number;
+  recorded_at: ColumnType<Date, string, never>;
+  operation_id: string;
+  domain: string;
+  kind: string;
+  project_id: string | null;
+  project_label: string | null;
+  image_id: string | null;
+  event_json: string;
+  prev_hash: string;
+  event_hash: string;
+}
+
 /**
  * Server-held keys the MCP gateway takes request MACs under (ADR 0014 D3).
  *
@@ -1082,6 +1114,7 @@ export interface ManagedDevServersTable {
     string | undefined,
     string
   >;
+  approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,
@@ -1549,6 +1582,7 @@ export interface Database {
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
+  live_meeting_results: LiveMeetingResultsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
@@ -1617,6 +1651,8 @@ export interface Database {
   secret_revocations: SecretRevocationsTable;
   secret_audit_events: SecretAuditEventsTable;
   audit_mac_keys: AuditMacKeysTable;
+  audit_streams: AuditStreamsTable;
+  audit_events: AuditEventsTable;
   secret_job_frames: SecretJobFramesTable;
   trusted_cli_outputs: TrustedCliOutputsTable;
   secret_jobs: SecretJobsTable;
@@ -1699,4 +1735,19 @@ interface LiveMeetingInsightsTable {
   evidence_b: string | null;
   source_path: string | null;
   created_at: number;
+}
+
+interface LiveMeetingResultsTable {
+  filed_revision: number | null;
+  meeting_id: string;
+  revision: number;
+  status: 'working' | 'ready' | 'failed';
+  title: string | null;
+  summary: string | null;
+  decisions_json: string;
+  tasks_json: string;
+  open_questions_json: string;
+  model: string | null;
+  created_at: number;
+  updated_at: number;
 }

@@ -32,6 +32,7 @@ on:
       - 'scripts/ios-pinned-tls-smoke-app.swift'
       - 'scripts/pinned-http-pool-smoke.swift'
       - 'scripts/*ios_pinned_tls_relay.py'
+      - 'scripts/*ios_pinned_tls_server.py'
       - 'scripts/remote-control-tunnel/**'
       - 'scripts/remote-control-integration/**'
       - 'scripts/remote-control-staging/**'
@@ -115,7 +116,7 @@ jobs:
             docs/protocols/uplink-enrollment-storage-v1.md; then
             enrollment=true
           fi
-          if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*' scripts/pinned-http-pool-smoke.swift 'scripts/*ios_pinned_tls_relay.py'; then
+          if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*' scripts/pinned-http-pool-smoke.swift 'scripts/*ios_pinned_tls_relay.py' 'scripts/*ios_pinned_tls_server.py'; then
             tls=true
           fi
           if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging scripts/remote-control-integration; then

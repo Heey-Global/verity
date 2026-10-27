@@ -138,3 +138,24 @@ it('includes the delegate timing dependency in all native probe compilation unit
     }
   }
 });
+
+it('uses the Promise queue overload and reserves cancellation before queue entry', () => {
+  const queued = transport.slice(
+    transport.indexOf('AsyncFunction("requestV3")'),
+    transport.indexOf('Function("supportsTransportLanes")'),
+  );
+  expect(queued).toContain('promise: Promise) -> Void in');
+  expect(queued).not.toContain(') async');
+  expect(queued).toContain('.runOnQueue(self.requestStartQueue)');
+  expect(queued).toContain('defer { self.requestStarts.finish(requestId, start: start) }');
+  expect(queued).toContain('try start.check()');
+  expect(queued).toContain('promise.resolve(response)');
+  expect(queued).toContain('promise.reject(error)');
+  expect(transport).toContain('Function("prepareRequestV3")');
+  expect(transport).toContain('Function("cancelRequestV3")');
+  expect(transport).toContain('self.requestStarts.shutdown()');
+  expect(transport).toContain(
+    'if let start { start.installAndResume(task) } else { task.resume() }',
+  );
+  expect(pool).toContain('fields["nativePromiseResolveWallMs"]');
+});

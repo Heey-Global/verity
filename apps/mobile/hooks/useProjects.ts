@@ -39,6 +39,9 @@ export function useProjects(client: VerityClient) {
   const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [failures, setFailures] = useState(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loadGeneration = useRef(0);
   const focused = useRef(false);
   const publishPreviews = useCallback(() => {
@@ -102,6 +105,7 @@ export function useProjects(client: VerityClient) {
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
       const generation = ++loadGeneration.current;
+      clearTimeout(retryTimer.current);
       if (!opts?.silent) setLoading(true);
       try {
         const nextProjects = await readContextProjects(client, true);
@@ -145,21 +149,43 @@ export function useProjects(client: VerityClient) {
         } finally {
           finishPublish();
         }
+        setHasLoaded(true);
+        setFailures(0);
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;
-        // A silent background poll keeps the last-good list on screen without
-        // flashing an error banner over it; only the initial load and
-        // pull-to-refresh surface a failure to the operator.
-        if (!opts?.silent) {
-          setError(caught instanceof VerityApiError ? caught.message : 'Could not load projects');
-        }
+        // Keep the last-good list, but expose a failed read even when live
+        // observation triggered it: unchanged resources may never notify again.
+        setError(caught instanceof VerityApiError ? caught.message : 'Could not load projects');
+        if (!(caught instanceof VerityApiError) || caught.status >= 500)
+          setFailures((count) => count + 1);
+        else setFailures(0);
       } finally {
         if (generation === loadGeneration.current) setLoading(false);
       }
     },
     [client],
   );
+
+  useEffect(() => {
+    if (failures === 0) return;
+    const retry = () => {
+      if (focused.current && AppState.currentState === 'active') void load({ silent: true });
+    };
+    if (AppState.currentState === 'active')
+      retryTimer.current = setTimeout(
+        retry,
+        Math.min(1_000 * 2 ** Math.min(failures - 1, 4), 15_000),
+      );
+    const listener = AppState.addEventListener('change', (state) => {
+      clearTimeout(retryTimer.current);
+      if (state === 'active') retry();
+    });
+    return () => {
+      clearTimeout(retryTimer.current);
+      listener.remove();
+    };
+  }, [failures, load]);
 
   // Refetch project membership on return, while retained resource watches track
   // dirty preview sources. Refocusing must not rebuild every share subscription.
@@ -250,6 +276,7 @@ export function useProjects(client: VerityClient) {
     publicPreviews,
     loading,
     error,
+    listState: error ? ('error' as const) : hasLoaded ? ('ready' as const) : ('loading' as const),
     refresh: () => {
       previewReads.invalidate();
       return load();

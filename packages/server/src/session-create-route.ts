@@ -65,6 +65,8 @@ export interface SessionCreateRouteDeps extends Pick<
 /** What the spawn logic needs from an HTTP request: only its logger. */
 interface SpawnRequest {
   log: Pick<FastifyBaseLogger, 'error'>;
+  /** The authenticated user, recorded as the initiator of any image build. */
+  localUserId?: string | null;
 }
 /** What the spawn logic needs from an HTTP reply: only the status code. */
 interface SpawnReply {
@@ -294,6 +296,7 @@ export function registerSessionCreateRoute(
             project.id,
             deps.provisioner.provision(project.id, {
               confirmWarnings: body.confirmProvisionWarnings === true,
+              initiator: { kind: 'user', userId: request.localUserId ?? null },
             }),
             (error) =>
               request.log.error(
