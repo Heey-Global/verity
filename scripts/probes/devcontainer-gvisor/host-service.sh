@@ -32,6 +32,7 @@ sudo bash deploy/buildkit/install.sh
 sudo systemctl stop verity-buildkit-snapshotter.timer
 sudo sed -i 's/snapshotter = "auto"/snapshotter = "native"/' /etc/verity-buildkit/buildkitd.toml
 sudo systemctl restart verity-buildkit
+printf 'native rollback data\n' | sudo tee /var/lib/verity-buildkit/runc-native/verity-migration-retention-probe > /dev/null
 sudo /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh reconcile
 sudo cat /run/verity-buildkit/migration-status.json > "$PROBE_EVIDENCE/snapshotter-migration.json"
 jq -e '.state == "converged"' "$PROBE_EVIDENCE/snapshotter-migration.json"
@@ -108,13 +109,16 @@ spawn_build() {
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
 PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/warm.log" 2>&1
 PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/repeated.log" 2>&1
-# The runner's ext4 supports overlayfs, so "auto" must not have fallen back to
-# the native snapshotter, whose full copy per step is what this setting avoids.
+# Verify the active worker, not historical log lines or retained worker directories.
 sudo test -d /var/lib/verity-buildkit/runc-overlayfs
-# This is a fresh runner, not evidence that an installer removed older state.
+sudo /usr/local/libexec/verity-buildkit/buildctl --addr unix:///run/verity-buildkit/buildkitd.sock \
+    debug workers --format '{{json .}}' > "$PROBE_EVIDENCE/active-workers.json"
+jq -e 'length == 1 and .[0].labels["org.mobyproject.buildkit.worker.snapshotter"] == "overlayfs"' \
+    "$PROBE_EVIDENCE/active-workers.json"
 sudo journalctl -q -o cat -u verity-buildkit > "$PROBE_EVIDENCE/worker-start.log"
 grep -F 'found worker' "$PROBE_EVIDENCE/worker-start.log" | grep -F 'worker.snapshotter:overlayfs' > /dev/null
-sudo test ! -e /var/lib/verity-buildkit/runc-native
+sudo test -d /var/lib/verity-buildkit/runc-native
+[[ $(sudo cat /var/lib/verity-buildkit/runc-native/verity-migration-retention-probe) == 'native rollback data' ]]
 docker create --name "$name-marker" "$name:positive" > /dev/null
 docker cp "$name-marker:/verity-dockerfile-probe" "$PROBE_EVIDENCE/dockerfile-marker.txt"
 docker cp "$name-marker:/verity-feature-probe" "$PROBE_EVIDENCE/feature-marker.txt"
