@@ -163,6 +163,35 @@ describe('audit recorder', () => {
     expect(fake.appended.map((e) => e.kind)).toEqual(['audit.write_gap', 'build.requested']);
   });
 
+  // A detached gap is still owed until its append commits; concurrent Settings
+  // reads must not show healthy while that write can still fail.
+  it('reports gaps that another health check is still persisting', async () => {
+    const fake = fakeLog();
+    const audit = recorder(fake.log);
+    fake.setFailing(true);
+    await audit.imageRemoved({ imageRef: 'old:1' });
+    let markStarted!: () => void;
+    let finishWrite!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const finish = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    });
+    fake.log.append = async () => {
+      markStarted();
+      await finish;
+      throw new Error('database unavailable');
+    };
+    const flushing = audit.health();
+    await started;
+    const during = await audit.health();
+    finishWrite();
+    const after = await flushing;
+    expect(during).toEqual({ status: 'degraded', pendingFailedWrites: 1 });
+    expect(after).toEqual(during);
+  });
+
   it('flushes outstanding gaps when health is checked', async () => {
     const fake = fakeLog();
     const audit = recorder(fake.log);

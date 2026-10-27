@@ -85,6 +85,7 @@ export function createAuditRecorder(
   // Per-process and in memory on purpose: a failed write leaves no row anywhere else,
   // and the gap event says only what this process saw (ADR 0028).
   const gaps = new Map<string, Gap>();
+  const flushingGaps = new Map<string, Gap>();
   const active = new Set<string>();
 
   function countFailure(streamId: string, kind: string): void {
@@ -122,6 +123,7 @@ export function createAuditRecorder(
     const gap = gaps.get(streamId);
     if (gap === undefined) return;
     gaps.delete(streamId);
+    flushingGaps.set(streamId, gap);
     try {
       await log.append({
         kind: 'audit.write_gap',
@@ -135,6 +137,8 @@ export function createAuditRecorder(
     } catch (error) {
       restoreGap(streamId, gap);
       throw error;
+    } finally {
+      flushingGaps.delete(streamId);
     }
   }
 
@@ -303,6 +307,7 @@ export function createAuditRecorder(
       }
       let pending = 0;
       for (const gap of gaps.values()) pending += gap.failedWrites;
+      for (const gap of flushingGaps.values()) pending += gap.failedWrites;
       return { status: pending > 0 ? 'degraded' : 'ok', pendingFailedWrites: pending };
     },
   };
