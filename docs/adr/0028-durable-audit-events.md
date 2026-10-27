@@ -109,7 +109,7 @@ stream and run and only when the head actually moves, so a quiet stream whose
 tail has not changed produces no event and the legacy chain's format is
 untouched; restore-triggered advancement follows the same rule. The installation
 stream's own head advancement is recorded by its head record alone and never by
-an event, and events written by a run do not count as tail movement for that
+an event, and is therefore exempt from the fail-closed rule, and events written by a run do not count as tail movement for that
 run's successor, so verification does not feed itself and the installation
 stream stays quiet when nothing else happens. The write-gap append is
 additionally fail-closed for the recovering process alone, as described below.
@@ -315,11 +315,15 @@ always the failure point recorded by the failed run, the resolution event
 follows every append made since then, and the re-derived head covers those
 appends, so an installation-stream failure, whose stream keeps receiving read,
 export and policy events meanwhile, has the same defined way out as any other:
-either a fresh full re-derivation succeeds and re-anchors the head, or the
-administrator declares the mismatch as an accepted gap and the head is
+either a fresh full re-derivation succeeds while the previously trusted head
+(sequence and hash) is still present and matches, and re-anchors the head, or
+the administrator declares the mismatch as an accepted gap and the head is
 re-anchored at the current tail with that declaration attached; when the
 resolved stream is the installation stream, the resolution event itself is that
-tail, so the head points at it.
+tail, so the head points at it. A missing or mismatched head can only be
+resolved as an accepted gap: a truncated or consistently rewritten chain
+re-derives cleanly, so a clean re-derivation proves nothing about it. Every
+resolution event records the old head's sequence and hash.
 
 After any resolution the head takes the sequence of the current tail, which
 includes every append made since the failure. When that sequence is lower than
