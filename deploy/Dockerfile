@@ -212,11 +212,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux; \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/cosign
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker-cli /usr/local/bin/docker-compose /usr/local/bin/docker-compose
-COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
-COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/
+COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/
 COPY deploy/bin/verity-transcribe-meeting /usr/local/bin/verity-transcribe-meeting
 
 # Self-contained host bootstrap payload. The public installer copies this tree
@@ -393,7 +390,8 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{
 # image to that host component, which verifies the release signature itself and installs the
 # bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
 # contract value equal in all three places.
-LABEL org.verity.devcontainer-builder="1"
+LABEL org.verity.devcontainer-builder="2"
+LABEL org.verity.build-admission="1"
 LABEL org.verity.recovery="1"
 
 # The Google Drive OAuth iOS client id (ADR 0009), injected by release.yml as a

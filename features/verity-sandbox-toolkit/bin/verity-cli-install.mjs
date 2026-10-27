@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -11,10 +12,44 @@ import {
   readdirSync,
   lstatSync,
   readlinkSync,
+  openSync,
+  readSync,
+  closeSync,
+  constants,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import console from 'node:console';
+
+// A version alone does not establish an intact installation. Include the lock,
+// installer (including hardening), runtime ABI and complete installed tree.
+function treeDigest(root) {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const visit = (relative) => {
+    const file = path.join(root, relative);
+    const stat = lstatSync(file);
+    hash.update(
+      JSON.stringify([relative, stat.mode, stat.uid, stat.gid, stat.isFile() ? stat.size : null]),
+    );
+    if (stat.isSymbolicLink()) hash.update(JSON.stringify(readlinkSync(file)));
+    else if (stat.isDirectory()) {
+      for (const name of readdirSync(file).sort()) visit(path.join(relative, name));
+    } else if (stat.isFile()) {
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        let length;
+        while ((length = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+          hash.update(buffer.subarray(0, length));
+        }
+      } finally {
+        closeSync(fd);
+      }
+    } else throw new Error('Unsupported CLI installation entry');
+  };
+  visit('');
+  return hash.digest('hex');
+}
 
 /** The ACP adapter must not reopen project policy when starting a thread. */
 export function hardenCodexAcpSource(source) {
@@ -49,7 +84,54 @@ export function installCli(
   const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
   const prefix = execFileSync('npm', ['prefix', '-g'], { encoding: 'utf8' }).trim();
   const destination = path.join(globalRoot, '.verity-cli', id);
+  const receipt = path.join(destination, 'verity-install.json');
+  const identity = createHash('sha256')
+    .update(readFileSync(fileURLToPath(import.meta.url)))
+    .update(readFileSync(path.join(source, 'package.json')))
+    .update(readFileSync(path.join(source, 'package-lock.json')))
+    .update(JSON.stringify([process.version, process.platform, process.arch, prefix]))
+    .digest('hex');
+  // Claude's adapter receives further patches outside this installer. Always
+  // rebuild that tree so changed external patches cannot be skipped by a receipt.
+  const reusable = version === pinned && id !== 'claude-acp';
+  if (reusable) {
+    try {
+      const saved = JSON.parse(readFileSync(receipt, 'utf8'));
+      const packageDir = path.join(destination, 'node_modules', name);
+      const installed = JSON.parse(readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
+      const bins =
+        typeof installed.bin === 'string'
+          ? { [name.split('/').at(-1)]: installed.bin }
+          : (installed.bin ?? {});
+      const linked = (link, target) =>
+        lstatSync(link).isSymbolicLink() &&
+        path.resolve(path.dirname(link), readlinkSync(link)) === target;
+      if (
+        saved.version === 1 &&
+        saved.identity === identity &&
+        installed.name === name &&
+        installed.version === version &&
+        saved.tree === treeDigest(path.join(destination, 'node_modules')) &&
+        linked(path.join(globalRoot, name), packageDir) &&
+        Object.entries(bins).every(([bin, relative]) => {
+          const target = path.resolve(packageDir, relative);
+          return (
+            path.basename(bin) === bin &&
+            target.startsWith(`${packageDir}${path.sep}`) &&
+            linked(path.join(prefix, 'bin', bin), target) &&
+            (lstatSync(target).mode & 0o111) !== 0
+          );
+        })
+      ) {
+        console.log(`Reusing verified CLI ${name}@${version}`);
+        return;
+      }
+    } catch {
+      /* An incomplete or modified tree is installed afresh below. */
+    }
+  }
   mkdirSync(destination, { recursive: true });
+  rmSync(receipt, { force: true });
   // Remove links into this tree before npm replaces it during a repeat install.
   const binDirectory = path.join(prefix, 'bin');
   mkdirSync(binDirectory, { recursive: true });
@@ -119,6 +201,16 @@ export function installCli(
     rmSync(link, { force: true });
     symlinkSync(target, link);
   }
+  if (reusable)
+    writeFileSync(
+      receipt,
+      JSON.stringify({
+        version: 1,
+        identity,
+        tree: treeDigest(path.join(destination, 'node_modules')),
+      }),
+      { mode: 0o600 },
+    );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

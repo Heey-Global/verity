@@ -1519,6 +1519,42 @@ describe('recorded devcontainer builder migration', () => {
   // The repair path seals the builder while the old Server keeps serving. Treating
   // that Server as a conflict would crash-loop the Updater on every host repaired
   // before its next update — the channel that would apply the bind.
+  it('keeps a running read-only client until guarded replacement adds admission writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'managed-admission-owner-'));
+    const initial = body();
+    await initializeManagedDeployment({
+      root,
+      deploymentId: 'deployment-1',
+      spec: {
+        ...initial,
+        mounts: [
+          ...initial.mounts,
+          {
+            source: { kind: 'bind', path: '/run/verity-buildkit' },
+            target: '/run/verity-buildkit',
+            readOnly: true,
+          },
+        ],
+        user: { ...initial.user, supplementaryGids: [...initial.user.supplementaryGids, 1102] },
+      },
+    });
+    await migrate(root);
+    const inspect = owned(true);
+    inspect.mounts!.push({
+      type: 'bind',
+      source: '/run/verity-buildkit',
+      destination: '/run/verity-buildkit',
+      readWrite: false,
+    });
+    inspect.groupAdd!.push('1102');
+    const client = docker(inspect);
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toMatchObject({
+      action: 'unchanged',
+      devcontainerBuilderPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+
   it('keeps a running pre-migration Server serving and reports the pending builder', async () => {
     const root = await authority();
     await migrate(root);
@@ -1540,7 +1576,7 @@ describe('recorded devcontainer builder migration', () => {
       action: 'created',
     });
     const created = client.createContainer.mock.calls[0]?.[0];
-    expect(created.binds).toContain('/run/verity-buildkit:/run/verity-buildkit:ro');
+    expect(created.binds).toContain('/run/verity-buildkit:/run/verity-buildkit');
     expect(created.groupAdd).toContain('1102');
   });
 

@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.62.0](https://github.com/Heey-Global/verity/compare/v4.61.0...v4.62.0) (2026-10-27)
+
+
+### Features
+
+* **audit:** add administrator logs for project image operations ([#1977](https://github.com/Heey-Global/verity/issues/1977)) ([3ef0ba7](https://github.com/Heey-Global/verity/commit/3ef0ba792b9ca14728e8df2effac2362c12d9a2a))
+* **buildkit:** manage build storage and reconcile overlayfs through signed releases ([#1981](https://github.com/Heey-Global/verity/issues/1981)) ([22b6328](https://github.com/Heey-Global/verity/commit/22b63288c8b5fb323e87ff1199c0760b72631b8b))
+* **server:** derive a meeting result after a live meeting ends ([#1978](https://github.com/Heey-Global/verity/issues/1978)) ([06aa780](https://github.com/Heey-Global/verity/commit/06aa780a57f9b478f70143b1319b7a3d9b667759))
+
+
+### Bug Fixes
+
+* **deps:** patch mobile XML, UUID and RSA dependencies ([#1965](https://github.com/Heey-Global/verity/issues/1965)) ([79d4326](https://github.com/Heey-Global/verity/commit/79d4326f3d7addef1a80d5b749add8a5edac3611))
+* **server:** revalidate execution and provider authority ([#1971](https://github.com/Heey-Global/verity/issues/1971)) ([ceb7048](https://github.com/Heey-Global/verity/commit/ceb7048d36f2d5bb0ee542e45e4d5ceca04ac4dd))
+
 ## [4.61.0](https://github.com/Heey-Global/verity/compare/v4.60.3...v4.61.0) (2026-10-27)
 
 

@@ -478,3 +478,28 @@ it('bounds Docker diagnostic bodies over the Unix transport and makes only GET r
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it('exposes only fresh, validated builder migration status to Control diagnostics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'builder-migration-status-'));
+  const path = join(directory, 'status.json');
+  try {
+    const status = {
+      version: 1,
+      state: 'deferred',
+      message: 'Builds are still running',
+      observedAt: new Date(now).toISOString(),
+    };
+    await writeFile(path, JSON.stringify(status));
+    const read = createRuntimeDiagnostics({ builderMigrationPath: path, now: () => now });
+    expect((await read({})).builderMigration).toEqual(status);
+    await writeFile(
+      path,
+      JSON.stringify({ ...status, observedAt: new Date(now - 121000).toISOString() }),
+    );
+    expect((await read({})).builderMigration).toBeUndefined();
+    await writeFile(path, JSON.stringify({ ...status, state: 'invented' }));
+    expect((await read({})).builderMigration).toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
