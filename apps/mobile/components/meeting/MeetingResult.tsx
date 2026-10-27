@@ -157,6 +157,8 @@ export function MeetingResult(props: {
                   loading={busy === 'retry'}
                   onPress={() => {
                     void act('retry', async () => {
+                      if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId())
+                        throw new Error('Reconnect to this meeting’s server.');
                       const client = createVerityClient();
                       if (!client) throw new Error('Connect to your server first.');
                       await client.retryLiveMeetingResult(meeting.sessionId, meeting.id);

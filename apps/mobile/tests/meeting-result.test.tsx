@@ -1,9 +1,13 @@
+import { Alert } from 'react-native';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { MeetingResult } from '../components/meeting/MeetingResult';
-import { createVerityClient } from '../lib/client';
+import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import { refreshTasks } from '../lib/tasksStore';
 
-jest.mock('../lib/client', () => ({ createVerityClient: jest.fn() }));
+jest.mock('../lib/client', () => ({
+  createVerityClient: jest.fn(),
+  getActiveMeetingServerId: jest.fn(),
+}));
 jest.mock('../lib/tasksStore', () => ({ refreshTasks: jest.fn() }));
 
 const ready = {
@@ -65,6 +69,7 @@ const client = {
 };
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('original');
   client.getLiveMeetingResult.mockResolvedValue(ready);
   jest
     .mocked(createVerityClient)
@@ -125,4 +130,18 @@ it('dismisses a suggestion without creating a task', async () => {
   expect(refreshTasks).not.toHaveBeenCalled();
   expect(screen.queryByText('Prepare release')).toBeNull();
   expect(screen.queryByText('TASKS')).toBeNull();
+});
+
+it('blocks retry after switching away from the meeting server', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  client.getLiveMeetingResult.mockResolvedValue({ ...ready, status: 'failed' });
+  render(<MeetingResult {...props} meeting={{ ...props.meeting, serverId: 'original' }} />);
+  await screen.findByText('Retry summary');
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('other');
+  fireEvent.press(screen.getByText('Retry summary'));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith('Could not save', 'Reconnect to this meeting’s server.'),
+  );
+  expect(client.retryLiveMeetingResult).not.toHaveBeenCalled();
+  alert.mockRestore();
 });
