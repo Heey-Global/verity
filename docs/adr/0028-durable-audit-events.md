@@ -233,6 +233,55 @@ the trace can be written. Avoid recursive logging of the audit recorder itself.
 No client-facing read path for secret-audit events exists today, so
 administrator-only access removes no existing project-member capability.
 
+### Presentation
+
+The app shows the trail as an **Audit logs** row in the Server group of
+Settings, next to Updates, and only to administrators. Following the existing
+settings rows, its subtitle names what the trail contains for the enabled
+domains (for the first stage: builds, secret access and server updates) and it
+carries no status while the trail is healthy. Degraded audit health (writes
+currently failing) or an unresolved unverified stream gives the row a
+`needsSetup` status (“Needs review”), so a problem with the trail is visible
+without opening it; a past write-gap stays visible in the list but no longer
+marks the row once writes succeed again. Project settings get no entry point,
+because project membership grants no access; later contextual links, for
+example from a project image, open the same filtered view for administrators.
+
+The list shows one row per operation, grouped by day and newest first, not one
+row per stored event. Each row is built from the
+[design system](../design-system.md):
+
+- **Icon:** one fixed line icon per domain, drawn in `action` because every row
+  opens its detail. Color never encodes the domain, and `signature` is not used.
+  An `attention` icon is reserved for problems with the trail itself: a
+  write-gap, shown as its own row at its failure window (“3 events not
+  recorded”), and an unverified stream, shown as a row above the list that names
+  the project and the date of the failed check.
+- **Title:** what happened, in the terms the app already uses (“Project image
+  built”, “Secret approved”, “Server updated”); Devcontainer, stream, chain,
+  head and sequence are implementation terms and never appear.
+- **Subtitle:** project, the concrete initiator (session title, “You”, sandbox
+  wake, server update) and time.
+- **Status:** a completed operation with its expected outcome shows no status
+  word. Only deviations do: running (`transient`), failed, denied or refused
+  (`needsSetup`) and indeterminate (“Unknown”). The status intents have no
+  mapping for an unknown outcome yet; the design system needs that addition
+  before the screen is built, rather than borrowing `optional`, whose meaning
+  differs.
+
+Search covers image ID or digest, project and operation ID, so an administrator
+who finds an unexplained image can go straight to the build that produced it.
+Filters follow the enabled domains. Export is a header action, recorded as
+described under Access. The footer states the retention boundary (“Entries since
+…”), which explains why older history is absent.
+
+The detail of an operation shows one status tag with the time range, then only
+what answers who started it, what it was built from and what it produced:
+initiator and project as links (shown as expired when the target is gone),
+commit, base image and Feature digests, resulting image and size, Server release
+and generation, and a copyable operation ID. Configuration fingerprints, stream
+positions and verification metadata stay in exports and are not shown.
+
 ### Stream integrity and verification
 
 The existing chain is keyed per project and stays the only stream for secret
@@ -503,6 +552,9 @@ Before enabling each domain, verify:
   and reconciliation never duplicate the external effect or invent attribution.
 - Non-admin users and agents cannot read; current admin agents can read only;
   role revocation and turn identity changes immediately remove that access.
+- The Audit logs entry is absent for non-administrators; it shows a status only
+  while audit health is degraded or an unverified stream is unresolved, and
+  searching for an image ID returns the operation that produced the image.
 - Secret-bearing, malformed and oversized inputs never leak through payloads,
   fingerprints, errors or exports; audit data cannot become agent instructions.
 - Concurrent append/prune, policy changes and interrupted retention preserve
