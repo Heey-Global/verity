@@ -4617,6 +4617,17 @@ migrations['0166_devcontainer_policy'] = {
   },
 };
 
+migrations['0167_managed_server_provider_authority'] = {
+  async up(db) {
+    await sql`alter table managed_dev_servers add column approved_provider_authority text`.execute(
+      db,
+    );
+  },
+  async down(db) {
+    await sql`alter table managed_dev_servers drop column approved_provider_authority`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

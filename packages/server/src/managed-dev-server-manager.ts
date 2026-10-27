@@ -70,9 +70,11 @@ export interface ManagedLocalShares {
 export interface ManagedDevServerManagerOptions {
   store: EventStore;
   runtime: ManagedDevServerRuntime;
+  providerAuthority?: (projectId: string) => Promise<string | undefined>;
   resolveSecrets?: (
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
+    providerAuthority: string,
   ) => Promise<{ env: string; value: string }[]>;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
@@ -270,6 +272,10 @@ export class ManagedDevServerManager {
       this.servers.listInstances({ projectId: project.id }),
       this.options.store.listSessions(),
     ]);
+    // Expose stale provider approvals to the existing approval UI, including legacy rows.
+    for (const entry of entries) {
+      if (!(await this.providerApproved(entry))) entry.approved = false;
+    }
     const names = new Map(sessions.map((session) => [session.sessionId, session.name ?? null]));
     return entries.map((entry) => {
       const own = instances.find(
@@ -298,6 +304,19 @@ export class ManagedDevServerManager {
           })),
       };
     });
+  }
+
+  private async providerApproved(entry: ManagedDevServerRecord): Promise<boolean> {
+    if (entry.secretBindings.length === 0) return true;
+    try {
+      const approved = await this.servers.approvedProviderAuthority(entry.id);
+      return (
+        approved !== undefined &&
+        approved === (await this.options.providerAuthority?.(entry.projectId))
+      );
+    } catch {
+      return false;
+    }
   }
 
   private instanceView(
@@ -395,7 +414,18 @@ export class ManagedDevServerManager {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
     await this.locked(project.id, async () => {
-      const approved = await this.servers.approve(entry.id, seen);
+      const providerAuthority = seen.secretBindings?.length
+        ? await this.options.providerAuthority?.(project.id)
+        : undefined;
+      if (seen.secretBindings?.length && providerAuthority === undefined)
+        throw new ManagedDevServerError(
+          'The secret provider is unavailable. Review and approve it again.',
+          409,
+        );
+      const approved = await this.servers.approve(entry.id, {
+        ...seen,
+        ...(providerAuthority === undefined ? {} : { providerAuthority }),
+      });
       if (!approved)
         throw new ManagedDevServerError(
           'The command changed in the meantime. Review it again before approving.',
@@ -557,7 +587,10 @@ export class ManagedDevServerManager {
     const context = await this.context(sessionId);
     const entry = await this.entry(context.project.id, idOrName);
     // Refuse before stopping: a restart that cannot start must not kill what runs.
-    if ((by === 'operator' || entry.secretBindings.length > 0) && !entry.approved)
+    if (
+      (by === 'operator' || entry.secretBindings.length > 0) &&
+      (!entry.approved || !(await this.providerApproved(entry)))
+    )
       throw new ManagedDevServerError('Review and approve the command first', 409);
     await this.locked(context.project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
@@ -761,14 +794,27 @@ export class ManagedDevServerManager {
     let secrets: { env: string; value: string }[] = [];
     try {
       if (secretBindings.length > 0) {
+        const approvedAuthority = await this.servers.approvedProviderAuthority(entry.id);
+        if (
+          approvedAuthority === undefined ||
+          approvedAuthority !== (await this.options.providerAuthority?.(project.id))
+        )
+          throw new Error('provider authority changed');
         if (!this.options.resolveSecrets) throw new Error('secret resolver unavailable');
-        secrets = await this.options.resolveSecrets(project.id, secretBindings);
+        secrets = await this.options.resolveSecrets(project.id, secretBindings, approvedAuthority);
+        if (
+          approvedAuthority !== (await this.options.providerAuthority?.(project.id)) ||
+          approvedAuthority !== (await this.servers.approvedProviderAuthority(entry.id)) ||
+          !(await this.servers.isApproved(entry.id, command, workdir, secretBindings))
+        )
+          throw new Error('provider authority changed');
       }
     } catch {
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
         state: 'crashed',
-        detail: 'Could not resolve server secrets. No server was started.',
+        detail:
+          'Could not validate or resolve server secrets. Review the provider and approve again. No server was started.',
       });
       return;
     }
