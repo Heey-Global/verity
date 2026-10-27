@@ -7,7 +7,7 @@
 # Set VERITY_SMOKE_OPAQUE_RELAY=1 to run the same macOS/iOS pin and
 # hostname checks through a byte-only relay to the local TLS backend.
 set -euo pipefail
-python3 -m unittest -q scripts.test_ios_pinned_tls_relay
+python3 -m unittest -q scripts.test_ios_pinned_tls_relay scripts.test_ios_pinned_tls_server
 
 tmp="$(mktemp -d)"
 server_pid=''
@@ -85,8 +85,9 @@ swiftc apps/mobile/native/CertificatePinDelegate.swift \
 addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
 python3 - "$tmp/cert.pem" "$tmp/key.pem" "$tmp/server-ready" "${addresses[@]}" <<'PY' &
-import asyncio, faulthandler, http.server, os, socketserver, ssl, sys, threading, time
+import asyncio, faulthandler, http.server, os, ssl, sys, threading, time
 from scripts.ios_pinned_tls_relay import relay
+from scripts.ios_pinned_tls_server import SmokeServer
 
 faulthandler.dump_traceback_later(15, repeat=True)
 
@@ -111,15 +112,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class SmokeServer(http.server.ThreadingHTTPServer):
-    def server_bind(self):
-        # HTTPServer normally reverse-resolves every bound address. The fixture
-        # needs no DNS name, and runner reverse DNS can block listener startup.
-        socketserver.TCPServer.server_bind(self)
-        self.server_name = self.server_address[0]
-        self.server_port = self.server_address[1]
-
-
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
 # Bound to the addresses under test rather than every interface the runner
@@ -131,8 +123,7 @@ context.load_cert_chain(sys.argv[1], sys.argv[2])
 relay_mode = os.environ.get('VERITY_SMOKE_OPAQUE_RELAY') == '1'
 servers = []
 for address in (['127.0.0.1'] if relay_mode else sys.argv[4:]):
-    server = SmokeServer((address, 18444 if relay_mode else 18443), Handler)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = SmokeServer((address, 18444 if relay_mode else 18443), Handler, context)
     servers.append(server)
 for server in servers:
     threading.Thread(target=server.serve_forever, daemon=True).start()
