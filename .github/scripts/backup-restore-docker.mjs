@@ -132,10 +132,10 @@ async function capture() {
   await pool.query(
     "INSERT INTO backup_revocation_outbox(id,device_id) VALUES ('before-capture','outbox-device'); INSERT INTO running_turns(session_id,prompt_seq) VALUES ('recovery-session',1)",
   );
-  await pool.query('UPDATE verity_settings SET git_user_name = $1, transcribe_api_key = $2', [
-    'Recovery fixture',
-    createSecretCipher(key).encrypt('recovered-synthetic-credential'),
-  ]);
+  await pool.query(
+    "INSERT INTO verity_settings(id,git_user_name,transcribe_api_key) VALUES ('global',$1,$2)",
+    ['Recovery fixture', createSecretCipher(key).encrypt('recovered-synthetic-credential')],
+  );
   const keys = await generateBackupKeys();
   const installationId = randomUUID();
   await writeBackupIdentityFixture(join(root, 'original-identity'), keys.host, installationId);
