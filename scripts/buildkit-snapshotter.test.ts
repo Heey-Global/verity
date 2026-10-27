@@ -99,6 +99,8 @@ esac\n`,
     expect(f.status().state).toBe('converged');
   });
   it.each([
+    { usage: '' },
+    { usage: 'null null' },
     { usage: '{}' },
     { usage: 'invalid' },
     { usage: '[{}]' },

@@ -121,7 +121,7 @@ drained() {
     [[ ! -e $run_dir/migration-pending && ! -e $journal ]] || return 1
     clients_compatible || return 1
     [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
-    ctl du --format '{{json .}}' | jq -e 'if . == null then true else type == "array" and all(.[]; .inUse == false) end' >/dev/null
+    ctl du --format '{{json .}}' | jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse == false) end)' >/dev/null
 }
 probe() {
     # A local rootfs from the pinned BuildKit image avoids any network pull in the solve.
@@ -175,7 +175,7 @@ reconcile() {
     [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || {
         status deferred 'Unresolved build leases remain; existing work is preserved'; return 0;
     }
-    ctl du --format '{{json .}}' | jq -e 'if . == null then true else type == "array" and all(.[]; .inUse == false) end' >/dev/null || {
+    ctl du --format '{{json .}}' | jq -se 'length == 1 and (.[0] | if . == null then true else type == "array" and all(.[]; .inUse == false) end)' >/dev/null || {
         status deferred 'BuildKit activity could not be excluded'; return 0;
     }
     [[ $(worker) == native || $(worker) == overlayfs ]] || return 1
