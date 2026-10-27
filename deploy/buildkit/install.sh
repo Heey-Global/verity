@@ -20,6 +20,10 @@ flock -w 60 7 || { echo 'Snapshotter maintenance is still running; retry the upd
 # Recover an interrupted configuration transaction before replacing its backup.
 if [[ -x /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh ]]; then
     /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh recover
+    if [[ -e /var/lib/verity/buildkit-snapshotter/pending.json ]]; then
+        systemctl restart verity-buildkit.service
+        /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh recover-verify
+    fi
 fi
 # Validate storage policy before changing binaries, service files or runtimes.
 rendered_config=$(bash "$source_dir/storage-policy.sh" "$source_dir/buildkitd.toml" \

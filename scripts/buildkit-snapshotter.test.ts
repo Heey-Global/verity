@@ -112,7 +112,23 @@ esac\n`,
     expect(existsSync(join(f.state, 'pending.json'))).toBe(true);
     expect(f.invoke('recover').status).toBe(0);
     expect(readFileSync(join(f.config, 'buildkitd.toml'), 'utf8')).toBe(f.previous);
+    expect(f.status().state).toBe('blocked');
+    expect(existsSync(join(f.state, 'pending.json'))).toBe(true);
+    expect(f.invoke('recover-verify').status).toBe(0);
     expect(f.status().state).toBe('rolled-back');
+    expect(existsSync(join(f.state, 'pending.json'))).toBe(false);
+  });
+  it('retains recovery state and admission blocking when the restored service cannot restart', () => {
+    const f = fixture({ crash: true });
+    expect(f.invoke().signal).toBe('SIGKILL');
+    writeFileSync(join(f.bin, 'systemctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    expect(f.invoke().status).not.toBe(0);
+    expect(existsSync(join(f.state, 'pending.json'))).toBe(true);
+    expect(existsSync(join(f.run, 'migration-pending'))).toBe(true);
+    expect(f.status().state).toBe('blocked');
+    writeFileSync(join(f.bin, 'buildctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    expect(f.invoke('recover-verify').status).not.toBe(0);
+    expect(existsSync(join(f.state, 'pending.json'))).toBe(true);
   });
   it('changes nothing when the actual filesystem suitability check fails', () => {
     const f = fixture({ failMount: true });

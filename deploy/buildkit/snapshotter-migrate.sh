@@ -77,9 +77,28 @@ recover() {
     restore
     jq -er .revision "$journal" > "$state/failed-revision"
     sync -f "$state/failed-revision"
+    : > "$run_dir/migration-pending"
+    status blocked 'Previous configuration restored; awaiting verification of the previous worker'
+}
+recover_verify() {
+    [[ -e $journal ]] || return 0
+    # A live transaction validates its trial/rollback worker itself; its parent
+    # holds admission exclusively while systemd invokes this post-start helper.
+    local pid boot start actual
+    pid=$(jq -er .pid "$journal")
+    boot=$(jq -er .boot "$journal")
+    start=$(jq -er .start "$journal")
+    actual=$(sed -E 's/^.*\) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}' || true)
+    if [[ $boot == "$(cat /proc/sys/kernel/random/boot_id)" && $actual == "$start" ]]; then return 0; fi
+    exec 8<"$run_dir/build-admission.lock"
+    flock -w 30 8
+    if [[ $(worker) != "$(jq -er .worker "$journal")" ]]; then
+        status blocked 'Previous worker could not be verified; recovery journal retained'
+        return 1
+    fi
     rm -f "$journal" "$run_dir/migration-pending"
     sync -f "$state"
-    status rolled-back 'Recovered the previous configuration after an interrupted migration'
+    status rolled-back 'Previous worker verified after interrupted migration recovery'
 }
 clients_compatible() {
     local ids id metadata
@@ -99,6 +118,7 @@ clients_compatible() {
     done
 }
 drained() {
+    [[ ! -e $run_dir/migration-pending && ! -e $journal ]] || return 1
     clients_compatible || return 1
     [[ -z $(find "$run_dir/leases" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
     ctl du --format '{{json .}}' | jq -e 'type == "array" and all(.[]; .inUse == false)' >/dev/null
@@ -123,7 +143,11 @@ reconcile() {
     flock -n 7 || return 0
     if [[ -e $journal ]]; then
         recover
+        # The blocker now fences new clients. Drop this descriptor so the
+        # service's post-start verifier can acquire admission independently.
+        exec 8<&-
         systemctl restart verity-buildkit.service
+        recover_verify
     fi
     [[ $(cat "$config_dir/snapshotter-policy.conf") == $'version=1\nsnapshotter=overlayfs' ]] || {
         status blocked 'Unsupported snapshotter policy'; return 1;
@@ -227,7 +251,8 @@ reconcile() {
 case ${1:-} in
     init) init ;;
     recover) recover ;;
+    recover-verify) recover_verify ;;
     reconcile) reconcile ;;
     drained) drained ;;
-    *) echo 'Expected init, recover, drained or reconcile' >&2; exit 2 ;;
+    *) echo 'Expected init, recover, recover-verify, drained or reconcile' >&2; exit 2 ;;
 esac

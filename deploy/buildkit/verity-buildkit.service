@@ -14,6 +14,7 @@ TimeoutStartSec=60
 ExecStartPre=+/usr/local/libexec/verity-buildkit/snapshotter-migrate.sh recover
 ExecStartPre=+/usr/local/libexec/verity-buildkit/network.sh apply
 ExecStart=/usr/local/libexec/verity-buildkit/buildkitd --config /etc/verity-buildkit/buildkitd.toml --otel-socket-path=/run/verity-buildkit/otel.sock
+ExecStartPost=+/usr/local/libexec/verity-buildkit/snapshotter-migrate.sh recover-verify
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=verity-buildkit

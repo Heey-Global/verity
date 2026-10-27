@@ -473,7 +473,8 @@ host allocations.
 A root-only, synced configuration backup and journal under
 `/var/lib/verity/buildkit-snapshotter` protect this configuration transaction.
 Validation failure restores and verifies the prior worker. `ExecStartPre` restores
-an interrupted transaction before the next service start, and the timer recovers
+an interrupted transaction before the next service start; `ExecStartPost` keeps
+the journal and admission blocker until the previous worker is verified. The timer recovers
 an interrupted transaction on the same boot. A failed restoration retains the
 journal and blocks new admissions. This is configuration rollback; daemon metadata
 is shared and it is not a full state backup. Old native state is retained and is
