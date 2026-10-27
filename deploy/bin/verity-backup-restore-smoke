@@ -48,6 +48,7 @@ start_host() {
     [[ $attempt != 120 ]] || { echo 'restore fixture daemon did not start' >&2; exit 1; }
     sleep 0.25
   done
+  inside chmod 0666 "$socket_dir/docker.sock"
   daemon_id=$(inner info --format '{{.ID}}')
   [[ -n $daemon_id && $daemon_id != "$(host_docker info --format '{{.ID}}')" ]]
   [[ $daemon_id = "$(inside docker info --format '{{.ID}}')" ]]
