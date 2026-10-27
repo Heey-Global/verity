@@ -110,6 +110,10 @@ function build(
   const approvals: Harness['approvals'] = [];
   const dispatches: Harness['dispatches'] = [];
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    authorizationSnapshot: async ({ toolName }) =>
+      toolName === 'verity_http_request' || toolName === 'verity_secret_run'
+        ? JSON.stringify({ dopplerProject: 'test-project', dopplerConfig: 'test' })
+        : undefined,
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
       options.vulnerabilityTools === true
