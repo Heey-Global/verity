@@ -106,7 +106,9 @@ it('resumes after database rename without guessing ownership and reauthenticates
     if (text.includes("phase = 'canonicalizing'")) phase = 'canonicalizing';
     if (text.includes('CREATE ROLE verity LOGIN')) verityLogin = true;
     if (text.startsWith('ALTER DATABASE') && text.includes('RENAME TO')) database = 'verity';
-    if (text.startsWith('REASSIGN') && !interrupted) {
+    if (text.startsWith('REASSIGN'))
+      throw new Error('cannot reassign ownership of objects owned by bootstrap role');
+    if (text.includes("set_config('verity.backup_password'") && !interrupted) {
       interrupted = true;
       throw new Error('process interrupted after rename');
     }

@@ -128,7 +128,8 @@ export async function canonicalizeRestoreDatabase(options: {
     const canonical = await open('verity', 'verity');
     try {
       await assertRestoreDatabaseAuthority(canonical, job);
-      await canonical.query('REASSIGN OWNED BY restore TO verity');
+      // The initdb role owns PostgreSQL system objects and cannot be reassigned.
+      // The normal verity superuser can manage application objects; seal the bootstrap login below.
       await canonical.query("SELECT set_config('verity.backup_password', $1, false)", [
         backupPassword,
       ]);
