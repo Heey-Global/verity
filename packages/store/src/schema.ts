@@ -1582,6 +1582,7 @@ export interface Database {
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
+  live_meeting_results: LiveMeetingResultsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
@@ -1734,4 +1735,19 @@ interface LiveMeetingInsightsTable {
   evidence_b: string | null;
   source_path: string | null;
   created_at: number;
+}
+
+interface LiveMeetingResultsTable {
+  filed_revision: number | null;
+  meeting_id: string;
+  revision: number;
+  status: 'working' | 'ready' | 'failed';
+  title: string | null;
+  summary: string | null;
+  decisions_json: string;
+  tasks_json: string;
+  open_questions_json: string;
+  model: string | null;
+  created_at: number;
+  updated_at: number;
 }

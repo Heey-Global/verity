@@ -4670,6 +4670,28 @@ migrations['0168_audit_events'] = {
   },
 };
 
+migrations['0169_live_meeting_results'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table live_meeting_results (
+      meeting_id text primary key references live_meetings(id) on delete cascade,
+      revision bigint not null,
+      status text not null check (status in ('working', 'ready', 'failed')),
+      filed_revision bigint,
+      title text,
+      summary text,
+      decisions_json text not null default '[]',
+      tasks_json text not null default '[]',
+      open_questions_json text not null default '[]',
+      model text,
+      created_at bigint not null,
+      updated_at bigint not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.dropTable('live_meeting_results').execute();
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

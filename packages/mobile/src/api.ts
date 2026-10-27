@@ -2363,6 +2363,33 @@ const liveMeetingInsightSchema = z.object({
     .transform((path) => path ?? null),
   createdAt: z.number(),
 });
+const liveMeetingResultItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  quote: z.string(),
+  speaker: z.number().nullable(),
+  atSeconds: z.number().nullable(),
+});
+export const liveMeetingResultSchema = z.object({
+  meetingId: z.string(),
+  revision: z.number(),
+  status: z.enum(['working', 'ready', 'failed']),
+  title: z.string().nullable(),
+  summary: z.string().nullable(),
+  decisions: z.array(liveMeetingResultItemSchema),
+  tasks: z.array(
+    liveMeetingResultItemSchema.extend({
+      state: z.enum(['proposed', 'added', 'dismissed']),
+      taskId: z.string().nullable(),
+    }),
+  ),
+  openQuestions: z.array(liveMeetingResultItemSchema),
+  model: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+export type LiveMeetingResult = z.infer<typeof liveMeetingResultSchema>;
+
 export type LiveMeeting = z.infer<typeof liveMeetingSchema>;
 export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
@@ -2412,6 +2439,7 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     edits: {
+      title?: string | null;
       speakerNames?: Record<string, string>;
       speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
       speakerMerges?: Record<string, number>;
@@ -2437,6 +2465,43 @@ export class VerityClient {
     this.readListeners.add(listener);
     for (const resource of this.observedReads.values()) listener(resource);
     return () => this.readListeners.delete(listener);
+  }
+
+  async getLiveMeetingResult(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      { method: 'GET' },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async updateLiveMeetingResultTask(
+    sessionId: string,
+    meetingId: string,
+    proposalId: string,
+    body:
+      | { revision: number; state: 'added'; taskId: string }
+      | { revision: number; state: 'dismissed' },
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/tasks/${encodeURIComponent(proposalId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async retryLiveMeetingResult(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/retry`,
+      { method: 'POST' },
+    );
   }
 
   async getLiveMeetingInsights(

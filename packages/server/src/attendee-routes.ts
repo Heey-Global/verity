@@ -4,6 +4,7 @@ import { OnlineMeetingStartError, type AttendeeMeetings } from './attendee-meeti
 
 const params = z.object({ id: z.string(), meetingId: z.string().uuid() });
 const edits = z.object({
+  title: z.string().max(200).nullable().optional(),
   speakerNames: z.record(z.string(), z.string().max(200)).optional(),
   speakerCorrections: z
     .array(
