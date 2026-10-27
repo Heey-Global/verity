@@ -95,7 +95,7 @@ describe.skipIf(!adminUrl)('restored database startup safety', () => {
     } finally {
       await pool.end();
       await migrated.destroy();
-      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      await admin.query(`DROP DATABASE "${name}"`);
       await admin.end();
     }
   });

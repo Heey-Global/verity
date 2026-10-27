@@ -199,7 +199,7 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
             }
           } finally {
             await probe.end();
-            await admin.query(`DROP DATABASE "${probeName}" WITH (FORCE)`);
+            await admin.query(`DROP DATABASE "${probeName}"`);
           }
         },
       };
@@ -222,7 +222,7 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
     } finally {
       await destination?.close();
       await database.end();
-      await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+      await admin.query(`DROP DATABASE "${name}"`);
       await admin.end();
       await rm(root, { recursive: true, force: true });
     }

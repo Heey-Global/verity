@@ -40,11 +40,11 @@ read_state() { if [[ -f $1 ]]; then cat "$1"; fi; }
 stat() { if [[ $1 = -c && $2 = %u ]]; then printf '0\\n'; else command stat "$@"; fi; }
 valid_server_image() { [[ $1 = ghcr.io/heey-global/verity/verity-server@sha256:* ]]; }
 verity_pairing_ipv4_addresses() { printf '192.0.2.1\\n'; }
-STATE_DIR=$1
+STATE_DIR=$VERITY_RESTORE_TEST_STATE
 PROJECT_PATH="$STATE_DIR/compose-project"
 SERVER_REPO=ghcr.io/heey-global/verity/verity-server
 MANAGED_DEPLOYMENT_VOLUME=verity-managed-deployment
-opt_restore=$2
+opt_restore=$VERITY_RESTORE_TEST_SOURCE
 opt_restore_action=trial
 opt_restore_repository=${repository}
 opt_restore_snapshot=7
@@ -58,22 +58,21 @@ opt_project=''
 opt_image=ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}
 opt_tag=latest
 restore_activation=0
-source "$3"
+source "$VERITY_RESTORE_TEST_INSTALLER"
 verity_restore_install
 `;
   try {
-    const child = spawn(
-      '/bin/bash',
-      ['-c', script, 'restore-shell', state, source, resolve('deploy/bin/verity-restore-install')],
-      {
-        env: {
-          ...process.env,
-          PATH: bin + ':' + process.env.PATH,
-          VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
+    const child = spawn('/bin/bash', ['-c', script], {
+      env: {
+        ...process.env,
+        PATH: bin + ':' + process.env.PATH,
+        VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
+        VERITY_RESTORE_TEST_STATE: state,
+        VERITY_RESTORE_TEST_SOURCE: source,
+        VERITY_RESTORE_TEST_INSTALLER: resolve('deploy/bin/verity-restore-install'),
       },
-    );
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
@@ -101,19 +100,15 @@ verity_restore_install
     const before = await readFile(log, 'utf8');
     const mismatch = spawn(
       '/bin/bash',
-      [
-        '-c',
-        script.replace('opt_restore_snapshot=7', 'opt_restore_snapshot=8'),
-        'restore-shell',
-        state,
-        source,
-        resolve('deploy/bin/verity-restore-install'),
-      ],
+      ['-c', script.replace('opt_restore_snapshot=7', 'opt_restore_snapshot=8')],
       {
         env: {
           ...process.env,
           PATH: bin + ':' + process.env.PATH,
           VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
+          VERITY_RESTORE_TEST_STATE: state,
+          VERITY_RESTORE_TEST_SOURCE: source,
+          VERITY_RESTORE_TEST_INSTALLER: resolve('deploy/bin/verity-restore-install'),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       },

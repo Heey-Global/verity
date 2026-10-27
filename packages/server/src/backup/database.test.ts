@@ -9,8 +9,7 @@ afterEach(async () => {
   if (!adminUrl) return;
   const admin = new pg.Pool({ connectionString: adminUrl, max: 1 });
   try {
-    for (const name of names.splice(0))
-      await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    for (const name of names.splice(0)) await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
   } finally {
     await admin.end();
   }
