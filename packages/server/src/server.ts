@@ -374,6 +374,9 @@ import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
+import type { AuditLog } from './audit-log.js';
+import { registerAuditRoutes } from './audit-routes.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
@@ -1416,6 +1419,8 @@ export interface ServerDeps {
   invalidateProjectList?: () => void;
   /** Best-effort image cleanup after a successful project soft-delete. */
   onProjectHidden?: (projectId: string) => Promise<void>;
+  /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
+  audit?: { recorder: AuditRecorder; log: AuditLog } | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -4670,6 +4675,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   });
   registerDiagnosticsMemoryRoute(app);
+  if (deps.audit !== undefined) {
+    registerAuditRoutes(app, {
+      ...deps.audit,
+      sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
+    });
+  }
 
   registerServerUpdateRoutes(app, deps);
 
@@ -7654,6 +7665,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!hidden) {
         return { code: 404, body: { error: `project ${id} not found` } };
       }
+      // Before the image cleanup, so the trail reads deletion first, removals second.
+      await deps.audit?.recorder.projectDeleted({
+        projectId: id,
+        projectLabel: `${project.owner}/${project.repo}`,
+        initiator: { kind: 'user', userId: request.localUserId },
+      });
       try {
         await deps.onProjectHidden?.(id);
       } catch (error) {

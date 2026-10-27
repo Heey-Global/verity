@@ -197,6 +197,9 @@ export interface DockerGcDeps {
   imageReferences?: DerivedImageReferences | undefined;
   /** Post-delete pass: leave containers, volumes and builder cache to scheduled GC. */
   imagesOnly?: boolean;
+  /** Called after a project image is removed, for the audit trail (ADR 0028).
+   *  Release images are housekeeping, not project history, and are not reported. */
+  onProjectImageRemoved?: (image: { ref: string; imageId: string }) => Promise<void>;
   log: DockerGcLogger;
   policy?: Partial<DockerGcPolicy>;
   /** Path whose filesystem free space drives disk-pressure escalation — the
@@ -559,6 +562,9 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
             await docker.removeImage(entry.ref);
             report.imagesRemoved.push(entry.ref);
             report.estimatedImageBytes += entry.size;
+            if (entry.ref.startsWith(DEVCONTAINER_IMAGE_PREFIX)) {
+              await deps.onProjectImageRemoved?.({ ref: entry.ref, imageId: entry.imageId });
+            }
           } catch (err) {
             // Most commonly a 409: a container grabbed the image between the
             // listing and the delete. Next pass re-evaluates.

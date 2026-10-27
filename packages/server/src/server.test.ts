@@ -101,6 +101,8 @@ import {
   SERVER_UPDATE_PUSH_CATEGORY,
 } from './self-update/server-update-notifier.js';
 import { CONTAINER_STOPPED_REASON } from './project-state.js';
+import type { AuditLog } from './audit-log.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import {
   AmbiguousGitPushError,
   DEVCONTAINER_IMAGE_PREFIX,
@@ -14170,6 +14172,41 @@ describe('DELETE /projects/:id', () => {
       }
     },
   );
+
+  it('records the deletion in the audit trail before the image cleanup', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-audit-delete',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'dev-audit-delete',
+      state: 'active',
+    });
+    const order: string[] = [];
+    const projectDeleted = vi.fn(async () => void order.push('audit'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      deprovisioner: fakeDeprovisioner(),
+      onProjectHidden: async () => void order.push('cleanup'),
+      audit: {
+        recorder: { projectDeleted } as unknown as AuditRecorder,
+        log: {} as AuditLog,
+      },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/projects/p-audit-delete' });
+      expect(res.statusCode).toBe(200);
+      expect(projectDeleted).toHaveBeenCalledExactlyOnceWith({
+        projectId: 'p-audit-delete',
+        projectLabel: 'org/repo',
+        initiator: { kind: 'user', userId: null },
+      });
+      expect(order).toEqual(['audit', 'cleanup']);
+    } finally {
+      await a.close();
+    }
+  });
 
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({

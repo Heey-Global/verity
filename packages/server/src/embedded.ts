@@ -3439,7 +3439,8 @@ export async function buildEmbeddedServer(
   // Durable audit trail for project image builds (ADR 0028). The Server generation is
   // read from this container's own label once; outside a managed deployment it is null.
   let auditServer: Promise<AuditServerIdentity> | undefined;
-  const auditRecorder = createAuditRecorder(createPostgresAuditLog(db), {
+  const auditLog = createPostgresAuditLog(db);
+  const auditRecorder = createAuditRecorder(auditLog, {
     server: () =>
       (auditServer ??= (async () => {
         const generation = await (async (): Promise<number | null> => {
@@ -4870,6 +4871,7 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    audit: { recorder: auditRecorder, log: auditLog },
     ...(projectDocker === undefined
       ? {}
       : {
@@ -4880,6 +4882,8 @@ export async function buildEmbeddedServer(
               imageReferences,
               ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
               imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
             });
           },
         }),
@@ -5657,6 +5661,8 @@ export async function buildEmbeddedServer(
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
       imageReferences,
+      onProjectImageRemoved: (image) =>
+        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

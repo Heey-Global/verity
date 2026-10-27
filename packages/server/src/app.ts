@@ -291,6 +291,10 @@ export interface ControlPlaneDeps {
   /** Deprovisioner (concept §19.8, #174). Stops + removes a project container,
    * optionally purges the bind-mount clone. Omit → deprovision route returns 503. */
   deprovisioner?: Deprovisioner | undefined;
+  /** Post-delete image cleanup. Without forwarding, a deleted project's images stayed on disk. */
+  onProjectHidden?: ServerDeps['onProjectHidden'];
+  /** Durable audit trail (ADR 0028). */
+  audit?: ServerDeps['audit'];
   /** Computes whether a running project container should be rebuilt/recreated to
    * pick up the current Verity sandbox/toolkit artifact. */
   sandboxUpdates?: SandboxUpdateChecker | undefined;
@@ -505,6 +509,8 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.projectWorktrees !== undefined ? { projectWorktrees: deps.projectWorktrees } : {}),
     ...(deps.deprovisioner !== undefined ? { deprovisioner: deps.deprovisioner } : {}),
+    ...(deps.onProjectHidden !== undefined ? { onProjectHidden: deps.onProjectHidden } : {}),
+    ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
     ...(deps.sandboxUpdates !== undefined ? { sandboxUpdates: deps.sandboxUpdates } : {}),
     // Factory form: called with the app logger so the sink logs through it.
     conductor: (logger) =>
