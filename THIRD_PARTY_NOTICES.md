@@ -50,7 +50,7 @@ separately by `TRADEMARKS.md`.
 | (MIT OR CC0-1.0) | 1 |
 | (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
-| Apache-2.0 | 58 |
+| Apache-2.0 | 59 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 9 |
@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 68 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1045 |
+| MIT | 1044 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -86,7 +86,7 @@ separately by `TRADEMARKS.md`.
 | @anthropic-ai/claude-agent-sdk-win32-arm64 | SEE LICENSE IN LICENSE.md | [source](https://www.npmjs.com/package/%40anthropic-ai%2Fclaude-agent-sdk-win32-arm64) |
 | @anthropic-ai/claude-agent-sdk-win32-x64 | SEE LICENSE IN LICENSE.md | [source](https://www.npmjs.com/package/%40anthropic-ai%2Fclaude-agent-sdk-win32-x64) |
 | @anthropic-ai/claude-agent-sdk | SEE LICENSE IN README.md | [source](https://www.npmjs.com/package/%40anthropic-ai%2Fclaude-agent-sdk) |
-| @anthropic-ai/sdk | MIT | [source](https://www.npmjs.com/package/%40anthropic-ai%2Fsdk) |
+| @anthropic-ai/sdk | Apache-2.0 | [source](https://www.npmjs.com/package/%40anthropic-ai%2Fsdk) |
 | @babel/code-frame | MIT | [source](https://www.npmjs.com/package/%40babel%2Fcode-frame) |
 | @babel/compat-data | MIT | [source](https://www.npmjs.com/package/%40babel%2Fcompat-data) |
 | @babel/core | MIT | [source](https://www.npmjs.com/package/%40babel%2Fcore) |
