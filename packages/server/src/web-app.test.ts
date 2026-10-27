@@ -49,6 +49,9 @@ describe('web app assets', () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('shared Expo app');
       expect(response.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      // Safari does not include blob URLs in connect-src 'self'. Attachments
+      // fetched from picker/drop object URLs must remain readable under the CSP.
+      expect(response.headers['content-security-policy']).toContain("connect-src 'self' blob:;");
       expect(response.headers['x-content-type-options']).toBe('nosniff');
     }
     expect((await app.inject('/app/bundle.js')).headers['content-type']).toContain('javascript');

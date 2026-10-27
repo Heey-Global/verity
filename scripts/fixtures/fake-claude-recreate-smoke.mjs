@@ -277,7 +277,7 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
           response: {
             subtype: 'success',
             request_id: frame.request_id,
-            response: { title: 'Sandbox recreation smoke' },
+            response: { title: 'Sandbox recreate smoke' },
           },
         });
         receivedTitleRequest = true;

@@ -16,6 +16,9 @@ import {
   verifyAttendeeSignature,
 } from './attendee-client.js';
 
+/** Safe startup guidance that the API may expose without internal error details. */
+export class OnlineMeetingStartError extends Error {}
+
 export interface AttendeeConfig {
   apiKey: string;
   webhookSecret: string;
@@ -245,7 +248,9 @@ export class AttendeeMeetings {
   async start(sessionId: string, meetingUrl: string, listenForVerity: boolean, title?: string) {
     return this.serial(async () => {
       if (!this.options.edge || !this.targetOrigin)
-        throw new Error('Online meetings require an available Uplink webhook connection.');
+        throw new OnlineMeetingStartError(
+          'Online meetings require an available Uplink webhook connection. Check Uplink / Online Sharing and retry.',
+        );
       if (!(await this.options.store.getSession(sessionId))) throw new Error('Session not found.');
       const credentials = await this.options.store.getAttendeeState<AttendeeConfig>('config');
       if (!credentials) throw new Error('Configure Attendee in Connected services first.');
@@ -335,7 +340,7 @@ export class AttendeeMeetings {
           state.credentials = { apiKey: '', webhookSecret: '' };
           state.pin = '';
           await this.publish(state);
-          throw new Error(
+          throw new OnlineMeetingStartError(
             error instanceof AttendeeRequestRejected
               ? `Attendee rejected the meeting request (${error.status}). Check Connected services and the meeting link, then retry.`
               : 'Could not open the Uplink webhook connection. Check Uplink / Online Sharing and retry.',
@@ -348,7 +353,7 @@ export class AttendeeMeetings {
           'Online meeting start did not complete. Provider state will be reconciled; do not start another bot.';
         await this.publish(state);
         // Keep the saved binding: a timed-out bot creation may still deliver its ID.
-        throw new Error(state.error, { cause: error });
+        throw new OnlineMeetingStartError(state.error, { cause: error });
       }
     });
   }

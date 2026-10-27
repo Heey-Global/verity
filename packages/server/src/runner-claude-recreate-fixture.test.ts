@@ -1,7 +1,10 @@
+import { AcpClaudeBackend, nodeSpawner } from '@verity/session';
+import { createTestDb } from '@verity/store/testing';
+import { unexpectedStderrLines } from './runner-claude-live-stderr.js';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -76,7 +79,7 @@ describe('Claude smoke fixture control handshake', () => {
         expect(response.response).toEqual({
           subtype: 'success',
           request_id: 'title-1',
-          response: { title: kind === 'live' ? 'Sandbox live smoke' : 'Sandbox recreation smoke' },
+          response: { title: kind === 'live' ? 'Sandbox live smoke' : 'Sandbox recreate smoke' },
         });
         expect((await next()).type).toBe('assistant');
         if (kind === 'live') {
@@ -108,3 +111,73 @@ describe('Claude smoke fixture control handshake', () => {
     },
   );
 });
+
+it('serves title requests through the pinned ACP adapter before and after transcript restore', async () => {
+  const ctx = await createTestDb();
+  const root = await mkdtemp(join(tmpdir(), 'recreate-acp-'));
+  const worktree = join(root, 'work');
+  const home = join(root, 'claude');
+  await mkdir(worktree);
+  const backend = new AcpClaudeBackend();
+  const env = {
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    HOME: root,
+    CLAUDE_CONFIG_DIR: home,
+    CLAUDE_CODE_EXECUTABLE: resolve('scripts/fixtures/fake-claude-recreate-smoke.mjs'),
+    VERITY_LIVE_SMOKE_WORKTREE: worktree,
+  };
+  try {
+    await ctx.store.createSession({ sessionId: 'recreate', worktree, model: 'smoke' });
+    const options = {
+      store: ctx.store,
+      storeSessionId: 'recreate',
+      worktree,
+      cwd: worktree,
+      model: 'smoke',
+      command: process.execPath,
+      extraArgs: [
+        fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js')),
+      ],
+      spawner: nodeSpawner,
+      env,
+    };
+    const seed = await backend.run({
+      ...options,
+      prompt: 'seed before sandbox recreate',
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(seed.exitCode, seed.stderr).toBe(0);
+    expect(seed.aborted, seed.stderr).toBe(false);
+    expect(seed.sessionId).toBeDefined();
+    expect(unexpectedStderrLines(seed.stderr ?? '')).toEqual([]);
+    const transcriptPath = join(
+      home,
+      'projects',
+      worktree.replaceAll('/', '-'),
+      `${seed.sessionId}.jsonl`,
+    );
+    const transcript = await readFile(transcriptPath, 'utf8');
+    await rm(home, { recursive: true, force: true });
+    await mkdir(join(home, 'projects', worktree.replaceAll('/', '-')), { recursive: true });
+    await writeFile(transcriptPath, transcript);
+    const resumed = await backend.run({
+      ...options,
+      prompt: 'resume after sandbox recreate',
+      resumeSessionId: seed.sessionId!,
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(resumed.exitCode, resumed.stderr).toBe(0);
+    expect(resumed.aborted, resumed.stderr).toBe(false);
+    expect(resumed.sessionId).toBe(seed.sessionId);
+    expect(unexpectedStderrLines(resumed.stderr ?? '')).toEqual([]);
+    const observation = JSON.parse(
+      await readFile(join(worktree, 'recreate-observed.json'), 'utf8'),
+    ) as { restored: string; databaseEnvironment: string[] };
+    expect(observation.restored).toBe(transcript);
+    expect(observation.databaseEnvironment).toEqual([]);
+    expect((await readFile(transcriptPath, 'utf8')).trim().split('\n')).toHaveLength(2);
+  } finally {
+    await ctx.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
