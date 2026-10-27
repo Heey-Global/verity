@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { expect, it } from 'vitest';
+import { devicePairingFromEnv } from '../pairing-env.js';
 import { generateBackupKeys } from './crypto.js';
 import { writeBackupIdentityFixture } from './testing.js';
 import { createRestoreHost } from './restore-host.js';
@@ -87,6 +88,23 @@ it('preserves deployment keys and CA while issuing a new host leaf and installat
     expect(await readFile(join(live, 'pairing-identity.pem'))).toEqual(
       files.get('pairing-identity.pem'),
     );
+    const pairing = await devicePairingFromEnv({
+      env: {
+        VERITY_PAIRING_IDENTITY_KEY_PATH: join(live, 'pairing-identity.pem'),
+        VERITY_PAIRING_CODE_PATH: join(live, 'pairing-code'),
+        VERITY_PAIRING_EXPIRES_AT_PATH: join(live, 'pairing-expires-at'),
+      },
+      pairingRequired: true,
+      verityRoot: live,
+    });
+    expect(pairing).toBeDefined();
+    // Normal startup needs complete material, while recovery must grant no pairing capability.
+    const disabledCode = (await readFile(join(live, 'pairing-code'), 'utf8')).trim();
+    expect(disabledCode).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => pairing!.redeem(disabledCode)).toThrow();
+    expect(Date.parse(await readFile(join(live, 'pairing-expires-at'), 'utf8'))).toBeLessThan(
+      Date.now(),
+    );
     const replacement = {
       ...job,
       id: randomUUID(),
@@ -115,6 +133,19 @@ it('preserves deployment keys and CA while issuing a new host leaf and installat
     expect(await readFile(join(newHost, 'tls-ca-cert.pem'))).not.toEqual(
       files.get('tls-ca-cert.pem'),
     );
+    const newPairing = await devicePairingFromEnv({
+      env: {
+        VERITY_PAIRING_IDENTITY_KEY_PATH: join(newHost, 'pairing-identity.pem'),
+        VERITY_PAIRING_CODE_PATH: join(newHost, 'pairing-code'),
+        VERITY_PAIRING_EXPIRES_AT_PATH: join(newHost, 'pairing-expires-at'),
+      },
+      pairingRequired: true,
+      verityRoot: newHost,
+    });
+    expect(newPairing!.identity()).not.toEqual(pairing!.identity());
+    const newCode = (await readFile(join(newHost, 'pairing-code'), 'utf8')).trim();
+    expect(newCode).not.toBe(disabledCode);
+    expect(() => newPairing!.redeem(newCode)).toThrow();
     ca.fill(0);
   } finally {
     await rm(root, { recursive: true, force: true });

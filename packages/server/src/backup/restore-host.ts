@@ -179,9 +179,14 @@ export function createRestoreHost(options: {
       await chmod(join(root, name), 0o644);
     if (process.getuid?.() === 0) await chown(join(root, 'backup-postgres-password'), uid, gid);
     await save('updater-token', randomBytes(32).toString('hex'));
-    // Pairing remains unavailable in trial; acceptance can create a fresh pairing code later.
+    // Public startup requires complete pairing wiring. An expired random code keeps
+    // recovery closed; a later installer run can explicitly issue a fresh invitation.
+    await save('pairing-code', randomBytes(32).toString('hex'));
+    await save('pairing-expires-at', '1970-01-01T00:00:00.000Z');
     for (const name of [
       'pairing-identity.pem',
+      'pairing-code',
+      'pairing-expires-at',
       'tls-key.pem',
       'tls-cert.pem',
       'tls-ca-cert.pem',

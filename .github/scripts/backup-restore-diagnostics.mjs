@@ -64,6 +64,10 @@ export function formatRestoreLog(contents) {
     ),
   ].slice(0, 8);
   const codes = new Set();
+  // Node's filesystem errors use inspected objects rather than JSON log records.
+  for (const match of text.matchAll(/\bcode:\s*['"]([A-Z0-9_]+)['"]/g)) {
+    if (safeCodes.has(match[1])) codes.add(match[1]);
+  }
   for (const line of text.split('\n')) {
     try {
       const entry = JSON.parse(line);

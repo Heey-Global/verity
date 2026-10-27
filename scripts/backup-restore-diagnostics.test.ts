@@ -43,4 +43,9 @@ it('redacts private activation logs while preserving static readiness failures a
   expect(result).toContain('/app/packages/server/dist/embedded.js:77:2');
   expect(result).toContain('23505');
   expect(formatRestoreLog(secret)).not.toContain(secret);
+  const filesystemFailure = formatRestoreLog(
+    `Error: ${secret} { code: 'ENOENT', path: '${secret}' }`,
+  );
+  expect(filesystemFailure).toContain('ENOENT');
+  expect(filesystemFailure).not.toContain(secret);
 });
