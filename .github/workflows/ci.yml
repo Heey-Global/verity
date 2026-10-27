@@ -1491,6 +1491,17 @@ jobs:
       - name: Load Verity server image into the runner's Docker
         if: matrix.installer == 'compose'
         run: docker load --input "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+      - name: Verify backup Docker capacity and cleanup
+        if: matrix.installer == 'compose'
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_image="$(sed -n 's/^    image: \(postgres:[^ ]*\)$/\1/p' deploy/docker-compose.yml)"
+          docker run --rm --user 0 --entrypoint node \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/.github/scripts/backup-docker-smoke.mjs:/tmp/backup-docker-smoke.mjs:ro" \
+            --env "VERITY_CI_BACKUP_POSTGRES=$postgres_image" \
+            "$VERITY_CI_IMAGE" /tmp/backup-docker-smoke.mjs
       - name: Verify the bundled installer payload
         if: matrix.installer == 'compose'
         run: |

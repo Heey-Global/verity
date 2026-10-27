@@ -45,6 +45,39 @@ const body = (): ServerDeploymentSpecBody => ({
 });
 
 describe('ServerDeploymentSpec', () => {
+  it('accepts backup mounts only as a writable pair while preserving legacy seals', () => {
+    const pair = [
+      {
+        source: { kind: 'bind' as const, path: '/var/lib/verity/backups' },
+        target: '/run/verity-backups',
+        readOnly: false,
+      },
+      {
+        source: { kind: 'bind' as const, path: '/var/lib/verity/backup-identity' },
+        target: '/run/verity-backup-identity',
+        readOnly: false,
+      },
+    ];
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({ ...body(), mounts: [...body().mounts, ...pair] }),
+      ),
+    ).not.toBeNull();
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({ ...body(), mounts: [...body().mounts, pair[0]!] }),
+      ),
+    ).toBeNull();
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({
+          ...body(),
+          mounts: [...body().mounts, ...pair.map((mount) => ({ ...mount, readOnly: true }))],
+        }),
+      ),
+    ).toBeNull();
+  });
+
   it('keeps legacy seals valid and permits only one read-only diagnostic bind', () => {
     const legacy = sealDeploymentSpec(body());
     expect(parseServerDeploymentSpec(legacy)).toEqual(legacy);

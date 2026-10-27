@@ -15,16 +15,18 @@ describe('deployment runtime imports', () => {
       write: false,
     });
     const imports = Object.values(metafile.inputs).flatMap((input) => input.imports);
-    expect(imports).toHaveLength(3);
+    expect(imports).toHaveLength(4);
     // An eager import here loads the server even when a companion mode was selected.
     expect(imports.every((entry) => entry.kind === 'dynamic-import')).toBe(true);
   });
 
-  it.each(['managed-gateway', 'managed-updater'])(
+  it.each(['managed-gateway', 'managed-updater', 'backup/probe-migrate'])(
     '%s does not load the HTTP server or session backends',
     async (mode) => {
       const { metafile } = await build({
-        entryPoints: [`${sourceRoot}/${mode}-main.ts`],
+        entryPoints: [
+          `${sourceRoot}/${mode === 'backup/probe-migrate' ? mode : mode + '-main'}.ts`,
+        ],
         bundle: true,
         platform: 'node',
         format: 'esm',

@@ -597,6 +597,8 @@ async function boundedResponseBytes(res: HttpResponse, limit: number): Promise<B
 
 /** Per-call options for {@link DockerClient.pullImage}. */
 interface PullImageOptions {
+  /** Abort a caller-owned disposable operation, including image download. */
+  signal?: AbortSignal;
   /** Override the client-level `registryAuth` for this single pull. */
   registryAuth?: string;
 }
@@ -1069,7 +1071,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
     const registryAuth = pullOpts?.registryAuth ?? defaultRegistryAuth;
     const init: HttpFetchInit = {
       method: 'POST',
-      signal: AbortSignal.timeout(pullTimeoutMs),
+      signal: pullOpts?.signal
+        ? AbortSignal.any([AbortSignal.timeout(pullTimeoutMs), pullOpts.signal])
+        : AbortSignal.timeout(pullTimeoutMs),
     };
     if (registryAuth !== undefined) {
       // Private-registry auth: base64 JSON {username,password} or identity token.

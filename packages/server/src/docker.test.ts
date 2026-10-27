@@ -2984,3 +2984,22 @@ describe('replaceContainerImage refusal and rollback arms', () => {
     );
   });
 });
+
+it('DockerClient.pullImage honors caller cancellation during a disposable operation', async () => {
+  const controller = new AbortController();
+  const fetch: HttpFetch = async (_url, init) => {
+    const signal = init?.signal;
+    expect(signal).toBeDefined();
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(new Error('aborted'));
+      signal!.addEventListener('abort', abort, { once: true });
+      if (signal!.aborted) abort();
+      controller.abort();
+    });
+    throw new Error('unreachable');
+  };
+  const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+  await expect(
+    docker.pullImage!('postgres:18-alpine', { signal: controller.signal }),
+  ).rejects.toMatchObject({ kind: 'network' });
+});

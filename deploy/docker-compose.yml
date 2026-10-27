@@ -326,6 +326,8 @@ services:
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
       # Only classified host evidence is shared; raw journals stay on the host.
       - ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}:/run/verity-host-diagnostics:ro
+      - ${VERITY_BACKUP_DIR:-/var/lib/verity/backups}:/run/verity-backups
+      - ${VERITY_BACKUP_IDENTITY_DIR:-/var/lib/verity/backup-identity}:/run/verity-backup-identity
 
     # Grant the non-root `node` user access to the mounted socket without running
     # the container as root. Set this to the GID that owns /var/run/docker.sock
@@ -553,6 +555,8 @@ services:
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
       VERITY_HOST_DIAGNOSTIC_DIR: ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}
+      VERITY_BACKUP_DIR: ${VERITY_BACKUP_DIR:-}
+      VERITY_BACKUP_IDENTITY_DIR: ${VERITY_BACKUP_IDENTITY_DIR:-}
       VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment

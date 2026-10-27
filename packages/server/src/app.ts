@@ -45,6 +45,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  backup?: ServerDeps['backup'];
   eventStore: EventStore;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
    * the route layer; provisioning the same folder does not make it visible to
@@ -322,6 +323,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   const sessionChanges = createSessionChangeFeed();
   return buildServer({
     eventStore: deps.eventStore,
+    ...(deps.backup ? { backup: deps.backup } : {}),
     sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined

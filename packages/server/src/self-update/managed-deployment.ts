@@ -364,6 +364,70 @@ export async function migrateManagedHostDiagnostics(options: {
   }
 }
 
+/** Installer-only capability migration; old deployments remain readable without these mounts. */
+export async function migrateManagedBackupMounts(options: {
+  root: string;
+  deploymentId: string;
+  image: string;
+  backupPath: string;
+  identityPath: string;
+}): Promise<ManagedDeploymentState> {
+  const root = await openUpdaterOwnedRoot(options.root);
+  try {
+    const pinnedRoot = `/proc/self/fd/${root.fd}`;
+    const existing = await readManagedDeploymentFiles(pinnedRoot);
+    if (!existing.managed) throw new Error(existing.reason);
+    if (
+      existing.spec.deploymentId !== options.deploymentId ||
+      existing.spec.image !== options.image
+    )
+      throw new Error('Managed authority changed before backup migration');
+    const requested = [
+      {
+        source: { kind: 'bind' as const, path: options.backupPath },
+        target: '/run/verity-backups',
+        readOnly: false,
+      },
+      {
+        source: { kind: 'bind' as const, path: options.identityPath },
+        target: '/run/verity-backup-identity',
+        readOnly: false,
+      },
+    ];
+    for (const mount of requested) {
+      const current = existing.spec.mounts.find((item) => item.target === mount.target);
+      if (
+        current &&
+        (current.source.kind !== 'bind' ||
+          current.source.path !== mount.source.path ||
+          current.readOnly)
+      )
+        throw new Error('Backup mount differs from sealed authority');
+    }
+    if (
+      requested.every((mount) =>
+        existing.spec.mounts.some((current) => current.target === mount.target),
+      )
+    )
+      return existing;
+    const body: ServerDeploymentSpecBody & { checksum?: string } = { ...existing.spec };
+    delete body.checksum;
+    const updated = parseServerDeploymentSpec(
+      sealDeploymentSpec({ ...body, mounts: [...body.mounts, ...requested] }),
+    );
+    if (updated === null) throw new Error('Backup deployment mounts are not allowlisted');
+    const backupName = 'deployment-spec.before-backups.json';
+    const backup = await readJson(join(pinnedRoot, backupName));
+    if (backup === undefined) await writeAtomicExclusive(pinnedRoot, backupName, existing.spec);
+    else if (parseServerDeploymentSpec(backup)?.deploymentId !== existing.spec.deploymentId)
+      throw new Error('Backup authority checkpoint is invalid');
+    await writeAtomic(pinnedRoot, MANAGED_DEPLOYMENT_SPEC_FILE, updated);
+    return { managed: true, marker: existing.marker, spec: updated };
+  } finally {
+    await root.close();
+  }
+}
+
 /**
  * Move the sealed authority to a new image, changing nothing else.
  *

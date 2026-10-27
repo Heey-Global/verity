@@ -637,6 +637,24 @@ export interface SecretKeyMetaTable {
  * NOT a secret column — validated while the store is SEALED, like
  * {@link SecretKeyMetaTable}. `id` is an opaque public handle for revocation.
  */
+interface BackupGitRepositoriesTable {
+  project_id: string;
+  path: string;
+  repo_key: string;
+}
+interface BackupUnassignedGitRepositoriesTable {
+  path: string;
+  repo_key: string;
+}
+interface BackupPolicyTable {
+  id: number;
+  journal_enabled: boolean;
+}
+interface BackupRevocationOutboxTable {
+  id: string;
+  device_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
 export interface AuthTokenTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null | undefined>;
   id: string;
@@ -1600,6 +1618,10 @@ export interface Database {
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
+  backup_policy: BackupPolicyTable;
+  backup_revocation_outbox: BackupRevocationOutboxTable;
+  backup_git_repositories: BackupGitRepositoriesTable;
+  backup_unassigned_git_repositories: BackupUnassignedGitRepositoriesTable;
   device_push_tokens: DevicePushTokensTable;
   push_receipts: PushReceiptsTable;
   session_backend_state: SessionBackendStateTable;

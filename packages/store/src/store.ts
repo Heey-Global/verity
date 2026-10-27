@@ -1226,6 +1226,23 @@ const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
+  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
+
+  /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
+  subscribeBackupRevocations(listener: () => Promise<void>): () => void {
+    this.backupRevocationListeners.add(listener);
+    return () => {
+      this.backupRevocationListeners.delete(listener);
+    };
+  }
+
+  private async notifyBackupRevocations(): Promise<void> {
+    // A destination outage must not undo or misreport an already committed token deletion.
+    await Promise.allSettled(
+      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
+    );
+  }
+
   /** PGlite does not enforce table-lock conflicts across its concurrent async
    * transactions, so serialize this rare dual-unique mutation in-process too.
    * The SQL table lock below remains the cross-process Postgres guard. */
@@ -8131,14 +8148,120 @@ export class EventStore implements EventSink {
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
   async deleteAuthToken(id: string): Promise<boolean> {
-    const res = await this.db.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
-    return (res?.numDeletedRows ?? 0n) > 0n;
+    const deleted = await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in row exclusive mode`.execute(trx);
+      const record = await trx
+        .selectFrom('auth_tokens')
+        .select('id')
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!record) return false;
+      if (policy?.journal_enabled)
+        await trx
+          .insertInto('backup_revocation_outbox')
+          .values({ id: randomUUID(), device_id: id })
+          .execute();
+      const res = await trx.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
+      return (res?.numDeletedRows ?? 0n) > 0n;
+    });
+    if (deleted) await this.notifyBackupRevocations();
+    return deleted;
   }
 
   /** Revoke every device token (e.g. on GitHub disconnect / master-password
    *  change) — forces all devices to re-authenticate. */
   async deleteAllAuthTokens(): Promise<void> {
-    await this.db.deleteFrom('auth_tokens').execute();
+    await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in share row exclusive mode`.execute(trx);
+      if (policy?.journal_enabled) {
+        const devices = await trx.selectFrom('auth_tokens').select('id').forUpdate().execute();
+        for (const device of devices)
+          await trx
+            .insertInto('backup_revocation_outbox')
+            .values({ id: randomUUID(), device_id: device.id })
+            .execute();
+      }
+      await trx.deleteFrom('auth_tokens').execute();
+    });
+    await this.notifyBackupRevocations();
+  }
+
+  /** Runtime backup policy is disabled explicitly by restore before any token cleanup. */
+  async setBackupJournaling(enabled: boolean): Promise<void> {
+    await this.db
+      .updateTable('backup_policy')
+      .set({ journal_enabled: enabled })
+      .where('id', '=', 1)
+      .execute();
+  }
+
+  async listBackupRevocations(): Promise<{ id: string; deviceId: string; revokedAt: string }[]> {
+    const rows = await this.db
+      .selectFrom('backup_revocation_outbox')
+      .selectAll()
+      .orderBy('created_at')
+      .limit(1000)
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      deviceId: row.device_id,
+      revokedAt: row.created_at.toISOString(),
+    }));
+  }
+
+  async acknowledgeBackupRevocation(id: string): Promise<void> {
+    await this.db.deleteFrom('backup_revocation_outbox').where('id', '=', id).execute();
+  }
+
+  /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
+  async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
+    if (
+      !path ||
+      path.startsWith('/') ||
+      path.includes('\\') ||
+      path.split('/').some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid backup Git bookkeeping path');
+    const key = randomUUID();
+    if (projectId === null) {
+      await this.db
+        .insertInto('backup_unassigned_git_repositories')
+        .values({ path, repo_key: key })
+        .onConflict((conflict) => conflict.column('path').doNothing())
+        .execute();
+      return (
+        await this.db
+          .selectFrom('backup_unassigned_git_repositories')
+          .select('repo_key')
+          .where('path', '=', path)
+          .executeTakeFirstOrThrow()
+      ).repo_key;
+    }
+    await this.db
+      .insertInto('backup_git_repositories')
+      .values({ project_id: projectId, path, repo_key: key })
+      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
+      .execute();
+    const row = await this.db
+      .selectFrom('backup_git_repositories')
+      .select('repo_key')
+      .where('project_id', '=', projectId)
+      .where('path', '=', path)
+      .executeTakeFirstOrThrow();
+    return row.repo_key;
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────

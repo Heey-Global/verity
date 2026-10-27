@@ -55,13 +55,13 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 7 |
 | BSD-2-Clause | 23 |
-| BSD-3-Clause | 26 |
+| BSD-3-Clause | 27 |
 | CC-BY-3.0 | 1 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1041 |
+| MIT | 1048 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -344,6 +344,10 @@ separately by `TRADEMARKS.md`.
 | @napi-rs/canvas-win32-x64-msvc | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-x64-msvc) |
 | @napi-rs/canvas | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas) |
 | @napi-rs/wasm-runtime | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fwasm-runtime) |
+| @noble/ciphers | MIT | [source](https://www.npmjs.com/package/%40noble%2Fciphers) |
+| @noble/curves | MIT | [source](https://www.npmjs.com/package/%40noble%2Fcurves) |
+| @noble/hashes | MIT | [source](https://www.npmjs.com/package/%40noble%2Fhashes) |
+| @noble/post-quantum | MIT | [source](https://www.npmjs.com/package/%40noble%2Fpost-quantum) |
 | @nodable/entities | MIT | [source](https://www.npmjs.com/package/%40nodable%2Fentities) |
 | @npmcli/agent | ISC | [source](https://www.npmjs.com/package/%40npmcli%2Fagent) |
 | @npmcli/fs | ISC | [source](https://www.npmjs.com/package/%40npmcli%2Ffs) |
@@ -456,6 +460,7 @@ separately by `TRADEMARKS.md`.
 | @rolldown/binding-win32-arm64-msvc | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-win32-arm64-msvc) |
 | @rolldown/binding-win32-x64-msvc | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-win32-x64-msvc) |
 | @rolldown/pluginutils | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fpluginutils) |
+| @scure/base | MIT | [source](https://www.npmjs.com/package/%40scure%2Fbase) |
 | @shopify/flash-list | MIT | [source](https://www.npmjs.com/package/%40shopify%2Fflash-list) |
 | @sigstore/bundle | Apache-2.0 | [source](https://www.npmjs.com/package/%40sigstore%2Fbundle) |
 | @sigstore/core | Apache-2.0 | [source](https://www.npmjs.com/package/%40sigstore%2Fcore) |
@@ -493,6 +498,7 @@ separately by `TRADEMARKS.md`.
 | @types/node | MIT | [source](https://www.npmjs.com/package/%40types%2Fnode) |
 | @types/normalize-package-data | MIT | [source](https://www.npmjs.com/package/%40types%2Fnormalize-package-data) |
 | @types/npm-package-arg | MIT | [source](https://www.npmjs.com/package/%40types%2Fnpm-package-arg) |
+| @types/pg-copy-streams | MIT | [source](https://www.npmjs.com/package/%40types%2Fpg-copy-streams) |
 | @types/pg | MIT | [source](https://www.npmjs.com/package/%40types%2Fpg) |
 | @types/qrcode | MIT | [source](https://www.npmjs.com/package/%40types%2Fqrcode) |
 | @types/react-test-renderer | MIT | [source](https://www.npmjs.com/package/%40types%2Freact-test-renderer) |
@@ -530,6 +536,7 @@ separately by `TRADEMARKS.md`.
 | acorn-jsx | MIT | [source](https://www.npmjs.com/package/acorn-jsx) |
 | acorn-walk | MIT | [source](https://www.npmjs.com/package/acorn-walk) |
 | acorn | MIT | [source](https://www.npmjs.com/package/acorn) |
+| age-encryption | BSD-3-Clause | [source](https://www.npmjs.com/package/age-encryption) |
 | agent-base | MIT | [source](https://www.npmjs.com/package/agent-base) |
 | agent-cli-detector | MIT | [source](https://www.npmjs.com/package/agent-cli-detector) |
 | ajv-formats | MIT | [source](https://www.npmjs.com/package/ajv-formats) |
@@ -1058,6 +1065,7 @@ separately by `TRADEMARKS.md`.
 | pdfjs-dist | Apache-2.0 | [source](https://www.npmjs.com/package/pdfjs-dist) |
 | pg-cloudflare | MIT | [source](https://www.npmjs.com/package/pg-cloudflare) |
 | pg-connection-string | MIT | [source](https://www.npmjs.com/package/pg-connection-string) |
+| pg-copy-streams | MIT | [source](https://www.npmjs.com/package/pg-copy-streams) |
 | pg-int8 | ISC | [source](https://www.npmjs.com/package/pg-int8) |
 | pg-pool | MIT | [source](https://www.npmjs.com/package/pg-pool) |
 | pg-protocol | MIT | [source](https://www.npmjs.com/package/pg-protocol) |

@@ -145,7 +145,15 @@ function makeHost({
   ]) {
     writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
   }
+  for (const helper of ['verity-backup-prerequisites', 'verity-backup-identity']) {
+    writeFileSync(
+      join(checkout, 'deploy', 'host', helper),
+      readFileSync(join(here, '..', 'host', helper)),
+    );
+  }
   const hostRuntime = {
+    VERITY_BACKUP_DIR: join(root, 'backups'),
+    VERITY_BACKUP_IDENTITY_DIR: join(root, 'backup-identity'),
     VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
     VERITY_HOST_DIAGNOSTIC_DIR: join(root, 'host-diagnostics'),
@@ -188,7 +196,7 @@ printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.1
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_BACKUP_DIR VERITY_BACKUP_IDENTITY_DIR VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -438,10 +446,32 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.throws(() => stateFile(host, 'runner-supervisor'));
     assert.match(stateFile(host, 'postgres-password'), /^[a-f0-9]{64}$/);
     assert.equal(statSync(join(host.stateDir, 'postgres-password')).mode & 0o777, 0o600);
+    const installationId = stateFile(host, 'installation-id');
+    assert.match(installationId, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+    assert.notEqual(installationId, stateFile(host, 'deployment-id'));
+    const backupPassword = stateFile(host, 'backup-postgres-password');
+    assert.match(backupPassword, /^[a-f0-9]{64}$/);
+    assert.equal(statSync(join(host.stateDir, 'backup-postgres-password')).mode & 0o777, 0o600);
+    assert.match(
+      readFileSync(
+        join(host.hostRuntime.VERITY_BACKUP_DIR, '.verity-backup-target'),
+        'utf8',
+      ).trim(),
+      /^[a-f0-9-]{36}$/,
+    );
+    assert.equal(
+      statSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC, 'verity-backup-identity')).mode &
+        0o777,
+      0o755,
+    );
+    assert.equal(readFileSync(host.dockerLog, 'utf8').includes(backupPassword), false);
+    assert.equal(result.output.includes(backupPassword), false);
 
     const env = handoverEnv(host);
     assert.equal(env.argv, 'managed-up');
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_A);
+    assert.equal(env.VERITY_BACKUP_DIR, host.hostRuntime.VERITY_BACKUP_DIR);
+    assert.equal(env.VERITY_BACKUP_IDENTITY_DIR, host.hostRuntime.VERITY_BACKUP_IDENTITY_DIR);
     assert.equal(env.VERITY_GVISOR_SMOKE_IMAGE, DIGEST_A);
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_POSTGRES_PASSWORD, stateFile(host, 'postgres-password'));

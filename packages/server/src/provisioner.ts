@@ -1,3 +1,4 @@
+import { backupLifecycle } from './backup/lifecycle.js';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import {
   createDevcontainerBuildSnapshot,
@@ -6410,7 +6411,9 @@ export class DeprovisionerImpl implements Deprovisioner {
       throw new ProvisioningError('project gone mid-deprovision');
     }
     const teardown = () => this.deprovisionProject(projectId, project, opts);
-    return this.withTeardown ? this.withTeardown(project, teardown) : teardown();
+    return backupLifecycle.mutate([projectId], () =>
+      this.withTeardown ? this.withTeardown(project, teardown) : teardown(),
+    );
   }
 
   private async deprovisionProject(

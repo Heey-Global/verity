@@ -4576,6 +4576,31 @@ migrations['0163_vulnerability_actions'] = {
   },
 };
 
+migrations['0164_backup_foundation'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
+      db,
+    );
+    await sql`insert into backup_policy(id) values (1)`.execute(db);
+    await sql`create table backup_revocation_outbox (
+      id text primary key, device_id text not null, created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table backup_git_repositories (
+      project_id text not null references projects(id) on delete cascade,
+      path text not null, repo_key text not null unique, primary key (project_id, path)
+    )`.execute(db);
+    await sql`create table backup_unassigned_git_repositories (
+      path text primary key, repo_key text not null unique
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table backup_unassigned_git_repositories`.execute(db);
+    await sql`drop table backup_git_repositories`.execute(db);
+    await sql`drop table backup_revocation_outbox`.execute(db);
+    await sql`drop table backup_policy`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

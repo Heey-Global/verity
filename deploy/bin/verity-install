@@ -32,6 +32,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
 source "$script_dir/verity-pairing-addresses"
 
+opt_backup_dir=''
 opt_image=''
 opt_deployment_id=''
 opt_tag='latest'
@@ -98,6 +99,7 @@ Options:
                        first install; NEVER changes afterwards.
   --project NAME       Compose project name. Detected from an existing install,
                        then persisted; defaults to "verity" on a fresh host.
+  --backup-dir <path>  Set the dedicated local backup directory (default /var/lib/verity/backups).
   --check              Run the preflight and print what would be installed, then
                        stop without touching the deployment.
   --update             Update an existing, not-yet-paired installation to --image
@@ -123,6 +125,8 @@ while [ "$#" -gt 0 ]; do
     --deployment-id=*) opt_deployment_id="${1#--deployment-id=}"; shift ;;
     --project) [ "$#" -ge 2 ] || die 'option --project needs a value'; opt_project="$2"; shift 2 ;;
     --project=*) opt_project="${1#--project=}"; shift ;;
+    --backup-dir) [ "$#" -ge 2 ] || die 'option --backup-dir needs a value'; opt_backup_dir="$2"; shift 2 ;;
+    --backup-dir=*) opt_backup_dir="${1#--backup-dir=}"; shift ;;
     --check) opt_check=1; shift ;;
     --update) opt_update=1; shift ;;
     --reinstall) opt_reinstall=1; shift ;;
@@ -894,6 +898,12 @@ printf '%s\n' "$deployment_id" | write_state "$ID_PATH" 0644
 printf '%s\n' "$compose_project" | write_state "$PROJECT_PATH" 0644
 printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
 
+# Provision optional backup capability only through this privileged installer.
+source "$repo_root/deploy/host/verity-backup-prerequisites"
+backup_dir="${opt_backup_dir:-$(read_state "$STATE_DIR/backup-dir")}"
+backup_dir="${backup_dir:-${VERITY_BACKUP_DIR:-/var/lib/verity/backups}}"
+setup_backup_prerequisites "$backup_dir" "$server_image"
+
 # Stable server identity and TLS keys live beside the installer state. Each run
 # rotates only the short-lived, one-time pairing capability shown below.
 heading 'Device pairing'
@@ -1003,6 +1013,8 @@ VERITY_RUNNER_SUPERVISOR=1 \
 VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
+VERITY_BACKUP_DIR="$VERITY_BACKUP_DIR" \
+VERITY_BACKUP_IDENTITY_DIR="$VERITY_BACKUP_IDENTITY_DIR" \
 VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM="$opt_advance_unpaired_from" \
 VERITY_GVISOR_SMOKE_IMAGE="$server_image" \
 COMPOSE_PROJECT_NAME="$compose_project" \
@@ -1030,6 +1042,9 @@ docker exec "$postgres_container" psql -v ON_ERROR_STOP=1 -U verity -d verity \
 docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
   psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U verity -d verity -c 'SELECT 1' >/dev/null \
   || die 'PostgreSQL rejected the generated credential over TCP after the SCRAM migration; run this installer again after correcting PostgreSQL'
+
+configure_backup_database_role "$postgres_container" "$VERITY_BACKUP_POSTGRES_PASSWORD"
+unset VERITY_BACKUP_POSTGRES_PASSWORD
 
 heading "$([ "$first_install" = 1 ] && printf 'Pair your device' || printf 'Optional: pair another device')"
 if [ "$first_install" = 1 ]; then
