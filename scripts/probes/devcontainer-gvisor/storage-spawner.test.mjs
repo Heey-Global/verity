@@ -88,6 +88,34 @@ console.log('fixture build');
         assert(samples.some((sample) => sample.phase === 'import'));
         assert(samples.every((sample) => sample.localAvailableBytes > 0));
       }
+      writeFileSync(
+        join(bin, 'devcontainer'),
+        `#!/usr/bin/env node
+process.stderr.write('runsc-real unavailable\\n' + 'CLI stack detail\\n'.repeat(400));
+process.exit(1);
+`,
+        { mode: 0o755 },
+      );
+      const failure = spawnSync(
+        process.execPath,
+        [new URL('./server-spawner.mjs', import.meta.url).pathname, root, 'fixture:failure'],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            PROBE_STORAGE_ROOT: join(root, 'owned'),
+            PROBE_STORAGE_REPORT: report,
+            PROBE_EVIDENCE: evidence,
+            VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: 'unix:///fixture/buildkit.sock',
+          },
+          encoding: 'utf8',
+          timeout: 15_000,
+        },
+      );
+      assert.equal(failure.status, 1);
+      assert.match(failure.stderr, /runsc-real unavailable/);
+      assert.match(failure.stderr, /Devcontainer build\/export failed/);
+      assert.deepEqual(readdirSync(join(root, 'owned')), []);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

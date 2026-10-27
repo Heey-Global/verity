@@ -66,6 +66,10 @@ try {
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
 } catch (error) {
+  // The public provisioning error is intentionally bounded. CI needs the
+  // captured command output too, so a CLI stack cannot hide the worker failure.
+  if (typeof error.cause?.stdout === 'string') process.stdout.write(error.cause.stdout);
+  if (typeof error.cause?.stderr === 'string') process.stderr.write(error.cause.stderr);
   process.stderr.write(String(error));
   process.exitCode = 1;
 } finally {
