@@ -128,12 +128,64 @@ if (resumed) {
   });
 }
 
+const emitTurn = () => {
+  emit({
+    type: 'assistant',
+    message: {
+      id: resumed ? 'after-recreate' : 'before-recreate',
+      type: 'message',
+      role: 'assistant',
+      model: 'smoke',
+      content: [
+        {
+          type: 'text',
+          text: resumed ? 'after sandbox recreate' : 'before sandbox recreate',
+        },
+      ],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 3,
+      },
+    },
+    parent_tool_use_id: null,
+    uuid: resumed ? '00000000-0000-4000-8000-000000000013' : '00000000-0000-4000-8000-000000000012',
+    session_id: sessionId,
+  });
+  emit({
+    type: 'result',
+    subtype: 'success',
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: resumed ? 'after sandbox recreate' : 'before sandbox recreate',
+    stop_reason: 'end_turn',
+    total_cost_usd: 0,
+    usage: {
+      input_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 3,
+    },
+    modelUsage: {},
+    permission_denials: [],
+    uuid: resumed ? '00000000-0000-4000-8000-000000000015' : '00000000-0000-4000-8000-000000000014',
+    session_id: sessionId,
+  });
+};
+
 // claude-agent-acp queues session/prompt until the SDK-side Claude process has
 // completed its initialize exchange and received the stream-json user frame.
 if (process.argv.includes('--input-format') && process.argv.includes('stream-json')) {
   process.stdin.setEncoding('utf8');
   let bufferedInput = '';
   let receivedUserPrompt = false;
+  let answeredTitle = false;
+  let completed = false;
   for await (const chunk of process.stdin) {
     if (typeof chunk !== 'string') continue;
     bufferedInput += chunk;
@@ -214,59 +266,34 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             },
           },
         });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'generate_session_title'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: { title: 'Sandbox recreate smoke' },
+          },
+        });
+        answeredTitle = true;
       } else if (frame.type === 'user') {
         receivedUserPrompt = true;
-        break;
+      }
+      // ACP requests a title asynchronously after queueing these smoke prompts.
+      // Ending the query first rejects that pending request during SDK teardown.
+      if (receivedUserPrompt && answeredTitle && !completed) {
+        completed = true;
+        emitTurn();
       }
     }
-    if (receivedUserPrompt) break;
   }
   if (!receivedUserPrompt) throw new Error('stream-json input ended before a user prompt');
+  if (!completed) throw new Error('stream-json input ended before the title request');
+} else {
+  emitTurn();
 }
-emit({
-  type: 'assistant',
-  message: {
-    id: resumed ? 'after-recreate' : 'before-recreate',
-    type: 'message',
-    role: 'assistant',
-    model: 'smoke',
-    content: [
-      {
-        type: 'text',
-        text: resumed ? 'after sandbox recreate' : 'before sandbox recreate',
-      },
-    ],
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: {
-      input_tokens: 1,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      output_tokens: 3,
-    },
-  },
-  parent_tool_use_id: null,
-  uuid: resumed ? '00000000-0000-4000-8000-000000000013' : '00000000-0000-4000-8000-000000000012',
-  session_id: sessionId,
-});
-emit({
-  type: 'result',
-  subtype: 'success',
-  duration_ms: 1,
-  duration_api_ms: 1,
-  is_error: false,
-  num_turns: 1,
-  result: resumed ? 'after sandbox recreate' : 'before sandbox recreate',
-  stop_reason: 'end_turn',
-  total_cost_usd: 0,
-  usage: {
-    input_tokens: 1,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
-    output_tokens: 3,
-  },
-  modelUsage: {},
-  permission_denials: [],
-  uuid: resumed ? '00000000-0000-4000-8000-000000000015' : '00000000-0000-4000-8000-000000000014',
-  session_id: sessionId,
-});
