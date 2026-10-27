@@ -180,7 +180,7 @@ fi
 rules_after_second=$(count_subnet_rules)
 run_probe scripts/probes/devcontainer-gvisor/storage-lifecycle.mjs "$work" "$name:positive" \
     > "$PROBE_EVIDENCE/storage-lifecycle.log" 2>&1
-run_probe scripts/probes/devcontainer-gvisor/storage-import-cancel.mjs "$work" "$name:positive" \
+PROBE_STORAGE_ROOT_OVERRIDE="$work/import-cancel-build-storage" run_probe scripts/probes/devcontainer-gvisor/storage-import-cancel.mjs "$work" "$name:positive" \
     > "$PROBE_EVIDENCE/import-cancellation.log" 2>&1
 comparison_work=$(mktemp -d "$RUNNER_TEMP/verity-storage-comparison.XXXXXX")
 sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" PROBE_EVIDENCE="$PROBE_EVIDENCE" \

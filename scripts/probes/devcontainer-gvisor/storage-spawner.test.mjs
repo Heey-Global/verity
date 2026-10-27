@@ -166,3 +166,18 @@ process.exit(1);
     }
   },
 );
+
+test('real Engine cancellation probe uses production remote tracking and a separate reservation root', () => {
+  const cancellation = readFileSync(
+    new URL('./storage-import-cancel.mjs', import.meta.url),
+    'utf8',
+  );
+  const host = readFileSync(new URL('./host-service.sh', import.meta.url), 'utf8');
+  assert.match(cancellation, /signal: abort.signal,\s+remoteOperation: 'image-import'/);
+  assert.match(cancellation, /assert.equal\(lease.retainArtifacts, true\)/);
+  assert.match(
+    cancellation,
+    /assert.throws\(\(\) => storage.acquire\(\), \/termination is unconfirmed\//,
+  );
+  assert.match(host, /PROBE_STORAGE_ROOT_OVERRIDE="\$work\/import-cancel-build-storage" run_probe/);
+});

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer, request } from 'node:http';
 import { once } from 'node:events';
 import { join } from 'node:path';
-import { readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BuildStorage } from '../../../packages/server/dist/build-storage.js';
 
@@ -13,11 +13,12 @@ assert.equal(process.env.GITHUB_ACTIONS, 'true');
 const [workspace, source] = process.argv.slice(2);
 assert(workspace && source?.startsWith('verity-host-builder-'));
 const { AbortController } = globalThis;
-const lease = new BuildStorage(process.env.PROBE_STORAGE_ROOT, process.env.PROBE_STORAGE_REPORT, {
+const storage = new BuildStorage(process.env.PROBE_STORAGE_ROOT, process.env.PROBE_STORAGE_REPORT, {
   estimateBytes: 4 * 1024 ** 3,
   reserveBytes: 2 * 1024 ** 3,
   reserveInodes: 100_000,
-}).acquire();
+});
+const lease = storage.acquire();
 const alias = `${source}-cancel-import`;
 const archive = join(lease.directory, 'image.tar');
 // Stay below Unix socket path limits independently of the workspace path.
@@ -103,6 +104,7 @@ try {
     .run('docker', ['load', '--input', archive], {
       env: { PATH: process.env.PATH, DOCKER_HOST: `unix://${socket}` },
       signal: abort.signal,
+      remoteOperation: 'image-import',
       timeout: 30_000,
       maxBuffer: 1024 ** 2,
     })
@@ -125,26 +127,37 @@ try {
   await delay(1000);
   assert.throws(() => cli('image', 'inspect', alias));
   cli('image', 'inspect', source);
-  // A later valid import must still work using the same reservation mechanism.
-  await lease.run('docker', ['load', '--input', archive], {
-    env: { PATH: process.env.PATH, DOCKER_HOST: 'unix:///var/run/docker.sock' },
-    timeout: 30_000,
-    maxBuffer: 1024 ** 2,
-  });
-  cli('image', 'inspect', alias);
-  cli('image', 'rm', alias);
+  // Production cannot infer completion from this test transport's observation.
+  // Keep the reservation even after the test saw a terminal partial-input error.
+  assert.equal(lease.retainArtifacts, true);
+  assert(existsSync(archive));
+  assert(existsSync(join(lease.directory, 'remote-operation.json')));
+  await assert.rejects(
+    lease.run('docker', ['load', '--input', archive], {
+      env: { PATH: process.env.PATH, DOCKER_HOST: 'unix:///var/run/docker.sock' },
+      remoteOperation: 'image-import',
+      timeout: 30_000,
+      maxBuffer: 1024 ** 2,
+    }),
+    /termination is unconfirmed/,
+  );
+  lease.dispose();
+  assert.throws(() => storage.acquire(), /termination is unconfirmed/);
   writeFileSync(
     join(process.env.PROBE_EVIDENCE, 'import-cancellation.json'),
     JSON.stringify({
       schemaVersion: 1,
       uploadedBytes,
       response,
-      subsequentImport: 'success',
+      reservation: 'retained',
+      subsequentImport: 'blocked-pending-reconciliation',
       limitation:
         'Controlled partial-input transport; direct-disconnect daemon cleanup is not established',
     }),
   );
-  console.log('PASS: cancelled load client, terminal partial-input response, later valid import');
+  console.log(
+    'PASS: cancelled real load client; uncertain remote reservation retained and reuse blocked',
+  );
 } finally {
   abort.abort();
   upload?.incoming.destroy();
@@ -158,5 +171,10 @@ try {
     /* Alias may never have been imported. */
   }
   lease.dispose();
-  assert.deepEqual(readdirSync(process.env.PROBE_STORAGE_ROOT), []);
+  // This dedicated disposable root remains intact as evidence; other probes
+  // use independent roots instead of pretending cancellation released it.
+  if (lease.retainArtifacts)
+    assert.deepEqual(readdirSync(process.env.PROBE_STORAGE_ROOT), [
+      lease.directory.split('/').at(-1),
+    ]);
 }
