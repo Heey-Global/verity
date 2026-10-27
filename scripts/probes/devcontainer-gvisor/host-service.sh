@@ -165,6 +165,10 @@ run_probe scripts/probes/devcontainer-gvisor/storage-lifecycle.mjs "$work" "$nam
     > "$PROBE_EVIDENCE/storage-lifecycle.log" 2>&1
 run_probe scripts/probes/devcontainer-gvisor/storage-import-cancel.mjs "$work" "$name:positive" \
     > "$PROBE_EVIDENCE/import-cancellation.log" 2>&1
+comparison_work=$(mktemp -d "$RUNNER_TEMP/verity-storage-comparison.XXXXXX")
+sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" PROBE_EVIDENCE="$PROBE_EVIDENCE" \
+    "$(command -v node)" scripts/probes/devcontainer-gvisor/storage-comparison.mjs "$comparison_work" \
+    > "$PROBE_EVIDENCE/storage-comparison.log" 2>&1
 sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
 [[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
 rules_after_reinstall=$(count_subnet_rules)
