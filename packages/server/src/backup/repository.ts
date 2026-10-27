@@ -66,14 +66,14 @@ export async function writeDurable(
   immutable: boolean,
 ): Promise<void> {
   const temporary = join(dirname(path), `.pending-${randomBytes(16).toString('hex')}`);
-  const file = await open(temporary, 'wx', 0o600);
   try {
-    await file.writeFile(bytes);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  try {
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     if (immutable) await link(temporary, path);
     else await rename(temporary, path);
     await syncDirectory(dirname(path));
@@ -382,6 +382,15 @@ export class BackupRepository {
       }
       // An empty/missing catalog is never enough evidence to delete a repository's objects.
       if (!references.size) return { snapshots: removedSnapshots, objects: 0 };
+      // Persist cache pruning before deletion so an interrupted GC cannot strand stale entries.
+      const state = await this.readState();
+      for (const [fingerprint, object] of Object.entries(state.index))
+        if (!reachable.has(object.id)) delete state.index[fingerprint];
+      await writeDurable(
+        join(this.stateRoot, 'index'),
+        encodeLocalIndex(state.index, this.host.fingerprintKey),
+        false,
+      );
       let removedObjects = 0;
       for (const id of await boundedDirectory(join(this.root, 'objects'), 200000)) {
         if (!/^[0-9a-f]{64}$/.test(id)) continue; // Publication temporaries are not committed objects.

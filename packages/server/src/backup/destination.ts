@@ -34,7 +34,7 @@ export class BackupDestination {
       throw new Error('Backup destination was replaced or unmounted');
     const marker = await open(
       `/proc/self/fd/${this.directory.fd}/.verity-backup-target`,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     try {
       const info = await marker.stat();

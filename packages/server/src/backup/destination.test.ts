@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rename, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,4 +47,13 @@ describe('mounted backup destination', () => {
     await writeFile(join(path, '.verity-backup-target'), randomUUID());
     await expect(BackupDestination.open(path, id)).rejects.toThrow('mismatch');
   });
+});
+
+it('rejects a FIFO marker without waiting for a writer', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'verity-destination-'));
+  roots.push(path);
+  execFileSync('mkfifo', [join(path, '.verity-backup-target')]);
+  await expect(BackupDestination.open(path, randomUUID())).rejects.toThrow(
+    'Invalid backup target marker',
+  );
 });

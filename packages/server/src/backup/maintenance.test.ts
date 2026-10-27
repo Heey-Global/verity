@@ -1,3 +1,4 @@
+import { decodeLocalIndex } from './local-state.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, writeFile, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ async function fixture() {
     host,
   );
   await repository.initialize();
-  return { root, repository, installationId };
+  return { root, repository, installationId, host };
 }
 async function capture(repository: BackupRepository, value: string, time = '2026-01-01T00:00:00Z') {
   return repository.capture(
@@ -56,6 +57,13 @@ describe('fail-closed backup retention and garbage collection', () => {
     expect(
       await f.repository.maintain({ installationId: f.installationId, now, paused: false }),
     ).toEqual({ snapshots: 2, objects: 1 });
+    const index = decodeLocalIndex(
+      await readFile(join(f.repository.stateRoot, 'index')),
+      f.host.fingerprintKey,
+    );
+    expect(Object.values(index as Record<string, { id: string }>).map((entry) => entry.id)).toEqual(
+      [first.files[0]!.objects[0]!.id],
+    );
     expect(await readdir(join(f.repository.root, 'snapshots'))).toEqual([
       `${last.sequence}-manual`,
     ]);
