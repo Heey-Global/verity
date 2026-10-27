@@ -5360,7 +5360,7 @@ describe('ProvisionerImpl (#174)', () => {
           server: { release: '1.2.3', generation: 7 },
           payload: {
             forceRebuild: true,
-            baseImageRef: 'ghcr.io/heey-global/dev-base:default',
+            baseImageRef: 'node:24',
             imageTag: build.mock.calls[0]?.[0].imageName,
           },
         });
@@ -5369,6 +5369,25 @@ describe('ProvisionerImpl (#174)', () => {
           imageId: 'sha256:built',
           payload: { imageId: 'sha256:built', sizeBytes: 42 },
         });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    // A Dockerfile's base cannot be inferred from the configured Verity default.
+    it('leaves unresolved Dockerfile provenance unknown', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-base-'));
+      try {
+        const { id, provisioner, appended } = await devcontainerProvisioner(root, false);
+        const dir = join(root, 'example-org-example-repo', '.devcontainer');
+        writeFileSync(
+          join(dir, 'devcontainer.json'),
+          '{ "build": { "dockerfile": "Dockerfile" } }',
+        );
+        writeFileSync(join(dir, 'Dockerfile'), 'FROM node:24\n');
+        await provisioner.recreateContainer(id, { forceRebuild: true });
+        expect(appended[0]!.payload).toMatchObject({ baseImageRef: null });
+        expect(appended[1]!.payload).toMatchObject({ baseImageDigest: null });
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

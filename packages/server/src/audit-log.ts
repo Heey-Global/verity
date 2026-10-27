@@ -60,7 +60,7 @@ const payloads = {
         .string()
         .regex(/^[0-9a-f]{7,64}$/)
         .nullable(),
-      baseImageRef: z.string().min(1).max(500),
+      baseImageRef: z.string().min(1).max(500).nullable(),
       /** Content hash over the devcontainer configuration and base image; never secret-bearing. */
       configFingerprint: z.string().regex(/^[0-9a-f]{8,128}$/),
       features: z.array(z.string().min(1).max(500)).max(20),

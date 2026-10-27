@@ -33,7 +33,7 @@ export interface BuildIntent {
   imageTag: string;
   forceRebuild: boolean;
   commit: string | null;
-  baseImageRef: string;
+  baseImageRef: string | null;
   configFingerprint: string;
   features: string[];
 }
@@ -201,7 +201,7 @@ export function createAuditRecorder(
               intent.commit !== null && /^[0-9a-f]{7,64}$/.test(intent.commit)
                 ? intent.commit
                 : null,
-            baseImageRef: intent.baseImageRef.slice(0, 500),
+            baseImageRef: intent.baseImageRef?.slice(0, 500) ?? null,
             configFingerprint: /^[0-9a-f]{8,128}$/.test(intent.configFingerprint)
               ? intent.configFingerprint
               : createHash('sha256').update(intent.configFingerprint, 'utf8').digest('hex'),

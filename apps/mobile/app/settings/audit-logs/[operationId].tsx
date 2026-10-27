@@ -129,7 +129,7 @@ export function AuditOperationView({
               subtitle={
                 build.baseImageDigest !== null
                   ? `${build.baseImageRef} · ${shortDigest(build.baseImageDigest)}`
-                  : build.baseImageRef
+                  : (build.baseImageRef ?? 'Not recorded')
               }
             />
             {build.features.map((feature) => (

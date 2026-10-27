@@ -49,7 +49,7 @@ export interface AuditOperationDetail extends AuditOperationSummary {
     imageTag: string;
     forceRebuild: boolean;
     commit: string | null;
-    baseImageRef: string;
+    baseImageRef: string | null;
     baseImageDigest: string | null;
     features: string[];
     sizeBytes: number | null;
@@ -148,7 +148,7 @@ export async function summarizeOperation(
             imageTag: str(requested.imageTag) ?? '',
             forceRebuild: requested.forceRebuild === true,
             commit: str(requested.commit),
-            baseImageRef: str(requested.baseImageRef) ?? '',
+            baseImageRef: str(requested.baseImageRef),
             baseImageDigest: str(result.baseImageDigest),
             features: Array.isArray(requested.features)
               ? requested.features.filter((f): f is string => typeof f === 'string')

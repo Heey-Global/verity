@@ -5972,6 +5972,22 @@ export class ProvisionerImpl implements Provisioner {
       // After the cache check, into the private copy only: the hash above was
       // computed over the project's own configuration.
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
+      // Only claim a base we can identify: Dockerfile/Compose bases and variable
+      // substitutions require resolution by the builder and remain unknown here.
+      const rawConfig = readDevcontainerJson(snapshotDevcontainerDir);
+      const configuredImage =
+        rawConfig === undefined ? undefined : topLevelJsonValue(rawConfig, 'image');
+      const directImage = configuredImage?.kind === 'string' ? configuredImage.value : undefined;
+      const auditBaseImageRef = pinsBase
+        ? baseImageRef
+        : directImage &&
+            !directImage.includes('${') &&
+            rawConfig !== undefined &&
+            ['build', 'dockerFile', 'dockerComposeFile'].every(
+              (key) => topLevelJsonValue(rawConfig, key) === undefined,
+            )
+          ? directImage
+          : null;
       // No build without a recorded intent: this throws before anything runs when
       // audit storage is unavailable (ADR 0028).
       const audit = await this.opts.audit?.beginBuild({
@@ -5981,7 +5997,7 @@ export class ProvisionerImpl implements Provisioner {
         imageTag: derivedTag,
         forceRebuild,
         commit: await this.checkoutCommit(dirs.clonePath),
-        baseImageRef,
+        baseImageRef: auditBaseImageRef,
         configFingerprint: hash,
         features: [DEVCONTAINER_NODE_FEATURE_REF, feature.ref],
       });
@@ -6011,7 +6027,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       if (audit !== undefined)
         await audit
-          .succeeded(await this.builtImageIdentity(derivedTag, baseImageRef))
+          .succeeded(await this.builtImageIdentity(derivedTag, auditBaseImageRef))
           .catch(() => undefined);
       return {
         imageRef: derivedTag,
@@ -6039,7 +6055,7 @@ export class ProvisionerImpl implements Provisioner {
    *  rather than being guessed (ADR 0028). */
   private async builtImageIdentity(
     imageTag: string,
-    baseImageRef: string,
+    baseImageRef: string | null,
   ): Promise<{ imageId: string | null; sizeBytes: number | null; baseImageDigest: string | null }> {
     const docker = this.opts.docker;
     const safely = async (ref: string) => {
@@ -6050,6 +6066,12 @@ export class ProvisionerImpl implements Provisioner {
       }
     };
     const image = await safely(imageTag);
+    if (baseImageRef === null)
+      return {
+        imageId: image?.id ?? null,
+        sizeBytes: image?.sizeBytes ?? null,
+        baseImageDigest: null,
+      };
     const pinned = /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
     const base = pinned === undefined ? await safely(baseImageRef) : undefined;
     // Only a digest of the base image's own repository: a re-tagged copy can carry

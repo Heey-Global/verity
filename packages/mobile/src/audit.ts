@@ -30,7 +30,7 @@ const operationDetailSchema = operationSummarySchema.extend({
       imageTag: z.string(),
       forceRebuild: z.boolean(),
       commit: z.string().nullable(),
-      baseImageRef: z.string(),
+      baseImageRef: z.string().nullable(),
       baseImageDigest: z.string().nullable(),
       features: z.array(z.string()),
       sizeBytes: z.number().nullable(),
