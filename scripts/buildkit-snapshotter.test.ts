@@ -14,6 +14,8 @@ function fixture(
   options: {
     legacy?: boolean;
     busy?: boolean;
+    usage?: string;
+    failUsage?: boolean;
     failProbe?: boolean;
     crash?: boolean;
     failMount?: boolean;
@@ -50,7 +52,7 @@ function fixture(
     `shift 2
 case "$1" in
  debug) snapshot=$(sed -nE 's/^snapshotter = "(.*)"/\\1/p' '${config}/buildkitd.toml'); printf '[{"labels":{"org.mobyproject.buildkit.worker.executor":"oci","org.mobyproject.buildkit.worker.network":"cni","org.mobyproject.buildkit.worker.oci.process-mode":"sandbox","org.mobyproject.buildkit.worker.snapshotter":"%s"}}]' "$snapshot" ;;
- du) echo '${options.busy ? '[{"inUse":true}]' : '[]'}' ;;
+ du) echo '${options.usage ?? (options.busy ? '[{"inUse":true}]' : '[]')}'; ${options.failUsage ? 'exit 1' : 'true'} ;;
  build) ${options.failProbe ? 'exit 1' : 'exit 0'} ;;
 esac\n`,
   );
@@ -89,6 +91,26 @@ esac\n`,
       expect(readFileSync(join(f.config, 'buildkitd.toml'), 'utf8')).toBe(f.previous);
     },
   );
+  it('accepts null usage from an empty real BuildKit worker', () => {
+    const f = fixture({ usage: 'null' });
+    expect(f.invoke('init').status).toBe(0);
+    expect(f.invoke('drained').status).toBe(0);
+    expect(f.invoke().status).toBe(0);
+    expect(f.status().state).toBe('converged');
+  });
+  it.each([
+    { usage: '{}' },
+    { usage: 'invalid' },
+    { usage: '[{}]' },
+    { usage: 'null', failUsage: true },
+  ])('preserves the activity fence for invalid or failed usage: %j', (options) => {
+    const f = fixture(options);
+    expect(f.invoke('init').status).toBe(0);
+    expect(f.invoke('drained').status).not.toBe(0);
+    expect(f.invoke().status).toBe(0);
+    expect(f.status().state).toBe('deferred');
+    expect(readFileSync(join(f.config, 'buildkitd.toml'), 'utf8')).toBe(f.previous);
+  });
   it('preserves unresolved leases instead of treating a crashed Server as drained', () => {
     const f = fixture();
     expect(f.invoke('init').status).toBe(0);
