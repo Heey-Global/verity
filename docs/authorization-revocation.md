@@ -14,7 +14,13 @@ without authentication retains unattributed execution; an attributed user must
 still have current project permission.
 
 Managed development servers persist the Doppler project/configuration identity
-with secret-binding approval. The manager checks it before resolution and again
+with secret-binding approval. Both approval dialogs display that provider
+identity alongside the command and aliases, then submit the captured snapshot.
+The manager rejects missing, unavailable or changed provider snapshots before
+saving approval. On conflict the client refreshes the view and requires a new
+explicit confirmation; it never automatically approves the replacement.
+
+The manager checks the stored identity before resolution and again
 before launch, including recovery. The resolver receives that approved identity
 and refuses a different provider before fetching secrets. Refreshed values from
 the same provider remain supported. Changing the provider requires fresh
@@ -24,6 +30,12 @@ Migration `0167_managed_server_provider_authority` leaves existing provider
 approvals unset. Existing secret-bearing entries must therefore be approved
 again before their next start or recovery. Secret-free entries are unaffected.
 No secret values are persisted in the approval metadata.
+
+Older clients that omit the provider snapshot cannot approve secret-bearing
+entries on a newer Core. Newer clients refuse these approvals when an older
+Core does not supply provider metadata. Secret-free approval remains compatible.
+Binding the dialog to the provider snapshot uses the existing approval storage
+and requires no additional migration.
 
 These checks guard new execution; they do not cancel an already running script,
 stop an existing development server, retract delivered data, or undo an upstream

@@ -1102,6 +1102,75 @@ describe('managed servers with secret bindings', () => {
     });
   };
 
+  it('rejects a provider change between display and confirmation without saving approval', async () => {
+    await ctx.store.updateProjectSettings('p1', {
+      dopplerProject: 'demo',
+      dopplerConfig: 'staging',
+    });
+    const resolveSecrets = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    await withResolver(resolveSecrets);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    const seen = {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    };
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
+    await expect(manager.approve('s1', 'api', seen)).rejects.toThrow('provider');
+    expect(await ctx.store.managedDevServers.approvedProviderAuthority(entry.id)).toBeUndefined();
+    expect(resolveSecrets).not.toHaveBeenCalled();
+    expect(sandbox.started).toHaveLength(0);
+    const refreshed = (await manager.view('s1'))[0]!;
+    expect(refreshed.providerSnapshot).toEqual({
+      provider: 'doppler',
+      project: 'demo',
+      config: 'production',
+    });
+    await manager.approve('s1', 'api', { ...seen, providerSnapshot: refreshed.providerSnapshot });
+    await manager.start('s1', 'api', 'agent');
+    expect(sandbox.started).toHaveLength(1);
+  });
+
+  for (const failure of ['missing-snapshot', 'missing-provider', 'lookup-error'] as const) {
+    it(`does not save approval with ${failure}`, async () => {
+      await withResolver(async () => []);
+      const entry = await manager.add('s1', {
+        name: 'api',
+        command: 'node server.mjs',
+        secretBindings,
+      });
+      const seen = {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        ...(failure === 'missing-snapshot'
+          ? {}
+          : { providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot }),
+      };
+      if (failure === 'lookup-error' || failure === 'missing-provider') {
+        await manager.close();
+        manager = new ManagedDevServerManager({
+          store: ctx.store,
+          runtime: sandbox.runtime,
+          providerAuthority: async () => {
+            if (failure === 'lookup-error') throw new Error('private diagnostic');
+            return undefined;
+          },
+          networkPorts: [8100],
+          sandboxWorktree: (_project, worktree) => worktree,
+        });
+      }
+      await expect(manager.approve('s1', 'api', seen)).rejects.toThrow('provider');
+      expect(await ctx.store.managedDevServers.approvedProviderAuthority(entry.id)).toBeUndefined();
+      expect(sandbox.started).toHaveLength(0);
+    });
+  }
+
   // A provider change must not launch a process with stale secret authority.
   for (const change of ['unchanged', 'during-resolution'] as const) {
     const check = it;
@@ -1139,6 +1208,7 @@ describe('managed servers with secret bindings', () => {
           command: entry.command,
           workdir: '.',
           secretBindings,
+          providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
         });
         await manager.start('s1', 'api', 'agent');
         expect(resolveSecret).toHaveBeenCalledWith({
@@ -1175,7 +1245,12 @@ describe('managed servers with secret bindings', () => {
     await expect(
       manager.approve('s1', 'api', { command: entry.command, workdir: '.' }),
     ).rejects.toThrow('changed');
-    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
     await manager.start('s1', 'api', 'agent');
     expect(resolveSecrets).toHaveBeenCalledWith(
       'p1',
@@ -1204,7 +1279,12 @@ describe('managed servers with secret bindings', () => {
         command: 'node server.mjs',
         secretBindings,
       });
-      await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+      await manager.approve('s1', 'api', {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      });
       if (change === 'recovery') {
         await manager.start('s1', 'api', 'agent');
         sandbox.recreate();
@@ -1226,7 +1306,12 @@ describe('managed servers with secret bindings', () => {
       expect(resolveSecrets).not.toHaveBeenCalled();
       expect(sandbox.started).toHaveLength(change === 'recovery' ? 1 : 0);
       if (change !== 'lookup-error') expect((await manager.view('s1'))[0]!.approved).toBe(false);
-      await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+      await manager.approve('s1', 'api', {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      });
       await manager.start('s1', 'api', 'agent');
       expect(resolveSecrets).toHaveBeenCalledOnce();
     });
@@ -1241,7 +1326,12 @@ describe('managed servers with secret bindings', () => {
       command: 'node server.mjs',
       secretBindings,
     });
-    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
     await manager.start('s1', 'api', 'agent');
     expect(sandbox.started).toHaveLength(0);
     expect((await instanceOf()).state).toBe('crashed');
@@ -1256,7 +1346,12 @@ describe('managed servers with secret bindings', () => {
       command: 'node server.mjs',
       secretBindings,
     });
-    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
     await manager.start('s1', 'api', 'agent');
     const run = sandbox.started[0]!;
     sandbox.listen(run.instanceId, Number(run.env.PORT));

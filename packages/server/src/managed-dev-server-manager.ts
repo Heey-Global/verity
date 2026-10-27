@@ -115,7 +115,14 @@ export interface ManagedInstanceView {
   startedAt: string | null;
 }
 
+export interface ManagedServerProviderSnapshot {
+  provider: 'doppler';
+  project: string;
+  config: string;
+}
+
 export interface ManagedServerView {
+  providerSnapshot?: ManagedServerProviderSnapshot | null | undefined;
   id: string;
   name: string;
   command: string;
@@ -272,6 +279,9 @@ export class ManagedDevServerManager {
       this.servers.listInstances({ projectId: project.id }),
       this.options.store.listSessions(),
     ]);
+    const providerSnapshot = entries.some((entry) => entry.secretBindings.length > 0)
+      ? await this.currentProviderSnapshot(project.id)
+      : null;
     // Expose stale provider approvals to the existing approval UI, including legacy rows.
     for (const entry of entries) {
       if (!(await this.providerApproved(entry))) entry.approved = false;
@@ -286,6 +296,7 @@ export class ManagedDevServerManager {
         name: entry.name,
         command: entry.command,
         secretBindings: entry.secretBindings,
+        providerSnapshot: entry.secretBindings.length > 0 ? providerSnapshot : null,
         workdir: entry.workdir,
         approved: entry.approved,
         accessSwitches: true as const,
@@ -304,6 +315,25 @@ export class ManagedDevServerManager {
           })),
       };
     });
+  }
+
+  private async currentProviderSnapshot(
+    projectId: string,
+  ): Promise<ManagedServerProviderSnapshot | null> {
+    try {
+      const authority = await this.options.providerAuthority?.(projectId);
+      if (authority === undefined) return null;
+      const value: unknown = JSON.parse(authority);
+      if (
+        !Array.isArray(value) ||
+        value.length !== 2 ||
+        !value.every((item) => typeof item === 'string' && item.length > 0)
+      )
+        return null;
+      return { provider: 'doppler', project: value[0] as string, config: value[1] as string };
+    } catch {
+      return null;
+    }
   }
 
   private async providerApproved(entry: ManagedDevServerRecord): Promise<boolean> {
@@ -405,6 +435,7 @@ export class ManagedDevServerManager {
     sessionId: string,
     idOrName: string,
     seen: {
+      providerSnapshot?: ManagedServerProviderSnapshot | null | undefined;
       command: string;
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
@@ -414,14 +445,23 @@ export class ManagedDevServerManager {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
     await this.locked(project.id, async () => {
-      const providerAuthority = seen.secretBindings?.length
-        ? await this.options.providerAuthority?.(project.id)
-        : undefined;
-      if (seen.secretBindings?.length && providerAuthority === undefined)
-        throw new ManagedDevServerError(
-          'The secret provider is unavailable. Review and approve it again.',
-          409,
-        );
+      let providerAuthority: string | undefined;
+      if (seen.secretBindings?.length) {
+        const current = await this.currentProviderSnapshot(project.id);
+        const snapshot = seen.providerSnapshot;
+        if (
+          !current ||
+          !snapshot ||
+          snapshot.provider !== current.provider ||
+          snapshot.project !== current.project ||
+          snapshot.config !== current.config
+        )
+          throw new ManagedDevServerError(
+            'The secret provider changed or is unavailable. Refresh and review it again before approving.',
+            409,
+          );
+        providerAuthority = JSON.stringify([snapshot.project, snapshot.config]);
+      }
       const approved = await this.servers.approve(entry.id, {
         ...seen,
         ...(providerAuthority === undefined ? {} : { providerAuthority }),

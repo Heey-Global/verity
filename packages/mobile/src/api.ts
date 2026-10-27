@@ -747,7 +747,13 @@ const sessionDevServerSchema = z.object({
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
+const managedServerProviderSnapshotSchema = z.object({
+  provider: z.literal('doppler'),
+  project: z.string().min(1),
+  config: z.string().min(1),
+});
 const managedDevServerSchema = z.object({
+  providerSnapshot: managedServerProviderSnapshotSchema.nullable().optional(),
   secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),
   id: z.string(),
   name: z.string(),
@@ -4509,6 +4515,7 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     seen: {
+      providerSnapshot?: z.infer<typeof managedServerProviderSnapshotSchema> | null;
       command: string;
       workdir: string;
       secretBindings?: { secretAlias: string; env: string }[];
