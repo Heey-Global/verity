@@ -4628,6 +4628,48 @@ migrations['0167_managed_server_provider_authority'] = {
   },
 };
 
+migrations['0168_audit_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // The allocation counter lives apart from the event rows, so a sequence is never
+    // reissued after its row is gone. The head columns are filled by verification runs.
+    await sql`create table audit_streams (
+        stream_id text primary key,
+        next_sequence integer not null default 0 check (next_sequence >= 0),
+        head_sequence integer,
+        head_hash text,
+        unverified boolean not null default false,
+        created_at timestamptz not null default now()
+      )`.execute(db);
+    await sql`create table audit_events (
+        stream_id text not null,
+        sequence integer not null check (sequence >= 0),
+        event_id text not null unique,
+        schema_version integer not null,
+        recorded_at timestamptz not null,
+        operation_id text not null,
+        domain text not null,
+        kind text not null,
+        project_id text,
+        project_label text,
+        image_id text,
+        event_json text not null,
+        prev_hash text not null,
+        event_hash text not null unique,
+        primary key (stream_id, sequence)
+      )`.execute(db);
+    await sql`create index audit_events_operation on audit_events(operation_id)`.execute(db);
+    await sql`create index audit_events_recorded on audit_events(recorded_at)`.execute(db);
+    await sql`create index audit_events_project on audit_events(project_id, recorded_at)`.execute(
+      db,
+    );
+    await sql`create index audit_events_image on audit_events(image_id)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table audit_events`.execute(db);
+    await sql`drop table audit_streams`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

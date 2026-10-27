@@ -101,6 +101,8 @@ import {
   SERVER_UPDATE_PUSH_CATEGORY,
 } from './self-update/server-update-notifier.js';
 import { CONTAINER_STOPPED_REASON } from './project-state.js';
+import type { AuditLog } from './audit-log.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import {
   AmbiguousGitPushError,
   DEVCONTAINER_IMAGE_PREFIX,
@@ -12483,7 +12485,10 @@ describe('POST /sessions with project field (#174)', () => {
       expect(body.project).toHaveProperty('sandboxUpdate');
       expect(body.project).toHaveProperty('toolkitDrift', null);
       // The provisioner was fired asynchronously (fire-and-forget)
-      expect(p.provision).toHaveBeenCalledWith('p-absent', { confirmWarnings: false });
+      expect(p.provision).toHaveBeenCalledWith('p-absent', {
+        confirmWarnings: false,
+        initiator: { kind: 'user', userId: null },
+      });
       // No session was started (we returned early)
       expect(startSession).not.toHaveBeenCalled();
     } finally {
@@ -13209,6 +13214,7 @@ describe('POST /projects/:id/link-github', () => {
       );
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-link', {
         confirmWarnings: true,
+        initiator: { kind: 'user', userId: null },
       });
       // The clone never moves: session worktree paths are persisted under it.
       expect(await ctx.store.getProject('p-link')).toMatchObject({
@@ -14166,6 +14172,41 @@ describe('DELETE /projects/:id', () => {
       }
     },
   );
+
+  it('records the deletion in the audit trail before the image cleanup', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-audit-delete',
+      owner: 'org',
+      repo: 'repo',
+      containerName: 'dev-audit-delete',
+      state: 'active',
+    });
+    const order: string[] = [];
+    const projectDeleted = vi.fn(async () => void order.push('audit'));
+    const a = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      deprovisioner: fakeDeprovisioner(),
+      onProjectHidden: async () => void order.push('cleanup'),
+      audit: {
+        recorder: { projectDeleted } as unknown as AuditRecorder,
+        log: {} as AuditLog,
+      },
+    });
+    try {
+      const res = await a.inject({ method: 'DELETE', url: '/projects/p-audit-delete' });
+      expect(res.statusCode).toBe(200);
+      expect(projectDeleted).toHaveBeenCalledExactlyOnceWith({
+        projectId: 'p-audit-delete',
+        projectLabel: 'org/repo',
+        initiator: { kind: 'user', userId: null },
+      });
+      expect(order).toEqual(['audit', 'cleanup']);
+    } finally {
+      await a.close();
+    }
+  });
 
   it('purges the container and soft-deletes (hides) the store row', async () => {
     await ctx.store.upsertProject({
@@ -15169,7 +15210,10 @@ describe('POST /projects/:id/repair', () => {
         url: '/projects/p-repair/repair',
       });
       expect(res.statusCode).toBe(202);
-      expect(provisioner.provision).toHaveBeenCalledWith('p-repair', { confirmWarnings: false });
+      expect(provisioner.provision).toHaveBeenCalledWith('p-repair', {
+        confirmWarnings: false,
+        initiator: { kind: 'user', userId: null },
+      });
       expect(res.json()).toMatchObject({
         project: { id: 'p-repair', state: 'cloning', provisionError: null },
       });
@@ -15454,6 +15498,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-verity', {
         confirmWarnings: false,
         forceRebuild: false,
+        initiator: { kind: 'user', userId: null },
       });
     } finally {
       await a.close();
@@ -15500,6 +15545,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(provisioner.recreateContainer).toHaveBeenCalledWith('p-recreate', {
         confirmWarnings: false,
         forceRebuild: false,
+        initiator: { kind: 'user', userId: null },
       });
       expect(res.json()).toMatchObject({
         project: { id: 'p-recreate', state: 'container_starting' },
@@ -15536,6 +15582,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
       expect(recreateContainer).toHaveBeenCalledWith('p-rebuild', {
         confirmWarnings: true,
         forceRebuild: true,
+        initiator: { kind: 'user', userId: null },
       });
     } finally {
       await a.close();

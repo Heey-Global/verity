@@ -664,3 +664,12 @@ export {
   type VulnerabilityFinding,
   type VulnerabilitySettings,
 } from './vulnerability.js';
+export type {
+  AuditDomain,
+  AuditHealth,
+  AuditInitiator,
+  AuditOperationDetail,
+  AuditOperationList,
+  AuditOperationQuery,
+  AuditOperationSummary,
+} from './audit.js';
