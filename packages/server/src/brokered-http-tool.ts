@@ -1,3 +1,4 @@
+import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 import {
   createRestrictedHttpJsonConnector,
   restrictedHttpJsonRequestSchema,
@@ -13,6 +14,8 @@ export type BrokeredToolCall = {
   id: string;
   name: 'verity_http_request' | 'verity_secret_run';
   input: unknown;
+  /** Trusted gateway authority; never read from tool arguments. */
+  approvedBinding?: BrokeredHttpProjectBinding;
 };
 
 export type BrokeredHttpToolResult = {
@@ -43,6 +46,7 @@ function boundRelayResult(result: BrokeredHttpToolResult): BrokeredHttpToolResul
 }
 
 export function createBrokeredHttpTool(options: {
+  requireApprovalBinding?: boolean;
   getProjectBinding: (projectId: string) => Promise<BrokeredHttpProjectBinding | undefined>;
   resolveSecret: (input: {
     projectId: string;
@@ -69,8 +73,10 @@ export function createBrokeredHttpTool(options: {
       throw new Error('invalid brokered HTTP tool call');
     }
     const request = restrictedHttpJsonRequestSchema.parse(call.input);
+    if (options.requireApprovalBinding && call.approvedBinding === undefined)
+      throw new Error('approved Doppler binding is required');
     const binding = await options.getProjectBinding(projectId);
-    if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+    assertBrokeredDopplerBinding(binding, call.approvedBinding);
     const connector = createRestrictedHttpJsonConnector({
       profile: {
         id: 'project-http',
@@ -87,14 +93,18 @@ export function createBrokeredHttpTool(options: {
           dopplerConfig: binding.dopplerConfig,
           secretName,
         }),
-      consumeApproval: (requestHash) =>
-        options.consumeApproval({
+      consumeApproval: async (requestHash) => {
+        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        const consumed = await options.consumeApproval({
           projectId,
           sessionId,
           turnId,
           callId: call.id,
           requestHash,
-        }),
+        });
+        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        return consumed;
+      },
       transport: options.transport,
     });
     const result = await connector.execute(request);

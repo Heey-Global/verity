@@ -1,3 +1,4 @@
+import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
@@ -1957,9 +1958,7 @@ export async function buildEmbeddedServer(
     const settings = await eventStore.getProjectSettings(projectId);
     const dopplerProject = settings?.dopplerProject?.trim();
     const dopplerConfig = settings?.dopplerConfig?.trim();
-    return dopplerProject === undefined || dopplerConfig === undefined
-      ? undefined
-      : { dopplerProject, dopplerConfig };
+    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
   const resolveBrokerDopplerSecret = async (
     input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
@@ -1978,6 +1977,7 @@ export async function buildEmbeddedServer(
     }
   };
   const brokeredHttpTool = createBrokeredHttpTool({
+    requireApprovalBinding: true,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
@@ -1985,6 +1985,7 @@ export async function buildEmbeddedServer(
   });
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
+    requireApprovalBinding: true,
     outputStore: trustedCliOutput,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
@@ -2068,6 +2069,12 @@ export async function buildEmbeddedServer(
             'verity_recent_session_messages',
           ]
         : [],
+    authorizationSnapshot: async ({ projectId, toolName }) => {
+      if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
+      const binding = await getBrokeredProjectBinding(projectId);
+      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+      return JSON.stringify(binding);
+    },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
       ? {
@@ -2118,11 +2125,7 @@ export async function buildEmbeddedServer(
   const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
     const binding = await getBrokeredProjectBinding(projectId);
     if (binding === undefined) return undefined;
-    return `project-doppler:${createHash('sha256')
-      .update(binding.dopplerProject)
-      .update('\0')
-      .update(binding.dopplerConfig)
-      .digest('hex')}`;
+    return brokeredDopplerBindingId(binding);
   };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
   // stops guessing aliases. Briefly cached; every failure degrades to "no list".
@@ -4884,12 +4887,20 @@ export async function buildEmbeddedServer(
       // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
       checkBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        return bindingId === undefined ? false : brokeredHttpGrants.check({ ...input, bindingId });
+        return bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+          ? false
+          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        if (bindingId === undefined) throw new Error('project Doppler binding is unavailable');
-        await brokeredHttpGrants.grant({ ...input, bindingId });
+        if (
+          bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+        ) {
+          throw new Error('Doppler access changed before saving approval');
+        }
+        await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       // Auto-name an unnamed session from its opening turn: the conductor derives a
       // 2–3 word title from the first chat using the session's OWN model (routed via
