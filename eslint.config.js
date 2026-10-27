@@ -121,7 +121,7 @@ export default tseslint.config(
   {
     // Real-Docker smoke harnesses execute directly with Node on the dedicated
     // workflow runner; they are syntax/lint checked but are not build inputs.
-    files: ['deploy/bin/*.mjs'],
+    files: ['deploy/bin/*.mjs', '.github/scripts/backup-docker-smoke.mjs'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: {
