@@ -1,6 +1,6 @@
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
-import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { request, type IncomingMessage } from 'node:http';
@@ -25,7 +25,8 @@ vi.mock('node:https', async (original) => ({
 
 let ctx: TestDb;
 beforeAll(async () => {
-  ctx = await createTestDb();
+  // Advancing fake timers cannot await PostgreSQL socket I/O during polling.
+  ctx = await createIsolatedTestDb();
 });
 afterAll(async () => {
   await ctx.close();
