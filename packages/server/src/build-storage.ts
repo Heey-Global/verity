@@ -131,7 +131,7 @@ export class BuildStorage {
       }
       const age = Date.now() - Date.parse(report.observedAt);
       if (age < -5000 || age > 120_000) unavailable('host storage report is stale');
-      for (const kind of ['buildkit', 'docker', 'containerd', 'export']) {
+      for (const kind of ['buildkit', 'docker', 'containerd', 'export', 'project']) {
         const roots = report.roots.filter((root) => root.kind === kind);
         const root = roots[0];
         if (

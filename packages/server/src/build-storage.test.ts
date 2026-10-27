@@ -118,6 +118,28 @@ describe('build storage admission', () => {
     lease.dispose();
   });
 
+  it('rejects unavailable, stale or exhausted independent project filesystems', () => {
+    const f = fixture();
+    const lease = f.manager().acquire();
+    for (const patch of [
+      { state: 'unavailable' },
+      { observedAt: new Date(Date.now() - 121_000).toISOString() },
+      { availableBytes: 9 * GiB },
+      { freeInodes: 999 },
+    ]) {
+      f.writeReport();
+      const report = JSON.parse(readFileSync(f.report, 'utf8')) as {
+        roots: { kind: string; filesystemId: string }[];
+      };
+      const project = report.roots.find((root) => root.kind === 'project')!;
+      project.filesystemId = 'independent-project-filesystem';
+      Object.assign(project, patch);
+      writeFileSync(f.report, JSON.stringify(report));
+      expect(() => lease.reserveBuild()).toThrow(/project filesystem|admission rejected/);
+    }
+    lease.dispose();
+  });
+
   it('rejects missing, stale, incomplete and ambiguous host reports without assuming topology', () => {
     const f = fixture();
     const lease = f.manager().acquire();
