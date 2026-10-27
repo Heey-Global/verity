@@ -208,6 +208,27 @@ describe('agent-seed/bin/git guard (push bypass)', () => {
     expect(stdout.trim()).toBe('');
   });
 
+  it.each(['--no-veri', '--no-verif'])(
+    'refuses the abbreviation %s, which git accepts for --no-verify',
+    async (flag) => {
+      const { code, stderr } = await runWrapper(
+        ['push', flag, 'origin', 'HEAD:refs/heads/x'],
+        main,
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain('verity git guard');
+    },
+  );
+
+  it('does not mistake --no-verbose for --no-verify', async () => {
+    const { code, stderr } = await runWrapper(
+      ['push', '--no-verbose', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
   it.each([
     [['-c', 'core.hooksPath=/dev/null', 'push', 'origin', 'HEAD:refs/heads/x']],
     [['-ccore.HooksPath=/dev/null', 'push', 'origin', 'HEAD:refs/heads/x']],

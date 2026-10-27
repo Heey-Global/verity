@@ -2,8 +2,8 @@
  * The pre-push code review contract, stated where every session sees it.
  *
  * Verity sandboxes install the agent-seed hooks globally (`core.hooksPath`), so
- * the gate itself is repo-agnostic: `agent-seed/hooks/pre-push` blocks a
- * feature-branch push until `.agents/.last-code-review-sha` covers HEAD. The
+ * the gate itself is repo-agnostic: `agent-seed/hooks/pre-push` blocks a push
+ * on any branch until `.agents/.last-code-review-sha` covers HEAD. The
  * prompt says "Verity sandboxes install" rather than "every sandbox has",
  * because a repository is free to point `core.hooksPath` somewhere of its own
  * and displace the seed hooks; the fragment is then inert rather than wrong.
@@ -29,7 +29,7 @@
  */
 export const CODE_REVIEW_SYSTEM_PROMPT = `# Pre-push code review gate (Verity)
 
-Verity sandboxes install a git \`pre-push\` hook that blocks a feature-branch push until each pending commit is covered by the review marker \`.agents/.last-code-review-sha\`. When a push is blocked that way, satisfy the gate with two commands, in this order:
+Verity sandboxes install a git \`pre-push\` hook that blocks a push, on every branch, until each pending commit is covered by the review marker \`.agents/.last-code-review-sha\`. When a push is blocked that way, satisfy the gate with two commands, in this order:
 
     verity-code-review run     # reviews the branch diff, prints concise findings
     verity-code-review mark    # records HEAD, after the findings are triaged

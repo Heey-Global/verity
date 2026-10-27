@@ -112,8 +112,10 @@ while [ "$i" -lt "$n" ]; do
 done
 
 # --- push: the pre-push gate is not optional ---------------------------------
-# `-n`/`--dry-run` runs no hook and is left alone. Options after `--` are
-# refspecs, not flags.
+# A push without the flag passes untouched, dry run or not. git accepts any
+# unambiguous abbreviation of a long option, and `--no-veri` is the shortest
+# one that is not also a prefix of `--no-verbose`, so the three spellings from
+# there up are refused. Options after `--` are refspecs, not flags.
 if [ "$subcmd" = "push" ]; then
   no_verify=""
   j=$((subidx + 1))
@@ -121,7 +123,7 @@ if [ "$subcmd" = "push" ]; then
     a="${args[$j]}"
     case "$a" in
       --) break ;;
-      --no-verify) no_verify=1 ;;
+      --no-veri | --no-verif | --no-verify) no_verify=1 ;;
     esac
     j=$((j + 1))
   done
