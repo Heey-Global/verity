@@ -1,3 +1,4 @@
+import { Text as UiText } from '../ui';
 import { MeetingWave } from './MeetingWave';
 import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
@@ -44,6 +45,11 @@ export function SavedMeetingCard({
         <Text style={styles.label}>MEETING SAVED</Text>
         <Text style={styles.title}>{card.title}</Text>
         {metrics ? <Text style={styles.metrics}>{metrics}</Text> : null}
+        {card.summary ? (
+          <UiText variant="bodySmall" numberOfLines={3}>
+            {card.summary}
+          </UiText>
+        ) : null}
       </View>
       <Icon name="chevron-right" size={18} color={colors.action} />
     </Pressable>

@@ -1,3 +1,5 @@
+import { MeetingResult } from '../../components/meeting/MeetingResult';
+import { shareMeetingResult } from '../../lib/shareMeetingResult';
 import {
   meetingModelChoice,
   meetingResearchModel,
@@ -44,6 +46,8 @@ import {
   loadDraftNote,
   finalizeNote,
   saveNote,
+  updateNote,
+  updateMeetingTitle,
   type MeetingNote,
   type MeetingRecord,
   type SpeakerCorrection,
@@ -80,12 +84,12 @@ import {
   MeetingAnswerText,
   NoticedCard,
   SectionLabel,
-  MeetingMetrics,
   SpeakerAvatar,
   speakerTone,
 } from '../../components/meeting/MeetingUI';
 import {
   Button,
+  useTextPrompt,
   Card,
   Group,
   HintBox,
@@ -132,6 +136,8 @@ export default function MeetingScreen() {
   const wide = width >= 900;
   const { theme } = useUnistyles();
   const colors = theme.colors;
+  const textPrompt = useTextPrompt();
+  const [transcriptSearch, setTranscriptSearch] = useState('');
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
@@ -556,7 +562,6 @@ export default function MeetingScreen() {
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
     ]);
   }, [answers, queuedAnswers, localAnswers]);
-  const completedAnswerCount = allMeetingAnswers.filter((card) => card.status === 'ready').length;
   const visibleAnswers = useMemo(() => {
     const shown = allMeetingAnswers.filter(
       (card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)),
@@ -1414,6 +1419,7 @@ export default function MeetingScreen() {
         : 'Listening for voices…'
     : 'No speaker labels yet.';
 
+  const completedAnswerCount = allMeetingAnswers.filter((card) => card.status === 'ready').length;
   const noteRows = (rows: MeetingNote[]) =>
     rows.map((note) => (
       <Text key={note.id} testID="meeting-note" style={styles.note}>
@@ -1564,10 +1570,23 @@ export default function MeetingScreen() {
         {(meeting.ownerToken || meeting.engine === 'attendee') && speakers.length ? (
           <Text style={styles.hint}>Tap a line to correct its speaker.</Text>
         ) : null}
+        <TextField
+          label="Search transcript"
+          accessibilityLabel="Search transcript"
+          placeholder="Search text or speaker"
+          value={transcriptSearch}
+          onChangeText={setTranscriptSearch}
+        />
         <FlatList
           ref={transcriptList}
           testID="meeting-transcript"
-          data={chunks}
+          data={chunks.filter(
+            (chunk) =>
+              !transcriptSearch.trim() ||
+              (chunk.text + ' ' + ('speaker' in chunk ? speakerLabel(chunk.speaker) : ''))
+                .toLocaleLowerCase()
+                .includes(transcriptSearch.trim().toLocaleLowerCase()),
+          )}
           // Rows read speaker names from the meeting; a rename must redraw them.
           extraData={meeting.speakerNames}
           keyExtractor={(_, index) => String(index)}
@@ -1802,123 +1821,138 @@ export default function MeetingScreen() {
   if (!meeting) return null;
 
   if (!live) {
-    const minutes = Math.max(
-      1,
-      Math.round(((meeting.endedAt ?? now) - meeting.startedAt) / 60_000),
-    );
-    const openPoints = noticedCards().slice(visibleAnswers.length);
     const unnamed = speakers.find((speaker) => !meeting.speakerNames?.[speaker]);
+    const editable = Boolean(meeting.ownerToken || meeting.engine === 'attendee');
+    const report = (reason: unknown) =>
+      Alert.alert('Could not save', reason instanceof Error ? reason.message : 'Please try again.');
     return (
       <KeyboardAvoidingView
         behavior="padding"
         style={[styles.root, { paddingTop: insets.top + 12 }]}
       >
         <Stack.Screen options={{ headerShown: false }} />
-        <ScrollView
-          style={styles.fill}
-          contentContainerStyle={[
-            styles.content,
-            styles.narrow,
-            { paddingBottom: insets.bottom + 24 },
-          ]}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.titleRow}>
-            <Text style={styles.title}>{meeting.title || 'Meeting'}</Text>
-            <Pressable accessibilityRole="button" onPress={() => router.back()}>
-              <Text style={styles.link}>Done</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.subtitle}>
-            {new Date(meeting.startedAt).toLocaleString([], {
-              dateStyle: 'medium',
-              timeStyle: 'short',
-            })}
-          </Text>
-          <MeetingMetrics
-            values={[
-              { label: 'min', value: minutes },
-              { label: 'people', value: speakers.length },
-              { label: 'answers', value: completedAnswerCount },
-              { label: 'notes', value: finalizedNotes.length },
-            ]}
-          />
-          <View style={styles.savedCard}>
-            <Icon
-              name={
-                noteUnsaved || meeting.state === 'interrupted' || syncError
-                  ? 'alert-circle'
-                  : 'check-circle'
-              }
-              size={22}
-              color={
-                noteUnsaved || meeting.state === 'interrupted' ? colors.attention : colors.success
-              }
-            />
-            <View style={styles.fill}>{statusLines}</View>
-          </View>
-          {visibleAnswers.length ? (
-            <View style={styles.block}>
-              <SectionLabel>{`ANSWERS · ${visibleAnswers.length}`}</SectionLabel>
-              {noticedCards().slice(0, visibleAnswers.length)}
-            </View>
-          ) : null}
-          {openPoints.length ? (
-            <View style={styles.block}>
-              <SectionLabel>{`OPEN POINTS · ${openPoints.length}`}</SectionLabel>
-              {openPoints}
-            </View>
-          ) : null}
-          {finalizedNotes.length || composerVisible ? (
-            <View style={styles.block}>
-              <SectionLabel>{`YOUR NOTES · ${finalizedNotes.length}`}</SectionLabel>
-              {finalizedNotes.length ? (
-                noteRows(finalizedNotes)
-              ) : (
-                <Text style={styles.hint}>No notes in this meeting.</Text>
-              )}
-              {composerVisible ? noteComposer(false) : null}
-            </View>
-          ) : null}
-          {speakers.length ? (
-            <View style={styles.block}>
-              <SectionLabel>PEOPLE</SectionLabel>
-              {speakers.length ? (
+        <MeetingResult
+          meeting={meeting}
+          wide={wide}
+          people={speakers.length}
+          bottomInset={insets.bottom}
+          status={statusLines}
+          onDone={() => router.back()}
+          onContinue={() => router.push({ pathname: '/session/[id]', params: { id: sessionId } })}
+          onTranscript={() => setTranscriptExpanded(true)}
+          onResearch={(question) => {
+            void openResearch(question);
+          }}
+          onShare={() =>
+            Alert.alert('Share meeting', 'Choose a format.', [
+              {
+                text: 'Markdown',
+                onPress: () => {
+                  void shareMeetingResult(sessionId, meeting.id, 'markdown').catch(report);
+                },
+              },
+              {
+                text: 'PDF',
+                onPress: () => {
+                  void shareMeetingResult(sessionId, meeting.id, 'pdf').catch(report);
+                },
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ])
+          }
+          onEditTitle={() => {
+            if (!editable) return;
+            textPrompt.prompt(
+              'Meeting title',
+              'The title appears in the filed meeting.',
+              (value) => {
+                if (value.trim().length > 200) {
+                  report(new Error('Titles can be at most 200 characters.'));
+                  return;
+                }
+                void (async () => {
+                  const client = createVerityClient();
+                  if (meeting.engine === 'attendee') {
+                    if (!client) throw new Error('Connect to your server first.');
+                    await client.editOnlineMeetingSpeakers(sessionId, meeting.id, {
+                      title: value.trim() || null,
+                    });
+                  } else await updateMeetingTitle(meeting.id, value);
+                  await syncMeetingSession(sessionId);
+                  await refresh();
+                })().catch(report);
+              },
+              'plain-text',
+              meeting.title || '',
+            );
+          }}
+          notes={
+            finalizedNotes.length || composerVisible ? (
+              <View style={styles.block}>
+                <SectionLabel>YOUR NOTES</SectionLabel>
+                {finalizedNotes.map((note) => (
+                  <View key={note.id}>
+                    {noteRows([note])}
+                    <Button
+                      label="Edit note"
+                      variant="text"
+                      size="compact"
+                      accessibilityLabel={`Edit note: ${note.text}`}
+                      onPress={() => {
+                        textPrompt.prompt(
+                          'Edit note',
+                          'Keep your note separate from participant statements.',
+                          (value) => {
+                            if (!value.trim() || value.length > 10000) {
+                              report(new Error('Enter a note of 1–10,000 characters.'));
+                              return;
+                            }
+                            void (async () => {
+                              await updateNote(note, value);
+                              await syncMeetingSession(sessionId);
+                              setNotes(await listNotes(meeting.id));
+                            })().catch(report);
+                          },
+                          'plain-text',
+                          note.text,
+                        );
+                      }}
+                    />
+                  </View>
+                ))}
+                {composerVisible ? noteComposer(false) : null}
+              </View>
+            ) : null
+          }
+          speakers={
+            speakers.length ? (
+              <View style={styles.block}>
+                <SectionLabel>PEOPLE</SectionLabel>
                 <View style={styles.avatarRow}>{speakerAvatars(true)}</View>
-              ) : (
-                <Text style={styles.hint}>{speakerStatus}</Text>
-              )}
-              {unnamed !== undefined && (meeting.ownerToken || meeting.engine === 'attendee') ? (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => renameSpeaker(unnamed)}
-                  style={styles.row}
-                >
-                  <Text style={styles.rowValue}>{speakerLabel(unnamed)} has no name yet</Text>
-                  <Text style={styles.link}>Name ›</Text>
-                </Pressable>
-              ) : null}
-              {restoreMerged}
-            </View>
-          ) : null}
-          <View style={styles.bottomBar}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open full transcript"
-              onPress={() => setTranscriptExpanded(true)}
-              style={styles.barButton}
-            >
-              <Text style={styles.barButtonText}>Transcript</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => router.push({ pathname: '/session/[id]', params: { id: sessionId } })}
-              style={[styles.barButton, styles.barButtonPrimary]}
-            >
-              <Text style={styles.barButtonPrimaryText}>Continue in chat</Text>
-            </Pressable>
-          </View>
-        </ScrollView>
+                {unnamed !== undefined && editable ? (
+                  <Button
+                    label={`${speakerLabel(unnamed)} · Name ›`}
+                    variant="text"
+                    onPress={() => renameSpeaker(unnamed)}
+                  />
+                ) : null}
+                {restoreMerged}
+              </View>
+            ) : null
+          }
+          answers={
+            visibleAnswers.length ? (
+              <View style={styles.block}>
+                <UiText
+                  variant="label"
+                  accessibilityLabel={`${completedAnswerCount} answers`}
+                >{`ANSWERS · ${completedAnswerCount}`}</UiText>
+                {noticedCards().slice(0, visibleAnswers.length)}
+              </View>
+            ) : null
+          }
+        />
+        {textPrompt.dialog}
         {transcriptSheet}
       </KeyboardAvoidingView>
     );
