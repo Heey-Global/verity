@@ -66,6 +66,12 @@ current generation keeps serving. The candidate's own `/healthz` does not guard 
 probe accepts a `degraded` 503 on purpose. A host installed before the host component existed is
 told to re-run the Verity installer (the Quick start command below) once; no insecure compatibility mode is available.
 
+The gVisor devcontainer builder follows the release in the same way: during an update, the Updater
+asks the host component `verity-host-builder` to install the builder the target image ships. The
+component verifies the image's release signature itself and leaves an unchanged builder running. A
+builder that cannot be updated keeps the previous one and does not fail the update; see
+[`deploy/buildkit`](buildkit/README.md#builder-updates).
+
 That's it — Verity's data lives on the Docker-managed `verity-data` volume, which
 the daemon creates on first use and initializes with the right owner (the image
 pre-creates `/srv/verity` as uid 1000). There is **no host directory to create or

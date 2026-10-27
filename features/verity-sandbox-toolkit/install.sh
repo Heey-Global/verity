@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.309}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.310}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.94.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.95.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -48,11 +48,11 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.163.0}"
+CODEX_VERSION="${CODEXVERSION:-0.164.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.2.2}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.1.3}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.1.4}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -486,7 +486,7 @@ WRITTEN_PATHS+=("$GITCONFIG")
 # .gitignore. Git auto-loads ~/.config/git/ignore (no core.excludesFile).
 GIT_IGNORE_DIR="$REMOTE_HOME/.config/git"
 mkdir -p "$GIT_IGNORE_DIR"
-printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' > "$GIT_IGNORE_DIR/ignore"
+printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
 # Chown only the git subdir we own — NOT the `.config` parent, which on an
 # arbitrary base (python:3.12 etc.) may already hold other tooling whose
 # ownership a recursive chown would silently clobber.
@@ -673,6 +673,10 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/
 # with the container capability; inert without VERITY_PROJECT_REPO_URL.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-repo" /opt/agent-seed/bin/verity-repo
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
+# Records the operator's "skip lint/format while dependencies are missing" answer
+# for the pre-push hook; the hook resolves it as a sibling, the symlink below
+# lets the agent run the command the hook prints.
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -695,6 +699,7 @@ ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
+ln -sf /opt/agent-seed/bin/verity-local-checks /usr/local/bin/verity-local-checks
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -418,6 +418,83 @@ describe('Docker update preparation', () => {
       await expect(prepare(docker)).resolves.toMatchObject({ phase: 'standby' });
       expect(docker.createContainer).toHaveBeenCalledTimes(2);
     });
+  });
+
+  // Repository builds are not a reason to hold back a Server update: a builder the host cannot
+  // update keeps the previous one, and the operator is told why instead of the update failing.
+  it('prepares the standby when asking for the builder fails outright', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));
+    const docker = fakeDocker();
+    const log = vi.fn();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path', builder: 'systemd-path' }),
+      );
+      // The request cannot be written at all: an error, not a host answer.
+      await mkdir(join(hostRuntimeDir, 'builder-request.json'));
+      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+            log,
+          }),
+        ),
+      ).resolves.toMatchObject({ phase: 'standby' });
+      expect(log).toHaveBeenCalledWith(expect.stringMatching(/Devcontainer builder not updated/u));
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prepares the standby and reports a builder the host components cannot update', async () => {
+    const { root } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-builder-'));
+    const docker = fakeDocker();
+    const log = vi.fn();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'devcontainer-builder.json'),
+        '{"version":1,"gid":1102}',
+      );
+      // Installed before verity-host-builder existed: no `builder` trigger.
+      await writeFile(
+        join(hostRuntimeDir, 'agent.json'),
+        JSON.stringify({ version: 1, trigger: 'systemd-path' }),
+      );
+      docker.inspectImageLabels = vi.fn(async () => ({ 'org.verity.devcontainer-builder': '1' }));
+      await expect(
+        resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+            log,
+          }),
+        ),
+      ).resolves.toMatchObject({ phase: 'standby' });
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /Devcontainer builder not updated.*Re-run the Verity installer once/su,
+        ),
+      );
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
   });
 
   /**

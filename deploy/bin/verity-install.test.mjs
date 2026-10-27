@@ -140,9 +140,16 @@ function makeHost({
     '#!/usr/bin/env bash\nexit 0\n',
     { mode: 0o755 },
   );
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'verity-host-builder'),
+    `#!/usr/bin/env bash\nprintf 'verity-host-builder %s\\n' "$*" >>${JSON.stringify(hostRuntimeLog)}\n`,
+    { mode: 0o755 },
+  );
   for (const unit of [
     'verity-host-runtime.path',
     'verity-host-runtime.service',
+    'verity-host-builder.path',
+    'verity-host-builder.service',
     'verity-host-diagnostics.service',
     'verity-host-diagnostics.timer',
   ]) {
@@ -519,7 +526,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'none' },
+      { version: 1, trigger: 'none', builder: 'none' },
     );
     assert.equal(handoverEnv(host).argv, 'managed-up');
   });
@@ -531,6 +538,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const calls = readFileSync(host.hostRuntimeLog, 'utf8');
     assert.match(calls, /^systemctl daemon-reload$/m);
     assert.match(calls, /^systemctl enable --now verity-host-runtime\.path$/m);
+    assert.match(calls, /^systemctl enable --now verity-host-builder\.path$/m);
     assert.match(calls, /^systemctl enable --now verity-host-diagnostics\.timer$/m);
     const override = readFileSync(
       join(
@@ -572,7 +580,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       JSON.parse(
         readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
       ),
-      { version: 1, trigger: 'systemd-path' },
+      { version: 1, trigger: 'systemd-path', builder: 'systemd-path' },
     );
   });
 
@@ -601,6 +609,11 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         ),
       ),
       { version: 1, gid: 1102 },
+    );
+    // Recorded from this release's bundle, so the next update finds nothing to change.
+    assert.match(
+      readFileSync(host.hostRuntimeLog, 'utf8'),
+      new RegExp(`^verity-host-builder record ${host.checkout}/deploy$`, 'm'),
     );
   });
 

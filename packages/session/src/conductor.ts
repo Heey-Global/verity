@@ -488,6 +488,7 @@ export interface ConductorDeps {
         toolName: BrokeredGrantToolName;
         target: string;
         channel: BrokeredGrantChannel;
+        bindingId?: string;
       }) => Promise<boolean>)
     | undefined;
   /** ADR 0011 D2: persist a scoped brokered-secret grant after an operator allow.
@@ -502,6 +503,7 @@ export interface ConductorDeps {
         target: string;
         scope: 'session' | 'project' | 'forever';
         channel: BrokeredGrantChannel;
+        bindingId?: string;
       }) => Promise<void>)
     | undefined;
   /** Fan-out bus threaded into each turn's runner (M3-2). */
@@ -1024,7 +1026,11 @@ export class Conductor {
    */
   private readonly externalPermissions = new Map<
     string,
-    { settle: (answer: ExternalPermissionAnswer) => void; channel: BrokeredGrantChannel }
+    {
+      settle: (answer: ExternalPermissionAnswer) => void;
+      channel: BrokeredGrantChannel;
+      brokeredGrantBindingId?: string;
+    }
   >();
   /** Synchronous claim fence around async permission delivery. The first manual or
    * automatic decision owns a prompt until delivery succeeds or fails. */
@@ -2864,7 +2870,13 @@ export class Conductor {
           return true;
         }
         try {
-          await this.persistBrokeredGrant(sessionId, request, options.scope, external?.channel);
+          await this.persistBrokeredGrant(
+            sessionId,
+            request,
+            options.scope,
+            external?.channel,
+            external?.brokeredGrantBindingId,
+          );
           options.onScopeSaved?.(true);
         } catch {
           // The runner has already consumed the allow and may have executed a
@@ -2919,6 +2931,7 @@ export class Conductor {
     sessionId: string,
     request: PermissionRequest,
     statedChannel?: BrokeredGrantChannel,
+    bindingId?: string,
   ): Promise<boolean> {
     const toolName = brokeredGrantToolName(request.toolName);
     const check = this.deps.checkBrokeredHttpGrant;
@@ -2945,6 +2958,7 @@ export class Conductor {
             secretAlias,
             toolName: target.toolName,
             target: target.target,
+            ...(bindingId !== undefined ? { bindingId } : {}),
           }),
         ),
       );
@@ -2960,6 +2974,7 @@ export class Conductor {
     scope: 'session' | 'project' | 'forever',
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
+    bindingId?: string,
   ): Promise<void> {
     if (scope === 'forever') throw new Error('permanent brokered secret grants are unsupported');
     const persist = this.deps.persistBrokeredHttpGrant;
@@ -2993,6 +3008,7 @@ export class Conductor {
         secretAlias,
         toolName: target.toolName,
         target: target.target,
+        ...(bindingId !== undefined ? { bindingId } : {}),
       });
     }
   }
@@ -3042,11 +3058,13 @@ export class Conductor {
     toolName: string;
     input: Record<string, unknown>;
     channel: BrokeredGrantChannel;
+    /** Server-resolved provider identity captured before the approval can wait. */
+    brokeredGrantBindingId?: string;
     /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
-    const { sessionId, toolUseId, channel, signal } = params;
+    const { sessionId, toolUseId, channel, signal, brokeredGrantBindingId } = params;
     if (this.pendingPermissionRequests.get(sessionId)?.has(toolUseId) === true) {
       throw new Error(`permission ${toolUseId} is already pending`);
     }
@@ -3069,7 +3087,11 @@ export class Conductor {
       this.pendingPermissionRequests.get(sessionId) ?? new Map<string, PermissionRequest>();
     pending.set(toolUseId, request);
     this.pendingPermissionRequests.set(sessionId, pending);
-    this.externalPermissions.set(`${sessionId}\0${toolUseId}`, { settle, channel });
+    this.externalPermissions.set(`${sessionId}\0${toolUseId}`, {
+      settle,
+      channel,
+      ...(brokeredGrantBindingId !== undefined ? { brokeredGrantBindingId } : {}),
+    });
     const onAbort = (): void => {
       this.settleExternalPermission(sessionId, toolUseId, {
         decision: { behavior: 'deny', message: EXTERNAL_PERMISSION_ABORT_MESSAGE },
@@ -3092,7 +3114,7 @@ export class Conductor {
       if (
         params.allowStandingGrant !== false &&
         (await Promise.race([
-          this.isCoveredByBrokeredGrant(sessionId, request, channel),
+          this.isCoveredByBrokeredGrant(sessionId, request, channel, brokeredGrantBindingId),
           answered.then(() => false),
         ]))
       ) {

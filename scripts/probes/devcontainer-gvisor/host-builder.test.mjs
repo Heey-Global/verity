@@ -53,11 +53,12 @@ test('host configuration restricts worker authority and bounds service resources
   assert.match(config, /max-parallelism = 1/);
   assert.match(config, /noProcessSandbox = false/);
   assert.match(config, /\[worker\.containerd\]\s+enabled = false/);
+  assert.match(config, /snapshotter = "auto"/);
   const unit = source('verity-buildkit.service');
   for (const constraint of [
-    'MemoryMax=2G',
+    'MemoryMax=@MEMORY_MAX@',
     'MemorySwapMax=0',
-    'CPUQuota=100%',
+    'CPUQuota=@CPU_QUOTA@',
     'TasksMax=512',
     'ProtectSystem=strict',
     'RuntimeDirectoryPreserve=yes',
@@ -65,6 +66,49 @@ test('host configuration restricts worker authority and bounds service resources
   ])
     assert(unit.includes(constraint), constraint);
   assert.match(unit, /^InaccessiblePaths=.*\/run\/docker.sock.*\/var\/run\/docker.sock/m);
+});
+
+test('installer fills every placeholder in the unit from the host resource limits', () => {
+  // A placeholder the installer does not replace reaches systemd as an invalid
+  // value; systemd drops the setting with a warning and the unit runs unbounded.
+  const placeholders = [...source('verity-buildkit.service').matchAll(/@([A-Z_]+)@/g)].map(
+    (match) => match[1],
+  );
+  const installer = source('install.sh');
+  assert.deepEqual(placeholders.sort(), ['CPU_QUOTA', 'MEMORY_MAX']);
+  for (const name of placeholders) assert(installer.includes(`s/@${name}@/`), name);
+});
+
+test('resource limits scale with the host within their bounds', () => {
+  const limits = (cpus, memGiB) => {
+    const result = spawnSync(
+      'bash',
+      [new URL('../../../deploy/buildkit/resources.sh', import.meta.url).pathname],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          VERITY_BUILDKIT_HOST_CPUS: String(cpus),
+          VERITY_BUILDKIT_HOST_MEM_KIB: String(memGiB * 1024 * 1024),
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  assert.equal(limits(1, 2), 'CPU_QUOTA=100%\nMEMORY_MAX=2048M\n');
+  assert.equal(limits(4, 16), 'CPU_QUOTA=200%\nMEMORY_MAX=4096M\n');
+  assert.equal(limits(16, 64), 'CPU_QUOTA=800%\nMEMORY_MAX=8192M\n');
+  assert.notEqual(
+    spawnSync(
+      'bash',
+      [new URL('../../../deploy/buildkit/resources.sh', import.meta.url).pathname],
+      {
+        env: { ...process.env, VERITY_BUILDKIT_HOST_CPUS: '0' },
+      },
+    ).status,
+    0,
+  );
 });
 
 test('service waits for BuildKit readiness and keeps its trace socket in a writable runtime directory', () => {

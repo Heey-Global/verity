@@ -1,3 +1,4 @@
+import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 import { createHash } from 'node:crypto';
 import type { TrustedCliOutputStore } from './trusted-cli-output.js';
 import {
@@ -39,6 +40,7 @@ export type TrustedCliToolResult = {
 const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 export function createTrustedCliTool(options: {
+  requireApprovalBinding?: boolean;
   outputStore?: TrustedCliOutputStore;
   getProjectBinding: (projectId: string) => Promise<BrokeredHttpProjectBinding | undefined>;
   resolveSecret: (input: {
@@ -81,6 +83,10 @@ export function createTrustedCliTool(options: {
       throw new Error('invalid trusted CLI tool call');
     }
     const request = trustedCliRequestSchema.parse(call.input);
+    if (options.requireApprovalBinding && call.approvedBinding === undefined)
+      throw new Error('approved Doppler binding is required');
+    const binding = await options.getProjectBinding(projectId);
+    assertBrokeredDopplerBinding(binding, call.approvedBinding);
     const requestHash = createHash('sha256')
       .update(canonicalJson({ tool: call.name, request }))
       .digest('hex');
@@ -95,8 +101,7 @@ export function createTrustedCliTool(options: {
     ) {
       throw new Error('trusted CLI approval was already consumed');
     }
-    const binding = await options.getProjectBinding(projectId);
-    if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+    assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
     const resolved: Uint8Array[] = [];
     try {
       const secrets: {
@@ -148,6 +153,10 @@ export function createTrustedCliTool(options: {
         command: request.command,
         ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),
       };
+      const dispatch: typeof execute = async (execution, streamOptions) => {
+        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        return execute(execution, streamOptions);
+      };
       const redactors =
         options.outputStore === undefined ? undefined : createTrustedCliOutputRedactors(resolved);
       if (options.outputStore !== undefined && redactors !== undefined) {
@@ -155,10 +164,10 @@ export function createTrustedCliTool(options: {
           options.outputStore,
           { projectId, sessionId },
           redactors,
-          (streamOptions) => execute(input, streamOptions),
+          (streamOptions) => dispatch(input, streamOptions),
         );
       }
-      return await execute(input);
+      return await dispatch(input);
     } finally {
       for (const secret of resolved) secret.fill(0);
     }

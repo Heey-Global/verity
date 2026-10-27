@@ -185,6 +185,7 @@ export interface McpGatewayDeps {
     sessionId: string;
     callId: string;
     invocationId: string;
+    authorizationSnapshot?: string;
     requestMac: string;
     macKeyId: string;
     toolName: GatewayToolName;
@@ -241,6 +242,7 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      authorizationSnapshot?: string;
       toolName: GatewayToolName;
       request: unknown;
     },
@@ -834,7 +836,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         'unavailable',
         keyed,
         toolName,
-        toolError(id, 'Google access changed. Try again.'),
+        toolError(id, 'Tool access changed. Try again.'),
       );
     }
     let answer: ExternalPermissionAnswer;
@@ -880,6 +882,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           sessionId,
           callId,
           invocationId,
+          ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
           ...keyed,
           toolName: toolName,
           input: request.data,
@@ -936,7 +939,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         });
         if (current !== authorizationSnapshot)
           throw new ControlPlaneSessionAuthorityError(
-            'Google access changed while waiting for approval. Submit the operation again.',
+            'Tool access changed while waiting for approval. Submit the operation again.',
           );
       }
       // A card can be parked for minutes, and the caller's turn may settle while it waits —
@@ -961,6 +964,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         callId,
         invocationId,
         approvedByCard: !standingAuthorization,
+        ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
         toolName: toolName,
         request: request.data,
       });

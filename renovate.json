@@ -174,6 +174,14 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Track the BuildKit daemon the host installer extracts. The `# renovate:` annotation alone matches no stock manager in a shell script, so without this the pin froze at v0.23.2 while the CI probe image moved on, and production builders kept a cache-export loop fixed upstream in v0.25.0. Shares the depName with the probe's BuildKit.Dockerfile, so both bump in one branch.",
+      "managerFilePatterns": ["/^deploy/buildkit/install\\.sh$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+=\\S+?:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ]
+    },
+    {
+      "customType": "regex",
       "description": "Track version pins declared as shell `VAR=\"${OVERRIDE:-VERSION}\"` in features/verity-sandbox-toolkit/install.sh (the single source of truth for the gh/doppler/claude-code/codex/opencode versions). The stock managers don't parse shell-default expansions, so without this the annotated pins silently freeze. The captured value is the literal default after `:-`.",
       "managerFilePatterns": ["/(^|/)features/verity-sandbox-toolkit/install\\.sh$/"],
       "matchStrings": [

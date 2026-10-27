@@ -238,6 +238,7 @@ function SessionList({ client }: { client: VerityClient }) {
     projects,
     loading: projectsLoading,
     error: projectsError,
+    listState: projectListState,
     refresh: refreshProjects,
     devServersByProject,
     detectionsByProject,
@@ -285,10 +286,19 @@ function SessionList({ client }: { client: VerityClient }) {
       baseUrl,
       previousGroups.current,
       forgeConnections,
+      projectListState,
     );
     previousGroups.current = next;
     return next;
-  }, [baseUrl, detectionsByProject, devServersByProject, forgeConnections, projects, sessions]);
+  }, [
+    baseUrl,
+    detectionsByProject,
+    devServersByProject,
+    forgeConnections,
+    projects,
+    projectListState,
+    sessions,
+  ]);
   // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);

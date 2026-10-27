@@ -18,9 +18,17 @@ must have the pinned devcontainer CLI and Docker buildx installed on PATH.
 BuildKit is a trusted root host daemon. It requires mount and network namespace
 privileges and cgroup delegation. It does not run in a privileged Docker
 container. The systemd unit hides Docker/containerd sockets, makes the host
-filesystem read-only except for builder state, and limits the service to 2 GiB
-memory, no swap, one CPU, and 512 tasks. The OCI worker runs one operation at a
-time and disables insecure entitlements and the containerd worker. BuildKit GC
+filesystem read-only except for builder state, and limits the service to half
+the host's CPUs (at least one), a quarter of its memory kept between 2 GiB and
+8 GiB, no swap, and 512 tasks. `resources.sh` derives those limits and the
+installer writes them into the unit, so they follow the host on every
+installation and update. The OCI worker runs one operation at a time and
+disables insecure entitlements and the containerd worker. Snapshots use
+overlayfs wherever the state directory's file system supports it: each step is
+a layer over its parent rather than a full copy of the image's file system,
+which keeps small steps fast and the cache within its limit. Elsewhere BuildKit
+falls back to the slower `native` snapshotter. An upgrade from `native` to
+overlayfs rebuilds the cache once and removes the old snapshots. BuildKit GC
 bounds its own cache independently of the Server's exported images. A build can
 use outbound networking; this service does not implement egress policy.
 
@@ -74,6 +82,47 @@ on every repair run. It runs `deploy/buildkit/install.sh`, waits for
   `/run/verity-buildkit` bind and that group into the Server's deployment spec;
 - records `devcontainer-builder.json` in the host runtime directory, so the
   Updater can apply the same change during a later update.
+
+### Builder updates
+
+The builder is a host service, so a Server image alone does not change it. On
+hosts set up by an installer that includes `verity-host-builder`, every guarded
+Server update brings the builder to the one its release ships:
+
+1. A release image that carries this bundle declares
+   `org.verity.devcontainer-builder=1`.
+2. After registering the gVisor runtimes, and before the standby is created, the
+   Updater writes `builder-request.json` into the host runtime directory. The
+   request names only the official target image digest.
+3. `verity-host-builder`, started by its systemd path unit, pulls that digest
+   from the registry and verifies the image's release signature with the pinned
+   cosign verifier. It then copies `deploy/buildkit`, `deploy/gvisor` and
+   `deploy/host/verity-host-runtime` out of the verified image and refuses a
+   bundle that contains a symbolic link.
+4. It compares the bundle's content hash, documentation excluded, with the one
+   recorded at the last installation. An unchanged builder keeps running, and
+   builds in progress are not interrupted.
+5. Otherwise it keeps the current builder files aside and runs the bundle's
+   `install.sh` with the recorded socket group. It records the new hash only
+   once the unit is active and its socket exists. A failed installation, an
+   interruption (including systemd stopping the unit), or a builder that does
+   not come back restores the previous files and restarts the previous builder.
+
+Staging, the signature verifier, the kept-aside files and the record live in
+`/var/lib/verity/host-builder`. That directory is root-only and not mounted
+into any container. From the shared host runtime directory, the component
+reads only the request and the installer's receipt.
+
+A builder that cannot be updated does not hold back the Server update. The
+Updater logs the reason, the previous builder keeps serving, and the next
+update asks again. Hosts set up before `verity-host-builder` existed have no
+component to ask: run the installer once. That run installs the current
+builder directly as well.
+
+The request carries no files and no code. The trust anchor is the Server
+release signature, which the host checks itself, so a requester can only
+choose among signed Verity releases. That includes an older one, whose builder
+is then installed, as a rolled-back Server would need.
 
 Deployments sealed before this release are migrated by a repair run (rerun the
 installer and choose "Repair"). The migration adds only the socket bind and its
