@@ -10,6 +10,7 @@ import {
   githubRepositoryAccessReady,
   settingsChecklist,
   settingsChecklistHeadline,
+  type AuditHealth,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
@@ -89,6 +90,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
+  // `null` until the Server says this device may read audit logs; members and
+  // Servers without the trail never show the row.
+  const [auditHealth, setAuditHealth] = useState<AuditHealth | null>(null);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -99,6 +103,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       client
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      client
+        .auditHealth()
+        .then((health) => active && setAuditHealth(health))
         .catch(() => undefined);
       // A stored key is not an active subscription: Uplink may have refused it.
       // Keep the last known state while re-reading so the row does not flicker.
@@ -229,6 +237,19 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/server-update')}
           />
+          {auditHealth !== null ? (
+            <SettingsNavRow
+              icon="file-text"
+              title="Audit logs"
+              subtitle="Image builds and project deletions"
+              status={
+                auditHealth.status === 'degraded'
+                  ? { intent: 'needsSetup', label: 'Needs review' }
+                  : undefined
+              }
+              onPress={() => router.push('/settings/audit-logs' as Href)}
+            />
+          ) : null}
           <SettingsNavRow
             icon="zap"
             signature
