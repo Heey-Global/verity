@@ -11,7 +11,7 @@ replacement Docker worker.
 This integration requires a Linux host with systemd, Docker Engine, and the
 pinned gVisor release in `deploy/gvisor/versions.env`. The installer handles
 amd64 and arm64 using those checksums; the host-service CI currently exercises
-ubuntu-24.04 amd64 only. Docker Desktop, rootless systemd, remote TCP BuildKit,
+ubuntu-26.04 amd64 only. Docker Desktop, rootless systemd, remote TCP BuildKit,
 and non-systemd hosts are not covered by this deployment. A source-run Server
 must have the pinned devcontainer CLI and Docker buildx installed on PATH.
 
@@ -373,6 +373,16 @@ required rollback images and project data. Exercise low-space/inode rejection,
 concurrent requests, cancellation and restart recovery within that budget.
 The disposable host-service CI fixture records bounded cold/warm/repeated
 phase samples; its small-workload estimate does not calibrate larger projects.
+The disposable runner also creates ten independent 128 MiB COPY results under
+a 4 GiB growth allowance, 2 GiB free reserve and six-minute deadline. A bounded
+BuildKit prune applies a 1 GiB cache target while a real RUN holds references;
+the test checks those references survive and observes remote solve completion
+after cancelling the client. This tests the GC budget mechanism, not automatic
+GC scheduling, and does not substitute for a representative native-snapshotter
+workload. Import cancellation uses a partial-input Unix-socket test transport
+to observe the Engine's terminal error and then a successful import. It does
+not establish arbitrary daemon-internal cleanup after a direct disconnect or
+cancellation through the production provisioning API.
 
 After separately approving a production rollout, a project Repair is successful
 only when the build process exits successfully, the archive imports, the

@@ -79,14 +79,17 @@ NODE
 # Enter through root, then drop to the runner with the dedicated socket group.
 # Explicit sudo run-as groups are not covered by every runner sudoers policy.
 # Supplementary groups retain Docker access for image loading; the Server is non-root.
-spawn_build() {
+run_probe() {
     sudo systemctl restart verity-build-storage.service
     sudo --preserve-env=PATH setpriv --reuid "$(id -u)" \
         --regid "$(getent group verity-buildkit | cut -d: -f3)" --init-groups \
         env PATH="$PWD/node_modules/.bin:$PATH" VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT=unix:///run/verity-buildkit/buildkitd.sock \
         PROBE_STORAGE_ROOT="$work/build-storage" PROBE_STORAGE_REPORT=/var/lib/verity/host-diagnostics/storage.json \
         PROBE_EVIDENCE="$PROBE_EVIDENCE" PROBE_WARM="${PROBE_WARM:-0}" \
-        node scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
+        node "$@"
+}
+spawn_build() {
+    run_probe scripts/probes/devcontainer-gvisor/server-spawner.mjs "${2:-$work}" "$1"
 }
 spawn_build "$name:positive" > "$PROBE_EVIDENCE/positive.log" 2>&1
 PROBE_WARM=1 spawn_build "$name:positive" > "$PROBE_EVIDENCE/warm.log" 2>&1
@@ -157,6 +160,10 @@ if ! spawn_build "$name:network2" "$network_work" > "$PROBE_EVIDENCE/network-egr
     false
 fi
 rules_after_second=$(count_subnet_rules)
+run_probe scripts/probes/devcontainer-gvisor/storage-lifecycle.mjs "$work" "$name:positive" \
+    > "$PROBE_EVIDENCE/storage-lifecycle.log" 2>&1
+run_probe scripts/probes/devcontainer-gvisor/storage-import-cancel.mjs "$work" "$name:positive" \
+    > "$PROBE_EVIDENCE/import-cancellation.log" 2>&1
 sudo bash deploy/buildkit/install.sh > "$PROBE_EVIDENCE/reinstall.log" 2>&1
 [[ $(sed -n 's/^SUBNET=//p' /etc/verity-buildkit/network.env) == "$subnet" ]]
 rules_after_reinstall=$(count_subnet_rules)
