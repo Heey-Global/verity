@@ -4617,7 +4617,18 @@ migrations['0166_devcontainer_policy'] = {
   },
 };
 
-migrations['0167_backup_foundation'] = {
+migrations['0167_managed_server_provider_authority'] = {
+  async up(db) {
+    await sql`alter table managed_dev_servers add column approved_provider_authority text`.execute(
+      db,
+    );
+  },
+  async down(db) {
+    await sql`alter table managed_dev_servers drop column approved_provider_authority`.execute(db);
+  },
+};
+
+migrations['0168_backup_foundation'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
       db,

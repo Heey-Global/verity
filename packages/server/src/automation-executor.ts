@@ -30,6 +30,8 @@ export type AutomationRunInput = Pick<
 export interface AutomationExecutorDeps {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
   getProject(projectId: string): Promise<ProjectRecord | undefined>;
+  /** Recheck the sponsor independently of the persisted automation claim. */
+  isAuthorized?(automation: AutomationRunInput, session: SessionRecord): Promise<boolean>;
   /** A claim can outlive a pause, replacement, or move. Confirm it still belongs
    * to this workspace before a script or its resulting prompt is dispatched. */
   isCurrent?(automation: AutomationRunInput, session: SessionRecord): Promise<boolean>;
@@ -39,6 +41,7 @@ export interface AutomationExecutorDeps {
   beginProjectActivity?(projectId: string): (() => void) | undefined;
   /** Absent where no project container can run scripts. */
   runScript?(input: {
+    automation: AutomationRunInput;
     script: string;
     project: ProjectRecord;
     session: SessionRecord;
@@ -107,7 +110,12 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
       }
       // stdout/stderr may contain repository data or credentials; only the exit
       // code crosses into history, notices, or the agent's turn.
-      const result = await deps.runScript({ script, project, session });
+      if ((await deps.isAuthorized?.(automation, session)) === false)
+        return {
+          outcome: 'skipped',
+          detail: 'The automation sponsor no longer has execution permission.',
+        };
+      const result = await deps.runScript({ script, project, session, automation });
       if (result.timedOut) return { outcome: 'error', detail: 'The check timed out.' };
       if (result.exitCode === 0) return { outcome: 'ok', detail: 'Nothing to do.' };
       if (result.exitCode === AUTOMATION_RUN_EXIT_CODE) return 'run';
@@ -166,12 +174,18 @@ export function createAutomationExecutor(deps: AutomationExecutorDeps): Automati
         if ((await deps.isCurrent?.(automation, session)) === false) {
           return { outcome: 'skipped', detail: 'The automation or its workspace changed.' };
         }
+        if ((await deps.isAuthorized?.(automation, session)) === false)
+          return {
+            outcome: 'skipped',
+            detail: 'The automation sponsor no longer has execution permission.',
+          };
         const { accepted } = await deps.dispatchTurnWhenIdle(session.sessionId, automation.prompt, {
           ...(automation.model !== null ? { model: automation.model } : {}),
           validateSession: async (acceptedSession) =>
             acceptedSession.projectId === session.projectId &&
             acceptedSession.worktree === session.worktree &&
-            (await deps.isCurrent?.(automation, acceptedSession)) !== false,
+            (await deps.isCurrent?.(automation, acceptedSession)) !== false &&
+            (await deps.isAuthorized?.(automation, acceptedSession)) !== false,
           displayPrompt: `Automation · ${automation.name}\n\n${automation.prompt}`,
           ...(automation.sponsorUserId
             ? { initiatedBy: { userId: automation.sponsorUserId } }

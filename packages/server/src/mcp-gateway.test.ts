@@ -1169,3 +1169,21 @@ describe('account-bound approval snapshots', () => {
     expect(invokeTool.mock.calls.map(([input]) => input.invocationId)).toEqual(receipts);
   });
 });
+
+it('checks execution authority after approval and fails closed on lookup errors', async () => {
+  let approved = false;
+  const authorizeExecution = vi.fn(async () => {
+    expect(approved).toBe(true);
+    throw new Error('authority lookup unavailable');
+  });
+  const { gateway, invokeTool } = harness({
+    requestApproval: async () => {
+      approved = true;
+      return ALLOW;
+    },
+    authorizeExecution,
+  });
+  await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+  expect(authorizeExecution).toHaveBeenCalledOnce();
+  expect(invokeTool).not.toHaveBeenCalled();
+});

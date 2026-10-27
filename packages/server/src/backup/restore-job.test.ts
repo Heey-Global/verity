@@ -14,7 +14,7 @@ async function fixture() {
   const metadata = {
     image: 'ghcr.io/heey-global/verity/verity-server@sha256:' + 'a'.repeat(64),
     manifestHash: 'b'.repeat(64),
-    schema: '0167_backup_foundation',
+    schema: '0168_backup_foundation',
     architecture: 'amd64' as const,
     deploymentId: 'existing-device-identity',
     sourceInstallationId: randomUUID(),

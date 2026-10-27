@@ -48,6 +48,16 @@ async function setup() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-data-'));
   const authRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
   await authRegistry.register('device-token', 'knowledge-test-device');
+  // Gateway dispatch requires the active turn to carry its real initiating user.
+  const userId = authRegistry.resolveUserId('device-token')!;
+  expect(await ctx.store.hasProjectPermission(userId, 'p', 'execute')).toBe(true);
+  const prompt = await ctx.store.appendEvent('s', {
+    t: 'prompt',
+    text: 'Manage project knowledge',
+    initiatedBy: { userId },
+  });
+  await ctx.store.markTurnRunning({ sessionId: 's', promptSeq: prompt.seq });
+  await ctx.store.bindTurnIdentity('s', { turnId: 't', startCommandId: 'knowledge-start' });
   const tokens = createMcpGatewayTokens();
   const token = tokens.issue({ projectId: 'p', sessionId: 's', turnId: 't' });
   const permission = vi.fn(async () => ({ decision: { behavior: 'deny' }, decidedBy: 'card' }));

@@ -96,6 +96,15 @@ export function registerManagedDevServerRoutes(
             .array(z.object({ secretAlias: z.string(), env: z.string() }).strict())
             .max(16)
             .optional(),
+          providerSnapshot: z
+            .object({
+              provider: z.literal('doppler'),
+              project: z.string().min(1),
+              config: z.string().min(1),
+            })
+            .strict()
+            .nullable()
+            .optional(),
           local: z.boolean().optional(),
         })
         .strict()

@@ -14,12 +14,21 @@ export function createManagedDevServerSecretResolver(options: {
     secretName: string;
   }): Promise<Uint8Array>;
 }) {
-  return async (projectId: string, bindings: readonly ManagedDevServerSecretBinding[]) => {
+  return async (
+    projectId: string,
+    bindings: readonly ManagedDevServerSecretBinding[],
+    approvedAuthority?: string,
+  ) => {
     const normalized = normalizeManagedDevServerSecretBindings(bindings);
     const buffers: Uint8Array[] = [];
     try {
       const binding = await options.getProjectBinding(projectId);
       if (!binding) throw new Error('missing binding');
+      if (
+        approvedAuthority !== undefined &&
+        approvedAuthority !== JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
+      )
+        throw new Error('provider binding changed');
       const secrets: { env: string; value: string }[] = [];
       for (const entry of normalized) {
         const raw = await options.resolveSecret({
@@ -33,6 +42,13 @@ export function createManagedDevServerSecretResolver(options: {
           throw new Error('invalid secret');
         secrets.push({ env: entry.env, value });
       }
+      const current = await options.getProjectBinding(projectId);
+      if (
+        !current ||
+        current.dopplerProject !== binding.dopplerProject ||
+        current.dopplerConfig !== binding.dopplerConfig
+      )
+        throw new Error('provider binding changed');
       return secrets;
     } catch {
       throw new Error('Could not resolve managed server secrets. No server was started.');
