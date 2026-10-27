@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -499,6 +499,27 @@ it('exposes only fresh, validated builder migration status to Control diagnostic
     expect((await read({})).builderMigration).toBeUndefined();
     await writeFile(path, JSON.stringify({ ...status, state: 'invented' }));
     expect((await read({})).builderMigration).toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A missing migration status alone left Control unable to tell an unprovisioned
+// host from one in maintenance; the admission state answers that directly.
+it('reports whether the host provisioned build admission', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'builder-admission-'));
+  try {
+    const read = createRuntimeDiagnostics({ builderAdmissionDirectory: directory, now: () => now });
+    expect((await read({})).builderAdmission).toMatchObject({
+      state: 'not-provisioned',
+      message: expect.stringContaining('Re-run the verified Verity installer'),
+    });
+    await mkdir(join(directory, 'leases'));
+    expect((await read({})).builderAdmission?.state).toBe('incomplete');
+    await writeFile(join(directory, 'build-admission.lock'), '');
+    expect((await read({})).builderAdmission?.state).toBe('provisioned');
+    await writeFile(join(directory, 'migration-pending'), '');
+    expect((await read({})).builderAdmission?.state).toBe('migration-pending');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

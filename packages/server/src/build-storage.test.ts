@@ -422,6 +422,91 @@ describe('host maintenance admission', () => {
     expect(() => f.manager.acquire()).toThrow('Builder admission unavailable');
     expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(0);
   });
+  // A host whose builder came from an installer before managed admission has
+  // neither marker, and no storage report either: requiring them blocked every
+  // build on such hosts until the installer was re-run.
+  it('builds unmanaged on a host that never provisioned admission', () => {
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    // runsc keeps its state here on every builder host; it is not an admission marker.
+    mkdirSync(join(gate, 'runsc'), { recursive: true });
+    rmSync(f.report);
+    const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
+    const lease = manager.admit();
+    expect(lease.directory).toBe(tmpdir());
+    expect(() => lease.reserveBuild()).not.toThrow();
+    lease.dispose();
+    expect(() => manager.acquire()).toThrow('predates managed build admission');
+    expect(existsSync(join(gate, 'leases'))).toBe(false);
+  });
+  // A Repair can provision the host while an unmanaged attempt is still staging.
+  // Without a second look, its solve would start without the lock and host
+  // maintenance would see no lease and restart the worker underneath it.
+  it('takes the host lock for remote work once a Repair provisions mid-attempt', async () => {
+    const { spawn, spawnSync } = await import('node:child_process');
+    const { readdirSync } = await import('node:fs');
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(gate);
+    const manager = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate);
+    const lease = manager.admit();
+    await lease.run('true', [], commandOptions);
+    expect(existsSync(join(gate, 'leases'))).toBe(false);
+
+    mkdirSync(join(gate, 'leases'));
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    const lock = join(gate, 'build-admission.lock');
+    // Its own process group: the sleeping child inherits the lock and must end too.
+    const maintenance = spawn('flock', ['-x', lock, 'sleep', '5'], { detached: true });
+    try {
+      await setTimeout(200);
+      await expect(
+        lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' }),
+      ).rejects.toThrow('maintenance is in progress');
+    } finally {
+      process.kill(-(maintenance.pid ?? 0), 'SIGKILL');
+      await once(maintenance, 'exit');
+    }
+
+    await lease.run('true', [], { ...commandOptions, remoteOperation: 'build-export' });
+    expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(1);
+    expect(readdirSync(join(gate, 'leases'))).toHaveLength(1);
+    lease.dispose();
+    expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(0);
+    expect(readdirSync(join(gate, 'leases'))).toHaveLength(0);
+  });
+  it('fails closed on partial provisioning, pending recovery and held maintenance', async () => {
+    const { spawn } = await import('node:child_process');
+    const partial = admission();
+    rmSync(join(partial.gate, 'build-admission.lock'));
+    expect(() => partial.manager.admit()).toThrow('missing build-admission.lock');
+
+    const pending = admission();
+    rmSync(join(pending.gate, 'build-admission.lock'));
+    rmSync(join(pending.gate, 'leases'), { recursive: true });
+    writeFileSync(join(pending.gate, 'migration-pending'), '');
+    expect(() => pending.manager.admit()).toThrow('migration recovery is pending');
+
+    const held = admission();
+    const maintenance = spawn('flock', [
+      '-x',
+      join(held.gate, 'build-admission.lock'),
+      'sleep',
+      '5',
+    ]);
+    try {
+      await setTimeout(200);
+      expect(() => held.manager.admit()).toThrow('builder maintenance is in progress');
+    } finally {
+      maintenance.kill();
+    }
+  });
+  it('admits through the host lock once provisioned', () => {
+    const f = admission();
+    const lease = f.manager.admit();
+    expect(lease).toBeDefined();
+    lease?.dispose();
+  });
   it('keeps a durable host blocker after an ambiguous remote failure', async () => {
     const { readdirSync } = await import('node:fs');
     const f = admission();

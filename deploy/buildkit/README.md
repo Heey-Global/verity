@@ -195,9 +195,24 @@ Storage management uses builder bundle contract 2. Hosts with the contract-1
 host updater need one installer Repair from this release before they can apply
 contract-2 builder updates. The old host component deliberately refuses the new
 bundle: it does not know how to back up the additional storage service units.
-A Server update can finish while repository builds remain unavailable pending
-that Repair and valid filesystem evidence. Existing project containers continue
-running. Configure and verify the storage roots below before testing a build.
+A Server update can therefore finish on a host whose builder lacks managed
+admission. Such a host shows neither `build-admission.lock` nor `leases` in
+`/run/verity-buildkit`, and Control diagnostics report `builderAdmission` as
+`not-provisioned`. Its repository builds keep the unmanaged path they used before
+storage management existed: no host lock, no host storage report and no storage
+admission, as on releases before contract 2. The Server logs this once, and the
+Updater names the installer Repair the host needs. Such a build looks again before
+its BuildKit solve and its image import: if a Repair has provisioned the host in
+the meantime, it holds the shared lock and a lease marker like a managed build, so
+snapshotter maintenance waits for it, or it fails with a retry while maintenance
+already holds the lock.
+
+Every other state stays closed. A directory with only one of the two markers is
+`incomplete`, a `migration-pending` marker or an exclusively held lock pauses new
+builds, and an unreadable directory is never taken as unprovisioned. The Repair
+installs the bridge and the contract-2 builder, after which the next build is
+admitted through the lock. Configure and verify the storage roots below before
+testing a build.
 
 Subsequent guarded builder updates include both storage units in their scoped
 backup, retain host policy files, and restore timer activation/enabling on failure.
@@ -479,6 +494,11 @@ an interrupted transaction on the same boot. A failed restoration retains the
 journal and blocks new admissions. This is configuration rollback; daemon metadata
 is shared and it is not a full state backup. Old native state is retained and is
 never treated as disposable merely because overlayfs is running.
+
+Control diagnostics also report `builderAdmission`: `provisioned`,
+`migration-pending`, `incomplete`, `not-provisioned` or `unreadable`, read from the
+builder directory on every request, so a missing migration report can be told
+apart from a host that never received the reconciler.
 
 Control diagnostics include fresh `builderMigration` evidence with `deferred`,
 `migrating`, `converged`, `rolled-back` or `blocked` status, a bounded explanation

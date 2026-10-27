@@ -1,3 +1,4 @@
+import { builderAdmissionMessage, readBuilderAdmissionState } from './build-storage.js';
 import { request as httpRequest } from 'node:http';
 import { open, stat, statfs } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -115,7 +116,20 @@ const builderMigrationSchema = z
     observedAt: timestamp,
   })
   .strict();
+const builderAdmissionSchema = z
+  .object({
+    state: z.enum([
+      'provisioned',
+      'migration-pending',
+      'not-provisioned',
+      'incomplete',
+      'unreadable',
+    ]),
+    message: z.string().max(300),
+  })
+  .strict();
 export const runtimeDiagnosticSnapshotSchema = z.object({
+  builderAdmission: builderAdmissionSchema.optional(),
   builderMigration: builderMigrationSchema.optional(),
   observedAt: timestamp,
   window: z.object({ since: timestamp, until: timestamp }),
@@ -471,6 +485,8 @@ export function createRuntimeDiagnostics(deps: {
   dataRoot?: string | undefined;
   hostSnapshotPath?: string | undefined;
   builderMigrationPath?: string | undefined;
+  /** Where the host provisions build admission; reported even when no migration status exists. */
+  builderAdmissionDirectory?: string | undefined;
   readHostSnapshot?: (() => Promise<string>) | undefined;
   now?: () => number;
 }) {
@@ -879,7 +895,20 @@ export function createRuntimeDiagnostics(deps: {
         /* Missing or stale host evidence never implies convergence. */
       }
     }
+    let builderAdmission: z.infer<typeof builderAdmissionSchema> | undefined;
+    if (deps.builderAdmissionDirectory !== undefined) {
+      try {
+        const admission = readBuilderAdmissionState(deps.builderAdmissionDirectory);
+        builderAdmission = { state: admission.state, message: builderAdmissionMessage(admission) };
+      } catch {
+        builderAdmission = {
+          state: 'unreadable',
+          message: 'Builder admission state could not be read; builds remain paused.',
+        };
+      }
+    }
     return runtimeDiagnosticSnapshotSchema.parse({
+      ...(builderAdmission === undefined ? {} : { builderAdmission }),
       ...(builderMigration === undefined ? {} : { builderMigration }),
       observedAt: new Date(now).toISOString(),
       window,

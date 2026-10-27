@@ -5944,7 +5944,7 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const storageLease = this.opts.buildStorage?.acquire();
+    const storageLease = this.opts.buildStorage?.admit();
     let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
     try {
       snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);

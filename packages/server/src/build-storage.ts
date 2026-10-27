@@ -1,8 +1,9 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   openSync,
   unlinkSync,
   mkdirSync,
@@ -14,10 +15,13 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 
 const GiB = 1024 ** 3;
+const execFileAsync = promisify(execFile);
 const reportSchema = z.object({
   schemaVersion: z.literal(1),
   observedAt: z.iso.datetime(),
@@ -112,6 +116,53 @@ export interface BuildStorageLease {
   dispose(): void;
 }
 
+/**
+ * What the host has provisioned for build admission. The host builder
+ * installation creates the lock and the lease directory together before any
+ * snapshotter maintenance can run, so a directory with neither marks a host
+ * whose builder predates managed admission, not one in maintenance.
+ */
+export type BuilderAdmissionState =
+  | { state: 'provisioned' }
+  | { state: 'migration-pending' }
+  | { state: 'not-provisioned' }
+  | { state: 'incomplete'; missing: string[] };
+
+const NOT_PROVISIONED_MESSAGE =
+  "This host's devcontainer builder predates managed build admission, so builds run without host storage admission. Re-run the verified Verity installer once on the host to provision it.";
+
+export function builderAdmissionMessage(admission: BuilderAdmissionState): string {
+  switch (admission.state) {
+    case 'provisioned':
+      return 'Managed build admission is provisioned.';
+    case 'migration-pending':
+      return 'Builder migration recovery is pending; new builds wait until the host verifies the previous worker.';
+    case 'not-provisioned':
+      return NOT_PROVISIONED_MESSAGE;
+    case 'incomplete':
+      return `Managed build admission is incomplete (missing ${admission.missing.join(', ')}); re-run the verified Verity installer once on the host.`;
+  }
+}
+
+export function readBuilderAdmissionState(directory: string): BuilderAdmissionState {
+  const present = (name: string) => {
+    try {
+      lstatSync(join(directory, name));
+      return true;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      // Unreadable is not absent: never relax admission on an error we cannot classify.
+      throw cause;
+    }
+  };
+  if (present('migration-pending')) return { state: 'migration-pending' };
+  const markers = ['build-admission.lock', 'leases'];
+  const missing = markers.filter((name) => !present(name));
+  if (missing.length === 0) return { state: 'provisioned' };
+  if (missing.length === markers.length) return { state: 'not-provisioned' };
+  return { state: 'incomplete', missing };
+}
+
 /** One active Server owns an Engine, as with derived-image collection. All
  * projects share this admission gate, including context staging and import.
  * Recovery only removes positively identified abandoned attempts; ambiguous
@@ -119,6 +170,7 @@ export interface BuildStorageLease {
  */
 export class BuildStorage {
   private held = false;
+  private warnedUnprovisioned = false;
   constructor(
     readonly root: string,
     private readonly reportFile = '/run/verity-host-diagnostics/storage.json',
@@ -173,10 +225,103 @@ export class BuildStorage {
     }
   }
 
+  /**
+   * The Provisioner's entry point. On a host without managed admission the
+   * build takes the unmanaged path it took before admission existed: host
+   * storage reports and the lock come from the same host installation, so
+   * neither can be required where the other was never provisioned. Every other
+   * state that is not a held shared lock fails closed.
+   */
+  admit(): BuildStorageLease {
+    if (this.admissionDirectory !== undefined) {
+      const admission = this.admissionState(this.admissionDirectory);
+      if (admission.state === 'not-provisioned') {
+        if (!this.warnedUnprovisioned) {
+          this.warnedUnprovisioned = true;
+          console.warn(builderAdmissionMessage(admission));
+        }
+        return this.unmanagedLease(this.admissionDirectory);
+      }
+    }
+    return this.acquire();
+  }
+
+  /**
+   * A Repair can provision the host while this attempt is still staging. Remote
+   * work therefore looks again before it starts and, once the lock exists,
+   * holds it shared like any managed build, so host maintenance waits for it
+   * instead of restarting the worker underneath it.
+   */
+  private unmanagedLease(admissionDirectory: string): BuildStorageLease {
+    let admissionFd: number | undefined;
+    let admissionMarker: string | undefined;
+    const enterProvisionedHost = () => {
+      const admission = this.admissionState(admissionDirectory);
+      if (admission.state === 'not-provisioned') return;
+      if (admission.state !== 'provisioned')
+        throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
+      const fd = openSync(join(admissionDirectory, 'build-admission.lock'), 'r');
+      try {
+        const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
+          stdio: ['ignore', 'ignore', 'pipe', fd],
+          timeout: 5000,
+        });
+        if (locked.status !== 0)
+          throw new Error(
+            'Builder admission unavailable: the host was provisioned during this build and its maintenance is in progress; retry the build',
+          );
+        if (existsSync(join(admissionDirectory, 'migration-pending')))
+          throw new Error(
+            'Builder admission unavailable: builder migration recovery is pending; retry the build',
+          );
+        admissionMarker = mkdtempSync(join(admissionDirectory, 'leases', 'attempt-'));
+      } catch (cause) {
+        closeSync(fd);
+        throw cause;
+      }
+      admissionFd = fd;
+    };
+    return {
+      directory: tmpdir(),
+      retainArtifacts: false,
+      reserveBuild: () => {},
+      run: async (command, args, options) => {
+        if (options.remoteOperation !== undefined && admissionFd === undefined)
+          enterProvisionedHost();
+        return execFileAsync(command, args, {
+          env: options.env,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          timeout: options.timeout,
+          maxBuffer: options.maxBuffer,
+          encoding: 'utf8',
+        });
+      },
+      dispose: () => {
+        if (admissionMarker !== undefined) rmSync(admissionMarker, { recursive: true });
+        if (admissionFd !== undefined) closeSync(admissionFd);
+        admissionMarker = undefined;
+        admissionFd = undefined;
+      },
+    };
+  }
+
+  private admissionState(directory: string): BuilderAdmissionState {
+    try {
+      return readBuilderAdmissionState(directory);
+    } catch (cause) {
+      throw new Error('Builder admission state could not be read; builds remain paused', {
+        cause,
+      });
+    }
+  }
+
   acquire(): BuildStorageLease {
     let admissionFd: number | undefined;
     let admissionMarker: string | undefined;
     if (this.admissionDirectory !== undefined) {
+      const admission = this.admissionState(this.admissionDirectory);
+      if (admission.state !== 'provisioned')
+        throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
       try {
         admissionFd = openSync(join(this.admissionDirectory, 'build-admission.lock'), 'r');
         const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
@@ -192,7 +337,7 @@ export class BuildStorage {
       } catch (cause) {
         if (admissionFd !== undefined) closeSync(admissionFd);
         throw new Error(
-          'Builder admission unavailable; retry after managed maintenance completes',
+          `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`,
           { cause },
         );
       }
