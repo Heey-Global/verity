@@ -395,8 +395,8 @@ export const DEVCONTAINER_BUILDER_MOUNT: ServerDeploymentSpecBody['mounts'][numb
 };
 
 /**
- * Give an adopted Server the dedicated devcontainer builder: the read-only
- * socket bind and the socket's group, changing no other sealed authority.
+ * Give an adopted Server the dedicated devcontainer builder: its socket and
+ * admission bind and group, changing no other sealed authority.
  *
  * Only a caller that has verified the host service may ask for this; the
  * installer does, after the builder unit is active and its socket exists. Old

@@ -3,7 +3,7 @@ import { parse as parseYaml } from 'yaml';
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   readManagedDeployment,
   MANAGED_DEPLOYMENT_SPEC_FILE,
@@ -13,6 +13,19 @@ import {
 import { sealDeploymentSpec } from './deployment-spec.js';
 import { managedServerContainerSpec } from './managed-server-owner.js';
 import { runManagedBootstrap, type ManagedBootstrapEnvironment } from './managed-bootstrap.js';
+
+// Fixtures supply explicit uid/gid; a container without a passwd entry must
+// still exercise the sealed mount transitions rather than fail in userInfo().
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
+  userInfo: () => ({
+    uid: 1000,
+    gid: 1000,
+    username: 'verity-test',
+    homedir: '/tmp',
+    shell: '/bin/sh',
+  }),
+}));
 
 const digest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
@@ -146,7 +159,7 @@ describe('runManagedBootstrap', () => {
     const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
     if (!state.managed) throw new Error(state.reason);
     const desired = await managedServerContainerSpec(state.spec, env, async () => '');
-    expect(desired.binds).toContain('/run/verity-buildkit:/run/verity-buildkit:ro');
+    expect(desired.binds).toContain('/run/verity-buildkit:/run/verity-buildkit');
     expect(desired.groupAdd).toContain('1102');
     expect(
       state.spec.environment.some((entry) => entry.name.includes('DEVCONTAINER_BUILDER_GID')),
@@ -177,7 +190,7 @@ describe('runManagedBootstrap', () => {
       {
         source: { kind: 'bind', path: '/run/verity-buildkit' },
         target: '/run/verity-buildkit',
-        readOnly: true,
+        readOnly: false,
       },
     ]);
     // A later repair that could not verify the builder leaves the sealed spec alone.
