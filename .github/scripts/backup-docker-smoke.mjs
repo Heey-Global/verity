@@ -25,7 +25,7 @@ try {
     /Insufficient or unverifiable/,
   );
   await assertClean();
-  const controller = new AbortController();
+  const controller = new globalThis.AbortController();
   const cancellableDocker = {
     ...docker,
     async startContainer(id) {
@@ -45,6 +45,9 @@ try {
   await assertClean();
   console.log('Backup Docker capacity, failure and cancellation cleanup passed.');
 } finally {
+  await cleanup();
+}
+async function cleanup() {
   try {
     await docker.removeContainer(prefix + '-space');
   } catch (error) {
