@@ -10,6 +10,35 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe('isolated recovery trial', () => {
+  it('bounds malformed authentication traffic before password verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'trial-rate-'));
+    roots.push(root);
+    const authenticate = vi.fn(async () => false);
+    const app = createRestoreTrial({
+      review: new BackupDeviceReview(root),
+      authenticate,
+      inventory: async () => ({ devices: [], revokedIds: [], findings: [] }),
+      removeOtherTokens: async () => {},
+    });
+    try {
+      for (let attempt = 0; attempt < 30; attempt++)
+        expect(
+          (await app.inject({ method: 'POST', url: '/recovery/authenticate', payload: {} }))
+            .statusCode,
+        ).toBe(400);
+      const limited = await app.inject({
+        method: 'POST',
+        url: '/recovery/authenticate',
+        payload: {},
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.headers['retry-after']).toBeDefined();
+      expect(authenticate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('requires password and explicit device review, never retains revoked devices or serves ordinary routes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'trial-'));
     roots.push(root);

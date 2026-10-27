@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 test('restore shell sends credentials only over stdin, uses explicit selection and keeps the trial off canonical volumes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'restore-shell-'));
   const state = join(root, 'state');
-  const source = join(root, 'copied backup');
+  const source = join(root, "copied backup'$(false)");
   const bin = join(root, 'bin');
   const log = join(root, 'docker.log');
   await Promise.all([mkdir(state, { mode: 0o700 }), mkdir(source), mkdir(bin)]);
@@ -40,11 +40,11 @@ read_state() { if [[ -f $1 ]]; then cat "$1"; fi; }
 stat() { if [[ $1 = -c && $2 = %u ]]; then printf '0\\n'; else command stat "$@"; fi; }
 valid_server_image() { [[ $1 = ghcr.io/heey-global/verity/verity-server@sha256:* ]]; }
 verity_pairing_ipv4_addresses() { printf '192.0.2.1\\n'; }
-STATE_DIR=${JSON.stringify(state)}
+STATE_DIR=$1
 PROJECT_PATH="$STATE_DIR/compose-project"
 SERVER_REPO=ghcr.io/heey-global/verity/verity-server
 MANAGED_DEPLOYMENT_VOLUME=verity-managed-deployment
-opt_restore=${JSON.stringify(source)}
+opt_restore=$2
 opt_restore_action=trial
 opt_restore_repository=${repository}
 opt_restore_snapshot=7
@@ -58,18 +58,22 @@ opt_project=''
 opt_image=ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}
 opt_tag=latest
 restore_activation=0
-source ${JSON.stringify(resolve('deploy/bin/verity-restore-install'))}
+source "$3"
 verity_restore_install
 `;
   try {
-    const child = spawn('bash', ['-c', script], {
-      env: {
-        ...process.env,
-        PATH: bin + ':' + process.env.PATH,
-        VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
+    const child = spawn(
+      'bash',
+      ['-c', script, 'restore-shell', state, source, resolve('deploy/bin/verity-restore-install')],
+      {
+        env: {
+          ...process.env,
+          PATH: bin + ':' + process.env.PATH,
+          VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    );
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
@@ -97,7 +101,14 @@ verity_restore_install
     const before = await readFile(log, 'utf8');
     const mismatch = spawn(
       'bash',
-      ['-c', script.replace('opt_restore_snapshot=7', 'opt_restore_snapshot=8')],
+      [
+        '-c',
+        script.replace('opt_restore_snapshot=7', 'opt_restore_snapshot=8'),
+        'restore-shell',
+        state,
+        source,
+        resolve('deploy/bin/verity-restore-install'),
+      ],
       {
         env: {
           ...process.env,
