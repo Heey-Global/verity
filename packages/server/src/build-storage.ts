@@ -425,6 +425,9 @@ export class BuildStorage {
    */
   async admitInTurn(onQueued?: (ahead: number) => void): Promise<BuildStorageLease> {
     if (this.held || this.handingOver || this.waiting.length > 0) {
+      // A refusal that does not depend on the lease answers now, not after the wait;
+      // admit() checks everything again once the turn comes.
+      this.refuseUnadmittableHost();
       const ahead = this.waiting.length + 1;
       await new Promise<void>((resolve) => {
         this.waiting.push(resolve);
@@ -438,6 +441,32 @@ export class BuildStorage {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
       if (!this.held) this.wakeNext();
     }
+  }
+
+  /** The host-side refusals of {@link acquire}, without taking a lease or marker. */
+  private refuseUnadmittableHost(): void {
+    if (this.admissionDirectory === undefined) return;
+    const admission = this.admissionState(this.admissionDirectory);
+    if (admission.state === 'not-provisioned') return;
+    if (admission.state !== 'provisioned')
+      throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
+    let reason: string | undefined;
+    const fd = openSync(join(this.admissionDirectory, 'build-admission.lock'), 'r');
+    try {
+      const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
+        stdio: ['ignore', 'ignore', 'pipe', fd],
+        timeout: 5000,
+      });
+      if (locked.status !== 0) reason = 'builder maintenance is in progress';
+      else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
+        reason = 'builder migration recovery is pending';
+    } finally {
+      closeSync(fd);
+    }
+    if (reason !== undefined)
+      throw new Error(
+        `Builder admission unavailable: ${reason}; retry after managed maintenance completes`,
+      );
   }
 
   private wakeNext(): void {

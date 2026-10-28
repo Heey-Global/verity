@@ -584,6 +584,23 @@ describe('host maintenance admission', () => {
     expect(() => f.manager.acquire()).toThrow('Builder admission unavailable');
     expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(0);
   });
+  // Queued behind another build, a host that cannot admit anyone must still answer
+  // at once instead of after that build finishes.
+  it('refuses a queued build at once while the host cannot admit builds', async () => {
+    const f = admission();
+    const lease = await f.manager.admitInTurn();
+    writeFileSync(join(f.gate, 'migration-pending'), '');
+    let settled = false;
+    const refused = f.manager.admitInTurn().finally(() => {
+      settled = true;
+    });
+    await expect(refused).rejects.toThrow('Builder admission unavailable');
+    expect(settled).toBe(true);
+    rmSync(join(f.gate, 'migration-pending'));
+    lease.dispose();
+    // The refused request left no place in the queue behind.
+    (await f.manager.admitInTurn()).dispose();
+  });
   // A host whose builder came from an installer before managed admission has
   // neither marker, and no storage report either: requiring them blocked every
   // build on such hosts until the installer was re-run.
