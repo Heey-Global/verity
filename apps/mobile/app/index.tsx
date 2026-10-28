@@ -1,3 +1,4 @@
+import { SchedulingDiagnostics } from '../components/SchedulingDiagnostics';
 import { sessionLayout } from '../lib/sessionLayout';
 import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
 import { DeferredSessionPane } from '../components/DeferredSessionPane';
@@ -952,11 +953,13 @@ function SessionList({ client }: { client: VerityClient }) {
   );
 
   finishHomeWork();
-  if (!wide) return master;
+  if (!wide) return <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>;
 
   return (
     <View style={styles.splitRow}>
-      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>
+        <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>
+      </View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane
