@@ -1,7 +1,7 @@
+import { openBackupDirectory } from './directory.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, opendir, rm, open, lstat } from 'node:fs/promises';
+import { mkdir, opendir, rm, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { type BackupHostKeys, openMetadata, sealMetadata } from './crypto.js';
@@ -49,10 +49,12 @@ async function names(path: string, limit: number): Promise<string[]> {
 
 /** Queue before deleting a token. Destination failure never loses a successfully queued revocation. */
 export class BackupRevocationJournal {
-  private readonly generationRoot: string;
   private readonly pinnedRoot = new AsyncLocalStorage<string>();
   private get root(): string {
-    return this.pinnedRoot.getStore() ?? this.generationRoot;
+    return (
+      this.pinnedRoot.getStore() ??
+      this.destination.pinnedPath('revocations', `${this.installationId}-k${this.keyGeneration}`)
+    );
   }
   private readonly outbox: string;
   constructor(
@@ -64,28 +66,36 @@ export class BackupRevocationJournal {
   ) {
     z.string().uuid().parse(installationId);
     z.number().int().min(1).max(999999999).parse(keyGeneration);
-    this.generationRoot = destination.pinnedPath(
-      'revocations',
-      `${installationId}-k${keyGeneration}`,
-    );
     this.outbox = join(stateRoot, 'revocation-outbox');
   }
-  private async withJournalLock<T>(action: () => Promise<T>): Promise<T> {
-    const info = await lstat(this.generationRoot);
-    if (!info.isDirectory()) throw new Error('Revocation journal must be a directory');
-    const directory = await open(
-      this.generationRoot,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
+  private async ensureJournalDirectory(): Promise<void> {
+    const path = this.destination.pinnedPath('revocations');
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    const parent = await openBackupDirectory(path);
     try {
-      const actual = await directory.stat();
-      if (actual.ino !== info.ino || actual.dev !== info.dev)
-        throw new Error('Revocation journal changed during open');
-      return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
-        withRepositoryLock(join(this.root, 'lock'), action),
-      );
+      await mkdir(`/proc/self/fd/${parent.fd}/${this.installationId}-k${this.keyGeneration}`, {
+        recursive: true,
+        mode: 0o700,
+      });
     } finally {
-      await directory.close();
+      await parent.close();
+    }
+  }
+  private async withJournalLock<T>(action: () => Promise<T>): Promise<T> {
+    const parent = await openBackupDirectory(this.destination.pinnedPath('revocations'));
+    try {
+      const directory = await openBackupDirectory(
+        `/proc/self/fd/${parent.fd}/${this.installationId}-k${this.keyGeneration}`,
+      );
+      try {
+        return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
+          withRepositoryLock(join(this.root, 'lock'), action),
+        );
+      } finally {
+        await directory.close();
+      }
+    } finally {
+      await parent.close();
     }
   }
   async queue(id: string, event?: { eventId: string; revokedAt: string }): Promise<boolean> {
@@ -159,7 +169,7 @@ export class BackupRevocationJournal {
       if ((await names(this.outbox, 100000)).length)
         throw new Error('Retired journal has pending revocations');
       await this.destination.assertPresent();
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
+      await this.ensureJournalDirectory();
       await this.withJournalLock(async () => {
         if (!(await shouldPrune())) return;
         const entries = await names(this.root, 100000);
@@ -230,7 +240,7 @@ export class BackupRevocationJournal {
       const pending = await names(this.outbox, 100000);
       if (!pending.length) return;
       await this.destination.assertWritable();
-      await mkdir(this.root, { recursive: true, mode: 0o700 });
+      await this.ensureJournalDirectory();
       await this.withJournalLock(async () => {
         const lowWater = await this.lowWater();
         let sequence = lowWater - 1;

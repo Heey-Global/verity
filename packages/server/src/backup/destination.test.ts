@@ -3,10 +3,22 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rename, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BackupDestination } from './destination.js';
+const capacity = vi.hoisted(() => ({ full: false }));
+vi.mock('node:fs/promises', async (originalImport) => {
+  const original = await originalImport<typeof import('node:fs/promises')>();
+  return {
+    ...original,
+    statfs: async (...args: Parameters<typeof original.statfs>) => {
+      const result = await original.statfs(...args);
+      return capacity.full ? { ...result, bavail: 0n } : result;
+    },
+  };
+});
 const roots: string[] = [];
 afterEach(async () => {
+  capacity.full = false;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe('mounted backup destination', () => {
@@ -56,4 +68,20 @@ it('rejects a FIFO marker without waiting for a writer', async () => {
   await expect(BackupDestination.open(path, randomUUID())).rejects.toThrow(
     'Invalid backup target marker',
   );
+});
+
+it('opens an authenticated full destination so scheduled failures and alerts remain retryable after reboot', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'backup-full-boot-'));
+  roots.push(root);
+  const targetId = randomUUID();
+  await writeFile(join(root, '.verity-backup-target'), targetId);
+  capacity.full = true;
+  const destination = await BackupDestination.open(root, targetId);
+  try {
+    await expect(destination.assertWritable()).rejects.toThrow('Insufficient');
+    capacity.full = false;
+    expect((await destination.assertWritable()).availableBytes > 0n).toBe(true);
+  } finally {
+    await destination.close();
+  }
 });

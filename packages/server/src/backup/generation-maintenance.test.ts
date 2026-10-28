@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+  rename,
+  symlink,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -116,6 +125,24 @@ it('keeps live generations, expires only globally unretained history and retries
     expect(
       await readFile(destination.pinnedPath('repositories', foreign, 'untouched'), 'utf8'),
     ).toBe('foreign');
+
+    const repositories = destination.pinnedPath('repositories');
+    const moved = join(root, 'moved-repositories');
+    await rename(repositories, moved);
+    await symlink(moved, repositories);
+    await expect(maintainBackupGenerations(local, destination, b, later)).rejects.toThrow(
+      'directory',
+    );
+    await rm(repositories);
+    await rename(moved, repositories);
+    const revocations = destination.pinnedPath('revocations');
+    const movedJournal = join(root, 'moved-journals');
+    await rename(revocations, movedJournal);
+    await symlink(movedJournal, revocations);
+    await expect(journal.retire()).rejects.toThrow('directory');
+    expect(await readFile(join(movedJournal, `${installationId}-k1`, 'checkpoint'))).toBeDefined();
+    await rm(revocations);
+    await rename(movedJournal, revocations);
     // Missing ownership evidence stops every prune before any generation can lose snapshots.
     await mkdir(destination.pinnedPath('repositories', `${installationId}-r3`));
     await expect(maintainBackupGenerations(local, destination, b, later)).rejects.toThrow(

@@ -22,7 +22,7 @@ export class BackupDestination {
     );
     const destination = new BackupDestination(path, targetId, directory);
     try {
-      await destination.assertWritable();
+      await destination.assertPresent();
       return destination;
     } catch (error) {
       await directory.close();

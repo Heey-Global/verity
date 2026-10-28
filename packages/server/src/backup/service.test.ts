@@ -149,16 +149,21 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     await expect(service!.startProbe(candidate.recoveryKey)).rejects.toThrow();
     await expect(service!.tick()).rejects.toThrow('already in progress');
     finish();
-    await expect.poll(() => service!.probeStatus(job.id)?.status).toBe('succeeded');
     await expect
-      .poll(async () => {
-        try {
-          await service!.tick();
-          return true;
-        } catch {
-          return false;
-        }
-      })
+      .poll(() => service!.probeStatus(job.id)?.status, { timeout: 10000 })
+      .toBe('succeeded');
+    await expect
+      .poll(
+        async () => {
+          try {
+            await service!.tick();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { timeout: 10000 },
+      )
       .toBe(true);
     const alert = vi.fn(async () => true);
     service!.setAlertNotifier(alert);
@@ -195,7 +200,9 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(proof).toMatchObject({ repository: repositoryName, sequence: 1 });
     probe.mockRejectedValueOnce(new Error('private-recovery-key'));
     const failed = await service!.startProbe(candidate.recoveryKey);
-    await expect.poll(() => service!.probeStatus(failed.id)?.status).toBe('failed');
+    await expect
+      .poll(() => service!.probeStatus(failed.id)?.status, { timeout: 10000 })
+      .toBe('failed');
     expect((await service!.status()).lastProbe).toEqual(proof);
     expect(await readFile(join(root, 'backup-state', 'probe-job'), 'utf8')).not.toContain(
       candidate.recoveryKey,

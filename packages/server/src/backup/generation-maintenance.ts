@@ -62,7 +62,9 @@ export async function maintainBackupGenerations(
     records.push({ state, repository });
   }
   // Unknown repositories may still need any generation's CA and journal. Never guess their owner key.
+  let count = 0;
   for await (const entry of await opendir(destination.pinnedPath('repositories'))) {
+    if (++count > 50000) throw new Error('Installation repository budget exceeded');
     if (entry.name.startsWith(current.installationId + '-r') && !known.has(entry.name))
       throw new Error('Missing backup generation catalog; maintenance refused');
   }

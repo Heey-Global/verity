@@ -1,3 +1,4 @@
+import { openBackupDirectory } from './directory.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { backupWork } from './priority.js';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
@@ -139,21 +140,22 @@ export class BackupRepository {
   }
 
   private async withLock<T>(action: () => Promise<T>): Promise<T> {
-    const info = await lstat(this.repositoryRoot);
-    if (!info.isDirectory()) throw new Error('Backup repository must be a directory');
-    const directory = await open(
-      this.repositoryRoot,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
+    const parent = this.destination
+      ? await openBackupDirectory(this.destination.pinnedPath('repositories'))
+      : undefined;
     try {
-      const actual = await directory.stat();
-      if (actual.ino !== info.ino || actual.dev !== info.dev)
-        throw new Error('Backup repository changed during open');
-      return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
-        withRepositoryLock(join(this.root, 'lock'), action),
+      const directory = await openBackupDirectory(
+        parent ? `/proc/${process.pid}/fd/${parent.fd}/${this.name}` : this.repositoryRoot,
       );
+      try {
+        return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
+          withRepositoryLock(join(this.root, 'lock'), action),
+        );
+      } finally {
+        await directory.close();
+      }
     } finally {
-      await directory.close();
+      await parent?.close();
     }
   }
   private async write(path: string, bytes: Uint8Array, immutable: boolean): Promise<void> {
@@ -163,7 +165,16 @@ export class BackupRepository {
 
   async initialize(): Promise<void> {
     await this.destination?.assertWritable();
-    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    if (this.destination) {
+      const path = this.destination.pinnedPath('repositories');
+      await mkdir(path, { recursive: true, mode: 0o700 });
+      const parent = await openBackupDirectory(path);
+      try {
+        await mkdir(`/proc/self/fd/${parent.fd}/${this.name}`, { recursive: true, mode: 0o700 });
+      } finally {
+        await parent.close();
+      }
+    } else await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
     await this.withLock(async () => {
       await mkdir(join(this.root, 'objects'), { mode: 0o700 });
