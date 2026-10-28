@@ -363,9 +363,16 @@ are never treated as proof of the BuildKit snapshotter. Active-solve attribution
 is explicitly unavailable in this report.
 
 Docker Engine may keep image content and snapshots in containerd outside
-`DockerRootDir`. Establish that root from the host runtime configuration and put
-it in `/etc/verity-buildkit/storage-roots.conf`; no containerd root is guessed.
-For a host using the standard containerd root and managed data volume:
+`DockerRootDir`. Without configuration, the publisher reads that root from the
+containerd Docker actually uses: it takes `root` from `containerd config dump`
+only when that configuration's gRPC address is the address `docker info` reports
+for Docker's containerd, and the directory exists. Both configuration formats
+(containerd 1.x `[grpc]` and 2.x `[plugins.'io.containerd.server.v1.grpc']`) are
+read. Any other arrangement, such as Docker's own managed containerd, stays
+unavailable rather than reporting a directory that may hold nothing; set the
+root explicitly for it. An explicit
+`/etc/verity-buildkit/storage-roots.conf` always takes precedence. For a host
+using the standard containerd root and managed data volume:
 
 ```text
 version=1
@@ -376,8 +383,8 @@ dataVolume=verity-data
 The publisher obtains `DockerRootDir` and the named volume's actual mountpoint
 from Docker. For bind-mounted data, set `exportRoot=/absolute/host/data/path`;
 set `projectRoot=/absolute/host/project/path` when project data is elsewhere.
-Unset containerd roots are reported unavailable; admission then checks only the
-roots it measured. Recheck these
+A containerd root that is neither configured nor established this way is
+reported unavailable; admission then checks only the roots it measured. Recheck these
 paths after moving Docker, containerd or data storage. Config files are parsed
 as data, never sourced as shell programs.
 
