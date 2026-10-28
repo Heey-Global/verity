@@ -80,29 +80,42 @@ const FOREIGN_ATTEMPT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
  *  whose client connection is gone. */
 const IMPORT_MAX_AGE_MS = 60 * 60 * 1000;
 
-// A failing transport is not an answer from the worker: the solve may still run.
+// A failing transport is not an answer from the remote side: the work may still run.
 const TRANSPORT_FAILURE =
-  /rpc error: code = (?:Unavailable|Canceled|DeadlineExceeded)|connection reset|broken pipe|transport is closing|error reading from server|context canceled|unexpected EOF|connection refused/i;
+  /rpc error|\b(?:Unavailable|Canceled|DeadlineExceeded|Unknown|Internal|Aborted):|deadline exceeded|connection (?:reset|refused|lost|closed|closing)|broken pipe|transport is closing|error reading from server|context canceled|i\/o timeout|EOF\s*$/i;
 
 /**
- * Whether a failed remote command's own output proves that the remote side
- * answered with a final result, so nothing of it can still be running.
+ * Whether a failed remote command's own output proves that the remote side answered
+ * with a final result, so nothing of it can still be running.
  *
- * A build step that exited (`did not complete successfully: exit code: N`) or a
- * `failed to solve` that is not a transport failure is BuildKit reporting the end
- * of the solve. For an import, `Error response from daemon` is the Engine
- * answering the load request. Anything else — a killed client, a timeout, a lost
- * connection — leaves the remote state unknown.
+ * Deliberately narrow, and read from the client's own last report rather than from
+ * any line: build steps print arbitrary text, including text that looks like a
+ * BuildKit error. For an export, the last `ERROR: failed to solve:` line must name a
+ * build step's process exit — the solve's own verdict. For an import, the last line
+ * must be the Engine's `Error response from daemon:` and not a transport failure.
+ * Everything else — a killed client, a timeout, a lost connection, any other error —
+ * leaves the remote state unknown, and reconciliation decides later.
  */
 export function remoteOperationEnded(operation: RemoteOperation, output: string): boolean {
-  const lines = output.split('\n');
+  const lines = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
   if (operation === 'build-export') {
-    if (lines.some((line) => /did not complete successfully: exit code: \d+/.test(line)))
-      return true;
-    return lines.some((line) => /\bfailed to solve\b/.test(line) && !TRANSPORT_FAILURE.test(line));
+    const verdict = lines.filter((line) => line.startsWith('ERROR: failed to solve:')).at(-1);
+    return (
+      verdict !== undefined &&
+      /^ERROR: failed to solve: process ".*" did not complete successfully: exit code: \d+$/.test(
+        verdict,
+      ) &&
+      !TRANSPORT_FAILURE.test(verdict)
+    );
   }
-  return lines.some(
-    (line) => /Error response from daemon/.test(line) && !TRANSPORT_FAILURE.test(line),
+  const answer = lines.filter((line) => !line.startsWith('Build command exited')).at(-1);
+  return (
+    answer !== undefined &&
+    answer.startsWith('Error response from daemon:') &&
+    !TRANSPORT_FAILURE.test(answer)
   );
 }
 
@@ -305,6 +318,9 @@ export function readHostStorageEvidence(
   }
   return evidence;
 }
+
+/** Attempt directories a lease in this process holds right now, across instances. */
+const activeDirectories = new Set<string>();
 
 /** One active Server owns an Engine, as with derived-image collection. All
  * projects share this admission gate, including context staging and import.
@@ -524,6 +540,8 @@ export class BuildStorage {
       if (!entry.isDirectory() || entry.isSymbolicLink()) unavailable('unrecognized attempt entry');
       const directory = join(this.root, entry.name);
       if (directory === this.currentDirectory) continue;
+      if (activeDirectories.has(directory))
+        unavailable('a previous build process still owns its reservation');
       const record = this.readRemoteRecord(directory);
       if (record !== undefined) {
         unresolved.push({
@@ -559,7 +577,7 @@ export class BuildStorage {
         });
         continue;
       }
-      if (existsProcess(owner.pid) && processStart(owner.pid) === owner.start)
+      if (this.ownerAlive(owner))
         unavailable('a previous build process still owns its reservation');
       if (this.liveChild(directory)) {
         unresolved.push({
@@ -573,6 +591,13 @@ export class BuildStorage {
       this.removeAttempt(directory, owner);
     }
     return unresolved;
+  }
+
+  /** Whether the attempt's owner still holds it. This process's own attempts are held
+   *  only while a lease has them; once disposed, this process is not their owner. */
+  private ownerAlive(owner: z.infer<typeof ownerSchema>): boolean {
+    if (!existsProcess(owner.pid) || processStart(owner.pid) !== owner.start) return false;
+    return owner.pid !== process.pid;
   }
 
   private readRemoteRecord(
@@ -650,9 +675,12 @@ export class BuildStorage {
     const identity = this.hostIdentity();
     let idle: boolean | undefined;
     let asked = false;
+    // The worker's answer covers only operations that began before it was asked.
+    let askedAt = 0;
     const buildkitIdle = async () => {
       if (!asked) {
         asked = true;
+        askedAt = Date.now();
         idle = await probe.buildkitIdle?.().catch(() => undefined);
       }
       return idle;
@@ -661,7 +689,7 @@ export class BuildStorage {
       if (!entry.name.startsWith('attempt-') || !entry.isDirectory() || entry.isSymbolicLink())
         continue;
       const directory = join(this.root, entry.name);
-      if (directory === this.currentDirectory) continue;
+      if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
       let owner: z.infer<typeof ownerSchema> | undefined;
       try {
         owner = ownerSchema.parse(JSON.parse(readFileSync(join(directory, 'owner.json'), 'utf8')));
@@ -679,7 +707,11 @@ export class BuildStorage {
         const age = now - Date.parse(record.startedAt);
         let reason: string | undefined;
         if (rebooted) reason = 'the host has restarted since the remote operation began';
-        else if (record.operation === 'build-export' && (await buildkitIdle()) === true)
+        else if (
+          record.operation === 'build-export' &&
+          (await buildkitIdle()) === true &&
+          Date.parse(record.startedAt) < askedAt
+        )
           reason = 'the builder reports no running build';
         else if (
           record.operation === 'image-import' &&
@@ -688,13 +720,20 @@ export class BuildStorage {
         )
           reason = 'the image import client has exited';
         if (reason === undefined) continue;
-        // A lease may have been taken while the worker was asked.
-        if (directory === this.currentDirectory) continue;
+        // A lease may have been taken, or this record rewritten, while the worker was asked.
+        if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
+        const current = this.readRemoteRecord(directory);
+        if (
+          current === undefined ||
+          current === 'invalid' ||
+          current.startedAt !== record.startedAt
+        )
+          continue;
         this.releaseRemoteRecord(directory, reason);
       }
       if (owner === undefined) continue;
       if (sameNamespace) {
-        if (existsProcess(owner.pid) && processStart(owner.pid) === owner.start) continue;
+        if (this.ownerAlive(owner)) continue;
         if (this.liveChild(directory)) continue;
         this.removeAttempt(directory, owner);
         continue;
@@ -757,6 +796,7 @@ export class BuildStorage {
     }
     this.held = true;
     this.currentDirectory = directory;
+    activeDirectories.add(directory);
     let commandIndex = 0;
     let running = false;
     let disposed = false;
@@ -959,6 +999,7 @@ export class BuildStorage {
         disposed = true;
         this.held = false;
         this.currentDirectory = undefined;
+        activeDirectories.delete(directory);
       },
     };
   }

@@ -274,14 +274,19 @@ operation, host identity, host boot ID and the attempt's admitted estimate, when
 the host storage report supplies the identity. The record is cleared when:
 
 - the command succeeds;
-- the command exits on its own with the remote side's own final answer: a build
-  step that reported its exit code, a `failed to solve` that is not a transport
-  failure, or an Engine `Error response from daemon` for an import;
+- the command exits on its own and its last report is the remote side's final
+  answer: for an export, `failed to solve` naming a build step's exit code; for
+  an import, the Engine's `Error response from daemon` that is not a transport
+  failure;
 - reconciliation proves the operation ended. The Server reconciles at start and
   every five minutes. It releases a record when the host booted again since the
-  record was written, when the BuildKit worker lists no running build
-  (`docker buildx history ls` through a private remote-driver record), or, for an
-  import, when its client provably exited.
+  record was written, when the BuildKit worker lists build history with no
+  running build (`docker buildx history ls` through a private remote-driver
+  record; an empty or unreadable history is no answer) for a record written
+  before it was asked, or, for an import, when its client exited (in the same
+  Server process) or more than an hour passed (a previous Server process; the
+  import client is bounded by 15 minutes). A malformed record is never released
+  automatically and holds the default estimate until it is reconciled offline.
 
 A timeout, cancellation, lost connection or Server crash keeps the record **and
 all potentially in-use owned artifacts**, including private registry
@@ -311,8 +316,9 @@ succeeds.
 No normal failure path needs this. It remains a last resort for a record that
 automatic reconciliation cannot release, for example while the BuildKit worker
 stays unreachable. It requires a **maintenance outage of the build host**, not
-just a Server restart. Do not delete marker files or infer remote termination
-from client PIDs, cache usage, image presence or elapsed time.
+just a Server restart. Do not delete marker files by hand: the evidence the Server
+uses (a host reboot, the worker's build history, an import client's exit) is the
+only evidence it accepts, and cache usage or image presence prove nothing.
 
 1. Record the reported `attempt-*` name and locate its **host-side** directory
    under the Server data volume's `build-storage` root. Keep the reviewed

@@ -11096,7 +11096,7 @@ describe('devcontainerBuilderIdle', () => {
       args.includes('history') ? { stdout, stderr: '' } : { stdout: '', stderr: '' }) as never;
 
   it('answers idle only when the worker lists no running build', async () => {
-    expect(await withEndpoint(history(''))).toBe(true);
+    expect(await withEndpoint(history(''))).toBeUndefined();
     expect(
       await withEndpoint(
         history('{"ref":"a","status":"Completed"}\n{"ref":"b","status":"Error"}\n'),

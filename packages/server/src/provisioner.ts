@@ -559,7 +559,9 @@ export async function devcontainerBuilderIdle(
       options,
     );
     const text = stdout.trim();
-    if (text === '') return true;
+    // No history is not evidence of idleness: a worker with history pruned or disabled
+    // lists nothing while a solve still runs.
+    if (text === '') return undefined;
     let entries: unknown[];
     try {
       entries = text.startsWith('[')

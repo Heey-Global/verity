@@ -437,6 +437,8 @@ describe('durable remote operation guard', () => {
         namespace: readlinkSync('/proc/self/ns/pid'),
       }),
     );
+    // The crashed Server's lease is gone; only its files and record remain.
+    lease.dispose();
     const storage = f.manager();
     storage.acquire().dispose();
     expect(existsSync(lease.directory)).toBe(true);
@@ -623,9 +625,32 @@ describe('remote operation release', () => {
 
   it('recognises only answers from the worker or the Engine as definitive', () => {
     expect(remoteOperationEnded('build-export', solveFailure)).toBe(true);
+    // Only a step's exit is the solve's own verdict; anything else is decided later.
     expect(
       remoteOperationEnded('build-export', 'ERROR: failed to solve: failed to read dockerfile'),
-    ).toBe(true);
+    ).toBe(false);
+    // A build step can print anything, including BuildKit's own verdict; the client's
+    // last report after a lost connection is what counts.
+    expect(
+      remoteOperationEnded(
+        'build-export',
+        `${solveFailure}\nERROR: failed to solve: Unavailable: http2: client connection lost`,
+      ),
+    ).toBe(false);
+    expect(
+      remoteOperationEnded(
+        'build-export',
+        '#9 ERROR: process "/bin/sh -c x" did not complete successfully: exit code: 1\nERROR: failed to solve: failed to receive status: EOF',
+      ),
+    ).toBe(false);
+    for (const transport of [
+      'Canceled: grpc: the client connection is closing',
+      'DeadlineExceeded: context deadline exceeded',
+      'i/o timeout',
+    ])
+      expect(remoteOperationEnded('image-import', `Error response from daemon: ${transport}`)).toBe(
+        false,
+      );
     // A lost connection says nothing about whether the solve is still running.
     expect(
       remoteOperationEnded(
@@ -639,6 +664,41 @@ describe('remote operation release', () => {
     ).toBe(true);
     expect(remoteOperationEnded('image-import', 'Build command exited 1')).toBe(false);
     expect(remoteOperationEnded('image-import', solveFailure)).toBe(false);
+    expect(
+      remoteOperationEnded(
+        'image-import',
+        'Error response from daemon: invalid tar header\nLoaded image: example:latest',
+      ),
+    ).toBe(false);
+  });
+
+  // The Server's own disposed attempts carry its own live pid; they once read as a
+  // build still running and refused every build until the Server restarted.
+  it('releases this process’s own ambiguous attempt once reconciliation proves it ended', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const lease = storage.acquire();
+    await expect(
+      lease.run(
+        process.execPath,
+        [
+          '-e',
+          'process.stderr.write("ERROR: failed to solve: Unavailable: connection reset"); process.exit(1)',
+        ],
+        { ...commandOptions, remoteOperation: 'build-export' },
+      ),
+    ).rejects.toThrow();
+    lease.dispose();
+    expect(existsSync(lease.directory)).toBe(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await setTimeout(5);
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(lease.directory)).toBe(false);
+    storage.acquire().dispose();
   });
 
   it('releases a deterministic build failure so the next project builds right away', async () => {
@@ -712,7 +772,7 @@ describe('build storage reconciliation', () => {
           version: 1,
           hostBootId: '11111111-1111-4111-8111-111111111111',
           hostIdentity: 'a'.repeat(64),
-          startedAt: new Date().toISOString(),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
           ...record,
         }),
       );
@@ -737,6 +797,36 @@ describe('build storage reconciliation', () => {
       warn.mockRestore();
     }
     expect(existsSync(directory)).toBe(false);
+  });
+
+  it('applies the worker’s answer only to operations that began before it was asked', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-late', {}, { operation: 'build-export' });
+    const storage = f.manager();
+    const warn = quiet();
+    try {
+      const left = await storage.reconcile({
+        buildkitIdle: async () => {
+          // A new operation is recorded while the worker is being asked.
+          await setTimeout(5);
+          writeFileSync(
+            join(directory, 'remote-operation.json'),
+            JSON.stringify({
+              version: 1,
+              operation: 'build-export',
+              hostBootId: '11111111-1111-4111-8111-111111111111',
+              hostIdentity: 'a'.repeat(64),
+              startedAt: new Date().toISOString(),
+            }),
+          );
+          return true;
+        },
+      });
+      expect(left).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
   });
 
   it('treats a host restart as proof and an unreachable worker as no answer', async () => {
