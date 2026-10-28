@@ -6,6 +6,16 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.62.2](https://github.com/Heey-Global/verity/compare/v4.62.1...v4.62.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* **buildkit:** establish the containerd root without a hand-written config ([#1993](https://github.com/Heey-Global/verity/issues/1993)) ([78e806b](https://github.com/Heey-Global/verity/commit/78e806b1e37758b470cce54595f47f5248895114))
+* **buildkit:** read the containerd root from the daemon Docker uses ([#1995](https://github.com/Heey-Global/verity/issues/1995)) ([eefd33b](https://github.com/Heey-Global/verity/commit/eefd33b85bfbd08243bb4965c30f36ae83f0db8a))
+* **server:** admit builds on measured storage with an overlay-sized estimate ([#1994](https://github.com/Heey-Global/verity/issues/1994)) ([177714e](https://github.com/Heey-Global/verity/commit/177714e5bb36da6ffa86c177aac1e5bd8a98d0bd))
+* **server:** keep the BuildKit cause when a devcontainer build fails ([#1992](https://github.com/Heey-Global/verity/issues/1992)) ([51930fd](https://github.com/Heey-Global/verity/commit/51930fd6cde6707a4710393d5e5d552cb928af23))
+
 ## [4.62.1](https://github.com/Heey-Global/verity/compare/v4.62.0...v4.62.1) (2026-10-27)
 
 
