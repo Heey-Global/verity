@@ -19,6 +19,14 @@ export const backupAlertMessages = {
     'Backup maintenance needs attention. Repair repository references before pruning.',
 } as const;
 export type BackupAlert = keyof typeof backupAlertMessages;
+export interface BackupAlertDelivery {
+  delivered: ReadonlySet<string>;
+  confirm(recipient: string): Promise<void>;
+}
+export type BackupAlertNotifier = (
+  code: BackupAlert,
+  delivery?: BackupAlertDelivery,
+) => Promise<boolean>;
 const code = z.enum(Object.keys(backupAlertMessages) as [BackupAlert, ...BackupAlert[]]);
 const schema = z
   .object({
@@ -26,6 +34,10 @@ const schema = z
     requiredBytes: z.string().regex(/^(0|[1-9][0-9]{0,39})$/),
     active: z.array(code).max(16),
     notified: z.array(code).max(16),
+    deliveries: z
+      .array(z.object({ code, recipient: z.string().regex(/^[a-f0-9]{64}$/) }).strict())
+      .max(4096)
+      .default([]),
     maintenanceFailed: z.boolean(),
   })
   .strict();
@@ -37,21 +49,22 @@ export class BackupOperationalAlerts {
     requiredBytes: '0',
     active: [],
     notified: [],
+    deliveries: [],
     maintenanceFailed: false,
   };
   private tail: Promise<unknown> = Promise.resolve();
-  private notify: ((code: BackupAlert) => Promise<boolean>) | undefined;
+  private notify: BackupAlertNotifier | undefined;
   private constructor(private readonly path: string) {}
   static async open(root: string): Promise<BackupOperationalAlerts> {
     const alerts = new BackupOperationalAlerts(join(root, 'operational-alerts'));
     try {
-      alerts.state = schema.parse(JSON.parse((await readBounded(alerts.path, 16384)).toString()));
+      alerts.state = schema.parse(JSON.parse((await readBounded(alerts.path, 1048576)).toString()));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     return alerts;
   }
-  setNotifier(notify: (code: BackupAlert) => Promise<boolean>): void {
+  setNotifier(notify: BackupAlertNotifier): void {
     this.notify = notify;
   }
   status(): BackupAlert[] {
@@ -83,10 +96,30 @@ export class BackupOperationalAlerts {
       if (this.state.maintenanceFailed) active.add('maintenance-failed');
       this.state.active = [...active].sort();
       this.state.notified = this.state.notified.filter((value) => active.has(value));
+      this.state.deliveries = this.state.deliveries.filter((value) => active.has(value.code));
       await this.save();
       for (const value of this.state.active) {
         if (this.state.notified.includes(value) || !this.notify) continue;
-        if (await this.notify(value)) {
+        const delivered = new Set(
+          this.state.deliveries
+            .filter((entry) => entry.code === value)
+            .map((entry) => entry.recipient),
+        );
+        if (
+          await this.notify(value, {
+            delivered,
+            confirm: async (recipient) => {
+              if (delivered.has(recipient)) return;
+              const entries = schema.shape.deliveries.parse([
+                ...this.state.deliveries,
+                { code: value, recipient },
+              ]);
+              this.state.deliveries = entries;
+              await this.save();
+              delivered.add(recipient);
+            },
+          })
+        ) {
           this.state.notified.push(value);
           await this.save();
         }

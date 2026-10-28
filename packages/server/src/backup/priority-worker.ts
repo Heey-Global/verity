@@ -73,8 +73,13 @@ const handle = async (job: {
         }
         if (job.immutable) linkSync(temporary, path);
         else renameSync(temporary, path);
+        const parent = dirname(path);
+        // Procfs FD capabilities are intentional intermediate symlinks, including PID-qualified ones.
+        const syncPath = new RegExp(`^/proc/(?:self|${process.pid})/fd/[0-9]+$`).test(parent)
+          ? parent + '/.'
+          : parent;
         const directory = openSync(
-          dirname(path),
+          syncPath,
           constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
         );
         try {

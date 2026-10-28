@@ -1,7 +1,7 @@
 import { getPriority } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -39,6 +39,15 @@ it('prioritizes only its worker and subprocesses, with bounded encrypted work an
     ).rejects.toThrow('budget');
     await withBackupWork(() => writeDurable(join(root, 'object'), bytes, true));
     expect(await readFile(join(root, 'object'))).toEqual(bytes);
+    const directory = await open(root, 'r');
+    try {
+      await withBackupWork(() =>
+        writeDurable(`/proc/${process.pid}/fd/${directory.fd}/pinned`, bytes, true),
+      );
+      expect(await readFile(join(root, 'pinned'))).toEqual(bytes);
+    } finally {
+      await directory.close();
+    }
     const [command, args] = backupCommand('/bin/sh', ['-c', 'ps -o ni= -p $$']);
     expect(Number(execFileSync(command, args, { encoding: 'utf8' }).trim())).toBe(19);
     expect(getPriority()).toBe(before);

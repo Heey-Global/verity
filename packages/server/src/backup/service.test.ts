@@ -189,7 +189,7 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     try {
       await service!.tick();
       expect((await service!.status()).alerts).toContain('identity-unreadable');
-      expect(alert).toHaveBeenCalledWith('identity-unreadable');
+      expect(alert).toHaveBeenCalledWith('identity-unreadable', expect.any(Object));
     } finally {
       await rename(tlsKey + '.offline', tlsKey);
     }

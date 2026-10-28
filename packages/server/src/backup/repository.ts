@@ -1,4 +1,4 @@
-import { openBackupDirectory } from './directory.js';
+import { backupDirectorySyncPath, openBackupDirectory } from './directory.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { backupWork } from './priority.js';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
@@ -54,7 +54,7 @@ export type CaptureEntry =
 async function syncDirectory(path: string): Promise<void> {
   // A held directory FD is an intentional procfs capability, not a user-supplied symlink.
   // Keep it an intermediate component so O_NOFOLLOW still protects the final directory.
-  const target = /^\/proc\/self\/fd\/[0-9]+$/.test(path) ? path + '/.' : path;
+  const target = backupDirectorySyncPath(path);
   const directory = await open(
     target,
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,

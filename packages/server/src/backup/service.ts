@@ -1,5 +1,5 @@
 import { maintainBackupGenerations, registerBackupGeneration } from './generation-maintenance.js';
-import { BackupOperationalAlerts, type BackupAlert } from './operational-alerts.js';
+import { BackupOperationalAlerts, type BackupAlertNotifier } from './operational-alerts.js';
 import { validateReadableIdentity } from './restore-identity.js';
 import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -377,7 +377,7 @@ export class BackupService {
       : { configured: false, alerts: [] };
   }
 
-  setAlertNotifier(notify: (code: BackupAlert) => Promise<boolean>): void {
+  setAlertNotifier(notify: BackupAlertNotifier): void {
     this.alerts.setNotifier(notify);
   }
   private health(): Promise<void> {
