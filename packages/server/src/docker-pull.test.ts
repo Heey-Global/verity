@@ -295,6 +295,27 @@ describe('PullProgressTracker', () => {
     expect(tracker.summary()).toMatchObject({ bytesDone: 800, bytesTotal: 1000 });
   });
 
+  it('stops waiting on the network when the store hides every layer of cached content', () => {
+    const tracker = new PullProgressTracker();
+    expect(tracker.awaitingNetwork).toBe(true);
+    // All blobs present: the containerd store names no layer and unpacks silently.
+    tracker.observe({ status: 'Pulling from verity/verity-server', id: 'v1' });
+    expect(tracker.awaitingNetwork).toBe(false);
+    // A layer the walk does name needs the network again.
+    tracker.observe({ status: 'Pulling fs layer', id: 'a' });
+    expect(tracker.awaitingNetwork).toBe(true);
+  });
+
+  it('waits on the network again when a verified layer is downloaded once more', () => {
+    const tracker = new PullProgressTracker();
+    tracker.observe({ status: 'Downloading', id: 'a', progressDetail: { current: 5, total: 9 } });
+    tracker.observe({ status: 'Verifying Checksum', id: 'a' });
+    expect(tracker.awaitingNetwork).toBe(false);
+    // The classic store rejected the resumed blob's checksum and fetches it again.
+    tracker.observe({ status: 'Downloading', id: 'a', progressDetail: { current: 1, total: 9 } });
+    expect(tracker.awaitingNetwork).toBe(true);
+  });
+
   it('keeps waiting on the network while any layer is still queued', () => {
     const tracker = new PullProgressTracker();
     expect(tracker.awaitingNetwork).toBe(true);

@@ -19,9 +19,13 @@ export const UPDATE_PULL_RETRY_DELAYS_MS: readonly number[] = [15_000, 60_000, 1
 /**
  * In-stream failures the daemon reports with no typed kind, but which are the
  * registry connection failing rather than the image being wrong: an HTTP 5xx
- * from the registry or a body cut off mid-blob.
+ * from the registry or a body cut off mid-blob. The classic store words a 5xx as
+ * `received unexpected HTTP status: 503 …`, the containerd store as
+ * `unexpected status from GET request to <url>: 503 Service Unavailable` (or
+ * HEAD).
  */
-const TRANSIENT_STREAM_FAILURE = /received unexpected HTTP status: 5\d\d|unexpected EOF/i;
+const TRANSIENT_STREAM_FAILURE =
+  /received unexpected HTTP status: 5\d\d|unexpected status from (?:GET|HEAD) request to \S+: 5\d\d|unexpected EOF/i;
 
 /**
  * Whether another attempt can reasonably succeed.

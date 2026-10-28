@@ -85,6 +85,8 @@ const RETRY_COUNTDOWN = /^Retrying in \d+ seconds?$/;
 export class PullProgressTracker {
   private readonly layers = new Map<string, LayerState>();
   private readonly messages = new Set<string>();
+  /** The daemon has resolved the manifest and announced the pull. */
+  private manifestResolved = false;
 
   /**
    * Feed one stream event. Returns true when it is forward progress: a layer or
@@ -106,6 +108,7 @@ export class PullProgressTracker {
     // A message keyed by the tag ("Pulling from x" carries `id: <tag>`) is not a
     // layer; it never reaches a settled state and must not hold the watchdog.
     if (status.startsWith('Pulling from ')) {
+      this.manifestResolved = true;
       const key = `${id}\u0000${status}`;
       if (this.messages.has(key)) return false;
       this.messages.add(key);
@@ -153,15 +156,19 @@ export class PullProgressTracker {
   }
 
   /**
-   * True while some layer still needs bytes from the registry, or before the
-   * stream has named any layer (manifest resolution). Once every known layer is
+   * True while some layer still needs bytes from the registry, or while the
+   * manifest is still being resolved. Once every known layer is
    * settled the remaining work — extraction, snapshot unpacking — is local, and
    * the containerd image store reports none of it: it unpacks a layer with no
    * progress lines at all, which for a large layer on a slow disk can take
    * minutes. A network idle timeout must not fire there.
    */
   get awaitingNetwork(): boolean {
-    if (this.layers.size === 0) return true;
+    // When the content store already holds every blob, the containerd store
+    // announces the pull and then hides all layer lines, not even "Already
+    // exists" (moby `daemon/containerd/image_pull.go`, `hideLayers`), while it
+    // unpacks in silence. A layer the walk does name re-arms the window.
+    if (this.layers.size === 0) return !this.manifestResolved;
     for (const layer of this.layers.values()) if (!layer.settled) return true;
     return false;
   }
@@ -194,6 +201,9 @@ export class PullProgressTracker {
       if (current !== undefined) layer.downloaded = Math.max(layer.downloaded, current);
     }
     if (SETTLED_STATUSES.has(status)) layer.settled = true;
+    // The classic store can reject a resumed blob's checksum and fetch the layer
+    // again; it needs the network once more.
+    else if (status === 'Downloading') layer.settled = false;
     if (DOWNLOADED_STATUSES.has(status) && layer.downloadTotal !== undefined)
       layer.downloaded = layer.downloadTotal;
   }

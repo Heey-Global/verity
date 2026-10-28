@@ -18,6 +18,28 @@ describe('isRetryablePullError', () => {
       }),
       true,
     ],
+    ...(['GET', 'HEAD'] as const).map(
+      (method) =>
+        [
+          `a registry 5xx on ${method} worded by the containerd store`,
+          new DockerError({
+            kind: 'other',
+            status: 200,
+            message: `image pull failed: failed to copy: httpReadSeeker: failed open: unexpected status from ${method} request to https://ghcr.io/v2/heey-global/verity/verity-server/blobs/sha256:${'c'.repeat(64)}: 503 Service Unavailable`,
+          }),
+          true,
+        ] as const,
+    ),
+    [
+      'a registry 4xx worded by the containerd store',
+      new DockerError({
+        kind: 'other',
+        status: 200,
+        message:
+          'image pull failed: unexpected status from GET request to https://ghcr.io/v2/x/manifests/y: 403 Forbidden',
+      }),
+      false,
+    ],
     [
       'a dial timeout reported inside the stream',
       new DockerError({
