@@ -152,3 +152,26 @@ describe('createReleaseChannelArtifactLoader', () => {
     ).rejects.toThrow(/document request failed: HTTP 500/);
   });
 });
+
+it('loads a historical release tag without consulting the moving channel', async () => {
+  const fetchRegistry = registry(() => json(manifest()));
+  const tag = 'candidate-stable-v1.0.0-amd64';
+  await createReleaseChannelArtifactLoader({ architecture: 'amd64', tag, fetchRegistry })(
+    new AbortController().signal,
+  );
+  expect(fetchRegistry).toHaveBeenCalledWith(
+    'ghcr.io',
+    'heey-global/verity/verity-server',
+    `manifests/${tag}`,
+    expect.anything(),
+    expect.anything(),
+  );
+});
+it.each(['../channel', 'x?query', '', 'x'.repeat(129)])(
+  'refuses unsafe historical artifact tag %s',
+  (tag) => {
+    expect(() => createReleaseChannelArtifactLoader({ architecture: 'amd64', tag })).toThrow(
+      'Invalid release artifact tag',
+    );
+  },
+);

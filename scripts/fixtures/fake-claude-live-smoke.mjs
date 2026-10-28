@@ -65,6 +65,83 @@ emit({
   session_id: sessionId,
 });
 
+const emitTurn = async () => {
+  emit({
+    type: 'assistant',
+    message: {
+      id: 'before',
+      type: 'message',
+      role: 'assistant',
+      model: 'smoke',
+      content: [{ type: 'text', text: 'before server restart' }],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 3,
+      },
+    },
+    parent_tool_use_id: null,
+    uuid: '00000000-0000-4000-8000-000000000002',
+    session_id: sessionId,
+  });
+  await writeFile(`${worktree}/before`, 'ready\n');
+
+  for (;;) {
+    try {
+      await access(continuePath);
+      break;
+    } catch {
+      await setTimeout(25);
+    }
+  }
+
+  emit({
+    type: 'assistant',
+    message: {
+      id: 'after',
+      type: 'message',
+      role: 'assistant',
+      model: 'smoke',
+      content: [{ type: 'text', text: 'after server restart' }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 6,
+      },
+    },
+    parent_tool_use_id: null,
+    uuid: '00000000-0000-4000-8000-000000000003',
+    session_id: sessionId,
+  });
+  emit({
+    type: 'result',
+    subtype: 'success',
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: 'before server restartafter server restart',
+    stop_reason: 'end_turn',
+    total_cost_usd: 0,
+    usage: {
+      input_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 6,
+    },
+    modelUsage: {},
+    permission_denials: [],
+    uuid: '00000000-0000-4000-8000-000000000004',
+    session_id: sessionId,
+  });
+};
+
 // The Agent SDK starts its Claude process while ACP creates the session, before
 // `session/prompt`. After the required init handshake, wait for the stream-json
 // user message so assistant output belongs to the active turn instead of being
@@ -73,6 +150,8 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
   process.stdin.setEncoding('utf8');
   let bufferedInput = '';
   let receivedUserPrompt = false;
+  let receivedTitleRequest = false;
+  let turnCompletion;
   for await (const chunk of process.stdin) {
     if (typeof chunk !== 'string') continue;
     bufferedInput += chunk;
@@ -158,87 +237,34 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             },
           },
         });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'generate_session_title'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: { title: 'Sandbox live smoke' },
+          },
+        });
+        receivedTitleRequest = true;
       } else if (frame.type === 'user') {
         receivedUserPrompt = true;
-        break;
+      }
+      // Keep servicing controls while the turn waits for the Server restart.
+      // Otherwise ACP's asynchronous title request closes unanswered.
+      if (receivedUserPrompt && receivedTitleRequest && turnCompletion === undefined) {
+        turnCompletion = emitTurn();
       }
     }
-    if (receivedUserPrompt) break;
   }
   if (!receivedUserPrompt) throw new Error('stream-json input ended before a user prompt');
+  if (!receivedTitleRequest) throw new Error('stream-json input ended before a title request');
+  await turnCompletion;
+} else {
+  await emitTurn();
 }
-
-emit({
-  type: 'assistant',
-  message: {
-    id: 'before',
-    type: 'message',
-    role: 'assistant',
-    model: 'smoke',
-    content: [{ type: 'text', text: 'before server restart' }],
-    stop_reason: null,
-    stop_sequence: null,
-    usage: {
-      input_tokens: 1,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      output_tokens: 3,
-    },
-  },
-  parent_tool_use_id: null,
-  uuid: '00000000-0000-4000-8000-000000000002',
-  session_id: sessionId,
-});
-await writeFile(`${worktree}/before`, 'ready\n');
-
-for (;;) {
-  try {
-    await access(continuePath);
-    break;
-  } catch {
-    await setTimeout(25);
-  }
-}
-
-emit({
-  type: 'assistant',
-  message: {
-    id: 'after',
-    type: 'message',
-    role: 'assistant',
-    model: 'smoke',
-    content: [{ type: 'text', text: 'after server restart' }],
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: {
-      input_tokens: 1,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-      output_tokens: 6,
-    },
-  },
-  parent_tool_use_id: null,
-  uuid: '00000000-0000-4000-8000-000000000003',
-  session_id: sessionId,
-});
-emit({
-  type: 'result',
-  subtype: 'success',
-  duration_ms: 1,
-  duration_api_ms: 1,
-  is_error: false,
-  num_turns: 1,
-  result: 'before server restartafter server restart',
-  stop_reason: 'end_turn',
-  total_cost_usd: 0,
-  usage: {
-    input_tokens: 1,
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
-    output_tokens: 6,
-  },
-  modelUsage: {},
-  permission_denials: [],
-  uuid: '00000000-0000-4000-8000-000000000004',
-  session_id: sessionId,
-});

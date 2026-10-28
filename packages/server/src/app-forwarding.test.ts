@@ -43,6 +43,12 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('passes the Uplink webhook authority through to online meetings', () => {
+    const attendeeEdge = { create: vi.fn(), remove: vi.fn(), isAvailable: () => true };
+    expect(forward({ attendeeEdge }).attendeeEdge).toBe(attendeeEdge);
+    expect(forward({}).attendeeEdge).toBeUndefined();
+  });
+
   it('forwards temporary diagnostic consent and live connector assignment to the API', () => {
     const activation = new ReturnPathActivation(() => ({ enabled: false }));
     const count = () => 2;
@@ -54,6 +60,16 @@ describe('buildControlPlane dependency forwarding', () => {
   it('keeps runtime evidence available through the production composition seam', () => {
     const runtimeDiagnostics = createRuntimeDiagnostics({});
     expect(forward({ runtimeDiagnostics }).runtimeDiagnostics).toBe(runtimeDiagnostics);
+  });
+
+  // Both were dropped here once: deleted projects kept their images on disk, and the
+  // audit routes and deletion events never reached the route layer.
+  it('passes post-delete image cleanup and the audit trail through', () => {
+    const onProjectHidden = vi.fn(async () => {});
+    const audit = { recorder: {}, log: {} } as NonNullable<ServerDeps['audit']>;
+    const got = forward({ onProjectHidden, audit });
+    expect(got.onProjectHidden).toBe(onProjectHidden);
+    expect(got.audit).toBe(audit);
   });
 
   it('passes the Knowledge data root through to the session file routes', () => {

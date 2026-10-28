@@ -59,6 +59,9 @@ services:
     # changed default, fails the release instead of every installed host
     # (`deploy/bin/verity-self-update-live-smoke`).
     environment: &verity-server-environment
+      # Unknown builds: 24 GiB for context, snapshots, export and import.
+      # Known project images use measured admission; keep the separate 10 GiB reserve.
+      VERITY_BUILD_ESTIMATE_GIB: ${VERITY_BUILD_ESTIMATE_GIB:-24}
       VERITY_UPDATE_CHANNEL: ${VERITY_UPDATE_CHANNEL:-stable}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       # Which Server is THE control plane (ADR 0008 D7). The value names a
@@ -326,6 +329,8 @@ services:
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
       # Only classified host evidence is shared; raw journals stay on the host.
       - ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}:/run/verity-host-diagnostics:ro
+      - ${VERITY_BACKUP_DIR:-/var/lib/verity/backups}:/run/verity-backups
+      - ${VERITY_BACKUP_IDENTITY_DIR:-/var/lib/verity/backup-identity}:/run/verity-backup-identity
 
     # Grant the non-root `node` user access to the mounted socket without running
     # the container as root. Set this to the GID that owns /var/run/docker.sock
@@ -485,7 +490,7 @@ services:
     # no password to store, generate, or configure. The network isolation is the
     # boundary, and Verity's own secrets are additionally encrypted at rest.
     # renovate: datasource=docker depName=postgres
-    image: postgres:18-alpine@sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
     mem_limit: ${VERITY_POSTGRES_MEMORY:-1g}
     memswap_limit: ${VERITY_POSTGRES_MEMORY_SWAP:-1g}
@@ -553,6 +558,12 @@ services:
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
       VERITY_HOST_DIAGNOSTIC_DIR: ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}
+      VERITY_BACKUP_DIR: ${VERITY_BACKUP_DIR:-}
+      VERITY_BACKUP_IDENTITY_DIR: ${VERITY_BACKUP_IDENTITY_DIR:-}
+      # Set by verity-install only after it verified the gVisor builder. Empty
+      # leaves the sealed spec without the builder socket. Not a VERITY_* name
+      # inside the container: older images forward those into the sealed spec.
+      DEVCONTAINER_BUILDER_GID: ${VERITY_DEVCONTAINER_BUILDER_GID:-}
       VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment

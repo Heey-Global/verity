@@ -10,6 +10,7 @@ import {
   githubRepositoryAccessReady,
   settingsChecklist,
   settingsChecklistHeadline,
+  type AuditHealth,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
@@ -89,6 +90,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
+  // `null` until the Server says this device may read audit logs; members and
+  // Servers without the trail never show the row.
+  const [auditHealth, setAuditHealth] = useState<AuditHealth | null>(null);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -99,6 +103,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       client
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      client
+        .auditHealth()
+        .then((health) => active && setAuditHealth(health))
         .catch(() => undefined);
       // A stored key is not an active subscription: Uplink may have refused it.
       // Keep the last known state while re-reading so the row does not flicker.
@@ -184,7 +192,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Connections">
+      <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
             icon="link"
@@ -194,40 +202,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
             }
             onPress={() => router.push('/settings/services')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Access">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="monitor"
-            title="Devices & Web Browsers"
-            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage devices and web browsers"
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Server">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="download"
-            title="Updates"
-            subtitle={
-              updateVersion !== null
-                ? `Server version ${updateVersion} available`
-                : appStoreVersion !== null
-                  ? `App version ${appStoreVersion} available`
-                  : 'Server and app'
-            }
-            // Only what needs a tap: a downloaded smaller app update applies on
-            // its own the next time the app starts.
-            status={
-              updateVersion !== null || appStoreVersion !== null
-                ? { intent: 'needsSetup', label: 'Update' }
-                : undefined
-            }
-            onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
             icon="zap"
@@ -245,10 +219,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/premium')}
           />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Features">
-        <SettingsListPanel>
+
           <SettingsNavRow
             icon="shield"
             title="Vulnerability scan"
@@ -272,11 +243,82 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/transcription')}
           />
         </SettingsListPanel>
+        <SettingsPanel>
+          <Text style={styles.disclosureTitle}>Verity Control</Text>
+          <Text style={styles.reproSubtitle}>
+            Show an internal Verity Control workspace for server administration sessions.
+          </Text>
+          <SettingsToggleRow
+            label="Advanced mode"
+            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
+            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
+            onValueChange={(value) => {
+              setPendingAdvancedMode(value);
+              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
+                setPendingAdvancedMode(undefined),
+              );
+            }}
+          />
+        </SettingsPanel>
       </SettingsGroup>
 
-      {/* Server connection — the recovery path if the saved address is wrong or the
-          server moved (IP / Tailscale name change). Routes to the onboarding step in
-          reconfigure mode; the only way back to it once a non-null URL is persisted. */}
+      <SettingsGroup title="App & Server">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="download"
+            title="Updates"
+            subtitle={
+              updateVersion !== null
+                ? `Server version ${updateVersion} available`
+                : appStoreVersion !== null
+                  ? `App version ${appStoreVersion} available`
+                  : 'Server and app'
+            }
+            // Only what needs a tap: a downloaded smaller app update applies on
+            // its own the next time the app starts.
+            status={
+              updateVersion !== null || appStoreVersion !== null
+                ? { intent: 'needsSetup', label: 'Update' }
+                : undefined
+            }
+            onPress={() => router.push('/settings/server-update')}
+          />
+          {auditHealth !== null ? (
+            <SettingsNavRow
+              icon="file-text"
+              title="Audit logs"
+              subtitle="Image builds and project deletions"
+              status={
+                auditHealth.status === 'degraded'
+                  ? { intent: 'needsSetup', label: 'Needs review' }
+                  : undefined
+              }
+              onPress={() => router.push('/settings/audit-logs' as Href)}
+            />
+          ) : null}
+          <SettingsNavRow
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
+          />
+          <SettingsNavRow
+            icon="server"
+            title="Server address"
+            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
+            accessibilityLabel="Change server address"
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+
       <SettingsGroup title="This app">
         <SettingsListPanel>
           {!isDemoMode() ? (
@@ -320,40 +362,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               }}
             />
           ) : null}
-          <SettingsNavRow
-            icon="server"
-            title="Server address"
-            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
-            onPress={() => {
-              if (isDemoMode()) {
-                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
-              } else {
-                router.push('/onboarding/server-url?reconfigure=1');
-              }
-            }}
-            accessibilityLabel="Change server address"
-          />
         </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Advanced">
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>Verity Control</Text>
-          <Text style={styles.reproSubtitle}>
-            Show an internal Verity Control workspace for server administration sessions.
-          </Text>
-          <SettingsToggleRow
-            label="Advanced mode"
-            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
-            onValueChange={(value) => {
-              setPendingAdvancedMode(value);
-              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
-                setPendingAdvancedMode(undefined),
-              );
-            }}
-          />
-        </SettingsPanel>
       </SettingsGroup>
 
       <View style={styles.settingsGroup}>

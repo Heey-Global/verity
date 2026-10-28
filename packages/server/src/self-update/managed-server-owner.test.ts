@@ -14,6 +14,7 @@ import {
 } from './deployment-spec.js';
 import {
   initializeManagedDeployment,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
 } from './managed-deployment.js';
 import {
@@ -1503,5 +1504,124 @@ describe('recorded host diagnostic mount migration', () => {
     const client = docker(owned(true));
     await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
     expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+});
+
+describe('recorded devcontainer builder migration', () => {
+  const migrate = async (root: string) =>
+    migrateManagedDevcontainerBuilder({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      gid: 1102,
+    });
+
+  // The repair path seals the builder while the old Server keeps serving. Treating
+  // that Server as a conflict would crash-loop the Updater on every host repaired
+  // before its next update — the channel that would apply the bind.
+  it('keeps a running read-only client until guarded replacement adds admission writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'managed-admission-owner-'));
+    const initial = body();
+    await initializeManagedDeployment({
+      root,
+      deploymentId: 'deployment-1',
+      spec: {
+        ...initial,
+        mounts: [
+          ...initial.mounts,
+          {
+            source: { kind: 'bind', path: '/run/verity-buildkit' },
+            target: '/run/verity-buildkit',
+            readOnly: true,
+          },
+        ],
+        user: { ...initial.user, supplementaryGids: [...initial.user.supplementaryGids, 1102] },
+      },
+    });
+    await migrate(root);
+    const inspect = owned(true);
+    inspect.mounts!.push({
+      type: 'bind',
+      source: '/run/verity-buildkit',
+      destination: '/run/verity-buildkit',
+      readWrite: false,
+    });
+    inspect.groupAdd!.push('1102');
+    const client = docker(inspect);
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toMatchObject({
+      action: 'unchanged',
+      devcontainerBuilderPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('keeps a running pre-migration Server serving and reports the pending builder', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      devcontainerBuilderPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds a stopped pre-migration Server with the socket bind and group', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(false));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'created',
+      action: 'created',
+    });
+    const created = client.createContainer.mock.calls[0]?.[0];
+    expect(created.binds).toContain('/run/verity-buildkit:/run/verity-buildkit');
+    expect(created.groupAdd).toContain('1102');
+  });
+
+  it('walks back both migrations for a Server older than either', async () => {
+    const root = await authority();
+    await migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+    await migrate(root);
+    await expect(
+      reconcileManagedServer(runtimeOptions(root, docker(owned(true)))),
+    ).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      diagnosticMountPending: true,
+      devcontainerBuilderPending: true,
+    });
+  });
+
+  it('walks back both migrations when the builder landed first', async () => {
+    const root = await authority();
+    await migrate(root);
+    await migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+    await expect(
+      reconcileManagedServer(runtimeOptions(root, docker(owned(true)))),
+    ).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      diagnosticMountPending: true,
+      devcontainerBuilderPending: true,
+    });
+  });
+
+  it('refuses other structural drift beside a pending builder', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker({ ...owned(true), groupAdd: ['999', '1101', '4242'] });
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
   });
 });

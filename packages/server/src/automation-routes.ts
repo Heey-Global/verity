@@ -57,6 +57,7 @@ export function registerAutomationRoutes(
     if (script !== null) {
       const check = await deps.checkScript({
         id: `check:${id}`,
+        ...(request.localUserId ? { sponsorUserId: request.localUserId } : {}),
         sessionId: id,
         name: body.name,
         prompt: body.prompt,

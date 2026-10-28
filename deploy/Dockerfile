@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder-deps
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS builder-deps
 
 WORKDIR /app
 
@@ -86,7 +86,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS deps
 
 WORKDIR /app
 
@@ -115,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS docker-cli
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -196,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS runtime
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -212,11 +212,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux; \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/cosign
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker-cli /usr/local/bin/docker-compose /usr/local/bin/docker-compose
-COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
-COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/
+COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/
 COPY deploy/bin/verity-transcribe-meeting /usr/local/bin/verity-transcribe-meeting
 
 # Self-contained host bootstrap payload. The public installer copies this tree
@@ -387,6 +384,15 @@ LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 # build-arg on purpose: every build of this Dockerfile, release or not, declares the same
 # pins its own code verifies against; gvisor-runtime-config.test.ts keeps the three in step.
 LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{\"x86_64\":\"75c092fe87d84078f06ac40937cb5207fb5a1a92511b38b4790c915801555daadc59fef33de8db4dd92e1892a6de390c8a2e390a7a3bd0e2d3731d9ed6a3a6e8\",\"aarch64\":\"ee39fa48121797db60919dacb77145d604c9a54616323a00304f8482fca87af20e8e78b079cb193ab7bef7230ad3f79096a3491e12c09ba11625c7be5130e084\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
+
+# This image carries the devcontainer builder bundle under /opt/verity-install/deploy in the
+# form deploy/host/verity-host-builder installs from. During an update the Updater names this
+# image to that host component, which verifies the release signature itself and installs the
+# bundle when it differs from the installed builder. devcontainer-builder.test.ts keeps the
+# contract value equal in all three places.
+LABEL org.verity.devcontainer-builder="2"
+LABEL org.verity.build-admission="1"
+LABEL org.verity.recovery="1"
 
 # The Google Drive OAuth iOS client id (ADR 0009), injected by release.yml as a
 # build-arg so the running server has it WITHOUT runtime Doppler access (the

@@ -151,7 +151,7 @@ describe('trusted CLI tool', () => {
     const resolveSecret = vi.fn();
     const execute = vi.fn();
     const tool = createTrustedCliTool({
-      getProjectBinding: vi.fn(),
+      getProjectBinding: async () => ({ dopplerProject: 'acme', dopplerConfig: 'prod' }),
       consumeApproval: async () => false,
       resolveSecret,
     });

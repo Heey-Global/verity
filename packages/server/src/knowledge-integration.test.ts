@@ -48,6 +48,16 @@ async function setup() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-data-'));
   const authRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
   await authRegistry.register('device-token', 'knowledge-test-device');
+  // Gateway dispatch requires the active turn to carry its real initiating user.
+  const userId = authRegistry.resolveUserId('device-token')!;
+  expect(await ctx.store.hasProjectPermission(userId, 'p', 'execute')).toBe(true);
+  const prompt = await ctx.store.appendEvent('s', {
+    t: 'prompt',
+    text: 'Manage project knowledge',
+    initiatedBy: { userId },
+  });
+  await ctx.store.markTurnRunning({ sessionId: 's', promptSeq: prompt.seq });
+  await ctx.store.bindTurnIdentity('s', { turnId: 't', startCommandId: 'knowledge-start' });
   const tokens = createMcpGatewayTokens();
   const token = tokens.issue({ projectId: 'p', sessionId: 's', turnId: 't' });
   const permission = vi.fn(async () => ({ decision: { behavior: 'deny' }, decidedBy: 'card' }));
@@ -396,3 +406,40 @@ it('uses the worker gateway bearer for Control memory rather than the proxy bear
     await app.close();
   }
 });
+
+it.each(['documents', 'code'] as const)(
+  'publishes current %s session edits to Global before turn completion',
+  async (kind) => {
+    const worktree = join(
+      sessionWorktree,
+      kind === 'documents' ? '.verity-document-sessions' : '.verity-sessions',
+      's',
+    );
+    const view =
+      kind === 'documents'
+        ? worktree
+        : join(sessionWorktree, '.verity-document-sessions', 'code-s');
+    mkdirSync(view, { recursive: true });
+    await ctx.db.updateTable('sessions').set({ worktree }).where('session_id', '=', 's').execute();
+    const h = await setup();
+    try {
+      const canonical = join(h.dataRoot, 'knowledge/p/insights');
+      mkdirSync(canonical, { recursive: true });
+      writeFileSync(join(canonical, 'profile.md'), 'Stale canonical version');
+      writeFileSync(join(view, 'profile.md'), 'Current session version');
+      writeFileSync(join(view, 'new.md'), 'New session document');
+      for (const path of ['profile.md', 'new.md']) {
+        h.permission.mockResolvedValueOnce({ decision: { behavior: 'allow' }, decidedBy: 'card' });
+        const published = await h.agent({ operation: 'publish_shared', path });
+        expect(published.isError).toBeUndefined();
+        expect(readFileSync(join(h.dataRoot, 'knowledge/shared/insights', path), 'utf8')).toBe(
+          readFileSync(join(view, path), 'utf8'),
+        );
+      }
+      expect(readFileSync(join(canonical, 'profile.md'), 'utf8')).toBe('Stale canonical version');
+      expect(existsSync(join(canonical, 'new.md'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  },
+);

@@ -44,6 +44,34 @@ private func pooledTask(session: URLSession, url: URL, pin: String) throws
 
 /// Exercises the production pool and task cancellation on both macOS and iOS.
 func verifyPinnedHTTPPool(origin: URL, pin: String) throws {
+  // Exercise the production reservation lifecycle before starting network work.
+  let starts = PinnedRequestStarts()
+  try checkPool(starts.prepare("queued"), "reservation failed")
+  try checkPool(!starts.prepare("queued"), "duplicate reservation replaced its owner")
+  let queued = starts.get("queued")!
+  starts.cancel("queued")
+  do {
+    try queued.check()
+    throw HTTPPoolSmokeFailure.failed("queued cancellation was lost")
+  } catch let error as URLError where error.code == .cancelled { }
+  try checkPool(starts.get("queued") == nil, "cancelled reservation leaked")
+  try checkPool(starts.prepare("queued"), "completed ID could not be reserved again")
+  let replacementStart = starts.get("queued")!
+  starts.finish("queued", start: queued)
+  try checkPool(starts.get("queued") === replacementStart, "late cleanup removed a new owner")
+  starts.shutdown()
+  do {
+    try replacementStart.check()
+    throw HTTPPoolSmokeFailure.failed("shutdown did not cancel pending starts")
+  } catch let error as URLError where error.code == .cancelled { }
+  try checkPool(!starts.prepare("after-destroy"), "destroyed module admitted new work")
+  let boundedStarts = PinnedRequestStarts()
+  for i in 0..<64 { try checkPool(boundedStarts.prepare("r-\(i)"), "premature capacity refusal") }
+  try checkPool(!boundedStarts.prepare("overflow"), "reservation registry is unbounded")
+  boundedStarts.cancel("r-0")
+  try checkPool(boundedStarts.prepare("overflow"), "cancellation did not release capacity")
+  boundedStarts.shutdown()
+
   let pool = PinnedHTTPSessionPool()
   defer { pool.shutdown() }
   do {
@@ -105,7 +133,30 @@ func verifyPinnedHTTPPool(origin: URL, pin: String) throws {
   try checkPool(firstTask.0.delegate.failure == nil && secondTask.0.delegate.failure == nil,
     "pin rejection contaminated another request's diagnostics")
 
+  let cancelledStart = PinnedRequestStart()
+  cancelledStart.cancel()
+  let startResult = HTTPPoolSmokeResult()
+  let neverResumed = first.session.dataTask(with: origin) { data, response, error in
+    startResult.complete(data: data, response: response, error: error)
+  }
+  cancelledStart.installAndResume(neverResumed)
+  let stoppedBeforeResume = try startResult.wait()
+  try checkPool((stoppedBeforeResume.2 as NSError?)?.code == NSURLErrorCancelled,
+    "pre-install cancellation did not settle the URLSession task")
+  cancelledStart.finish()
+
   let slow = origin.appendingPathComponent("slow")
+  let runningStart = PinnedRequestStart()
+  let runningResult = HTTPPoolSmokeResult()
+  let runningTask = first.session.dataTask(with: slow) { data, response, error in
+    runningResult.complete(data: data, response: response, error: error)
+  }
+  runningStart.installAndResume(runningTask)
+  runningStart.cancel()
+  let stoppedWhileRunning = try runningResult.wait()
+  try checkPool((stoppedWhileRunning.2 as NSError?)?.code == NSURLErrorCancelled,
+    "in-flight start cancellation did not cancel its URLSession task")
+  runningStart.finish()
   let cancelled = try pooledTask(session: first.session, url: slow, pin: pin)
   let survivor = try pooledTask(session: first.session, url: slow, pin: pin)
   cancelled.0.cancel()

@@ -13,12 +13,12 @@ export function liveResourceInterval(path: string): number | undefined {
     return undefined;
   if (/^\/projects(?:\/[^/]+(?:\/(?:public-shares|local-shares))?)?$/u.test(p)) return 15_000;
   if (
-    /^\/sessions\/[^/]+\/(?:branches|links|linked-message-approvals|dev-servers|managed-dev-servers(?:\/[^/]+\/logs)?|local-shares|public-static-entries|public-static-directories)$/u.test(
+    /^\/sessions\/[^/]+\/(?:google-status|branches|links|linked-message-approvals|dev-servers|managed-dev-servers(?:\/[^/]+\/logs)?|local-shares|public-static-entries|public-static-directories)$/u.test(
       p,
     )
   )
-    return p.endsWith('/branches') ? 5_000 : 3_000;
-  if (/^\/sessions\/[^/]+\/live-meetings(?:\/[^/]+\/(?:commands|insights))?$/u.test(p))
+    return p.endsWith('/google-status') ? 15_000 : p.endsWith('/branches') ? 5_000 : 3_000;
+  if (/^\/sessions\/[^/]+\/live-meetings(?:\/[^/]+\/(?:commands|insights|result))?$/u.test(p))
     return 2_000;
   if (/^\/server\/(?:updates|update-channel)$/u.test(p)) return 2_000;
   if (/^\/settings\/agent-logins\/[^/]+$/u.test(p)) return 2_500;

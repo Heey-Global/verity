@@ -17,13 +17,20 @@ type SessionFileKind = 'directory' | 'file' | 'symlink' | 'other';
  * because a worktree may legitimately contain a top-level `knowledge/` or
  * `shared/` directory of its own and reserving those names would hide it.
  */
-export const SESSION_FILE_ROOTS = ['worktree', 'knowledge', 'shared'] as const;
+export const SESSION_FILE_ROOTS = [
+  'worktree',
+  'knowledge',
+  'shared',
+  'sources',
+  'documents',
+  'drafts',
+] as const;
 
 export type SessionFileRootName = (typeof SESSION_FILE_ROOTS)[number];
 
 /** The two knowledge roots, which share every rule the worktree does not. */
 export function isKnowledgeRoot(root: SessionFileRootName): boolean {
-  return root === 'knowledge' || root === 'shared';
+  return root !== 'worktree';
 }
 
 /**

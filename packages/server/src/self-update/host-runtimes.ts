@@ -142,7 +142,7 @@ async function unsatisfiedHostRuntimes(
   return missing;
 }
 
-interface HostRuntimeResult {
+export interface HostRuntimeResult {
   readonly id: string;
   readonly ok: boolean;
   readonly message: string;
@@ -197,6 +197,50 @@ function parseResult(value: unknown): HostRuntimeResult | undefined {
   };
 }
 
+export interface HostAnswerRequest {
+  /** The host directory both files live in, as this container sees it. */
+  readonly dir: string;
+  readonly request: string;
+  readonly result: string;
+  /** Stable across a resumed operation, so a crash reuses the request and its answer. */
+  readonly id: string;
+  readonly body: object;
+  readonly timeoutMs: number;
+  readonly pollMs?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+}
+
+/**
+ * Ask a root host component, through its request file, and wait for its answer to THIS request.
+ * `undefined` means nothing answered in time. A successful answer already on file for the same id
+ * is reused, so a resumed operation does not ask twice.
+ */
+export async function requestHostAnswer(
+  options: HostAnswerRequest,
+): Promise<HostRuntimeResult | undefined> {
+  const resultPath = join(options.dir, options.result);
+  const previous = (await readResult(resultPath)).result;
+  if (previous?.id === options.id && previous.ok) return previous;
+  const requestPath = join(options.dir, options.request);
+  const temporary = join(options.dir, `.${options.request}.${String(process.pid)}`);
+  await mkdir(options.dir, { recursive: true });
+  await writeFile(temporary, `${JSON.stringify(options.body)}\n`, { mode: 0o600 });
+  // A rename is what the path unit sees, and it lands the whole request at once.
+  await rename(temporary, requestPath);
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
+  const deadline = now() + options.timeoutMs;
+  const startedAt = (await stat(requestPath)).mtimeMs;
+  for (;;) {
+    const { result: candidate, mtimeMs } = await readResult(resultPath);
+    // An older failure for this same id is not an answer to the request just written.
+    if (candidate?.id === options.id && (candidate.ok || mtimeMs >= startedAt)) return candidate;
+    if (now() >= deadline) return undefined;
+    await sleep(options.pollMs ?? 1_000);
+  }
+}
+
 export interface ReconcileHostRuntimesOptions {
   readonly docker: Pick<DockerClient, 'inspectRuntime'>;
   readonly requirements: HostRuntimeRequirements;
@@ -234,36 +278,22 @@ export async function reconcileHostRuntimes(options: ReconcileHostRuntimesOption
     );
   }
 
-  const resultPath = join(dir, 'result.json');
-  let result = (await readResult(resultPath)).result;
-  if (result?.id !== requestId || !result.ok) {
-    const requestPath = join(dir, 'request.json');
-    const temporary = join(dir, `.request.json.${String(process.pid)}`);
-    await mkdir(dir, { recursive: true });
-    await writeFile(temporary, `${JSON.stringify({ version: 1, id: requestId, requirements })}\n`, {
-      mode: 0o600,
-    });
-    // A rename is what the path unit sees, and it lands the whole request at once.
-    await rename(temporary, requestPath);
-    const now = options.now ?? Date.now;
-    const sleep = options.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
-    const deadline = now() + (options.timeoutMs ?? 15 * 60_000);
-    const startedAt = (await stat(requestPath)).mtimeMs;
-    for (;;) {
-      const { result: candidate, mtimeMs } = await readResult(resultPath);
-      // An older failure for this same id is not an answer to the request just written.
-      if (candidate?.id === requestId && (candidate.ok || mtimeMs >= startedAt)) {
-        result = candidate;
-        break;
-      }
-      if (now() >= deadline) {
-        throw new HostRuntimeError(
-          `This release needs ${need}, and the host runtime service did not answer. Check ` +
-            '`journalctl -u verity-host-runtime` on the host, then retry the update.',
-        );
-      }
-      await sleep(options.pollMs ?? 1_000);
-    }
+  const result = await requestHostAnswer({
+    dir,
+    request: 'request.json',
+    result: 'result.json',
+    id: requestId,
+    body: { version: 1, id: requestId, requirements },
+    timeoutMs: options.timeoutMs ?? 15 * 60_000,
+    ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  if (result === undefined) {
+    throw new HostRuntimeError(
+      `This release needs ${need}, and the host runtime service did not answer. Check ` +
+        '`journalctl -u verity-host-runtime` on the host, then retry the update.',
+    );
   }
   if (!result.ok) {
     throw new HostRuntimeError(

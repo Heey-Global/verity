@@ -451,6 +451,11 @@ export interface TurnPreparationContext {
 }
 
 export interface ConductorDeps {
+  /** Project migrations run before claiming a turn, so no live backend sees a replaced path. */
+  prepareSession?: ((sessionId: string) => Promise<void>) | undefined;
+  /** Filesystem preparation and publication, awaited while the turn owns its session. */
+  prepareWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
+  settleWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
   store: EventStore;
   /** A session changed in a way no event records: it started or stopped
    * working, or received an automatic name. Lets live overviews refresh the row.
@@ -483,6 +488,7 @@ export interface ConductorDeps {
         toolName: BrokeredGrantToolName;
         target: string;
         channel: BrokeredGrantChannel;
+        bindingId?: string;
       }) => Promise<boolean>)
     | undefined;
   /** ADR 0011 D2: persist a scoped brokered-secret grant after an operator allow.
@@ -497,6 +503,7 @@ export interface ConductorDeps {
         target: string;
         scope: 'session' | 'project' | 'forever';
         channel: BrokeredGrantChannel;
+        bindingId?: string;
       }) => Promise<void>)
     | undefined;
   /** Fan-out bus threaded into each turn's runner (M3-2). */
@@ -1019,7 +1026,11 @@ export class Conductor {
    */
   private readonly externalPermissions = new Map<
     string,
-    { settle: (answer: ExternalPermissionAnswer) => void; channel: BrokeredGrantChannel }
+    {
+      settle: (answer: ExternalPermissionAnswer) => void;
+      channel: BrokeredGrantChannel;
+      brokeredGrantBindingId?: string;
+    }
   >();
   /** Synchronous claim fence around async permission delivery. The first manual or
    * automatic decision owns a prompt until delivery succeeds or fails. */
@@ -1509,6 +1520,26 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
   ): Promise<RunResult> {
+    const owner = this.turns.get(sessionId);
+    await this.deps.prepareWorkspace?.(session);
+    let publicationSafe = true;
+    try {
+      return await this.runPreparedBackendTurn(sessionId, prompt, session, opts);
+    } catch (error) {
+      if (error instanceof BackendTerminationUnconfirmedError) publicationSafe = false;
+      throw error;
+    } finally {
+      if (publicationSafe && !owner?.forceSettled && this.turns.get(sessionId) === owner)
+        await this.deps.settleWorkspace?.(session);
+    }
+  }
+
+  private async runPreparedBackendTurn(
+    sessionId: string,
+    prompt: string,
+    session: SessionRecord,
+    opts: TurnOptions,
+  ): Promise<RunResult> {
     const backendKey = this.backendKey(opts.model ?? session.model);
     // Fold any server-authored pending notes (e.g. the post-merge worktree reset)
     // into THIS turn's model prompt as provenance-labelled data and consume them. They ride the model input
@@ -1529,6 +1560,7 @@ export class Conductor {
     const backendState = await this.deps.store.getSessionBackendState(sessionId, backendKey);
     const canResumeCanonicalClaudeSession =
       backendKey === 'claude' &&
+      !session.worktree.split('/').includes('.verity-document-sessions') &&
       moveNotice === undefined &&
       backendState === undefined &&
       // Another backend's binding means Claude's canonical thread is no longer
@@ -2614,12 +2646,23 @@ export class Conductor {
    * own terminal writes + release steps instead of double-writing or clobbering a
    * successor turn's fence, handle, or marker.
    */
+  private async settleDocumentsById(sessionId: string): Promise<void> {
+    if (!this.deps.settleWorkspace) return;
+    try {
+      const session = await this.deps.store.getSession(sessionId);
+      if (session) await this.deps.settleWorkspace(session);
+    } catch (error) {
+      this.reportTurnError(sessionId, error);
+    }
+  }
+
   private async forceSettleWedgedTurn(sessionId: string, handle: SessionTurnHandle): Promise<void> {
     // Already settled, or the run loop owns the settle — nothing to free.
     if (handle.settled || !handle.claimSettle('force')) return;
     if (this.turns.get(sessionId) === handle) this.turns.delete(sessionId);
     this.clearPermissions(sessionId);
     try {
+      await this.settleDocumentsById(sessionId);
       void handle
         .cleanupImages?.()
         .catch((error: unknown) => this.reportTurnError(sessionId, error));
@@ -2827,7 +2870,13 @@ export class Conductor {
           return true;
         }
         try {
-          await this.persistBrokeredGrant(sessionId, request, options.scope, external?.channel);
+          await this.persistBrokeredGrant(
+            sessionId,
+            request,
+            options.scope,
+            external?.channel,
+            external?.brokeredGrantBindingId,
+          );
           options.onScopeSaved?.(true);
         } catch {
           // The runner has already consumed the allow and may have executed a
@@ -2882,6 +2931,7 @@ export class Conductor {
     sessionId: string,
     request: PermissionRequest,
     statedChannel?: BrokeredGrantChannel,
+    bindingId?: string,
   ): Promise<boolean> {
     const toolName = brokeredGrantToolName(request.toolName);
     const check = this.deps.checkBrokeredHttpGrant;
@@ -2908,6 +2958,7 @@ export class Conductor {
             secretAlias,
             toolName: target.toolName,
             target: target.target,
+            ...(bindingId !== undefined ? { bindingId } : {}),
           }),
         ),
       );
@@ -2923,6 +2974,7 @@ export class Conductor {
     scope: 'session' | 'project' | 'forever',
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
+    bindingId?: string,
   ): Promise<void> {
     if (scope === 'forever') throw new Error('permanent brokered secret grants are unsupported');
     const persist = this.deps.persistBrokeredHttpGrant;
@@ -2956,6 +3008,7 @@ export class Conductor {
         secretAlias,
         toolName: target.toolName,
         target: target.target,
+        ...(bindingId !== undefined ? { bindingId } : {}),
       });
     }
   }
@@ -3005,11 +3058,13 @@ export class Conductor {
     toolName: string;
     input: Record<string, unknown>;
     channel: BrokeredGrantChannel;
+    /** Server-resolved provider identity captured before the approval can wait. */
+    brokeredGrantBindingId?: string;
     /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
-    const { sessionId, toolUseId, channel, signal } = params;
+    const { sessionId, toolUseId, channel, signal, brokeredGrantBindingId } = params;
     if (this.pendingPermissionRequests.get(sessionId)?.has(toolUseId) === true) {
       throw new Error(`permission ${toolUseId} is already pending`);
     }
@@ -3032,7 +3087,11 @@ export class Conductor {
       this.pendingPermissionRequests.get(sessionId) ?? new Map<string, PermissionRequest>();
     pending.set(toolUseId, request);
     this.pendingPermissionRequests.set(sessionId, pending);
-    this.externalPermissions.set(`${sessionId}\0${toolUseId}`, { settle, channel });
+    this.externalPermissions.set(`${sessionId}\0${toolUseId}`, {
+      settle,
+      channel,
+      ...(brokeredGrantBindingId !== undefined ? { brokeredGrantBindingId } : {}),
+    });
     const onAbort = (): void => {
       this.settleExternalPermission(sessionId, toolUseId, {
         decision: { behavior: 'deny', message: EXTERNAL_PERMISSION_ABORT_MESSAGE },
@@ -3055,7 +3114,7 @@ export class Conductor {
       if (
         params.allowStandingGrant !== false &&
         (await Promise.race([
-          this.isCoveredByBrokeredGrant(sessionId, request, channel),
+          this.isCoveredByBrokeredGrant(sessionId, request, channel, brokeredGrantBindingId),
           answered.then(() => false),
         ]))
       ) {
@@ -3111,6 +3170,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     displayPrompt = prompt,
+    origin: PromptOrigin = {},
   ): Promise<RunResult> {
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     // Register the in-flight handle synchronously (before the async run) so a cancel
@@ -3124,6 +3184,8 @@ export class Conductor {
         sessionId,
         displayPrompt,
         await this.storeAttachments(opts.attachments),
+        false,
+        origin,
       );
       this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       const sinceSeq = await this.deps.store.latestEventSeq(sessionId);
@@ -3801,8 +3863,10 @@ export class Conductor {
         if (after.some((e) => isTurnTerminalEvent(e.event))) {
           // An interrupted marker may close an uncertain turn whose worker still lives.
           if (after.some((row) => row.event.t === 'result')) {
+            await this.settleDocumentsById(marker.sessionId);
             await this.cleanupRecoveredImageAttachments(marker);
           } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+            await this.settleDocumentsById(marker.sessionId);
             await this.cleanupRecoveredImageAttachments(marker);
           }
           if (this.leaveUncertainRecovery(marker.sessionId)) {
@@ -3836,6 +3900,7 @@ export class Conductor {
           continue;
         }
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
+        await this.settleDocumentsById(marker.sessionId);
         await this.cleanupRecoveredImageAttachments(marker);
         await this.emitInterrupted(marker.sessionId);
         await this.deps.store.clearRunningTurn(marker.sessionId);
@@ -4280,8 +4345,10 @@ export class Conductor {
       const after = await this.deps.store.getEventsAfter(marker.sessionId, marker.promptSeq);
       if (after.some((event) => isTurnTerminalEvent(event.event))) {
         if (after.some((row) => row.event.t === 'result')) {
+          await this.settleDocumentsById(marker.sessionId);
           await this.cleanupRecoveredImageAttachments(marker);
         } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+          await this.settleDocumentsById(marker.sessionId);
           await this.cleanupRecoveredImageAttachments(marker);
         }
         await this.deps.store.clearRunningTurn(marker.sessionId);
@@ -4386,7 +4453,10 @@ export class Conductor {
       // anchor — either way the settle would be writing into someone else's turn. Come
       // back and re-read the whole state instead of pushing a stale verdict through.
       if (settled === null) return this.scheduleUncertainRecovery(marker);
-      if (outcome.status === 'dead') await this.cleanupRecoveredImageAttachments(marker);
+      if (outcome.status === 'dead') {
+        await this.settleDocumentsById(marker.sessionId);
+        await this.cleanupRecoveredImageAttachments(marker);
+      }
       await this.deps.store.clearRunningTurn(marker.sessionId, marker.promptSeq);
       this.leaveUncertainRecovery(marker.sessionId);
       this.releaseInFlight(marker.sessionId);
@@ -4535,6 +4605,8 @@ export class Conductor {
       if (!ownsSettle) {
         // force-settled — nothing left to write
       } else if (result !== undefined) {
+        const session = await this.deps.store.getSession(marker.sessionId);
+        if (session) await this.deps.settleWorkspace?.(session);
         void this.cleanupRecoveredImageAttachments(marker);
         if (result.aborted) await this.emitInterrupted(marker.sessionId);
         else await this.ensureTerminalMarker(marker.sessionId, marker.promptSeq, result);
@@ -4883,6 +4955,11 @@ export class Conductor {
           backend,
           await this.brokeredAliasesFor(contextProjectId, backend),
         );
+        const workspaceSession =
+          opts.sessionId === undefined
+            ? undefined
+            : await this.deps.store.getSession(opts.sessionId);
+        if (workspaceSession) await this.deps.prepareWorkspace?.(workspaceSession);
         const { opts: dispatchOpts, cleanup } = await this.prepareFileAttachments(runOpts);
         // On the fresh-spawn path the backend mints the session id during
         // `startTurn`, so it isn't known yet here: pass the pre-created id when the
@@ -4913,14 +4990,23 @@ export class Conductor {
         });
         handle.delegate = turn;
         handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
+        let publicationSafe = true;
         try {
           const result = await turn.result;
           await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
             this.reportTurnError(boundId ?? opts.sessionId ?? result.sessionId ?? 'unbound', error);
           });
           return result;
+        } catch (error) {
+          if (error instanceof BackendTerminationUnconfirmedError) publicationSafe = false;
+          throw error;
         } finally {
-          await cleanup();
+          try {
+            if (publicationSafe && !handle.forceSettled && workspaceSession)
+              await this.deps.settleWorkspace?.(workspaceSession);
+          } finally {
+            await cleanup();
+          }
         }
       })()
         .then(async (result) => {
@@ -4992,8 +5078,8 @@ export class Conductor {
    * Validate the prompt, atomically claim the per-session lock, and resolve the
    * session. On success the lock is HELD (the caller must release it once its
    * run settles); on any post-claim failure the lock is released before
-   * throwing. The claim is synchronous before the first await, so two concurrent
-   * turns for one session can never both pass the guard. The busy check precedes
+   * throwing. After optional project migration, the busy check and claim are
+   * synchronous, so two concurrent turns can never both pass the guard. The busy check precedes
    * the claim, so a {@link SessionBusyError} never releases the OTHER turn's lock.
    */
   private async accept(
@@ -5006,6 +5092,10 @@ export class Conductor {
     // (attachment, empty prompt) is valid content and passes.
     if (!turnHasContent(prompt, opts)) throw new Error('turn must have a prompt or an attachment');
     if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
+    if (this.deps.prepareSession) {
+      await this.deps.prepareSession(sessionId);
+      if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
+    }
     this.markInFlight(sessionId);
     try {
       const session = await this.deps.store.getSession(sessionId);
@@ -5578,7 +5668,18 @@ export class Conductor {
     if (session.projectId === null) return '';
     // Keep the mount instructions present on resumed turns without re-injecting
     // the project's curated overview.
-    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}`;
+    const parts = session.worktree.split('/');
+    const codeIndex = parts.lastIndexOf('.verity-sessions');
+    const documentPath = parts.includes('.verity-document-sessions')
+      ? '.'
+      : codeIndex >= 0
+        ? `${'../'.repeat(parts.length - codeIndex)}.verity-document-sessions/code-${session.sessionId}`
+        : undefined;
+    const documents =
+      documentPath === undefined
+        ? ''
+        : `\n\nYour durable Documents working copy is ${documentPath}, relative to your working directory. Write project documents there. /knowledge/insights is the read-only canonical Documents collection. Changes from your working copy are published automatically after the turn, with concurrent changes preserved as conflicts. Sources and Global remain read-only. These working-copy instructions replace direct-write guidance for /knowledge/insights above.`;
+    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}${documents}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so
@@ -5593,6 +5694,7 @@ export class Conductor {
    *  the adjacent {@link projectMemoryPrompt} read already does on the same
    *  fresh-context path, so a down store fails it either way. */
   private async codeHostForSession(session: SessionRecord): Promise<TurnCodeHost> {
+    if (session.worktree.split('/').includes('.verity-document-sessions')) return 'local';
     if (session.projectId === null) return 'github';
     const project = await this.deps.store.getProject(session.projectId);
     if (project === undefined) return 'github';

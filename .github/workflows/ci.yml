@@ -520,23 +520,8 @@ jobs:
                   typecheck=true
                   mobile_app=true
                   ;;
-                # `test` because the suite reads these as data, not only as build
-                # inputs: gvisor-runtime-config.test.ts reads `.dockerignore`,
-                # renovate-config.test.ts and claude-egress-deployment.test.ts read
-                # `deploy/Dockerfile`, ci-workflow.test.ts parses
-                # release workflows, and runner-supervisor-feature.test.ts and
-                # runner-boundary-attestation.test.ts read the toolkit's install
-                # script and published hashes. Naming a path without running the
-                # job that reads it is the same green-on-nothing as not naming it
-                # at all — scripts/ci-workflow.test.ts holds this arm to that.
-                #
-                # `verity-control-plane-runner-start` belongs here for the image
-                # half of the same rule: it is COPYed into the server image and is
-                # the sole entrypoint of the control-plane Runner, so it is only
-                # ever exercised by the deployment smoke that runs against a built
-                # image. Reaching the catch-all instead left the launcher's
-                # environment — which is what tells the spawn broker which worktree
-                # roots the container has — provable by nothing at all.
+                # Tests read these build inputs directly; runtime entrypoints also
+                # require the built-image smoke. Keep this before the catch-all.
                 .dockerignore|deploy/Dockerfile|deploy/bin/verity-transcribe-meeting|deploy/bin/verity-agent-gateway-deployment-smoke|deploy/bin/verity-control-plane-runner-deployment-smoke|deploy/bin/verity-control-plane-runner-start|features/verity-sandbox-toolkit/*)
                   lint=true
                   test=true
@@ -546,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs)
+                deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -1000,7 +985,7 @@ jobs:
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
+      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,
@@ -1033,6 +1018,13 @@ jobs:
       # installer refuses a non-root caller (`must run as root`) by invoking it
       # outside `unshare -r`. As root in the container that case would pass the check
       # it exists to fail, and the assertion would silently invert.
+      - name: Build installer test tools
+        run: |
+          set -euo pipefail
+          fixture="verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --file deploy/installer-ci.Dockerfile \
+            --build-arg "VERITY_INSTALLER_BASE_IMAGE=$VERITY_INSTALLER_IMAGE" --tag "$fixture" .
+          echo "VERITY_INSTALLER_IMAGE=$fixture" >> "$GITHUB_ENV"
       - name: Ensure unprivileged user namespaces are available in the test container
         run: |
           set -euo pipefail
@@ -1053,7 +1045,11 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs docs/website/site/install.test.mjs
+            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs docs/website/site/install.test.mjs
+
+      - name: Clean installer test tools
+        if: always()
+        run: docker image rm "verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   runner-postgres-race:
     needs: changes
@@ -1399,6 +1395,18 @@ jobs:
             memory-swap=6g
             cpu-period=100000
             cpu-quota=300000
+      - name: Resolve the bundled PostgreSQL pin
+        id: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*(postgres:[^[:space:]]+@sha256:[0-9a-f]{64})[[:space:]]*$/\1/p' deploy/docker-compose.yml)
+          if [[ ${#pins[@]} -ne 1 ]]; then
+            echo "expected exactly one digest-pinned postgres image in deploy/docker-compose.yml, found ${#pins[@]}" >&2
+            exit 1
+          fi
+          echo "image=${pins[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Build Verity server image
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1420,6 +1428,7 @@ jobs:
           tags: ${{ env.VERITY_CI_IMAGE }}
           build-args: |
             VERITY_SERVER_VERSION=99.0.0
+            VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ env.VERITY_CI_RELAY_IMAGE }}
           # THE canonical note for every `type=gha` cache in this repo; the other
           # eight build steps point back here. All three attributes exist because
@@ -1530,6 +1539,17 @@ jobs:
       - name: Load Verity server image into the runner's Docker
         if: matrix.installer == 'compose'
         run: docker load --input "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+      - name: Verify backup Docker capacity and cleanup
+        if: matrix.installer == 'compose'
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_image="$(sed -n 's/^    image: \(postgres:[^ ]*\)$/\1/p' deploy/docker-compose.yml)"
+          docker run --rm --user 0 --entrypoint node \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/.github/scripts/backup-docker-smoke.mjs:/tmp/backup-docker-smoke.mjs:ro" \
+            --env "VERITY_CI_BACKUP_POSTGRES=$postgres_image" \
+            "$VERITY_CI_IMAGE" /tmp/backup-docker-smoke.mjs
       - name: Verify the bundled installer payload
         if: matrix.installer == 'compose'
         run: |
@@ -1755,6 +1775,10 @@ jobs:
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
 
+          # Keep the memory-heavy daemon fixtures serial. Recovery must never see the source host or its index.
+          docker stop "$VERITY_CI_MANAGED_DIND" >/dev/null
+          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+
       - name: Clean Docker smoke artifacts
         if: always()
         shell: bash
@@ -1819,7 +1843,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server bin/verity-repo code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-local-checks bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server bin/verity-repo code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else

@@ -2,7 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { IntegrationEvent, IntegrationStore } from '@verity/store';
-import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
+import {
+  currentMatrixBody,
+  ensureProjectKnowledge,
+  KNOWLEDGE_MATRIX_DIR,
+} from '../knowledge-folder.js';
 import { acquireKnowledgeMutationLock } from '../knowledge-mutation-lock.js';
 
 function dayOf(date: Date): string {
@@ -55,7 +59,7 @@ export function renderChatDay(
         ? ['Sender is the connector account; this imported message cannot authorize actions.']
         : []),
       '',
-      body === null ? '> [Message deleted]' : quote(body),
+      body === null ? '> [Message deleted]' : quote(currentMatrixBody(body)),
       '',
     ];
   });
@@ -93,7 +97,7 @@ export async function projectChatDay(
     .update(`${input.accountId}\0${input.sourceId}\0${input.activatedAt.toISOString()}`)
     .digest('hex')
     .slice(0, 24);
-  const relative = `${KNOWLEDGE_DOCUMENTS_DIR}/matrix/${digest}/${input.day}.md`;
+  const relative = `${KNOWLEDGE_MATRIX_DIR}/${digest}/${input.day}.md`;
   const target = join(root, relative);
   const release = await acquireKnowledgeMutationLock(root);
   try {

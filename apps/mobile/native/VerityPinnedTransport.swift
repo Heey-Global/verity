@@ -27,6 +27,9 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
   private let httpPool = PinnedHTTPSessionPool()
   private let transportTimings = PinnedTransportTimingRegistry()
   private let requestsLock = NSLock()
+  private let requestStarts = PinnedRequestStarts()
+  // Queue blocks only launch a Task; they never wait for the network.
+  private let requestStartQueue = DispatchQueue(label: "verity.pinned-request-start", qos: .userInitiated)
   // How URLSession speaks to the loopback tunnel. Both dialects carry the same
   // pinned TLS bytes; the app switches when one of them fails the Core probe on
   // a device, since the two take different paths through the system proxy code.
@@ -79,8 +82,9 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
   }
 
   private func performRequest(
-    id: String, request: URLRequest, tlsPin: String, proxyPort: Int, upload: URL? = nil, timing: PinnedTransportTiming? = nil
+    id: String, request: URLRequest, tlsPin: String, proxyPort: Int, upload: URL? = nil, timing: PinnedTransportTiming? = nil, start: PinnedRequestStart? = nil
   ) async throws -> (Data, HTTPURLResponse) {
+    try start?.check()
     let lane = PinnedHTTPTransportLane(headers: request.allHTTPHeaderFields ?? [:])
     var request = request
     PinnedHTTPTransportLane.removeHeader(from: &request)
@@ -112,7 +116,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         record.install(task)
         self.storeRequest(record, id: id)
         timing?.resumed()
-        task.resume()
+        if let start { start.installAndResume(task) } else { task.resume() }
       }
     } catch {
       if let failure = delegate.failure {
@@ -127,9 +131,11 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
 
   private func requestResponse(
     requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?,
-    tlsPin: String, proxyPort: Int, preferText: Bool
+    tlsPin: String, proxyPort: Int, preferText: Bool, start: PinnedRequestStart? = nil,
+    entryTiming: PinnedTransportTiming? = nil
   ) async throws -> [String: Any] {
-    let timing = PinnedTransportTiming(
+    entryTiming?.workEntered()
+    let timing = entryTiming ?? PinnedTransportTiming(
       headers: headers, proxyPort: proxyPort, proxyMode: currentProxyMode())
     if let timing { transportTimings.retain(timing) }
     guard let target = URL(string: url), target.scheme == "https", target.user == nil, target.password == nil else {
@@ -143,7 +149,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       request.httpBody = body
     }
     let (data, response) = try await performRequest(
-      id: requestId, request: request, tlsPin: tlsPin, proxyPort: proxyPort, timing: timing)
+      id: requestId, request: request, tlsPin: tlsPin, proxyPort: proxyPort, timing: timing, start: start)
     var result = pinnedHTTPResponse(data: data, response: response, preferText: preferText)
     // Never wait for metrics: the bounded export includes a later delegate callback.
     if let timing {
@@ -183,6 +189,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
     Events("onWebSocketEvent")
 
     OnDestroy {
+      self.requestStarts.shutdown()
       self.requestsLock.lock()
       let requests = Array(self.requests.values)
       self.requests.removeAll()
@@ -213,6 +220,42 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         requestId: requestId, url: url, method: method, headers: headers, bodyBase64: bodyBase64,
         tlsPin: tlsPin, proxyPort: proxyPort, preferText: true)
     }
+
+    // The synchronous reservation makes abort-before-queue-entry observable. No URL,
+    // headers, networking or JS runtime values are retained by the reservation.
+    Function("prepareRequestV3") { (requestId: String) -> Bool in
+      self.requestStarts.prepare(requestId)
+    }
+    Function("cancelRequestV3") { (requestId: String) in
+      self.requestStarts.cancel(requestId)
+    }
+    // Deliberately a non-async Swift closure with an explicit Promise: the async
+    // Swift overload schedules its body through the JS runtime before native entry.
+    AsyncFunction("requestV3") {
+      (requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?, tlsPin: String, proxyPort: Int, promise: Promise) -> Void in
+      guard let start = self.requestStarts.get(requestId) else {
+        promise.reject(URLError(.cancelled))
+        return
+      }
+      let timing = PinnedTransportTiming(
+        headers: headers, proxyPort: proxyPort, proxyMode: self.currentProxyMode())
+      Task {
+        defer { self.requestStarts.finish(requestId, start: start) }
+        do {
+          try start.check()
+          let response = try await self.requestResponse(
+            requestId: requestId, url: url, method: method, headers: headers,
+            bodyBase64: bodyBase64, tlsPin: tlsPin, proxyPort: proxyPort,
+            preferText: true, start: start, entryTiming: timing)
+          try start.check()
+          timing?.promiseResolving()
+          promise.resolve(response)
+        } catch {
+          timing?.promiseResolving()
+          promise.reject(error)
+        }
+      }
+    }.runOnQueue(self.requestStartQueue)
 
     Function("supportsTransportLanes") { true }
 

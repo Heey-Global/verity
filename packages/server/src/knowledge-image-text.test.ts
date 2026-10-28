@@ -18,7 +18,7 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 );
-const RELATIVE = 'sources/documents/matrix/room/attachments/event-receipt.png';
+const RELATIVE = 'sources/matrix/room/attachments/event-receipt.png';
 
 let root: string;
 beforeEach(async () => {

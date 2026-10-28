@@ -275,7 +275,7 @@ it('shares bounded runtime history and preserves the first sample for comparison
     await shareUpdateDiagnostics();
     const message = (share.mock.calls[0]![0] as { message: string }).message;
     const report = JSON.parse(message);
-    expect(report.schema).toBe(6);
+    expect(report.schema).toBe(7);
     expect(report.runtimeDiagnostics.baseline).toMatchObject({
       recordingAgeMs: 0,
       screen: 'settings',

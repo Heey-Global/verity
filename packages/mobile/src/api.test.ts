@@ -147,6 +147,38 @@ function jsonBody(call: Call | undefined): unknown {
 }
 
 describe('VerityClient live meetings', () => {
+  it('validates result reads and sends revision-scoped confirmation and retry requests', async () => {
+    const result = {
+      meetingId: 'm',
+      revision: 2,
+      status: 'ready',
+      title: 'Release',
+      summary: 'Ship.',
+      decisions: [],
+      tasks: [],
+      openQuestions: [],
+      model: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ result }),
+      json({ result }),
+      json({ accepted: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getLiveMeetingResult('s', 'm')).toEqual(result);
+    await client.updateLiveMeetingResultTask('s', 'm', 'proposal', {
+      revision: 2,
+      state: 'added',
+      taskId: 'task',
+    });
+    expect(calls[1]?.url).toBe('http://host/sessions/s/live-meetings/m/result/tasks/proposal');
+    expect(jsonBody(calls[1])).toEqual({ revision: 2, state: 'added', taskId: 'task' });
+    await client.retryLiveMeetingResult('s', 'm');
+    expect(calls[2]?.init?.method).toBe('POST');
+  });
+
   it('loads server-generated insights for the selected meeting', async () => {
     const insight = {
       id: 'insight-1',
@@ -1153,10 +1185,13 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ collapsed: true }));
   });
 
-  it('maps a 503 (fleet registry not configured) to an empty list', async () => {
-    const { fetch } = fakeFetch(json({ error: 'not configured' }, 503));
+  it('surfaces a 503 without pretending the project list is empty', async () => {
+    const { fetch } = fakeFetch(json({ error: 'temporarily unavailable' }, 503));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listProjects()).toEqual([]);
+    await expect(client.listProjects()).rejects.toMatchObject({
+      status: 503,
+      message: 'temporarily unavailable',
+    });
   });
 
   it('fetches repository issues with validated connection metadata', async () => {
@@ -3923,6 +3958,7 @@ describe('managed dev server actions', () => {
     const seen = {
       command: 'npm run dev',
       workdir: 'web',
+      providerSnapshot: { provider: 'doppler' as const, project: 'demo', config: 'staging' },
       secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
     };
     expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
@@ -4201,4 +4237,65 @@ it('keeps account selection and session exceptions in account-aware requests', a
     codeVerifier: 'verifier',
     redirectUri: 'app:/oauth',
   });
+});
+
+it('preserves compact Google presentation in session detail while accepting older servers', async () => {
+  const connection = {
+    enabled: true,
+    connected: true,
+    accountEmail: 'a@example.test',
+    clientId: null,
+    source: 'project',
+    mode: 'inherit',
+  };
+  const googleStatus = {
+    gmail: connection,
+    calendar: connection,
+    contacts: connection,
+    workspaceFile: null,
+  };
+  const wire = {
+    sessionId: 's',
+    worktree: '/s',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 0,
+  };
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async () => new Response(JSON.stringify({ ...wire, googleStatus })));
+  const client = new VerityClient({
+    baseUrl: 'https://core.example',
+    fetch,
+    getToken: () => 'paired',
+  });
+  expect((await client.getSession('s')).googleStatus).toEqual(googleStatus);
+  expect(sessionDetailSchema.parse(wire).googleStatus).toBeUndefined();
+  fetch.mockImplementation(async () => new Response(JSON.stringify(googleStatus)));
+  const controller = new AbortController();
+  expect(await client.getSessionGoogleStatus('s', controller.signal)).toEqual(googleStatus);
+  expect(fetch.mock.calls.at(-1)?.[1]?.signal).toBe(controller.signal);
+  expect(fetch.mock.calls.at(-1)?.[1]?.headers).toMatchObject({ authorization: 'Bearer paired' });
+});
+
+it('preserves the provider snapshot returned with managed server views', async () => {
+  const providerSnapshot = { provider: 'doppler', project: 'demo', config: 'staging' };
+  const server = {
+    id: 'srv',
+    name: 'API',
+    command: 'node server.mjs',
+    workdir: '.',
+    approved: false,
+    secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    providerSnapshot,
+    instance: null,
+    elsewhere: [],
+  };
+  const { fetch } = fakeFetchSequence(json({ servers: [server] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(
+    providerSnapshot,
+  );
 });

@@ -1,3 +1,17 @@
+import { createBackupAlertNotifier } from './backup/alert-notifier.js';
+import {
+  brokeredDopplerBindingId,
+  parseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
+import type { SessionFileRootName } from './session-files.js';
+import {
+  createDocumentWorkspaceProvisioner,
+  documentWorkspace,
+  isDocumentWorkspace,
+  DOCUMENT_SESSION_DIRECTORY,
+  documentViewForSession,
+} from './document-workspace.js';
+import { sessionGoogleStatus, type SessionGoogleStatus } from './session-google-status.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
@@ -356,11 +370,16 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
+import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
+import type { AuditLog } from './audit-log.js';
+import { registerAuditRoutes } from './audit-routes.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
@@ -705,6 +724,7 @@ type PublicVeritySettingsRecord = Omit<
 };
 
 export interface ProjectSettingsRecord {
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -725,6 +745,7 @@ export interface ProjectSettingsRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'
@@ -1115,6 +1136,7 @@ function publicProjectSettings(
     'dopplerTokenRef' | 'dopplerToken' | 'dopplerMintedToken' | 'dopplerMintedTokenSlug'
   > = {
     projectId: settings.projectId,
+    devcontainerEnabled: settings.devcontainerEnabled ?? true,
     // Binding is operator-set, non-secret config — safe to expose plaintext.
     dopplerProject: settings.dopplerProject,
     dopplerConfig: settings.dopplerConfig,
@@ -1133,6 +1155,8 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  /** Internal service; public operations remain gated on complete recovery acceptance. */
+  backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;
   matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   onMatrixConfigured?: (() => Promise<void>) | undefined;
@@ -1398,6 +1422,10 @@ export interface ServerDeps {
    * client to take that echo for the truth.
    */
   invalidateProjectList?: () => void;
+  /** Best-effort image cleanup after a successful project soft-delete. */
+  onProjectHidden?: (projectId: string) => Promise<void>;
+  /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
+  audit?: { recorder: AuditRecorder; log: AuditLog } | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -2254,7 +2282,8 @@ async function fileLiveMeeting(input: {
     if (!meeting || meeting.state === 'active') return null;
     const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
     const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
-    return { meeting, notes, insights: insights ?? [] };
+    const result = await input.eventStore.liveMeetings.result(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [], result };
   };
   const first = await load();
   if (!first) return;
@@ -2262,7 +2291,10 @@ async function fileLiveMeeting(input: {
   const meetingDir = knowledge
     ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
     : await ensureLegacyMeetingDirectory(session.worktree);
-  const title = liveMeetingTitle(first.meeting);
+  const title = liveMeetingTitle({
+    ...first.meeting,
+    title: first.meeting.title || first.result?.title || null,
+  });
   const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
   const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
   const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
@@ -2301,6 +2333,7 @@ async function fileLiveMeeting(input: {
         people: liveMeetingPeopleCount(current.meeting),
         notes: current.notes.length,
         answers: liveMeetingAnswerCount(events, current.meeting.id),
+        ...(current.result?.summary ? { summary: current.result.summary } : {}),
       };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
@@ -2990,6 +3023,7 @@ export interface SessionListEnvelope {
 }
 
 export interface SessionDetail extends SessionSummary {
+  googleStatus?: SessionGoogleStatus | undefined;
   /** True while a turn is in flight for this session (the agent is working) —
    * the live "Agent is working…" signal, server-authoritative so it survives
    * the app navigating away + back. */
@@ -3745,13 +3779,43 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // session. Prompt-only runs need nothing but the conductor, which wakes a
   // sleeping project for the turn itself; only a check script needs the
   // project container directly.
+  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
+    if (!userId) return deps.authRegistry?.isEnabled() !== true;
+    return (
+      projectId !== null &&
+      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
+    );
+  };
+  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
+  // `undefined` when the turn is not the session's running one or has no initiator.
+  const runningTurnInitiator = async (
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> => {
+    const running = (await deps.eventStore.listRunningTurns()).find(
+      (t) => t.sessionId === sessionId,
+    );
+    if (running?.turnId !== turnId) return undefined;
+    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
+      (event) => event.seq === running.promptSeq,
+    )?.event;
+    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
+  };
   const automationExecutor = createAutomationExecutor({
+    isAuthorized: async (automation, session) => {
+      try {
+        return await canExecuteAs(automation.sponsorUserId, session.projectId);
+      } catch {
+        return false;
+      }
+    },
     isCurrent: async (automation, snapshot) => {
       const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
       const session = await deps.eventStore.getSession(automation.sessionId);
       return (
         current?.id === automation.id &&
         current.status === 'enabled' &&
+        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
         session?.projectId === snapshot.projectId &&
         session.worktree === snapshot.worktree
       );
@@ -3774,7 +3838,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
       ? {
-          runScript: async ({ script, project, session }) => {
+          runScript: async ({ script, project, session, automation }) => {
             const runtime = deps.projectRuntime;
             const cloneRoot = deps.projectCloneRoot;
             if (!runtime?.runAutomationScript || !cloneRoot) {
@@ -3783,6 +3847,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
+            try {
+              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
+                throw new Error('revoked');
+            } catch {
+              throw new ControlPlaneSessionAuthorityError(
+                'The automation sponsor no longer has execution permission.',
+              );
+            }
             return runtime.runAutomationScript(
               project,
               settings ?? emptyProjectSettings(project.id),
@@ -3823,7 +3895,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
     isSkippableError: (error) =>
-      error instanceof SealedError || error instanceof ProjectNotReadyError,
+      error instanceof SealedError ||
+      error instanceof ProjectNotReadyError ||
+      error instanceof ControlPlaneSessionAuthorityError,
   });
 
   const automationScheduler = startAutomationScheduler({
@@ -4100,12 +4174,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
           const fresh = await deps.eventStore.markSessionAutomation(sessionId, marker);
           if (!fresh) return;
+          // Nobody asked for this turn, so it runs for the session's most recent user;
+          // their project rights are still checked on every gateway call it makes.
+          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
             repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
+              ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
           if (!accepted) {
@@ -4480,6 +4558,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     done();
   });
 
+  if (deps.backup) {
+    app.addHook('onClose', () => deps.backup!.close());
+    if (BACKUP_RECOVERY_ACCEPTED) {
+      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+      app.addHook('onReady', (done) => {
+        deps.backup!.service?.start();
+        done();
+      });
+    }
+  }
+  registerBackupRoutes(app, {
+    userId: (request) => request.localUserId,
+    isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
+    service: deps.backup?.service,
+    unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
+  });
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,
@@ -4651,6 +4746,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   });
   registerDiagnosticsMemoryRoute(app);
+  if (deps.audit !== undefined) {
+    registerAuditRoutes(app, {
+      ...deps.audit,
+      sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
+    });
+  }
 
   registerServerUpdateRoutes(app, deps);
 
@@ -4716,6 +4817,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const branchesForSession = async (
     session: SessionRecord,
   ): Promise<GitBranchService | undefined> => {
+    if (isDocumentWorkspace(session.worktree)) return undefined;
     if (deps.branches === undefined) return undefined;
     if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
     if (session.projectId !== null) {
@@ -4937,6 +5039,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const localMergeTarget = async (
     session: SessionRecord,
   ): Promise<{ basePath: string; project: ProjectRecord } | undefined> => {
+    if (isDocumentWorkspace(session.worktree)) return undefined;
     if (session.projectId === null || deps.projectCloneRoot === undefined) return undefined;
     const project = await deps.eventStore.getProject(session.projectId);
     if (project === undefined || !isLocalProject(project)) return undefined;
@@ -5801,6 +5904,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId: string,
         id: string,
         decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+        decidedBy?: { userId: string },
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
@@ -5846,6 +5950,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       message: string;
       invocationId: string;
       approvedByCard: boolean;
+      // The user the delivered turn runs for. Without one, an authenticated server
+      // refuses every gateway call in the peer's turn.
+      initiatedBy: { userId: string } | undefined;
     }): Promise<{ sessionId: string; queued: boolean }> => {
       const source = await deps.eventStore.getSession(input.sourceSessionId);
       const link = await linkedSessionTarget(input.sourceSessionId, input.targetSessionId);
@@ -5898,6 +6005,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             {
               displayPrompt: prompt,
               clientReplyId: `linked:${input.invocationId}`,
+              ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
               peer: {
                 sessionId: input.sourceSessionId,
                 projectId: source.projectId!,
@@ -5916,7 +6024,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       string,
       { behavior: 'allow' | 'deny'; promise: Promise<boolean> }
     >();
-    decidePendingLinkedMessage = (sessionId, id, decision) => {
+    decidePendingLinkedMessage = (sessionId, id, decision, decidedBy) => {
       const key = `${sessionId}\0${id}`;
       const existing = pendingLinkDecisions.get(key);
       if (existing) {
@@ -5941,6 +6049,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           message: pending.message,
           invocationId: pending.invocationId,
           approvedByCard: true,
+          // The sending turn has usually ended by now; the user who approved delivery is
+          // the one the message runs for.
+          initiatedBy: decidedBy,
         });
         // The original gateway call recorded a timeout refusal. Pair it with a
         // served record under the same call id when this saved approval delivers.
@@ -6057,13 +6168,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // the first delivery's answer without a second turn. That is the same trade ADR 0008 made
       // for every dispatch, and it is the safe direction — the failure is a briefing not sent
       // twice, and a caller that meant it can say it differently or send it from a new call.
-      dispatchTurn: ({ sessionId, prompt, displayPrompt, idempotencyKey }) =>
-        conductor.dispatchTurn(
+      dispatchTurn: async ({ sessionId, prompt, displayPrompt, idempotencyKey, caller }) => {
+        const initiatedBy = await runningTurnInitiator(caller.sessionId, caller.turnId);
+        return conductor.dispatchTurn(
           sessionId,
           prompt,
           {},
-          { displayPrompt, clientReplyId: idempotencyKey },
-        ),
+          {
+            displayPrompt,
+            clientReplyId: idempotencyKey,
+            ...(initiatedBy ? { initiatedBy } : {}),
+          },
+        );
+      },
       createSession: async ({ projectId, name, idempotencyKey }) => {
         const existing = controlHandoffSessionCreates.get(idempotencyKey);
         if (existing !== undefined) return existing;
@@ -6095,6 +6212,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (projectsBeingDeleted.has(project.id)) {
             throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
           }
+          if (isLocalProject(project) && !deps.dataRoot)
+            throw new ControlPlaneSessionToolError(
+              'Local projects require configured document storage.',
+            );
+          await deps.provisioner?.prepareLocalDocuments?.(project.id);
           const releaseSpawn = beginProjectSpawn(project.id);
           try {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
@@ -6115,12 +6237,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
             };
             const provisioner =
-              deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-                ...worktreeOpts,
-              });
+              isLocalProject(project) && deps.dataRoot
+                ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+                : (deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+                  createGitWorktreeProvisioner({
+                    repoDir: projectClone,
+                    worktreeRoot: join(projectClone, '.verity-sessions'),
+                    ...worktreeOpts,
+                  }));
             await deps.refreshProjectToken?.(project);
             const worktree = await provisioner.add(makeBranch(name));
             try {
@@ -6317,9 +6441,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      // Runs before the card, so a caller that may not use these tools is turned away without
-      // an operator being asked to read a briefing their answer could not have delivered. The
-      // tools re-check it themselves on the way in; this only decides when it is caught.
+      // Approval cannot restore rights revoked from the initiating user while waiting.
+      authorizeExecution: async (input) => {
+        const running = (await deps.eventStore.listRunningTurns()).find(
+          (t) => t.sessionId === input.sessionId,
+        );
+        if (!running && deps.authRegistry?.isEnabled() !== true) {
+          await gatewayDeps.authorizeExecution?.(input);
+          return;
+        }
+        if (!running || running.turnId !== input.turnId)
+          throw new ControlPlaneSessionAuthorityError('The calling turn is no longer active.');
+        const session = await deps.eventStore.getSession(input.sessionId);
+        const prompt = (
+          await deps.eventStore.getEventsAfter(input.sessionId, running.promptSeq - 1, 1)
+        ).find((event) => event.seq === running.promptSeq)?.event;
+        const userId = prompt?.t === 'prompt' ? prompt.initiatedBy?.userId : undefined;
+        if (
+          session?.projectId !== input.projectId ||
+          !(await canExecuteAs(userId, input.projectId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
+        await gatewayDeps.authorizeExecution?.(input);
+      },
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
@@ -6523,7 +6669,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+      authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
+          const snapshot = await gatewayDeps.authorizationSnapshot?.({
+            sessionId,
+            turnId,
+            projectId,
+            toolName,
+            request,
+          });
+          if (snapshot === undefined) throw new Error('approved Doppler binding is unavailable');
+          return JSON.stringify(parseBrokeredDopplerBinding(snapshot));
+        }
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
@@ -6754,6 +6911,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               input.sessionId,
               planningRevision,
               planningConsents.get(input.request as object),
+              // Approved from the planning turn, so the implementation runs for its initiator.
+              await runningTurnInitiator(input.sessionId, input.turnId),
             ))
           )
             throw new ControlPlaneSessionAuthorityError(
@@ -6812,6 +6971,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             message: request.message,
             invocationId: input.invocationId,
             approvedByCard: input.approvedByCard === true,
+            initiatedBy: await runningTurnInitiator(input.sessionId, input.turnId),
           });
           await deps.eventStore.deletePendingSessionLinkMessage(input.sessionId, input.callId);
           return result;
@@ -6831,7 +6991,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
-          return publishSharedInsight(deps.dataRoot, input.projectId, request);
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (session?.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError(
+              'Knowledge access requires an active session in the calling project',
+            );
+          return publishSharedInsight(
+            deps.dataRoot,
+            input.projectId,
+            request,
+            documentViewForSession(session),
+          );
         }
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
@@ -6871,6 +7041,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         callId,
         invocationId,
+        authorizationSnapshot,
         requestMac,
         macKeyId,
         toolName,
@@ -6909,6 +7080,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             toolName,
             input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
+            ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+            authorizationSnapshot !== undefined
+              ? {
+                  brokeredGrantBindingId: brokeredDopplerBindingId(
+                    parseBrokeredDopplerBinding(authorizationSnapshot),
+                  ),
+                }
+              : {}),
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
@@ -7596,6 +7775,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!hidden) {
         return { code: 404, body: { error: `project ${id} not found` } };
       }
+      // Before the image cleanup, so the trail reads deletion first, removals second.
+      // Best-effort: the deletion has happened, and a lost record becomes a write gap.
+      try {
+        await deps.audit?.recorder.projectDeleted({
+          projectId: id,
+          projectLabel: `${project.owner}/${project.repo}`,
+          initiator: { kind: 'user', userId: request.localUserId },
+        });
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project deletion not audited');
+      }
+      try {
+        await deps.onProjectHidden?.(id);
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project image cleanup deferred to GC');
+      }
       // The deprovision succeeded and the project is hidden, so the rows can go
       // now. Re-list rather than reusing the set from before: a spawn that raced
       // the deprovision created its session after that first pass and would
@@ -7717,7 +7912,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : project;
       settleBackgroundProvision(
         project.id,
-        deps.provisioner.provision(project.id, { confirmWarnings }),
+        deps.provisioner.provision(project.id, {
+          confirmWarnings,
+          initiator: { kind: 'user', userId: request.localUserId },
+        }),
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
@@ -7850,6 +8048,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
+          initiator: { kind: 'user', userId: request.localUserId },
         });
         await afterProjectProvision(project.id);
       } catch (error) {
@@ -8013,7 +8212,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // to report the link itself as failed.
         if (linked.state !== 'absent' && provisioner.recreateContainer) {
           try {
-            await provisioner.recreateContainer(linked.id, { confirmWarnings: true });
+            await provisioner.recreateContainer(linked.id, {
+              confirmWarnings: true,
+              initiator: { kind: 'user', userId: request.localUserId },
+            });
             await afterProjectProvision(linked.id);
           } catch (error) {
             app.log.warn(
@@ -8193,6 +8395,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   registerSessionReadRoutes(app, {
+    getGoogleStatus: async (id) =>
+      (await deps.eventStore.getSession(id)) ? sessionGoogleStatus(deps.eventStore, id) : undefined,
     listModels: async (projectId) => {
       const available = await availableModels();
       if (projectId === undefined) return available;
@@ -8236,6 +8440,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : projectedStatus;
       return {
         ...session,
+        googleStatus: await sessionGoogleStatus(deps.eventStore, id),
         status,
         pendingPermissions,
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
@@ -8300,6 +8505,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
+    onTasksChanged: () => resources.invalidate('/tasks'),
+    onResultChanged: (sessionId, meetingId) =>
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      ),
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -8332,7 +8542,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
       if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
-        return directMeetingQuery({ model, prompt, signal });
+        return directMeetingQuery({
+          model,
+          prompt,
+          signal,
+          maxOutputTokens: prompt.startsWith('Write a meeting result') ? 12000 : 2048,
+        });
       return conductor.query({
         prompt,
         model,
@@ -8836,7 +9051,40 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
+  const fileStorageRoot = (root: { root: SessionFileRootName; dir: string }) =>
+    root.root === 'documents' || root.root === 'sources' ? dirname(root.dir) : root.dir;
+  const extractionArgs = (
+    root: { root: SessionFileRootName; dir: string },
+    path: string,
+  ): [string, string] => [
+    fileStorageRoot(root),
+    root.root === 'documents' || root.root === 'sources' ? `${basename(root.dir)}/${path}` : path,
+  ];
   registerSessionFileRoutes(app, {
+    documentStatus: async (id) => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session?.projectId || !deps.dataRoot) return undefined;
+      const view = documentViewForSession(session);
+      if (!view) return undefined;
+      const running = conductor.isBusy(id);
+      try {
+        return {
+          running,
+          pending: await documentWorkspace(
+            deps.dataRoot,
+            session.projectId,
+            view,
+          ).hasPendingChanges(),
+        };
+      } catch {
+        // A file may still be changing during a live turn; never label it published.
+        return { running, pending: true };
+      }
+    },
+    workspaceKind: async (id) =>
+      isDocumentWorkspace((await deps.eventStore.getSession(id))?.worktree ?? '')
+        ? 'documents'
+        : 'code',
     // A knowledge root is created on first browse rather than only at
     // provisioning: the folder is the source of truth (ADR 0022 D1), so an
     // explorer that can show it is the shortest path to one that exists.
@@ -8847,7 +9095,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (deps.dataRoot === undefined) return undefined;
       if (root === 'shared') return ensureSharedKnowledge(deps.dataRoot);
       if (session.projectId === null) return undefined;
-      return ensureProjectKnowledge(deps.dataRoot, session.projectId);
+      const projectRoot = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
+      if (root === 'documents') return join(projectRoot, 'insights');
+      if (root === 'sources') return join(projectRoot, 'sources');
+      if (root === 'drafts') {
+        const project = await deps.eventStore.getProject(session.projectId);
+        if (!project || !deps.projectCloneRoot) return undefined;
+        const drafts = join(
+          projectClonePath(deps.projectCloneRoot, project),
+          DOCUMENT_SESSION_DIRECTORY,
+        );
+        await mkdir(drafts, { recursive: true });
+        return drafts;
+      }
+      return projectRoot;
     },
     list: async (reply, root, path) => {
       let target: { abs: string; rel: string };
@@ -8878,7 +9139,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
 
       try {
-        const release = await acquireKnowledgeMutationLock(root.dir);
+        const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
         try {
           await recoverFileHistory(`/proc/self/fd/${directoryHandle.fd}`);
         } finally {
@@ -9004,7 +9265,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
+        const releaseMutation = await acquireKnowledgeMutationLock(fileStorageRoot(root));
         try {
           await link(temporaryPath, destinationPath);
         } finally {
@@ -9013,7 +9274,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await unlink(temporaryPath);
         if (root.root === 'knowledge' && target.rel === 'overview.md')
           await markProjectOverviewAuthoritative(root.dir);
-        if (root.root !== 'worktree') await extractKnowledgeFile(root.dir, target.rel);
+        if (root.root !== 'worktree')
+          await extractKnowledgeFile(...extractionArgs(root, target.rel));
         return { path: target.rel, size: Number(uploaded.size) };
       } catch (error) {
         await unlink(temporaryPath).catch(() => undefined);
@@ -9045,7 +9307,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       let fileHandle;
       const editablePath = !isManagedKnowledgePath(root.root, target.rel);
-      const release = editablePath ? await acquireKnowledgeMutationLock(root.dir) : () => {};
+      const release = editablePath
+        ? await acquireKnowledgeMutationLock(fileStorageRoot(root))
+        : () => {};
       try {
         if (editablePath) {
           let slot;
@@ -9084,7 +9348,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const extractedBytes =
           root.root === 'worktree'
             ? undefined
-            : await readFile(knowledgeExtractionPath(root.dir, target.rel)).catch(() => undefined);
+            : await readFile(knowledgeExtractionPath(...extractionArgs(root, target.rel))).catch(
+                () => undefined,
+              );
         if (stats.size > MAX_SESSION_TEXT_FILE_BYTES) {
           if (
             extractedBytes !== undefined &&
@@ -9123,7 +9389,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           content: bytes.toString('utf8'),
           size: stats.size,
           version: fileVersion(bytes),
-          editable: !isManagedKnowledgePath(root.root, target.rel),
+          editable:
+            root.root !== 'drafts' &&
+            root.root !== 'sources' &&
+            !isManagedKnowledgePath(root.root, target.rel),
         };
       } finally {
         await fileHandle.close();
@@ -9131,7 +9400,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     history: async (reply, root, path, version) => {
       let slot;
-      const release = await acquireKnowledgeMutationLock(root.dir);
+      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
       try {
         slot = await openKnowledgeFileSlot(root, path);
         await recoverFileHistory(slot.directoryPath);
@@ -9162,7 +9431,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       } catch (error) {
         return knowledgeSlotFailure(reply, error);
       }
-      const release = await acquireKnowledgeMutationLock(root.dir);
+      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
       try {
         if (
           root.root === 'knowledge' &&
@@ -9172,7 +9441,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        if (root.root === 'worktree') await excludeFileHistoryFromGit(root.dir);
+        if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
+          await excludeFileHistoryFromGit(root.dir);
         const creationMode =
           root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
             ? 0o666
@@ -9187,7 +9457,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const updates: Array<() => Promise<unknown>> = [];
         if (root.root === 'knowledge' && slot.rel === 'overview.md')
           updates.push(() => markProjectOverviewAuthoritative(root.dir));
-        if (root.root !== 'worktree') updates.push(() => extractKnowledgeFile(root.dir, slot.rel));
+        if (root.root !== 'worktree')
+          updates.push(() => extractKnowledgeFile(...extractionArgs(root, slot.rel)));
         for (const update of updates) {
           try {
             await update();
@@ -9266,7 +9537,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const releaseMutation = await acquireKnowledgeMutationLock(root.dir);
+        const releaseMutation = await acquireKnowledgeMutationLock(fileStorageRoot(root));
         try {
           const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
           if (stats === undefined) {
@@ -9280,7 +9551,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           await unlink(`${file.directoryPath}/${file.name}`);
           if (root.root === 'knowledge' && file.rel === 'overview.md')
             await markProjectOverviewAuthoritative(root.dir);
-          if (root.root !== 'worktree') await removeKnowledgeExtraction(root.dir, file.rel);
+          if (root.root !== 'worktree')
+            await removeKnowledgeExtraction(...extractionArgs(root, file.rel));
           return { path: file.rel, deleted: true };
         } finally {
           releaseMutation?.();
@@ -9306,7 +9578,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
       const releases: Array<() => void> = [];
       // Acquire both roots in a stable order so opposite moves cannot deadlock.
-      for (const dir of [...new Set([fromRoot.dir, toRoot.dir])].sort()) {
+      for (const dir of [...new Set([fileStorageRoot(fromRoot), fileStorageRoot(toRoot)])].sort()) {
         releases.push(await acquireKnowledgeMutationLock(dir));
       }
       try {
@@ -9348,12 +9620,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The worktree keeps no extracted-text mirror; only knowledge files carry one.
         if (toRoot.root !== 'worktree') {
           const movedExtraction = await moveKnowledgeExtraction(
-            fromRoot.dir,
-            source.rel,
-            toRoot.dir,
-            destination.rel,
+            ...extractionArgs(fromRoot, source.rel),
+            ...extractionArgs(toRoot, destination.rel),
           );
-          if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+          if (!movedExtraction)
+            await extractKnowledgeFile(...extractionArgs(toRoot, destination.rel));
         }
         return { path: destination.rel, root: toRoot.root };
       } catch (error) {
@@ -9482,12 +9753,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
       // a long session with only its tail and fetch older turns on scroll-up, instead
       // of replaying the whole event log. Live updates still arrive over the WS stream.
-      boundedHistory: async (reply, id, beforeSeq, snapshotSeq) => {
+      boundedHistory: async (reply, id, beforeSeq, snapshotSeq, eventOffset) => {
         if (!(await deps.eventStore.getSession(id))) {
           reply.code(404);
           return { error: `session ${id} not found` };
         }
-        return deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq);
+        try {
+          return await deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq, eventOffset);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          reply.code(400);
+          return { error: 'invalid history offset' };
+        }
       },
       history: async (reply, id, limit, beforeSeq) => {
         const session = await deps.eventStore.getSession(id);
@@ -9606,11 +9883,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           if (project !== undefined && !isControlPlaneProject(project)) {
             const projectClone = projectClonePath(deps.projectCloneRoot, project);
             cleanupWorktrees =
-              deps.projectWorktrees?.(project, projectClone) ??
-              createGitWorktreeProvisioner({
-                repoDir: projectClone,
-                worktreeRoot: join(projectClone, '.verity-sessions'),
-              });
+              isDocumentWorkspace(session.worktree) && deps.dataRoot
+                ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
+                : (deps.projectWorktrees?.(project, projectClone) ??
+                  createGitWorktreeProvisioner({
+                    repoDir: projectClone,
+                    worktreeRoot: join(projectClone, '.verity-sessions'),
+                  }));
           }
         }
         const deleted = await deleteSessionEverywhere(id);
@@ -9659,6 +9938,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const sessionCreate = registerSessionCreateRoute(app, {
     eventStore: deps.eventStore,
+    ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
     ...(deps.provisioner === undefined ? {} : { provisioner: deps.provisioner }),
     ...(deps.projectCloneRoot === undefined ? {} : { projectCloneRoot: deps.projectCloneRoot }),
     ...(deps.projectBackend === undefined ? {} : { projectBackend: deps.projectBackend }),
@@ -9744,7 +10024,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'a turn needs a prompt or at least one attachment' };
       }
-      const session = await deps.eventStore.getSession(id);
+      let session = await deps.eventStore.getSession(id);
+      if (session?.projectId) {
+        await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
+        session = await deps.eventStore.getSession(id);
+      }
       if (
         !(await isConfiguredProjectSessionModel(body.model ?? session?.model)) &&
         session?.projectId != null
@@ -10081,6 +10365,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
 
     localSavesInFlight.add(id);
+    // The save and its follow-up turns run for the user who asked for it, so they keep
+    // gateway tool access under authentication.
+    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
+    const origin = initiatedBy ? { initiatedBy } : {};
     const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
     const prompt =
       "Save this session's work to the local project. Review the working tree and the branch changes. " +
@@ -10091,7 +10379,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
     void (async () => {
       try {
-        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project');
+        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project', origin);
         if (result.aborted || result.exitCode !== 0) return;
         let approvedTip: string;
         try {
@@ -10110,11 +10398,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
           return;
         }
-        const merged = await mergeLocalSession(id, () => undefined, approvedTip);
+        const merged = await mergeLocalSession(id, () => undefined, approvedTip, initiatedBy);
         if ('error' in merged) {
           await conductor.dispatchTurn(
             id,
@@ -10124,7 +10412,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               { error: merged.error },
             ),
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
         }
       } catch (error) {
@@ -10134,7 +10422,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           )
           .catch(() => undefined);
       } finally {
@@ -10210,7 +10498,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerSessionMoveRoute(app, {
     move: async (id, body) => {
-      const session = await deps.eventStore.getSession(id);
+      let session = await deps.eventStore.getSession(id);
       if (!session) throw new SessionMoveError('not_found', 'Session not found.', 404);
       const prior = await deps.eventStore.getSessionMove(id, body.operationId);
       if (
@@ -10231,6 +10519,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return JSON.parse(prior.result_json) as unknown;
       }
 
+      if (session.projectId && deps.provisioner?.prepareLocalDocuments) {
+        await deps.provisioner.prepareLocalDocuments(session.projectId);
+        session = await deps.eventStore.getSession(id);
+        if (!session) throw new SessionMoveError('not_found', 'Session not found.', 404);
+      }
       if (session.projectId === null || session.projectId === body.project)
         throw new SessionMoveError(
           'unsupported_session',
@@ -10259,6 +10552,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const projectIds = [source.id, target.id].sort();
       if (projectIds.some((projectId) => projectsBeingDeleted.has(projectId)))
         throw new SessionMoveError('busy', 'A project is being deleted.');
+      if (deps.dataRoot && !isDocumentWorkspace(session.worktree))
+        throw new SessionMoveError(
+          'unsupported_session',
+          'Migrate this legacy repository session to Documents before moving it to a document project.',
+        );
+      await deps.provisioner?.prepareLocalDocuments?.(target.id);
       const releases = projectIds.map(beginProjectSpawn);
       try {
         return await mutation(projectIds[0]!, () =>
@@ -10278,6 +10577,73 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               const releasePreview = await beginPreviewSessionMove(source.id);
               try {
                 await recoverMovePreviews(id, body.operationId);
+                if (isDocumentWorkspace(session.worktree)) {
+                  if (!deps.dataRoot)
+                    throw new SessionMoveError('unavailable', 'Document storage is unavailable.');
+                  const targetClone = projectClonePath(cloneRoot, target);
+                  const branch = `document-move-${createHash('sha256')
+                    .update(JSON.stringify([id, body.operationId]))
+                    .digest('hex')}`;
+                  const targetWorktree = join(targetClone, DOCUMENT_SESSION_DIRECTORY, branch);
+                  if (!duplicate) {
+                    await deps.eventStore.prepareSessionMove({
+                      sessionId: id,
+                      operationId: body.operationId,
+                      sourceProjectId: source.id,
+                      sourceWorktree: session.worktree,
+                      targetProjectId: target.id,
+                      targetWorktree,
+                      branch,
+                      onCommits: body.onCommits,
+                    });
+                    await createDocumentWorkspaceProvisioner(
+                      deps.dataRoot,
+                      target.id,
+                      targetClone,
+                    ).add(branch);
+                  } else if (
+                    duplicate.target_worktree !== targetWorktree ||
+                    duplicate.source_worktree !== session.worktree
+                  ) {
+                    throw new SessionMoveError(
+                      'operation_conflict',
+                      'The session changed since this move was prepared.',
+                    );
+                  }
+                  const destination = documentWorkspace(deps.dataRoot, target.id, targetWorktree);
+                  await destination.prepare();
+                  const transferred = await documentWorkspace(
+                    deps.dataRoot,
+                    source.id,
+                    session.worktree,
+                  ).transferPending(destination, `Transferred edits/${body.operationId}`);
+                  await destination.publish();
+                  conductor.closeSession?.(id);
+                  for (const binding of await deps.eventStore.getSessionBackendStates(id))
+                    conductor.closeSession?.(binding.backendSessionId);
+                  await deps.previewShareManager?.revokeSessionShares(source.id, id);
+                  await deps.managedDevServerManager?.stopSession(id, { forget: true });
+                  await deps.localPreviewManager?.stopSession(id);
+                  const result = {
+                    projectId: target.id,
+                    worktree: targetWorktree,
+                    branch: null,
+                    contextMode: 'history-handoff',
+                    transferred,
+                    retainedWorktree: session.worktree,
+                    retainedBranch: null,
+                    skipped: [],
+                  };
+                  const notice = `This session moved to project ${target.id}, a Documents workspace without Git. Published source documents remain in the source project. Outstanding edits were copied under Transferred edits/${body.operationId}. Historical paths refer to the previous project. Use the target project's instructions and permissions.`;
+                  await deps.eventStore.commitSessionMove(
+                    id,
+                    body.operationId,
+                    notice,
+                    JSON.stringify(result),
+                  );
+                  await liveHub.recheckSession(id);
+                  return result;
+                }
                 const snapshot = await captureMoveSnapshot(session.worktree);
                 const sourceSettings = await projectSettingsStore(
                   deps.eventStore,

@@ -48,6 +48,20 @@ const resolveDefault = (context, moduleName, platform) =>
   (upstreamResolveRequest ?? context.resolveRequest)(context, moduleName, platform);
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // FlashList's web measurement uses visual rectangles for layout offsets.
+  // Inverted transcripts need the offset before their scaleY(-1) transform.
+  if (
+    platform === 'web' &&
+    moduleName === './utils/measureLayout' &&
+    /[/\\]@shopify[/\\]flash-list[/\\](src|dist)[/\\]recyclerview[/\\]RecyclerView\.[jt]sx?$/.test(
+      context.originModulePath,
+    )
+  ) {
+    return {
+      type: 'sourceFile',
+      filePath: path.resolve(projectRoot, 'lib/flashListMeasureLayout.web.ts'),
+    };
+  }
   // 1. A bare @verity/* import → that package's TS source entry.
   const srcIndex = veritySrcIndex[moduleName];
   if (srcIndex !== undefined) {

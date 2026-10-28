@@ -106,12 +106,15 @@ export function projectOverviewStatus(
   const vulnerabilities = project.vulnerabilitySummary;
   if (vulnerabilities?.unclassified && !vulnerabilities.count)
     return {
-      label: `${vulnerabilities.unclassified} findings need classification`,
+      label:
+        vulnerabilities.unclassified === 1
+          ? '1 package needs classification'
+          : `${vulnerabilities.unclassified} packages need classification`,
       tone: 'attention',
     };
   if (vulnerabilities && vulnerabilities.count > 0) {
     const count = vulnerabilities.count;
-    const label = `${count} ${count === 1 ? 'vulnerability' : 'vulnerabilities'}${vulnerabilities.unclassified ? ` · ${vulnerabilities.unclassified} need classification` : ''}`;
+    const label = `${count} vulnerable ${count === 1 ? 'package' : 'packages'}${vulnerabilities.unclassified ? ` · ${vulnerabilities.unclassified} need classification` : ''}`;
     return { label, tone: 'attention' };
   }
   const badge = projectBadge(project);

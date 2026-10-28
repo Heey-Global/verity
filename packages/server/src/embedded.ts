@@ -1,3 +1,7 @@
+import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+import { BuildStorage } from './build-storage.js';
+import { createProjectImageReferences } from './derived-image-references.js';
+import { pinToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -118,7 +122,7 @@ import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
+import { startDockerGcScheduler, runDockerGc, type DockerGcPolicy } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -146,6 +150,9 @@ import {
 } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
+import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
@@ -218,10 +225,10 @@ import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from '.
 import {
   ProvisionerImpl,
   DeprovisionerImpl,
-  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   projectClonePath,
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
+  devcontainerBuilderIdle,
   projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
@@ -260,7 +267,10 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import type { ClaudeEgressMtlsMaterial, ClaudeEgressPeerBinding } from './claude-egress-mtls.js';
+import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import {
+  agentGatewayUnavailableMessage,
+  type AgentGatewayRepairFailure,
   claudeEgressAgentEnv,
   claudeEgressRelayHealthy,
   claudeEgressRouteEnabled,
@@ -620,6 +630,8 @@ import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
+import { openBackupRuntime } from './backup/runtime.js';
+import { BACKUP_RECOVERY_ACCEPTED } from './backup/routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -1766,12 +1778,13 @@ export function devcontainerProvisionerOptionsForDockerBaseUrl(
  * project keeps the old behavior (the branch service decides).
  */
 export async function branchRenameAppliesToSession(
-  session: { projectId: string | null },
+  session: { projectId: string | null; worktree?: string },
   getProject: (projectId: string) => Promise<Pick<ProjectRecord, 'kind'> | undefined>,
 ): Promise<boolean> {
+  if (session.worktree?.split('/').includes('.verity-document-sessions')) return false;
   if (session.projectId === null) return true;
   const project = await getProject(session.projectId);
-  return project?.kind !== 'control_plane';
+  return project?.kind !== 'control_plane' && project?.kind !== 'local';
 }
 
 /** Project-scoped admission used by embedded session backends. It serializes
@@ -1954,9 +1967,7 @@ export async function buildEmbeddedServer(
     const settings = await eventStore.getProjectSettings(projectId);
     const dopplerProject = settings?.dopplerProject?.trim();
     const dopplerConfig = settings?.dopplerConfig?.trim();
-    return dopplerProject === undefined || dopplerConfig === undefined
-      ? undefined
-      : { dopplerProject, dopplerConfig };
+    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
   const resolveBrokerDopplerSecret = async (
     input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
@@ -1975,6 +1986,7 @@ export async function buildEmbeddedServer(
     }
   };
   const brokeredHttpTool = createBrokeredHttpTool({
+    requireApprovalBinding: true,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
@@ -1982,6 +1994,7 @@ export async function buildEmbeddedServer(
   });
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
+    requireApprovalBinding: true,
     outputStore: trustedCliOutput,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
@@ -2065,6 +2078,12 @@ export async function buildEmbeddedServer(
             'verity_recent_session_messages',
           ]
         : [],
+    authorizationSnapshot: async ({ projectId, toolName }) => {
+      if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
+      const binding = await getBrokeredProjectBinding(projectId);
+      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
+      return JSON.stringify(binding);
+    },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
       ? {
@@ -2115,11 +2134,7 @@ export async function buildEmbeddedServer(
   const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
     const binding = await getBrokeredProjectBinding(projectId);
     if (binding === undefined) return undefined;
-    return `project-doppler:${createHash('sha256')
-      .update(binding.dopplerProject)
-      .update('\0')
-      .update(binding.dopplerConfig)
-      .digest('hex')}`;
+    return brokeredDopplerBindingId(binding);
   };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
   // stops guessing aliases. Briefly cached; every failure degrades to "no list".
@@ -2556,11 +2571,17 @@ export async function buildEmbeddedServer(
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
   // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
   // the DB-backed GitHub App mint.
+  // Long image pulls (sandbox, toolkit, relay and preview images) report their
+  // progress here, rate-limited by the client.
+  const logDockerPull = (message: string): void => {
+    console.info(`verity: ${message}`);
+  };
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
       ? createDockerClient({
           baseUrl: config.dockerBaseUrl,
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+          pullLog: logDockerPull,
         })
       : undefined;
   if (projectDocker !== undefined) {
@@ -2581,6 +2602,7 @@ export async function buildEmbeddedServer(
       createDockerClient({
         baseUrl: config.dockerBaseUrl,
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+        pullLog: logDockerPull,
       }))
     : undefined;
   const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
@@ -2849,6 +2871,7 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -3037,7 +3060,9 @@ export async function buildEmbeddedServer(
     projectId: string,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): boolean => {
-    const fingerprint = inspected.labels?.[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL];
+    // A woken Sandbox holds a certificate re-issued after its creation-time label
+    // was written; the provisioner vouches for that one per container generation.
+    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, projectId, inspected);
     return (
       fingerprint !== undefined &&
       agentGatewayBindings.some(
@@ -3063,16 +3088,17 @@ export async function buildEmbeddedServer(
    * the conductor's background backend resolutions must never trigger a rebuild.
    * The operator sees a transcript note and a `Waiting` badge for the duration, and
    * the turn resumes by itself — the alternative was a terminal error on a state
-   * that repairs itself in a minute. Failures are swallowed into `false` so the
-   * caller raises the one operator-facing message.
+   * that repairs itself in a minute. Failures are returned rather than thrown so
+   * the caller raises the one operator-facing message, naming the repair's own
+   * cause when there is one.
    */
   const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
     queuedSessionIds: ReadonlySet<string>,
-  ): Promise<boolean> => {
-    if (!preparation.canWait || docker === undefined) return false;
-    if (provisioner?.repairSandboxForTurn === undefined) return false;
+  ): Promise<{ ready: true } | { ready: false; failure?: AgentGatewayRepairFailure }> => {
+    if (!preparation.canWait || docker === undefined) return { ready: false };
+    if (provisioner?.repairSandboxForTurn === undefined) return { ready: false };
     preparation.waitingOn(
       'The project Sandbox has to be rebuilt before this message can run. Keeping the turn queued while Verity attempts the rebuild; it continues automatically if the Sandbox becomes ready.',
     );
@@ -3085,10 +3111,10 @@ export async function buildEmbeddedServer(
           { requireFreshAgentGatewayIdentity: true },
         ))
       )
-        return false;
+        return { ready: false };
     } catch (error) {
       app.log.warn({ err: error, projectId: project.id }, 'turn-time sandbox repair failed');
-      return false;
+      return { ready: false, failure: { stage: 'rebuild', cause: error } };
     }
     // Trust the recreate only as far as the same check that rejected the Sandbox in
     // the first place: a repair that reports success but leaves the relay unhealthy
@@ -3096,13 +3122,15 @@ export async function buildEmbeddedServer(
     try {
       const inspected = await docker.inspectContainer(project.containerName);
       await synchronizeAgentGatewayForTurn();
-      return await agentGatewayReady(project.id, inspected);
+      return (await agentGatewayReady(project.id, inspected))
+        ? { ready: true }
+        : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
       app.log.warn(
         { err: error, projectId: project.id },
         'could not verify the Agent Gateway identity after a turn-time sandbox repair',
       );
-      return false;
+      return { ready: false, failure: { stage: 'verify', cause: error } };
     }
   };
 
@@ -3426,7 +3454,36 @@ export async function buildEmbeddedServer(
     (typeof configuredDevcontainerFeatureRef === 'string'
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+  const imageReferences = createProjectImageReferences(db);
+  // Durable audit trail for project image builds (ADR 0028). The Server generation is
+  // read from this container's own label once; outside a managed deployment it is null.
+  let auditServer: AuditServerIdentity | undefined;
+  const auditLog = createPostgresAuditLog(db);
+  const auditRecorder = createAuditRecorder(auditLog, {
+    server: async () => {
+      if (auditServer !== undefined) return auditServer;
+      let generation: number | null = null;
+      let settled = true;
+      try {
+        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
+          'verity.generation'
+        ];
+        const parsed = label === undefined ? Number.NaN : Number(label);
+        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+      } catch {
+        // Recorded as unknown this time, and asked again next time: a transient
+        // failure must neither block a build nor stick for the life of the process.
+        settled = false;
+      }
+      const identity = { release: runtimeServerVersion(), generation };
+      if (settled) auditServer = identity;
+      return identity;
+    },
+    onError: (error, kind) => {
+      console.warn(`verity: audit event ${kind} could not be recorded`, error);
+    },
+  });
+  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
       ? async () =>
           resolveToolkitFeatureRef(
@@ -3439,6 +3496,15 @@ export async function buildEmbeddedServer(
           publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
           devcontainerFeatureRefConfigured,
         );
+  const devcontainerFeature: DevcontainerFeatureSource | undefined =
+    selectedDevcontainerFeature === undefined
+      ? undefined
+      : async () =>
+          pinToolkitFeature(
+            typeof selectedDevcontainerFeature === 'function'
+              ? await selectedDevcontainerFeature()
+              : selectedDevcontainerFeature,
+          );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -3685,7 +3751,24 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
+    buildStorage = new BuildStorage(
+      join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-storage',
+      ),
+      undefined,
+      undefined,
+      undefined,
+      '/run/verity-buildkit',
+    );
     provisioner = new ProvisionerImpl({
+      buildStorage,
+      buildFailureLogDirectory: join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-failures',
+      ),
+      imageReferences,
+      audit: auditRecorder,
       store: eventStore,
       db,
       docker,
@@ -3940,6 +4023,12 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      providerAuthority: async (projectId) => {
+        const binding = await getBrokeredProjectBinding(projectId);
+        return binding
+          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
+          : undefined;
+      },
       resolveSecrets: createManagedDevServerSecretResolver({
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
@@ -4425,8 +4514,32 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
+  const backupArchitecture =
+    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
+  const backup =
+    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
+      ? await openBackupRuntime({
+          recoveryAccepted: BACKUP_RECOVERY_ACCEPTED,
+          probe: {
+            docker: projectDocker,
+            network: 'verity-net',
+            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
+          },
+          root: config.dataVolumeRoot,
+          databaseUrl: config.databaseUrl,
+          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
+          architecture: backupArchitecture,
+          release: SERVER_COMPAT.serverVersion,
+          schema: SERVER_COMPAT.schema.current,
+          store: eventStore,
+          onError: () => {
+            console.warn('verity: backup operation unavailable; queued revocations remain durable');
+          },
+        })
+      : undefined;
   const app = buildControlPlane({
     eventStore,
+    ...(backup ? { backup } : {}),
     ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
     matrixConnectorToken: async () => {
       try {
@@ -4605,6 +4718,11 @@ export async function buildEmbeddedServer(
       dataRoot: config.dataVolumeRoot,
       serverContainerId: config.diagnosticServerContainerId,
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
+      builderAdmissionDirectory: '/run/verity-buildkit',
+      buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
+      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
@@ -4767,9 +4885,9 @@ export async function buildEmbeddedServer(
             defaultProjectImage,
             defaultProjectImageVersion: config.defaultProjectImageVersion,
             toolkitFeatureRef:
-              typeof devcontainerFeature === 'function'
-                ? async () => (await devcontainerFeature())?.ref
-                : devcontainerFeature?.ref,
+              devcontainerFeature === undefined
+                ? undefined
+                : async () => (await devcontainerFeature())?.ref,
           }),
         }
       : {}),
@@ -4826,6 +4944,22 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
+    audit: { recorder: auditRecorder, log: auditLog },
+    ...(projectDocker === undefined
+      ? {}
+      : {
+          onProjectHidden: async () => {
+            await runDockerGc({
+              docker: projectDocker,
+              log: app.log,
+              imageReferences,
+              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
+              imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
+            });
+          },
+        }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
@@ -4857,12 +4991,20 @@ export async function buildEmbeddedServer(
       // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
       checkBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        return bindingId === undefined ? false : brokeredHttpGrants.check({ ...input, bindingId });
+        return bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+          ? false
+          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
-        if (bindingId === undefined) throw new Error('project Doppler binding is unavailable');
-        await brokeredHttpGrants.grant({ ...input, bindingId });
+        if (
+          bindingId === undefined ||
+          (input.bindingId !== undefined && input.bindingId !== bindingId)
+        ) {
+          throw new Error('Doppler access changed before saving approval');
+        }
+        await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
       },
       // Auto-name an unnamed session from its opening turn: the conductor derives a
       // 2–3 word title from the first chat using the session's OWN model (routed via
@@ -5130,6 +5272,7 @@ export async function buildEmbeddedServer(
                 throw new Error('Claude egress routing target cannot be verified');
               }
               let gatewayReady: boolean;
+              let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
                 const inspected = await docker.inspectContainer(project.containerName);
                 gatewayReady = await agentGatewayReady(project.id, inspected);
@@ -5151,15 +5294,16 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                gatewayReady = await repairSandboxForAgentTurn(
+                const repair = await repairSandboxForAgentTurn(
                   project,
                   preparation,
                   queuedSessionIds,
                 );
+                gatewayReady = repair.ready;
+                repairFailure = repair.ready ? undefined : repair.failure;
               }
               if (!gatewayReady) {
-                const message =
-                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again';
+                const message = agentGatewayUnavailableMessage(repairFailure);
                 // A background resolution never attempted the rebuild above, so its
                 // failure says nothing about whether the Sandbox is repairable — only
                 // that this resolution would not wait for one. Reporting it as the
@@ -5495,6 +5639,38 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // An interrupted build must not hold build storage until someone reboots the host.
+  // Ask at start and every five minutes whether earlier attempts provably ended.
+  if (buildStorage !== undefined) {
+    const storage = buildStorage;
+    const buildDockerHost =
+      config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
+    let reconciling = false;
+    const reconcileBuildStorage = async () => {
+      if (reconciling) return;
+      reconciling = true;
+      try {
+        const unresolved = await storage.reconcile(
+          buildDockerHost === undefined
+            ? {}
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
+        );
+        if (unresolved.length > 0)
+          app.log.warn(
+            { attempts: unresolved },
+            'Build storage holds space for earlier build attempts whose end is not yet confirmed',
+          );
+      } catch (err) {
+        app.log.warn({ err }, 'Build storage reconciliation failed');
+      } finally {
+        reconciling = false;
+      }
+    };
+    void reconcileBuildStorage();
+    const buildStorageTimer = setInterval(() => void reconcileBuildStorage(), 5 * 60_000);
+    buildStorageTimer.unref();
+    app.addHook('onClose', () => clearInterval(buildStorageTimer));
+  }
   app.addHook('onClose', () => listenerDiscovery?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
@@ -5506,7 +5682,10 @@ export async function buildEmbeddedServer(
   if (starterProvisioner !== undefined) {
     void ensureStarterProject({
       store: eventStore,
-      provision: (projectId) => starterProvisioner.provision(projectId),
+      provision: (projectId) =>
+        starterProvisioner.provision(projectId, {
+          initiator: { kind: 'system', trigger: 'welcome_project' },
+        }),
       log: app.log,
     });
   }
@@ -5588,6 +5767,9 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      imageReferences,
+      onProjectImageRemoved: (image) =>
+        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

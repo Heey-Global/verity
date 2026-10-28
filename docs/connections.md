@@ -71,6 +71,9 @@ lives only on this Verity server. The last code host used is preselected, and
 the repository list belongs to the selected host. Forgejo is offered only when
 the server can run Forgejo projects. A local project can later be connected to
 an existing repository on either host in **Project settings → Repository**.
+This adds Code by fetching the repository. Documents and archived local history
+stay on the Verity server and are never imported into the remote repository.
+Existing document sessions keep their working copies.
 
 Project headers, issue references and the pull request bar show the code host's
 own mark and open the repository, issue or pull request on that host.
@@ -113,7 +116,8 @@ are resolved per operation so token rotation does not retain stale tokens.
 Forgejo project creation accepts `{ "repo": "owner/repository", "connectionId":
 "..." }` at `POST /projects`; the selected connection determines the provider.
 `POST /projects/:id/link` requires the same repository and connection fields to
-publish a local project. The existing `link-github` route remains available.
+connect Code to a local project. Configured document storage is required so legacy
+files can be retained before connecting. The existing `link-github` route remains available.
 Selecting a Forgejo connection requires administrator access and a fully
 configured project relay/provisioner. New Forgejo clone and container names
 include a hash of the connection and repository identity. Existing clones retain

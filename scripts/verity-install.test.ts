@@ -67,7 +67,13 @@ describe('public Verity installer', () => {
   it('keeps verifier pins consistent across bootstrap, recovery, and server image', async () => {
     const bootstrap = await readFile(installerPath, 'utf8');
     const dockerfile = await readFile('deploy/Dockerfile', 'utf8');
+    // The host builder component verifies release images with its own copy of the pins.
+    const hostBuilder = await readFile('deploy/host/verity-host-builder', 'utf8');
     const bootstrapVersion = bootstrap.match(/^COSIGN_VERSION=v(\S+)$/m)![1]!;
+    expect(hostBuilder.match(/^COSIGN_VERSION=v(\S+)$/m)![1]).toBe(bootstrapVersion);
+    // Accepting another signer would let any image the Updater names be installed as root.
+    const signer = bootstrap.match(/--certificate-identity (\S+)/)![1]!;
+    expect(hostBuilder).toContain(`SIGNER_IDENTITY='${signer}'`);
     expect(dockerfile.match(/^ARG COSIGN_VERSION=(\S+)$/m)![1]).toBe(bootstrapVersion);
     expect(COSIGN_VERSION.replace(/^v/, '')).toBe(bootstrapVersion);
     for (const [architecture, suffix, dockerSuffix] of [
@@ -81,6 +87,9 @@ describe('public Verity installer', () => {
         dockerfile.match(new RegExp(`^ARG COSIGN_SHA256${dockerSuffix}=([a-f0-9]{64})$`, 'm'))![1],
       ).toBe(checksum);
       expect(COSIGN_SHA256[architecture]).toBe(checksum);
+      expect(
+        hostBuilder.match(new RegExp(`^COSIGN_SHA256_${suffix}=([a-f0-9]{64})$`, 'm'))![1],
+      ).toBe(checksum);
     }
   });
 

@@ -1,0 +1,33 @@
+# The socket grants build authority. Mount it only into the trusted Server.
+root = "/var/lib/verity-buildkit"
+insecure-entitlements = []
+
+[grpc]
+  address = ["unix:///run/verity-buildkit/buildkitd.sock"]
+  uid = 0
+  gid = 1102
+
+[worker.oci]
+  enabled = true
+  # Each RUN step gets its own network namespace on a NATed host bridge. The
+  # host-network default leaves runsc's sandbox network with no interface, so
+  # no step could resolve or reach anything. network.sh writes the CNI config
+  # and chooses a subnet that does not overlap this host's routes.
+  networkMode = "cni"
+  cniConfigPath = "/etc/verity-buildkit/cni.conflist"
+  cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"
+  binary = "/usr/local/libexec/verity-buildkit/runsc"
+  # "auto" takes overlayfs, which layers each step on its parent, wherever the
+  # state directory's file system supports it, and "native" only where it does
+  # not. native copies the whole root file system before every step, which made
+  # even small steps take half a minute on multi-gigabyte images.
+  snapshotter = "auto"
+  max-parallelism = 1
+  noProcessSandbox = false
+  gc = true
+  reservedSpace = "1GB"
+  maxUsedSpace = "10GB"
+  minFreeSpace = "5GB"
+
+[worker.containerd]
+  enabled = false

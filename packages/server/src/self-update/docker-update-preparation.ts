@@ -1,7 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, DockerClient } from '../docker.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
+import {
+  readDevcontainerBuilderCapability,
+  reconcileDevcontainerBuilder,
+} from './devcontainer-builder.js';
 import {
   migrateManagedControlPlaneRunner,
+  migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
   readManagedDeployment,
 } from './managed-deployment.js';
@@ -15,6 +21,7 @@ import {
 } from './managed-server-owner.js';
 import { reconcileHostRuntimes, readTargetHostRuntimes } from './host-runtimes.js';
 import { readBundledPostgresImage } from './postgres-image.js';
+import { pullWithRetry } from './pull-retry.js';
 import type { StandbyCandidate, UpdatePreparationDeps } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
 
@@ -61,6 +68,10 @@ export interface DockerUpdatePreparationOptions {
   /** The host runtime request directory as the Updater sees it; tests only. */
   readonly hostRuntimeDir?: string;
   readonly log?: (message: string) => void;
+  /** Waits between attempts of the target-image pull; tests only. */
+  readonly pullRetryDelaysMs?: readonly number[];
+  /** Sleep used for those waits; tests only. */
+  readonly pullRetrySleep?: (ms: number) => Promise<unknown>;
 }
 
 function candidateName(journal: UpdateJournal, role: string): string {
@@ -163,6 +174,10 @@ export async function dockerUpdatePreparation(
     options.environment ?? process.env,
     options.readFile ?? ((path) => readFile(path, 'utf8')),
   );
+
+  // Pull progress goes where the rest of the Updater's narration goes.
+  const progressLog = options.log ?? console.info;
+  const pullOptions = { log: progressLog };
 
   // Every candidate runs the target digest, and preparation pulls it before any
   // container is compared, so the image is on the daemon by the time this runs.
@@ -310,12 +325,49 @@ export async function dockerUpdatePreparation(
      * is not a reason to fail a Server update with nothing else wrong with it;
      * the reconciler checks the image is present and simply declines the swap
      * when it is not, leaving the database where it was until the next update.
+     * For the same reason it gets a single attempt: retrying a pull whose
+     * failure is swallowed anyway would only delay the update.
+     *
+     * The Server pull itself is retried ({@link pullWithRetry}) on a stall or a
+     * transient network failure, because a failure here is terminal for the
+     * operation and the slow, flaky links that cause it are exactly the ones
+     * where a second attempt tends to get through.
+     *
+     * What a retry costs depends on the daemon's image store, and only part of
+     * it is established:
+     *
+     * - Layers a failed attempt finished are kept by both stores and reported
+     *   as "Already exists" next time; a retry never fetches those again.
+     * - Classic graphdriver store: a partially downloaded layer is NOT carried
+     *   across pulls. The daemon resumes it with an HTTP Range request only
+     *   within its own per-layer retries inside one pull; the temporary file
+     *   belongs to that pull and is removed when it ends (moby
+     *   `distribution/pull_v2.go`, `v2LayerDescriptor.Download`/`Close`). A
+     *   retry after a stall restarts each unfinished layer from zero.
+     * - containerd image store (`io.containerd.snapshotter.v1`): containerd
+     *   keeps an unfinished blob as an ingest under a ref derived from its
+     *   digest, closes rather than aborts the writer when a fetch fails, and
+     *   on the next fetch of the same blob seeks the registry stream to the
+     *   ingest's offset (containerd `remotes/handlers.go` `Fetch`,
+     *   `content/helpers.go` `Copy`/`seekReader`). So resumption is designed
+     *   in. NOT verified: whether moby's pull lease or containerd's garbage
+     *   collection removes that ingest between our attempts, and how long an
+     *   ingest survives, were not established from code or documentation.
+     *   Treat resumption there as likely but unconfirmed.
+     *
+     * With the idle window in place a steadily progressing pull no longer
+     * needs a retry to finish, so none of this decides whether an update
+     * completes; it decides how much a stall costs.
      */
     pullImage: async (digest) => {
-      await docker.pullImage!(digest);
+      await pullWithRetry(digest, () => docker.pullImage!(digest, pullOptions), {
+        ...(options.pullRetryDelaysMs === undefined ? {} : { delaysMs: options.pullRetryDelaysMs }),
+        ...(options.pullRetrySleep === undefined ? {} : { sleep: options.pullRetrySleep }),
+        log: progressLog,
+      });
       const bundled = await readBundledPostgresImage(docker, digest);
       if (bundled.kind !== 'image') return;
-      await docker.pullImage!(bundled.image).catch(() => undefined);
+      await docker.pullImage!(bundled.image, pullOptions).catch(() => undefined);
     },
     verifyImage: async (journal) => {
       if (journal.deploymentId !== state.spec.deploymentId)
@@ -325,13 +377,29 @@ export async function dockerUpdatePreparation(
     runPreflight,
     reconcileHostRuntimes: async (journal) => {
       const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
-      if (requirements === undefined) return;
-      await reconcileHostRuntimes({
+      if (requirements !== undefined) {
+        await reconcileHostRuntimes({
+          docker,
+          requirements,
+          requestId: journal.updateId,
+          ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+        });
+      }
+      // After the runtimes: the builder runs its steps on the runsc they register.
+      // Nothing about the builder may fail the update, an unexpected error included.
+      const builder = await reconcileDevcontainerBuilder({
         docker,
-        requirements,
+        image: journal.targetDigest,
         requestId: journal.updateId,
         ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
-      });
+      }).catch((error: unknown) => ({
+        state: 'failed' as const,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+      if (builder.state === 'failed')
+        (options.log ?? console.warn)(
+          `Devcontainer builder not updated; the previous builder keeps running. ${builder.message}`,
+        );
     },
     prepareStandby: async (journal) => {
       // A legacy Server cannot be reconciled in place after gaining these
@@ -383,6 +451,33 @@ export async function dockerUpdatePreparation(
             (diagnostics.state === 'unsupported'
               ? 'Rerun the verified installer once to provision host diagnostics.'
               : 'Check the host diagnostics exporter and timer.'),
+        );
+      }
+      // Same shape as the diagnostic bind: only an installer-verified builder
+      // adds the socket, and never to a generation whose standby already exists.
+      const builder = await readDevcontainerBuilderCapability(options.hostRuntimeDir);
+      if (
+        builder.state === 'available' &&
+        !migrated.spec.mounts.some(
+          (mount) => mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY && !mount.readOnly,
+        )
+      ) {
+        if ((await findNamed(docker, candidateName(journal, STANDBY_ROLE))) === null) {
+          migrated = await migrateManagedDevcontainerBuilder({
+            root: options.managedRoot,
+            deploymentId: migrated.spec.deploymentId,
+            image: migrated.spec.image,
+            gid: builder.gid,
+          });
+          if (!migrated.managed) throw new Error(migrated.reason);
+        } else {
+          (options.log ?? console.warn)(
+            'Devcontainer builder migration deferred until the next update; this standby already exists',
+          );
+        }
+      } else if (builder.state === 'invalid') {
+        (options.log ?? console.warn)(
+          'Devcontainer builder receipt is invalid; rerun the verified installer to repair it',
         );
       }
       base = await managedServerContainerSpec(

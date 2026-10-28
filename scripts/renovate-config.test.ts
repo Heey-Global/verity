@@ -17,6 +17,7 @@ interface RenovateConfig {
   prConcurrentLimit?: number;
   customManagers: Array<{
     description?: string;
+    managerFilePatterns?: string[];
     matchStrings?: string[];
   }>;
   packageRules: Array<{
@@ -185,6 +186,61 @@ describe('Renovate checksummed release assets', () => {
     );
 
     expect(rule).toMatchObject({ enabled: false, matchPackageNames: ['cli/cli'] });
+  });
+});
+
+describe('Renovate BuildKit daemon pin', () => {
+  const installer = 'deploy/buildkit/install.sh';
+  const probe = 'scripts/probes/devcontainer-gvisor/BuildKit.Dockerfile';
+
+  // Renovate's `/.../` file-pattern form; anything else is a glob this guard
+  // does not need to interpret, and so counts as not reaching the installer.
+  function patternMatches(pattern: string, path: string): boolean {
+    const regex = /^\/(.*)\/$/.exec(pattern);
+    return regex !== null && new RegExp(regex[1]).test(path);
+  }
+
+  function pinnedRef(path: string): string {
+    const lines = readFileSync(path, 'utf8').split('\n');
+    const index = lines.findIndex((line) => line.includes('depName=moby/buildkit'));
+    const ref = /moby\/buildkit:(\S+@sha256:[a-f0-9]{64})/.exec(lines[index + 1] ?? '');
+    if (ref === null) {
+      expect.fail(`${path} has no digest-pinned moby/buildkit line after its annotation`);
+    }
+    return ref[1];
+  }
+
+  it('is reached by a manager that can rewrite it', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    const source = readFileSync(installer, 'utf8');
+
+    // A shell script is invisible to the stock docker managers, so the
+    // annotation above the pin looks maintained while nothing ever reads it.
+    // That is how production builders stayed on v0.23.2, and its cache-export
+    // loop, while the probe image CI exercised moved to a fixed release.
+    const captures = config.customManagers
+      .filter((manager) =>
+        (manager.managerFilePatterns ?? []).some((pattern) => patternMatches(pattern, installer)),
+      )
+      .flatMap((manager) => manager.matchStrings ?? [])
+      .map((matchString) => new RegExp(matchString).exec(source)?.groups)
+      .filter((groups) => groups !== undefined);
+
+    const [value, digest] = pinnedRef(installer).split('@');
+    expect(captures).toContainEqual(
+      expect.objectContaining({
+        datasource: 'docker',
+        depName: 'moby/buildkit',
+        currentValue: value,
+        currentDigest: digest,
+      }),
+    );
+  });
+
+  it('runs the daemon release the container probe exercises', () => {
+    // The probe image is where CI proves a BuildKit release against runsc. A
+    // host installer pinned elsewhere ships a daemon no workflow has built with.
+    expect(pinnedRef(installer)).toBe(pinnedRef(probe));
   });
 });
 
