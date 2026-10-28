@@ -627,6 +627,8 @@ import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
+import { openBackupRuntime } from './backup/runtime.js';
+import { BACKUP_RECOVERY_ACCEPTED } from './backup/routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -4494,8 +4496,32 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
+  const backupArchitecture =
+    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
+  const backup =
+    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
+      ? await openBackupRuntime({
+          recoveryAccepted: BACKUP_RECOVERY_ACCEPTED,
+          probe: {
+            docker: projectDocker,
+            network: 'verity-net',
+            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
+          },
+          root: config.dataVolumeRoot,
+          databaseUrl: config.databaseUrl,
+          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
+          architecture: backupArchitecture,
+          release: SERVER_COMPAT.serverVersion,
+          schema: SERVER_COMPAT.schema.current,
+          store: eventStore,
+          onError: () => {
+            console.warn('verity: backup operation unavailable; queued revocations remain durable');
+          },
+        })
+      : undefined;
   const app = buildControlPlane({
     eventStore,
+    ...(backup ? { backup } : {}),
     ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
     matrixConnectorToken: async () => {
       try {

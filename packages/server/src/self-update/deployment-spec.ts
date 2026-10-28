@@ -301,6 +301,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         mount.target === '/var/run/docker.sock' &&
         !mount.readOnly) ||
         (mount.target === '/run/verity-pairing' && mount.readOnly) ||
+        ((mount.target === '/run/verity-backups' ||
+          mount.target === '/run/verity-backup-identity') &&
+          source.path !== '/' &&
+          !source.path.includes(':') &&
+          !mount.readOnly) ||
         (mount.target === '/run/verity-host-diagnostics' &&
           source.path !== '/' &&
           !source.path.includes(':') &&
@@ -338,7 +343,7 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 9 ||
+    mounts.length > 11 ||
     mounts.some(
       (mount) =>
         mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
@@ -351,6 +356,8 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
     // vetted.
     new Set(mounts.map((mount) => mount.target)).size !== mounts.length ||
     !requiredVolumeKeys.every((key) => mountKeys.includes(key)) ||
+    mounts.some((mount) => mount.target === '/run/verity-backups') !==
+      mounts.some((mount) => mount.target === '/run/verity-backup-identity') ||
     // The two control-plane volumes form one boundary: the Server must rotate the
     // identity generation it asks the Runner to acknowledge over the matching
     // runtime socket. Accept old specs with neither, but never a half-upgraded pair.

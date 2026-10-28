@@ -28,6 +28,7 @@ policy. The packaging is described in
   - [Master password](#master-password)
   - [Upgrade notes](#upgrade-notes)
 - [Updates and recovery](#updates-and-recovery)
+- [Recovery from a copied backup](../docs/INSTALLER_RECOVERY.md)
 - [Docker socket security note](#docker-socket-security-note)
 - [Hardening an internet-reachable host](#hardening-an-internet-reachable-host)
 - [Claude egress credential boundary](#claude-egress-credential-boundary)

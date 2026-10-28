@@ -1,3 +1,4 @@
+import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { connectDocumentCode } from './document-code.js';
@@ -6421,7 +6422,9 @@ export class DeprovisionerImpl implements Deprovisioner {
       throw new ProvisioningError('project gone mid-deprovision');
     }
     const teardown = () => this.deprovisionProject(projectId, project, opts);
-    return this.withTeardown ? this.withTeardown(project, teardown) : teardown();
+    return backupLifecycle.mutate([projectId], () =>
+      this.withTeardown ? this.withTeardown(project, teardown) : teardown(),
+    );
   }
 
   private async deprovisionProject(

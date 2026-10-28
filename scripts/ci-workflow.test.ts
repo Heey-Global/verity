@@ -2422,6 +2422,15 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(
+      job?.steps?.some((step) =>
+        step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
+      ),
+    ).toBe(true);
+    expect(readFileSync('deploy/installer-ci.Dockerfile', 'utf8')).toMatch(
+      /apt-get install[^\n]+\bjq\b/,
+    );
+
     const suite = (job?.steps ?? []).find((step) =>
       step.run?.includes('node --test deploy/bin/verity-install.test.mjs'),
     );
@@ -3961,6 +3970,28 @@ describe('server image CI smoke', () => {
     .replace('${{ runner.temp }}', '$RUNNER_TEMP')
     .replace(/\$\{\{ env\.(\w+) \}\}/g, '$$$1');
 
+  it('builds the recovery candidate with the real pinned PostgreSQL image label', async () => {
+    const resolve = buildJob.steps.find((step) => step.id === 'postgres');
+    expect(resolve?.run).toBeDefined();
+    const root = await mkdtemp(join(tmpdir(), 'ci-postgres-pin-'));
+    const output = join(root, 'output');
+    try {
+      execFileSync('bash', ['-c', resolve!.run!], {
+        env: { ...process.env, GITHUB_OUTPUT: output },
+      });
+      const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8'));
+      expect(readFileSync(output, 'utf8').trim()).toBe(`image=${compose.services.postgres.image}`);
+      expect(build?.with?.['build-args']).toContain(
+        'VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}',
+      );
+      expect(readFileSync('deploy/Dockerfile', 'utf8')).toContain(
+        'LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports the image once and loads that archive into every daemon that runs it', () => {
     // `load: true` next to the archive would export the image twice, and a
     // `docker save` anywhere re-packs what was just unpacked — each a minute or
@@ -4121,6 +4152,40 @@ describe('managed installer CI acceptance', () => {
   const step = job.steps.find((entry) =>
     entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
   );
+
+  it('runs the interruption driver below a container init so SIGKILL terminates it', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const command = source
+      .replaceAll('\\\n', ' ')
+      .split('\n')
+      .find((line) => line.includes('--entrypoint node') && line.includes('"$root/driver.mjs"'));
+    expect(command).toBeDefined();
+    expect(command).toMatch(/\binner run\b/);
+    expect(command).toMatch(/(?:^|\s)--init(?:\s|$)/);
+  });
+
+  it('keeps restore daemon sockets within the Linux Unix-socket path limit', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const assignment = source.match(/^ {2}local socket_dir=(.+)$/m)?.[0];
+    expect(assignment).toBeDefined();
+    const workTemplate = source.match(/^work=\$\(mktemp -d "(.+)"\)$/m)?.[1];
+    expect(workTemplate).toBeDefined();
+    const paths = ['original', 'fresh'].map((host) =>
+      execFileSync(
+        'bash',
+        [
+          '-c',
+          `RUNNER_TEMP=/home/runner/work/_temp; work="${workTemplate}"; daemon_name="$1"; socket_path() { ${assignment}; printf '%s' "$socket_dir/docker.sock"; }; socket_path`,
+          'socket-guard',
+          `verity-backup-restore-dind-40510879161-1-${host}`,
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    expect(new Set(paths).size).toBe(2);
+    // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
+    for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
+  });
 
   it('runs the candidate through the installer in a separate disposable daemon', () => {
     // A green legacy Compose smoke does not exercise the managed installer.

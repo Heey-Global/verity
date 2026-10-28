@@ -1397,4 +1397,3 @@ is intended for rollbacks, and it is the same latitude Amendment 2 gives runtime
 registration that the builder installer performs is not part of the rollback, because it equals
 the release's runtime pins, which Amendment 2 reconciles anyway. Hosts without systemd get the
 builder at install time only.
-

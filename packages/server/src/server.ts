@@ -1,3 +1,4 @@
+import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
@@ -369,6 +370,8 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
+import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
@@ -1152,6 +1155,8 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  /** Internal service; public operations remain gated on complete recovery acceptance. */
+  backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;
   matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   onMatrixConfigured?: (() => Promise<void>) | undefined;
@@ -4553,6 +4558,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     done();
   });
 
+  if (deps.backup) {
+    app.addHook('onClose', () => deps.backup!.close());
+    if (BACKUP_RECOVERY_ACCEPTED) {
+      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+      app.addHook('onReady', (done) => {
+        deps.backup!.service?.start();
+        done();
+      });
+    }
+  }
+  registerBackupRoutes(app, {
+    userId: (request) => request.localUserId,
+    isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
+    service: deps.backup?.service,
+    unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
+  });
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,
