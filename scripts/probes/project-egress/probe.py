@@ -702,6 +702,58 @@ def mutation_checks():
     save()
 
 
+def established_closure(event, started):
+    # One command submits all four retained sockets, avoiding serial Docker
+    # startup delays that would move later observations past the deadline.
+    flows = [
+        {
+            "id": f"{event}-{kind}-{family}",
+            "marker": uuid.uuid4().hex,
+            "kind": kind,
+            "family": family,
+        }
+        for family in (4, 6)
+        for kind in ("tcp", "udp")
+    ]
+    batch = command("a", {"action": "flow-send-batch", "flows": flows})
+    results = batch.get("results", [])
+    if len(results) != len(flows):
+        raise RuntimeError("incomplete established-flow closure batch")
+    time.sleep(0.15)
+    receipts = observations("receiver")
+    # This is a conservative upper bound shared by all four observations,
+    # including command and observer overhead, not a clock inside the sandbox.
+    elapsed = time.monotonic() - started
+    REPORT["closure_seconds"][event] = {}
+    for flow, result in zip(flows, results):
+        kind, family = flow["kind"], flow["family"]
+        attempted = result.get("sent") is True or result.get("error") in (
+            "BrokenPipeError",
+            "ConnectionResetError",
+            "ConnectionAbortedError",
+        )
+        observed = any(row["marker"] == flow["marker"] for row in receipts)
+        REPORT["closure_seconds"][event][f"{kind}-{family}"] = elapsed
+        REPORT["cases"].append(
+            {
+                "id": f"{event}-after-{kind}-{family}",
+                "type": "network",
+                "marker": flow["marker"],
+                "expected": False,
+                "observed": observed,
+                "control": f"{event}-before-{kind}-{family}",
+                "result": result,
+                "observer": "receiver",
+                "transport": None,
+                "attempted": attempted,
+                "status": "pass"
+                if attempted and not observed and elapsed <= 2
+                else "fail",
+            }
+        )
+    save()
+
+
 def lifecycle():
     for event in ("revoke", "expiry", "controller-crash"):
         grant([["a", "receiver"]])
@@ -738,33 +790,9 @@ def lifecycle():
         else:
             stop_controller()  # SIGKILL, not graceful cleanup.
             time.sleep((LEASE_MS + 100) / 1000)
-        # Measure an observed negative on the already established UDP socket,
-        # including command/observation overhead; a sleep alone is not closure evidence.
-        network(
-            f"{event}-after-udp-4",
-            "a",
-            "receiver",
-            "udp",
-            4,
-            False,
-            f"{event}-before-udp-4",
-            request={"action": "flow-send", "id": f"{event}-udp-4"},
-        )
-        REPORT["closure_seconds"][event] = time.monotonic() - start
+        established_closure(event, start)
         for family in (4, 6):
             for kind in ("tcp", "udp"):
-                flow_id = f"{event}-{kind}-{family}"
-                if not (kind == "udp" and family == 4):
-                    network(
-                        f"{event}-after-{kind}-{family}",
-                        "a",
-                        "receiver",
-                        kind,
-                        family,
-                        False,
-                        f"{event}-before-{kind}-{family}",
-                        request={"action": "flow-send", "id": flow_id},
-                    )
                 network(
                     f"{event}-new-{kind}-{family}",
                     "a",
@@ -820,7 +848,11 @@ def recheck_receipts():
             and (case["transport"] is None or row["transport"] == case["transport"])
             for row in logs[case["observer"]]
         )
-        case["status"] = "pass" if case["observed"] == case["expected"] else "fail"
+        case["status"] = (
+            "pass"
+            if case["observed"] == case["expected"] and case.get("attempted", True)
+            else "fail"
+        )
 
 
 def snapshot(label):

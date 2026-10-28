@@ -39,8 +39,10 @@ Docker starts restart-policy containers. The test kills the policy process,
 lets a lease expire normally, restarts a project, and restarts the entire outer
 Docker container/daemon. Project restart is mediated by the trusted harness,
 which revokes before restart; unexpected project replacement outside that
-supervisor is not certified. The two-second closure criterion includes a negative
-observation on an existing UDP socket and command overhead. It is a test bound,
+supervisor is not certified. The two-second closure criterion applies to each existing TCP/UDP socket under
+IPv4/IPv6. A single command submits all four probes; the final receiver snapshot
+provides a conservative elapsed-time upper bound for each, including command
+and observation overhead. It is a test bound,
 not a production latency promise or an exact measurement of the kernel transition.
 
 ## Required evidence

@@ -61,9 +61,14 @@ class EvidenceTests(unittest.TestCase):
                 "suppressed_positive_detected": True,
             },
             "cases": cases,
-            "closure_seconds": dict.fromkeys(
-                ("revoke", "expiry", "controller-crash"), 1.2
-            ),
+            "closure_seconds": {
+                event: {
+                    f"{kind}-{family}": 1.2
+                    for kind in ("tcp", "udp")
+                    for family in (4, 6)
+                }
+                for event in ("revoke", "expiry", "controller-crash")
+            },
         }
 
     def test_complete_fixture_and_missing_quic(self):
@@ -97,12 +102,22 @@ class EvidenceTests(unittest.TestCase):
             elif mutation == "runtime":
                 report["runtime"]["attested"] = False
             elif mutation == "late":
-                report["closure_seconds"]["expiry"] = 2.01
+                report["closure_seconds"]["expiry"]["tcp-6"] = 2.01
             elif mutation == "skip":
                 report["cases"][0]["status"] = "skip"
             else:
                 report["cases"].append(copy.deepcopy(report["cases"][0]))
             self.assertTrue(verify(report), mutation)
+
+    def test_each_retained_transport_requires_a_bounded_closure(self):
+        for family in (4, 6):
+            for kind in ("tcp", "udp"):
+                key = f"{kind}-{family}"
+                report = self.report()
+                report["closure_seconds"]["expiry"][key] = 2.01
+                self.assertIn(f"missing/late closure: expiry-{key}", verify(report))
+                del report["closure_seconds"]["expiry"][key]
+                self.assertIn(f"missing/late closure: expiry-{key}", verify(report))
 
     def test_network_case_cannot_be_relabelled_or_inverted(self):
         for field, value in (("type", "boundary"), ("expected", True)):
@@ -227,6 +242,41 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         request["marker"] = "should-have-been-denied"
         await agent.bounded(request)
         self.assertIn(("should-have-been-denied", "tcp"), self.events)
+
+    async def test_batch_attempts_each_retained_transport_and_family(self):
+        loop = asyncio.get_running_loop()
+        extra_server = await asyncio.start_server(agent.receive_stream, "::1", 0)
+        transports, flows, requests = [], {}, []
+        try:
+            for host, family, tcp_port in (
+                ("127.0.0.1", socket.AF_INET, self.port),
+                ("::1", socket.AF_INET6, extra_server.sockets[0].getsockname()[1]),
+            ):
+                transport, _ = await loop.create_datagram_endpoint(
+                    agent.DatagramReceiver, local_addr=(host, 0)
+                )
+                transports.append(transport)
+                tcp = await asyncio.open_connection(host, tcp_port)
+                udp = socket.socket(family, socket.SOCK_DGRAM)
+                udp.connect(transport.get_extra_info("sockname"))
+                for kind, flow in (("tcp", tcp), ("udp", udp)):
+                    key = f"{kind}-{family}"
+                    flows[key] = flow
+                    requests.append({"id": key, "marker": key})
+            with patch.object(agent, "FLOWS", flows):
+                result = await agent.bounded(
+                    {"action": "flow-send-batch", "flows": requests}
+                )
+            self.assertEqual(result, {"results": [{"sent": True}] * 4})
+            await asyncio.sleep(0.05)
+            self.assertEqual({marker for marker, _ in self.events}, set(flows))
+        finally:
+            for flow in flows.values():
+                (flow[1] if isinstance(flow, tuple) else flow).close()
+            for transport in transports:
+                transport.close()
+            extra_server.close()
+            await extra_server.wait_closed()
 
     async def test_dns_is_nonrecursive_and_returns_changed_target(self):
         addresses = [policy.ADDRESSES["receiver"], policy.ADDRESSES["other"]]

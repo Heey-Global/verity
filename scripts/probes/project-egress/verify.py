@@ -123,9 +123,13 @@ def verify(report):
                 ):
                     failures.append("broken positive control: " + case["id"])
     for event in ("revoke", "expiry", "controller-crash"):
-        latency = report.get("closure_seconds", {}).get(event)
-        if not isinstance(latency, (int, float)) or not 0 <= latency <= 2:
-            failures.append("missing/late closure: " + event)
+        timings = report.get("closure_seconds", {}).get(event, {})
+        for family in (4, 6):
+            for kind in ("tcp", "udp"):
+                key = f"{kind}-{family}"
+                latency = timings.get(key) if isinstance(timings, dict) else None
+                if not isinstance(latency, (int, float)) or not 0 <= latency <= 2:
+                    failures.append(f"missing/late closure: {event}-{key}")
     return failures
 
 

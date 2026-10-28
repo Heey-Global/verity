@@ -257,6 +257,13 @@ FLOWS = {}
 
 async def operation(request):
     action = request.get("action", "send")
+    if action == "flow-send-batch":
+        return {
+            "results": [
+                await bounded({**item, "action": "flow-send"})
+                for item in request["flows"]
+            ]
+        }
     if action == "flow-start":
         if request["kind"] == "tcp":
             FLOWS[request["id"]] = await asyncio.open_connection(request["host"], 8080)
