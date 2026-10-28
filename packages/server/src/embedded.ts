@@ -2568,11 +2568,17 @@ export async function buildEmbeddedServer(
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
   // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
   // the DB-backed GitHub App mint.
+  // Long image pulls (sandbox, toolkit, relay and preview images) report their
+  // progress here, rate-limited by the client.
+  const logDockerPull = (message: string): void => {
+    console.info(`verity: ${message}`);
+  };
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
       ? createDockerClient({
           baseUrl: config.dockerBaseUrl,
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+          pullLog: logDockerPull,
         })
       : undefined;
   if (projectDocker !== undefined) {
@@ -2593,6 +2599,7 @@ export async function buildEmbeddedServer(
       createDockerClient({
         baseUrl: config.dockerBaseUrl,
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+        pullLog: logDockerPull,
       }))
     : undefined;
   const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
