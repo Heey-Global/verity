@@ -123,29 +123,48 @@ test('installer delivers bounded collection and updater rollback includes both s
 
 // Without storage-roots.conf the containerd root used to stay unavailable on
 // every installed host, and the Server refused every build until an operator
-// wrote the file by hand.
-test('publisher takes the containerd root from the containerd Docker uses', () => {
+// wrote the file by hand. The running daemon decides, not a configuration file
+// it may have been started without: a --root override names another filesystem.
+test('publisher takes the containerd root from the daemon Docker uses', () => {
   const work = mkdtempSync(join(tmpdir(), 'publish-storage-'));
   try {
     const root = join(work, 'containerd-root');
-    spawnSync('mkdir', ['-p', root, join(work, 'bin'), join(work, 'libexec'), join(work, 'state')]);
+    const other = join(work, 'override-root');
+    for (const path of [root, other, 'bin', 'libexec', 'state', 'proc'])
+      spawnSync('mkdir', ['-p', path.startsWith('/') ? path : join(work, path)]);
     const script = (name, body) => {
       writeFileSync(join(work, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     };
     // Records the roots the publisher hands to the collector.
     script('libexec/storage-report.sh', `printf '%s\\n' "$3"`);
-    const publish = ({ dockerAddress, config, roots }) => {
+    const v2 = (address) =>
+      `version = 3\nroot = '${root}'\n\n[plugins]\n  [plugins.'io.containerd.server.v1.grpc']\n    address = '${address}'\n  [plugins.'io.containerd.server.v1.ttrpc']\n    address = '${address}.ttrpc'\n`;
+    const v1 = `version = 2\nroot = "${root}"\n\n[debug]\n  address = ""\n\n[grpc]\n  address = "/run/containerd/containerd.sock"\n`;
+    // A fake process table: each daemon's binary prints the configuration it
+    // would resolve, the default one or the file named by --config.
+    const daemon = (pid, args, defaultConfig) => {
+      const dir = join(work, 'proc', String(pid));
+      spawnSync('mkdir', ['-p', dir]);
+      writeFileSync(join(dir, 'comm'), 'containerd\n');
+      writeFileSync(join(dir, 'cmdline'), ['/usr/bin/containerd', ...args, ''].join('\0'));
+      writeFileSync(join(work, `default-${pid}.toml`), defaultConfig);
+      script(
+        `bin/containerd-${pid}`,
+        `if [ "$1" = --config ]; then cat "$2"; else cat '${join(work, `default-${pid}.toml`)}'; fi`,
+      );
+      spawnSync('ln', ['-sfn', join(work, 'bin', `containerd-${pid}`), join(dir, 'exe')]);
+    };
+    const publish = (dockerAddress, roots) => {
       script(
         'bin/docker',
         `case "$*" in *Containerd.Address*) echo '${dockerAddress}';; *DockerRootDir*) echo /var/lib/docker;; *) exit 1;; esac`,
       );
-      writeFileSync(join(work, 'config.toml'), config);
-      script('bin/containerd', `cat '${join(work, 'config.toml')}'`);
       const result = spawnSync('bash', [join(directory, 'publish-storage-report.sh')], {
         encoding: 'utf8',
         env: {
           ...process.env,
           PATH: `${join(work, 'bin')}:${process.env.PATH}`,
+          VERITY_PROC_ROOT: join(work, 'proc'),
           VERITY_HOST_DIAGNOSTIC_DIR: join(work, 'state'),
           VERITY_BUILDKIT_LIBEXEC: join(work, 'libexec'),
           VERITY_BUILD_STORAGE_ROOTS: roots ?? join(work, 'absent.conf'),
@@ -154,25 +173,34 @@ test('publisher takes the containerd root from the containerd Docker uses', () =
       assert.equal(result.status, 0, result.stderr);
       return readFileSync(join(work, 'state', 'storage.json'), 'utf8').trim();
     };
-    const v2 = `version = 3\nroot = '${root}'\n\n[plugins]\n  [plugins.'io.containerd.server.v1.grpc']\n    address = '/run/containerd/containerd.sock'\n  [plugins.'io.containerd.server.v1.ttrpc']\n    address = '/run/containerd/containerd.sock.ttrpc'\n`;
-    const v1 = `version = 2\nroot = "${root}"\n\n[debug]\n  address = ""\n\n[grpc]\n  address = "/run/containerd/containerd.sock"\n`;
-    for (const config of [v2, v1])
-      assert.equal(publish({ dockerAddress: '/run/containerd/containerd.sock', config }), root);
-    // Docker's own managed containerd is not the system configuration; never borrow its root.
-    assert.equal(
-      publish({ dockerAddress: '/var/run/docker/containerd/containerd.sock', config: v2 }),
-      '/.verity-storage-unavailable',
-    );
-    // An operator's explicit root always wins.
+    const reset = () => {
+      rmSync(join(work, 'proc'), { recursive: true, force: true });
+      spawnSync('mkdir', ['-p', join(work, 'proc')]);
+    };
+    const system = '/run/containerd/containerd.sock';
+    const unavailable = '/.verity-storage-unavailable';
+
+    for (const config of [v2(system), v1]) {
+      reset();
+      daemon(100, [], config);
+      assert.equal(publish(system), root);
+    }
+    reset();
+    daemon(100, ['--root', other], v2(system));
+    assert.equal(publish(system), other, 'a --root override names the filesystem in use');
+    reset();
+    writeFileSync(join(work, 'custom.toml'), v2('/run/custom/containerd.sock'));
+    daemon(100, ['--config', join(work, 'custom.toml')], v2(system));
+    assert.equal(publish('/run/custom/containerd.sock'), root, 'its --config file is resolved');
+    assert.equal(publish(system), unavailable, 'a daemon not serving Docker is ignored');
+    reset();
+    daemon(100, [], v2(system));
+    daemon(200, ['--root', other], v2(system));
+    assert.equal(publish(system), unavailable, 'two daemons claiming one address are ambiguous');
+    reset();
+    daemon(100, [], v2(system));
     writeFileSync(join(work, 'roots.conf'), 'version=1\ncontainerdRoot=/srv/containerd\n');
-    assert.equal(
-      publish({
-        dockerAddress: '/run/containerd/containerd.sock',
-        config: v2,
-        roots: join(work, 'roots.conf'),
-      }),
-      '/srv/containerd',
-    );
+    assert.equal(publish(system, join(work, 'roots.conf')), '/srv/containerd');
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
