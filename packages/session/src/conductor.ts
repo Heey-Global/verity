@@ -3170,6 +3170,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     displayPrompt = prompt,
+    origin: PromptOrigin = {},
   ): Promise<RunResult> {
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     // Register the in-flight handle synchronously (before the async run) so a cancel
@@ -3183,6 +3184,8 @@ export class Conductor {
         sessionId,
         displayPrompt,
         await this.storeAttachments(opts.attachments),
+        false,
+        origin,
       );
       this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       const sinceSeq = await this.deps.store.latestEventSeq(sessionId);

@@ -29,6 +29,8 @@ export interface SessionControlRouteDeps {
     sessionId: string,
     toolUseId: string,
     decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+    /** The user answering the saved approval; a delivered message runs for them. */
+    decidedBy?: { userId: string },
   ) => Promise<boolean>;
 }
 
@@ -95,7 +97,12 @@ export function registerSessionControlRoutes(
     }
     if (!decided && deps.decidePendingLinkedMessage !== undefined) {
       try {
-        decided = await deps.decidePendingLinkedMessage(id, toolUseId, decision);
+        decided = await deps.decidePendingLinkedMessage(
+          id,
+          toolUseId,
+          decision,
+          request.localUserId ? { userId: request.localUserId } : undefined,
+        );
       } catch (error) {
         if (error instanceof PermissionDecisionInProgressError) {
           reply.code(409);
