@@ -37,6 +37,7 @@ def required_cases():
             "redirect",
             "dns-target-change",
             "embedded-dns",
+            "embedded-dns-control",
             "host-control",
             "gateway-control",
             "gateway-denied",
@@ -103,6 +104,11 @@ def verify(report):
                 "expected"
             ) is not expected_result(case["id"]):
                 failures.append("wrong expectation: " + case["id"])
+        if (
+            case["id"] == "embedded-dns"
+            and case.get("control") != "embedded-dns-control"
+        ):
+            failures.append("mismatched embedded DNS control")
         if case.get("status") != "pass":
             failures.append("failed: " + case["id"])
         if case.get("type") == "network":

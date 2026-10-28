@@ -47,7 +47,8 @@ not a production latency promise or an exact measurement of the kernel transitio
 
 `verify.py` owns the required case manifest. Missing IPv6, QUIC, controls, runtime
 attestation, cases or mutation evidence fails the result; no runtime case may be
-skipped. Cases include:
+skipped. An unavailable Docker embedded resolver therefore fails its required
+positive control; it is not counted as proof of the fence. Cases include:
 
 - IPv4/IPv6 TCP, UDP, DNS over UDP/TCP and actual QUIC streams, with positive
   controls for both projects and both receiver destinations.
@@ -55,7 +56,8 @@ skipped. Cases include:
   then B explicitly granted and revoked.
 - Shell and synthetic installation-hook children, forged project labels,
   redirects and a DNS answer changing the target to the second destination.
-- Docker embedded DNS access, gateway input, synthetic metadata/foreign-project
+- Docker embedded DNS access with a granted positive control through the same
+  `127.0.0.11` resolver, gateway input, synthetic metadata/foreign-project
   addresses, private volume/socket checks and PID 1 visibility. Metadata and
   foreign-project network tests temporarily DNAT synthetic addresses to the
   controlled receiver, with a working positive control; they never contact a

@@ -438,6 +438,16 @@ def controls():
 
 def bypasses():
     grant([["b", "receiver"], ["a", "receiver"], ["a", "other"]])
+    network(
+        "embedded-dns-control",
+        "b",
+        "receiver",
+        "dns",
+        4,
+        True,
+        request={"host": "127.0.0.11"},
+        observer="receiver",
+    )
     network("shell-control", "b", "receiver", "tcp", 4, True, child=True)
     network("install-control", "a", "other", "tcp", 4, True, child="install")
     network("redirect-control", "a", "receiver", "redirect", 4, True, observer="other")
@@ -505,7 +515,7 @@ def bypasses():
         "dns",
         4,
         False,
-        "control-b-dns-4",
+        "embedded-dns-control",
         request={"host": "127.0.0.11"},
         observer="receiver",
     )
