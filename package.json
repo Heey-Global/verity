@@ -30,7 +30,7 @@
     "@bacons/xcode": {
       "uuid": "11.1.1",
       "@expo/plist": {
-        "@xmldom/xmldom": "0.8.15"
+        "@xmldom/xmldom": "0.9.12"
       }
     }
   },
