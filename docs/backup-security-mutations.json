@@ -1,0 +1,607 @@
+{
+  "baseline": "4e4b0befb89752c116278a350d2f0e3da97765d5",
+  "scope": "Only the guards listed here; not the complete ADR0025 mutation matrix. Synthetic test data only.",
+  "testFileSha256": [
+    {
+      "path": "packages/server/src/backup/restore-authenticity.test.ts",
+      "sha256": "bb8a3587ee78e682b49cedd4f063147a5b528441b96a24953dd38443717f812b"
+    },
+    {
+      "path": "packages/server/src/backup/git-gc.test.ts",
+      "sha256": "29ed3e30d440b5ef28847bf9d8ca35dfb33518c7992d8f5337596eec558ce3ec"
+    },
+    {
+      "path": "packages/server/src/backup/capture.test.ts",
+      "sha256": "fa63a8f38abdd6d41fe3f9f17f953cf09ff3d3b8f6e3546386703b67f8c51817"
+    },
+    {
+      "path": "packages/server/src/backup/restore-database.test.ts",
+      "sha256": "de3eb1a3749bc84c9937562d262cac6418895ec1390b8ec94ec6a78a56cae8e9"
+    },
+    {
+      "path": "packages/server/src/backup/routes.test.ts",
+      "sha256": "9a1107d902ae1302cb77e7826cd65017672a2220125e4df4ddd0cd0bc945ae38"
+    },
+    {
+      "path": "packages/server/src/backup/restore-trial.test.ts",
+      "sha256": "5615e656c1f44f4ee267a02f51865a6da6509332d62eb55e8c91636f252cc43d"
+    },
+    {
+      "path": "packages/server/src/backup/restore-trial-runtime.test.ts",
+      "sha256": "b2687b39d7eed7cd11b6dad798d60f53fb48a13f59b23eac9efcf178e3178644"
+    },
+    {
+      "path": "packages/server/src/backup/restore-final-review.test.ts",
+      "sha256": "3b6f35950d664319d628342ed55ac5e9d9075cb05a9167459b15279b506c53da"
+    },
+    {
+      "path": "packages/server/src/backup/probe-jobs.test.ts",
+      "sha256": "33b8120ec5f4d3078fe25b2347875f4c5e0c0b81ae95d3ed1156d3617a7677fc"
+    },
+    {
+      "path": "packages/server/src/backup/installer-secrets.test.ts",
+      "sha256": "bb4382a6065498029aa33dc1230b62ad0e67a58c3755901cab4087349039260d"
+    },
+    {
+      "path": "packages/server/src/backup/service.test.ts",
+      "sha256": "d0e07910f7932bc388da0358db31f12516f4d4e14ce48090f7dac8cf7606384a"
+    }
+  ],
+  "environment": {
+    "OPENSSL_CONF": "/dev/null",
+    "VERITY_TEST_SHARED_POSTGRES_URL": "Disposable local PostgreSQL 15; supply your own test URL",
+    "VERITY_TEST_TIMEOUT_MS": "60000"
+  },
+  "toolchain": {
+    "node": "26.12.1",
+    "vitest": "5.0.5"
+  },
+  "commandNote": "Commands below give the Vitest CLI argument vector; use the installed Vitest executable or npm exec -- vitest. Source replacements are temporary and restored in finally.",
+  "cases": [
+    {
+      "id": "manifest-signature",
+      "file": "packages/server/src/backup/crypto.ts",
+      "replace": "  verifyMetadata(key.verificationKey, envelope);",
+      "with": "  // mutation: signature verification omitted",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-authenticity.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "rejects recipient-encrypted"
+      ],
+      "originalSourceSha256": "f4ac9c676980960f952b5a221fea7223889a388510f3a61f42d957fc45dd7240",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-authenticity.test.ts > rejects recipient-encrypted unsigned manifests and authenticated future formats before any restore effect, preserving the last good snapshot",
+        "AssertionError: promise resolved \"Buffer[ 123, 34, 102, 111, 114, \u2026(332) ]\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "future-format",
+      "file": "packages/server/src/backup/format.ts",
+      "replace": "    value['format'] !== BACKUP_FORMAT_VERSION ||\n",
+      "with": "",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-authenticity.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "rejects recipient-encrypted"
+      ],
+      "originalSourceSha256": "e8a552fabf18020ae96bc10e60dba77d7635a2e14a07b8b74dffe30a9fed30bf",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-authenticity.test.ts > rejects recipient-encrypted unsigned manifests and authenticated future formats before any restore effect, preserving the last good snapshot",
+        "AssertionError: promise resolved \"{ format: 1, \u2026(9) }\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "gc-disappearance",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": " ||\n      (error as NodeJS.ErrnoException).code === 'ENOENT'",
+      "with": "",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/git-gc.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "re-freezes after an actual"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/git-gc.test.ts > re-freezes after an actual concurrent gc removes a listed loose object and refuses borrowed-only history",
+        "Error: ENOENT: no such file or directory, open '/proc/self/fd/24/7f093eb634de1ea23391712054146ac5765b73'",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "borrowed-history",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": "(result.status === 'validated' || result.status === 'alternates-dropped')",
+      "with": "result.status === 'validated'",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/git-gc.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "re-freezes after an actual"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/git-gc.test.ts > re-freezes after an actual concurrent gc removes a listed loose object and refuses borrowed-only history",
+        "AssertionError: expected 'alternates-dropped' to be 'not-validated' // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "index-only",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": "      const path = entry.path.slice(4);",
+      "with": "      const path = entry.path.slice(4); if (path === 'index') continue;",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/capture.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "captures paused and active"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/capture.test.ts > integrated capture components with PostgreSQL > captures paused and active project files plus frozen Git, identity and one DB snapshot; restores without source or index",
+        "Error: Command failed: git -C <tmp>/staging/.verity-restore-PNGkdk/workspaces/project show :index-only",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "stash-ref",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": "      const path = entry.path.slice(4);",
+      "with": "      const path = entry.path.slice(4); if (path === 'refs/stash' || path === 'logs/refs/stash') continue;",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/capture.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "captures paused and active"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/capture.test.ts > integrated capture components with PostgreSQL > captures paused and active project files plus frozen Git, identity and one DB snapshot; restores without source or index",
+        "Error: Command failed: git -C <tmp>/staging/.verity-restore-3Z1DQJ/workspaces/project show stash@{0}:stashed",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "hostile-config",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": "  return output.join('\\n') + '\\n';",
+      "with": "  return input;",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/capture.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "captures paused and active"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/capture.test.ts > integrated capture components with PostgreSQL > captures paused and active project files plus frozen Git, identity and one DB snapshot; restores without source or index",
+        "AssertionError: expected 'unstable' to be 'validated' // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "administrator-after-gate",
+      "file": "packages/server/src/backup/routes.ts",
+      "replace": "if (!(await deps.isAdministrator(userId)))",
+      "with": "if (!deps.recoveryAccepted() && !(await deps.isAdministrator(userId)))",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/routes.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "checks current administrator"
+      ],
+      "originalSourceSha256": "a683e73583604b4ac0dd30302a19fd34966290449a08505dc822c49e59a4166e",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/routes.test.ts > checks current administrator authority and the recovery gate on every registered backup route",
+        "AssertionError: member /api/backups/status: expected 200 to be 403 // Object.is equality",
+        "Tests  1 failed | 2 skipped (3)"
+      ]
+    },
+    {
+      "id": "ordinary-trial-route",
+      "file": "packages/server/src/backup/restore-trial.ts",
+      "replace": "  app.register(rateLimitPlugin, {",
+      "with": "  app.post('/pair/enroll', async () => ({paired:true}));\n  app.register(rateLimitPlugin, {",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-trial.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "requires password and explicit"
+      ],
+      "originalSourceSha256": "00b0617ad1f8467d5d050086c11aeceeae7f6f4b56ba88870333f3f5e1e1c345",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-trial.test.ts > isolated recovery trial > requires password and explicit device review, never retains revoked devices or serves ordinary routes",
+        "AssertionError: /pair/enroll: expected 200 to be 404 // Object.is equality",
+        "Tests  1 failed | 1 skipped (2)"
+      ]
+    },
+    {
+      "id": "trial-docker-authority",
+      "file": "packages/server/src/backup/restore-trial-runtime.ts",
+      "replace": "binds: [`${trial}:/restore:rw`],",
+      "with": "binds: [`${trial}:/restore:rw`, '/var/run/docker.sock:/var/run/docker.sock'],",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-trial-runtime.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "starts only the restricted"
+      ],
+      "originalSourceSha256": "ae4effae346eba786b4b3b323163d6fe852c9c0d48653d64613c92b2f18ae1e7",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-trial-runtime.test.ts > starts only the restricted staging trial and resumes explicit device review across worker restarts",
+        "AssertionError: expected \"vi.fn()\" to be called with arguments: [ ObjectContaining{\u2026} ]",
+        "FAIL  packages/server/src/backup/restore-trial-runtime.test.ts > starts only the restricted canonical trial and resumes explicit device review across worker restarts",
+        "AssertionError: expected \"vi.fn()\" to be called with arguments: [ ObjectContaining{\u2026} ]",
+        "Tests  2 failed (2)"
+      ]
+    },
+    {
+      "id": "late-revocation",
+      "file": "packages/server/src/backup/restore-final-review.ts",
+      "replace": "review.keptIds.filter((id) => !revoked.has(id))",
+      "with": "review.keptIds",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-final-review.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "rechecks both factors"
+      ],
+      "originalSourceSha256": "7285a0b962d6479081dbee4570014d5ec887819fa17d2148e092e7b1c961f9bf",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-final-review.test.ts > rechecks both factors and new journal/outbox revocations before keeping any reviewed device",
+        "AssertionError: expected [ 'keep', 'journal-revoked', \u2026(1) ] to deeply equal [ 'keep' ]",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "probe-disk-secret",
+      "file": "packages/server/src/backup/probe-jobs.ts",
+      "replace": "        await this.save({});\n        accept",
+      "with": "        await this.save({});\n        await writeDurable(join(this.deps.root,'leak'),Buffer.from(recoveryKey),false);\n        accept",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/probe-jobs.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "keeps synthetic keys"
+      ],
+      "originalSourceSha256": "38800ef1e6e60d02fc61fe3f3d3798cda6d4029a3a4a2542c3dca3a899dd83b2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/probe-jobs.test.ts > keeps synthetic keys out of all job files and captured logs across success, failure, cancellation and restart",
+        "AssertionError: <tmp>/leak: expected true to be false // Object.is equality",
+        "Tests  1 failed | 8 skipped (9)"
+      ]
+    },
+    {
+      "id": "probe-log-secret",
+      "file": "packages/server/src/backup/probe-jobs.ts",
+      "replace": "        } catch {\n          failed = true;",
+      "with": "        } catch (error) {\n          console.error(error);\n          failed = true;",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/probe-jobs.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "keeps synthetic keys"
+      ],
+      "originalSourceSha256": "38800ef1e6e60d02fc61fe3f3d3798cda6d4029a3a4a2542c3dca3a899dd83b2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/probe-jobs.test.ts > keeps synthetic keys out of all job files and captured logs across success, failure, cancellation and restart",
+        "AssertionError: expected '[\"Error: sensitive dependency failure\u2026' not to contain '<synthetic-key>'",
+        "Tests  1 failed | 8 skipped (9)"
+      ]
+    },
+    {
+      "id": "installer-argument-secret",
+      "file": "deploy/bin/verity-restore-install",
+      "replace": "| docker run --rm --interactive",
+      "with": "| docker run --env \"RECOVERY_KEY=$recovery_key\" --rm --interactive",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/installer-secrets.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "transports installer credentials"
+      ],
+      "originalSourceSha256": "681a7a8cf8bff179a0d5f68269fd4b4af131a389c11210e232e80ae57406a51f",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/installer-secrets.test.ts > transports installer credentials only on stdin and leaves no credential bytes in arguments, files or logs after failure, retry and abort",
+        "AssertionError: <tmp>/arguments: expected true to be false // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "seeded-preview-reset",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "for (const table of RESTORE_EPHEMERAL_TABLES) await client.query(`DELETE FROM ${table}`);",
+      "with": "for (const table of RESTORE_EPHEMERAL_TABLES) if (table !== 'public_preview_shares') await client.query(`DELETE FROM ${table}`);",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: public_preview_shares: expected 1 to be +0 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "seeded-capability-reset",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "for (const table of RESTORE_EPHEMERAL_TABLES) await client.query(`DELETE FROM ${table}`);",
+      "with": "for (const table of RESTORE_EPHEMERAL_TABLES) if (table !== 'signing_capabilities') await client.query(`DELETE FROM ${table}`);",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: signing_capabilities: expected 1 to be +0 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "seeded-job-reset",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "for (const table of RESTORE_EPHEMERAL_TABLES) await client.query(`DELETE FROM ${table}`);",
+      "with": "for (const table of RESTORE_EPHEMERAL_TABLES) if (!['secret_job_frames','secret_jobs'].includes(table)) await client.query(`DELETE FROM ${table}`);",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: secret_jobs: expected 1 to be +0 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "seeded-runtime-reset",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "for (const table of RESTORE_EPHEMERAL_TABLES) await client.query(`DELETE FROM ${table}`);",
+      "with": "for (const table of RESTORE_EPHEMERAL_TABLES) if (table !== 'managed_dev_server_instances') await client.query(`DELETE FROM ${table}`);",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: managed_dev_server_instances: expected 1 to be +0 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "capability-generation",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "generation = generation + 1",
+      "with": "generation = generation",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: expected [ { generation: 7, \u2026(3) } ] to deeply equal [ { generation: 8, \u2026(3) } ]",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "meeting-interruption",
+      "file": "packages/server/src/backup/restore-database.ts",
+      "replace": "UPDATE live_meetings SET state = 'interrupted' WHERE state = 'active'",
+      "with": "UPDATE live_meetings SET state = 'active' WHERE state = 'active'",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "c5a9c2b328741588609743e44b658228ec49293a7590b63db3d6135e243be923",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: expected [ { state: 'active' } ] to deeply equal [ { state: 'interrupted' } ]",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "unreviewed-recovery-schema",
+      "file": "packages/store/src/migrations.ts",
+      "replace": "async up(db: Kysely<unknown>): Promise<void> {",
+      "with": "async up(db: Kysely<unknown>): Promise<void> { await db.schema.createTable('enrollment_recovery_unreviewed').addColumn('id','text').execute();",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-database.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "applies snapshot and destination"
+      ],
+      "originalSourceSha256": "bba914a3a3199b3be00402265c01338cc12b47f94dbcac5bc38470a3e93cfc76",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/restore-database.test.ts > restored database startup safety > applies snapshot and destination revocations, suspends work, preserves secret metadata and rolls back failed resets",
+        "AssertionError: expected [ Array(1) ] to deeply equal []",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "reflog",
+      "file": "packages/server/src/backup/git.ts",
+      "replace": "      const path = entry.path.slice(4);",
+      "with": "      const path = entry.path.slice(4); if (path.startsWith('logs/') && path !== 'logs/refs/stash') continue;",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/capture.test.ts",
+        "--maxWorkers=1",
+        "-t",
+        "captures paused and active"
+      ],
+      "originalSourceSha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6",
+      "exitCode": 1,
+      "failureEvidence": [
+        "FAIL  packages/server/src/backup/capture.test.ts > integrated capture components with PostgreSQL > captures paused and active project files plus frozen Git, identity and one DB snapshot; restores without source or index",
+        "AssertionError: expected '25142e2 refs/stash@{0}: On master: se\u2026' to contain 'reflog-only'",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "service-space-alert",
+      "file": "packages/server/src/backup/service.ts",
+      "replace": "if (capacity.nearlyFull) codes.push('insufficient-space');",
+      "with": "if (capacity.nearlyFull) { /* mutation: low-space alert omitted */ }",
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup/service.test.ts",
+        "--maxWorkers=1"
+      ],
+      "originalSourceSha256": "86e64cddf9d6f716223114d884603c9d59b3a6980e672f086f36590e2fe665a5",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "AssertionError: expected [] to include 'insufficient-space'",
+        "Tests  1 failed (1)"
+      ],
+      "configurationNote": "Same tests with a temporary global-setup wrapper disabling Error.prepareStackTrace only during teardown; see evidence matrix."
+    }
+  ],
+  "restorationVerified": true,
+  "evidenceNormalization": "Ephemeral test-directory names and synthetic key fragments are normalized in assertion excerpts; source substitutions and test arguments are exact.",
+  "guardRefinements": [
+    "An initial hostile-config mutation passed with a version-only include; malformed included configuration now detects sanitizer bypass.",
+    "An initial preview-deletion mutation passed because assertions iterated only the implementation reset list; seeded tables now have independent postconditions and every reset table must have nonempty fixtures.",
+    "An initial logging mutation passed because JSON.stringify(Error) omits its message; captured console arguments now use node:util format, including Error messages/stacks."
+  ],
+  "verification": {
+    "backupSuite": {
+      "filesPassed": 71,
+      "filesFailed": 0,
+      "testsPassed": 186,
+      "testsFailed": 0,
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/backup",
+        "--maxWorkers=1"
+      ],
+      "configuration": "Repository Vitest configuration with temporary teardown-only Error.prepareStackTrace workaround; see docs/BACKUP_RECOVERY_EVIDENCE.md. Test workers unchanged.",
+      "previousFailureResolved": "service.test.ts normalizes statfs percentage independently of shared host fill level; actual available bytes and minimum reserve checks remain."
+    },
+    "affectedConsumers": {
+      "filesPassed": 4,
+      "testsPassed": 86,
+      "command": [
+        "vitest",
+        "run",
+        "packages/server/src/auth.test.ts",
+        "packages/server/src/self-update/deployment-spec.test.ts",
+        "packages/server/src/self-update/managed-deployment.test.ts",
+        "scripts/backup-restore-diagnostics.test.ts",
+        "--maxWorkers=1"
+      ]
+    },
+    "followUpGuards": {
+      "filesPassed": 4,
+      "filesFailed": 1,
+      "testsPassed": 67,
+      "testsFailed": 1,
+      "scope": [
+        "packages/server/src/backup/service.test.ts",
+        "packages/server/src/backup/destination.test.ts",
+        "scripts/vitest-global-setup.test.ts",
+        "scripts/test-postgres.test.ts",
+        "packages/store/src/testing.test.ts"
+      ],
+      "limitation": "Unchanged test-postgres clusterRole test requires os.userInfo(); container has no /etc/passwd, producing uv_os_get_passwd ENOENT."
+    },
+    "build": "tsc -b packages/server passed",
+    "lint": "Scoped ESLint on changed TypeScript files passed",
+    "format": "Changed-file Prettier and git diff --check passed",
+    "postgresCleanup": {
+      "originalWarning": "Vite 8.3.5 extractInlineSourceMap throws code.charCodeAt is not a function while backgroundOwner formats Error.stack. Default repository harness unchanged.",
+      "workaround": "Temporary globalSetup wrapper suspends Error.prepareStackTrace only while invoking original teardown.",
+      "remainingOwnedDatabasesAfterFullRun": 0,
+      "verification": "Independent pg_database query against exact runDatabaseNames(namespace, 64), after original teardown completed."
+    },
+    "digestVerification": "All 23 mutation source digests and all recorded test digests matched after restoration",
+    "globalRecoveryAccepted": false
+  }
+}

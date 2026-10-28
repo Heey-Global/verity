@@ -90,6 +90,20 @@ describe('isolated recovery trial', () => {
       expect(authenticated.statusCode).toBe(200);
       const { token } = authenticated.json<{ token: string }>();
       const headers = { authorization: `Bearer ${token}` };
+      // A valid recovery session authorizes review only, never normal installation operations.
+      for (const url of [
+        '/api/projects',
+        '/pair/enroll',
+        '/devices/pairing-invitations',
+        '/projects/p/wake',
+        '/sessions/s/messages',
+        '/api/server/update',
+        '/api/backups/setup',
+      ]) {
+        const denied = await app.inject({ method: 'POST', url, headers, payload: {} });
+        expect(denied.statusCode, url).toBe(404);
+      }
+
       expect((await app.inject({ url: '/recovery/devices', headers })).json()).toEqual({
         devices: ['kept', 'revoked'],
         revokedIds: ['revoked'],

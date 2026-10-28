@@ -349,13 +349,19 @@ export async function freezeGitDirectory(
       result.status = 'unstable';
       result.findings.push('changed-during-freeze');
     }
-    if (result.status === 'validated' && !(await checkFrozenGit(result.git, directory))) {
-      result.status = 'unstable';
+    if (
+      (result.status === 'validated' || result.status === 'alternates-dropped') &&
+      !(await checkFrozenGit(result.git, directory))
+    ) {
+      result.status = result.status === 'alternates-dropped' ? 'not-validated' : 'unstable';
       result.findings.push('connectivity');
     }
     return result;
   } catch (error) {
-    if (error instanceof BackupFileChangedError) {
+    if (
+      error instanceof BackupFileChangedError ||
+      (error as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
       result.status = 'unstable';
       result.findings.push('changed-during-freeze');
       return result;
