@@ -64,3 +64,39 @@ jobs:
           path: ${{ runner.temp }}/devcontainer-gvisor-evidence
           if-no-files-found: warn
           retention-days: 7
+
+  # Manual attribution run: which step of a real repository build the gVisor
+  # builder makes slow, against a runc worker from the same pinned BuildKit.
+  build-timing:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Install the repository-pinned devcontainer CLI
+        run: npm ci --ignore-scripts
+      - name: Read the private base image and Feature
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Time the repository devcontainer build per step
+        env:
+          DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer
+          PROBE_EVIDENCE: ${{ runner.temp }}/build-timing
+        run: bash scripts/probes/devcontainer-gvisor/build-timing.sh
+      - name: Retain build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-timing
+          path: ${{ runner.temp }}/build-timing
+          if-no-files-found: warn
+          retention-days: 7
