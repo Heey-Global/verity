@@ -112,6 +112,10 @@ import {
 export { RUNNER_RUNTIME_GID, RUNNER_RUNTIME_UID };
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import {
+  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
+  recordAgentGatewayProjection,
+} from './agent-gateway-projection.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '@verity/store';
 import {
@@ -923,8 +927,7 @@ export interface ProvisionerOptions {
 }
 
 export const CLAUDE_EGRESS_GATEWAY_URL_LABEL = 'verity.claude-egress.gateway-url';
-/** Fingerprint of the client certificate mounted into this exact Sandbox. */
-export const AGENT_GATEWAY_PEER_FINGERPRINT_LABEL = 'verity.agent-gateway.peer-fingerprint-sha256';
+export { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL };
 
 /** Read the canonical directory descriptors off a project row (post-canonical
  *  per §19.0/§19.1 — assumes the row was upserted through the slice-2 sync).
@@ -3456,6 +3459,18 @@ export class ProvisionerImpl implements Provisioner {
                 (this.opts.chownRunnerFile ?? defaultChownRunnerFile)(keyPath, {
                   uid: this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID,
                   gid: this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID,
+                });
+                // Sleep revoked the certificate this container was created with, so
+                // the one just written in place has a new fingerprint while the
+                // container's immutable label still names the revoked one. Record
+                // which fingerprint this exact container and generation now holds;
+                // without it the woken Sandbox fails Agent Gateway readiness on
+                // every turn and is pushed into a full recreate it does not need.
+                recordAgentGatewayProjection(this.opts.gitSecretRoot, {
+                  projectId: project.id,
+                  containerId: inspect.id,
+                  containerGeneration: generation,
+                  fingerprint256: material.fingerprint256,
                 });
               }
             }

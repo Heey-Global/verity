@@ -1,6 +1,6 @@
 import { BuildStorage } from './build-storage.js';
 import { DerivedImageReferences } from './derived-image-references.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, X509Certificate } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -92,7 +92,12 @@ import {
   SANDBOX_ENV_COHORTS,
 } from './project-relay-migration.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
-import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import {
+  createClaudeEgressIdentityService,
+  type ClaudeEgressIdentityService,
+} from './claude-egress-identity.js';
+import { normalizeFingerprint } from './claude-egress-mtls.js';
+import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
 import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
@@ -1034,6 +1039,101 @@ describe('ProvisionerImpl (#174)', () => {
       }
     },
   );
+
+  it('re-projects the Agent Gateway identity of a Sandbox woken without a recreate', async () => {
+    const id = await seedProject('active');
+    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-wake-identity-'));
+    try {
+      const identity = createClaudeEgressIdentityService({
+        store: ctx.store,
+        serverName: 'gateway.test',
+      });
+      // What provisioning projected into the container and stamped on its label.
+      const created = await identity.sandboxMaterial(id);
+      const keyDir = join(secretRoot, 'claude-egress');
+      const certPath = join(keyDir, `egress_client.${id}.crt`);
+      const keyPath = join(keyDir, `egress_client.${id}.key`);
+      mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(keyDir, `egress_ca.${id}.crt`), created.caCertPem);
+      writeFileSync(certPath, created.clientCertPem);
+      writeFileSync(keyPath, created.clientKeyPem, { mode: 0o600 });
+      const running = {
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: {
+          [PROJECT_ID_LABEL]: id,
+          [CONTAINER_GENERATION_LABEL]: 'generation-1',
+          [AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]: created.fingerprint256,
+        },
+        mounts: [
+          {
+            source: keyPath,
+            destination: '/run/verity/claude-egress/client.key',
+            readWrite: false,
+          },
+        ],
+      };
+      const stopped = { ...running, running: false };
+      // sleep: inspect running, confirm stopped; wake: inspect retained, inspect started.
+      const inspections = [running, stopped, stopped, running];
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi.fn(async () => inspections.shift() ?? running),
+      });
+      const relay = defaultProjectRelay();
+      relay.sleep = async () => {};
+      relay.reactivate = relay.start.bind(relay);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        gitSecretRoot: secretRoot,
+        claudeEgressIdentity: identity,
+        chownRunnerFile: () => {},
+      });
+
+      await provisioner.sleepProject(id);
+      expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+
+      const mounted = normalizeFingerprint(
+        new X509Certificate(readFileSync(certPath, 'utf8')).fingerprint256,
+      );
+      const accepted = (await identity.gatewayMaterial()).peerBindings
+        .filter((binding) => binding.projectId === id)
+        .map((binding) => binding.fingerprint256);
+      // The gateway accepts exactly what the woken container now holds, and the
+      // revoked creation-time certificate stays revoked.
+      expect(accepted).toEqual([mounted]);
+      // The silent failure: the immutable label still names the revoked
+      // certificate, so a readiness check that trusts only the label rejects this
+      // healthy Sandbox on every turn and forces a recreate.
+      expect(accepted).not.toContain(running.labels[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]);
+      expect(projectedAgentGatewayFingerprint(secretRoot, id, running)).toBe(mounted);
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+
+      // The record vouches for that container generation only. A recreated or
+      // foreign container falls back to its own label and is never re-authorized.
+      for (const other of [
+        { ...running, id: 'container-2' },
+        {
+          ...running,
+          labels: { ...running.labels, [CONTAINER_GENERATION_LABEL]: 'generation-2' },
+        },
+        { ...running, labels: { ...running.labels, [PROJECT_ID_LABEL]: 'other-project' } },
+      ]) {
+        const claimed = projectedAgentGatewayFingerprint(secretRoot, id, other);
+        expect(claimed).toBe(created.fingerprint256);
+        expect(accepted).not.toContain(claimed);
+      }
+    } finally {
+      rmSync(secretRoot, { recursive: true, force: true });
+    }
+  });
 
   it('keeps a retained sleeping Sandbox when Docker inspection fails transiently', async () => {
     const id = await seedProject('active');
