@@ -9116,6 +9116,51 @@ describe('GET /sessions/:id/branches', () => {
     },
   );
 
+  // Nobody asks for a repair turn, so without an initiator an authenticated server refuses
+  // every gateway call the agent makes while fixing the PR.
+  it('runs a background repair for the session user who wrote last', async () => {
+    await createExistingSession('s1');
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Open a PR',
+      initiatedBy: { userId: 'earlier' },
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Ship it',
+      initiatedBy: { userId: 'latest' },
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Unattributed follow-up' });
+    branchSvc.current.mockResolvedValue('feat/background-repair');
+    const backgroundApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus: vi.fn(async () => ({
+        number: 119,
+        title: 'Background repair',
+        url: 'https://github.com/heey-global/verity/pull/119',
+        phase: 'open' as const,
+        headSha: 'abc123',
+        pipeline: 'failure' as const,
+        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        mergeable: false,
+      })),
+      pullRequestRepairPollMs: 20,
+    });
+    try {
+      await backgroundApp.ready();
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+      expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
+        displayPrompt: 'Fix failing CI for PR #119',
+        initiatedBy: { userId: 'latest' },
+      });
+    } finally {
+      await backgroundApp.close();
+    }
+  });
+
   it('automatically asks the agent to fix failed CI once per PR head', async () => {
     let now = 0;
     await createExistingSession('s1');

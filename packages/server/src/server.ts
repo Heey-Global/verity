@@ -4169,12 +4169,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
           const fresh = await deps.eventStore.markSessionAutomation(sessionId, marker);
           if (!fresh) return;
+          // Nobody asked for this turn, so it runs for the session's most recent user;
+          // their project rights are still checked on every gateway call it makes.
+          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
             repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
+              ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
           if (!accepted) {

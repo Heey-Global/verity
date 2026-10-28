@@ -22,7 +22,8 @@ A message folded into a turn that is already running is judged as part of
 that turn. Gateway calls in these turns are checked against the target
 project like any other turn, and a turn without an initiator is refused when
 authentication is enabled. Pull request repair turns that Verity starts on its
-own have no user behind them and remain subject to that refusal.
+own run for the user behind the session's most recent attributed prompt; a
+session without one gets no initiator and is refused.
 
 Scheduled automations check their sponsor before script execution, before
 prompt dispatch, and at queued turn admission. A failed authority check skips

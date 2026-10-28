@@ -4539,6 +4539,21 @@ export class EventStore implements EventSink {
     return { events, hasMore };
   }
 
+  /** The user behind the session's most recent prompt that names one, or `undefined`
+   *  when no prompt in the session has an initiator. */
+  async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
+  }
+
   /**
    * Read events with `seq > afterSeq` (the bigserial id) in order, each tagged
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
