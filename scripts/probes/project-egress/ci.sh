@@ -18,7 +18,7 @@ cleanup() {
   status=$?
   trap - EXIT
   set +e
-  docker logs "$name" > "$PROBE_EVIDENCE/daemon.log" 2>&1
+  docker logs "$name" > "$PROBE_EVIDENCE/daemon.txt" 2>&1
   docker exec "$name" nft list ruleset > "$PROBE_EVIDENCE/firewall-exit.txt" 2>&1
   for receiver in receiver other gateway; do
     docker exec "$name" docker logs "pe-$receiver" > "$PROBE_EVIDENCE/$receiver-exit.jsonl" 2>&1
@@ -55,9 +55,9 @@ PY
 memory_bytes=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["memory"])' "$PROBE_EVIDENCE/limits.json")
 docker version > "$PROBE_EVIDENCE/docker-version.txt"
 cp deploy/gvisor/versions.env "$PROBE_EVIDENCE/runtime-pins.env"
-docker build -f deploy/gvisor-ci.Dockerfile -t "$runtime_image" . > "$PROBE_EVIDENCE/runtime-build.log" 2>&1
-docker build -f "$probe_dir/Host.Dockerfile" --build-arg "RUNSC_SOURCE_IMAGE=$runtime_image" -t "$host_image" . > "$PROBE_EVIDENCE/host-build.log" 2>&1
-docker build -f "$probe_dir/Fixture.Dockerfile" -t "$fixture_image" . > "$PROBE_EVIDENCE/fixture-build.log" 2>&1
+docker build -f deploy/gvisor-ci.Dockerfile -t "$runtime_image" . > "$PROBE_EVIDENCE/runtime-build.txt" 2>&1
+docker build -f "$probe_dir/Host.Dockerfile" --build-arg "RUNSC_SOURCE_IMAGE=$runtime_image" -t "$host_image" . > "$PROBE_EVIDENCE/host-build.txt" 2>&1
+docker build -f "$probe_dir/Fixture.Dockerfile" -t "$fixture_image" . > "$PROBE_EVIDENCE/fixture-build.txt" 2>&1
 docker image inspect "$runtime_image" "$host_image" "$fixture_image" --format '{{.Id}} {{json .RepoDigests}}' > "$PROBE_EVIDENCE/images.txt"
 docker run -d --privileged --name "$name" --memory "$memory_bytes" --memory-swap "$memory_bytes" --cpus 1 --pids-limit 2048 \
   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
@@ -73,12 +73,12 @@ ready() {
   return 1
 }
 ready
-docker save "$fixture_image" | docker exec -i "$name" docker load > "$PROBE_EVIDENCE/image-load.log"
+docker save "$fixture_image" | docker exec -i "$name" docker load > "$PROBE_EVIDENCE/image-load.txt"
 docker exec "$name" docker tag "$fixture_image" project-egress-fixture:local
 # No project probe receives the outer/inner Docker socket or evidence mount.
-timeout 600 docker exec "$name" python3 /probe/probe.py before-restart > "$PROBE_EVIDENCE/before-restart.log" 2>&1
+timeout 600 docker exec "$name" python3 /probe/probe.py before-restart > "$PROBE_EVIDENCE/before-restart.txt" 2>&1
 # A real daemon/network-namespace restart, with project restart policies active.
 docker restart --time 3 "$name" > "$PROBE_EVIDENCE/daemon-restart.txt"
 ready
-timeout 240 docker exec "$name" python3 /probe/probe.py after-restart > "$PROBE_EVIDENCE/after-restart.log" 2>&1
+timeout 240 docker exec "$name" python3 /probe/probe.py after-restart > "$PROBE_EVIDENCE/after-restart.txt" 2>&1
 python3 "$probe_dir/verify.py" "$PROBE_EVIDENCE/result.json"

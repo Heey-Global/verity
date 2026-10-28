@@ -22,7 +22,10 @@ or evidence mount. Both remain running during the A/B tests. Interface and fixed
 source-address bindings determine identity; request labels have no authority.
 
 An nftables table in the outer daemon network namespace filters project traffic
-before Docker's forwarding chains. Separate forwarding accepts deliberately make
+before Docker's forwarding chains. All three disposable bridges use
+`gateway_mode_ipv4=nat-unprotected` and `gateway_mode_ipv6=nat-unprotected`
+with masquerading disabled: Docker's default raw ingress drops would otherwise
+block the positive path before the experimental fence. Separate forwarding accepts deliberately make
 the receiver reachable when policy permits it: Docker bridge isolation alone
 cannot produce a false success. The input hook also filters gateway access.
 IPv6 neighbor discovery is narrowly exempted to keep the link usable.

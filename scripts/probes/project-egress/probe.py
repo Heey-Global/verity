@@ -57,7 +57,7 @@ def grant(grants, duration=120):
     ready = OUT / "controller-ready"
     ready.unlink(missing_ok=True)
     Path(str(ready) + ".expiry").unlink(missing_ok=True)
-    with (OUT / "controller.log").open("a") as log:
+    with (OUT / "controller.txt").open("a") as log:
         CONTROLLER = subprocess.Popen(
             [
                 sys.executable,
@@ -291,6 +291,12 @@ def setup():
             f"com.docker.network.bridge.name=pe-{suffix}",
             "--opt",
             "com.docker.network.bridge.enable_ip_masquerade=false",
+            # Docker's raw ingress drops precede the experimental forward fence.
+            # These disposable networks must expose the positive path to it.
+            "--opt",
+            "com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected",
+            "--opt",
+            "com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected",
             "pe-" + suffix,
         )
     forwarding()
@@ -692,9 +698,10 @@ def mutation_checks():
             "control-b-tcp-4",
         )
         mutation = REPORT["cases"].pop()
+        REPORT["mutations"] = {"removed_fence": mutation}
+        save()
         if mutation["status"] != "fail" or not mutation["observed"]:
             raise RuntimeError("removed-fence mutation was not detected")
-        REPORT["mutations"] = {"removed_fence": mutation}
     finally:
         stop_controller()
         nft("delete table inet project_egress\n" + base_rules())
