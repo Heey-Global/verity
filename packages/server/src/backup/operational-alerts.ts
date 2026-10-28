@@ -19,7 +19,7 @@ export const backupAlertMessages = {
     'Backup maintenance needs attention. Repair repository references before pruning.',
 } as const;
 export type BackupAlert = keyof typeof backupAlertMessages;
-export interface BackupAlertDelivery {
+interface BackupAlertDelivery {
   delivered: ReadonlySet<string>;
   confirm(recipient: string): Promise<void>;
 }
