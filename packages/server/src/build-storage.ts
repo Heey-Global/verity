@@ -429,10 +429,14 @@ export class BuildStorage {
       // admit() checks everything again once the turn comes.
       this.refuseUnadmittableHost();
       const ahead = this.waiting.length + 1;
-      await new Promise<void>((resolve) => {
-        this.waiting.push(resolve);
+      const turn = new Promise<void>((resolve) => this.waiting.push(resolve));
+      // Only a notice: a failing one must not leave a woken turn unclaimed.
+      try {
         onQueued?.(ahead);
-      });
+      } catch {
+        /* the wait goes on */
+      }
+      await turn;
       this.handingOver = false;
     }
     try {

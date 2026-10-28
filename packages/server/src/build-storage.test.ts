@@ -260,6 +260,18 @@ describe('build queue', () => {
     storage.acquire().dispose();
   });
 
+  it('keeps the queue moving when a wait notice throws', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const first = await storage.admitInTurn();
+    const second = storage.admitInTurn(() => {
+      throw new Error('notice failed');
+    });
+    first.dispose();
+    (await second).dispose();
+    (await storage.admitInTurn()).dispose();
+  });
+
   it('keeps the turn for a woken build against a newcomer', async () => {
     const f = fixture();
     const storage = f.manager();
