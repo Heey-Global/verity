@@ -229,6 +229,7 @@ import {
   projectClonePath,
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
+  devcontainerBuilderIdle,
   projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
@@ -2861,6 +2862,7 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -3735,19 +3737,21 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
+    buildStorage = new BuildStorage(
+      join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-storage',
+      ),
+      undefined,
+      undefined,
+      undefined,
+      '/run/verity-buildkit',
+    );
     provisioner = new ProvisionerImpl({
-      buildStorage: new BuildStorage(
-        join(
-          config.dataVolumeRoot ??
-            config.dataDir ??
-            config.workspacesDir ??
-            join(tmpdir(), 'verity'),
-          'build-storage',
-        ),
-        undefined,
-        undefined,
-        undefined,
-        '/run/verity-buildkit',
+      buildStorage,
+      buildFailureLogDirectory: join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-failures',
       ),
       imageReferences,
       audit: auditRecorder,
@@ -4703,6 +4707,8 @@ export async function buildEmbeddedServer(
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
       builderAdmissionDirectory: '/run/verity-buildkit',
       buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
+      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
@@ -5617,6 +5623,38 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // An interrupted build must not hold build storage until someone reboots the host.
+  // Ask at start and every five minutes whether earlier attempts provably ended.
+  if (buildStorage !== undefined) {
+    const storage = buildStorage;
+    const buildDockerHost =
+      config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
+    let reconciling = false;
+    const reconcileBuildStorage = async () => {
+      if (reconciling) return;
+      reconciling = true;
+      try {
+        const unresolved = await storage.reconcile(
+          buildDockerHost === undefined
+            ? {}
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
+        );
+        if (unresolved.length > 0)
+          app.log.warn(
+            { attempts: unresolved },
+            'Build storage holds space for earlier build attempts whose end is not yet confirmed',
+          );
+      } catch (err) {
+        app.log.warn({ err }, 'Build storage reconciliation failed');
+      } finally {
+        reconciling = false;
+      }
+    };
+    void reconcileBuildStorage();
+    const buildStorageTimer = setInterval(() => void reconcileBuildStorage(), 5 * 60_000);
+    buildStorageTimer.unref();
+    app.addHook('onClose', () => clearInterval(buildStorageTimer));
+  }
   app.addHook('onClose', () => listenerDiscovery?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);

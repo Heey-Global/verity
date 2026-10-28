@@ -48,6 +48,7 @@ import {
   RUNNER_AGENT_GID,
   RUNNER_AGENT_UID,
   devcontainerBuildArgs,
+  devcontainerBuilderIdle,
   defaultDevcontainerBuildSpawner,
   DEVCONTAINER_NODE_FEATURE_REF,
   devcontainerLifecycleCommand,
@@ -7065,7 +7066,9 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         );
         expect(snapshot).not.toBe('');
         expect(existsSync(join(snapshot, '.devcontainer', 'devcontainer.json'))).toBe(true);
-        expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+        // Kept with its estimate, without refusing the next build.
+        storage.acquire().dispose();
+        expect(storage.unresolvedAttempts()).toHaveLength(1);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -7133,6 +7136,110 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       }
     },
   );
+
+  // A Sandbox recreate whose image already exists builds nothing. It used to take a build
+  // storage lease first, so a storage blocked by another project's build refused the repair.
+  it('reuses an existing derived image while build storage refuses every lease', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const storage = new BuildStorage(join(root, 'build-storage'));
+      const admit = vi.spyOn(storage, 'admit').mockImplementation(() => {
+        throw new Error('Build storage unavailable: blocked for this test');
+      });
+      const { client: docker, calls } = fakeDocker({ imageExists: async () => true });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+      });
+      const result = await provisioner.provision(id);
+      expect(result.state).toBe('active');
+      expect(admit).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      const created = calls.find((c) => c.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).image).toMatch(/^verity-devc-/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The provisioning error keeps a dozen lines; a pip or ansible-galaxy failure fills those
+  // with its own traceback before the cause, which was then lost.
+  it('keeps the last hundred lines of a failed build for diagnostics', async () => {
+    const { root } = makeCloneRoot(true);
+    const logs = mkdtempSync(join(tmpdir(), 'verity-build-failures-'));
+    try {
+      const id = await seedProject();
+      const output = Array.from({ length: 150 }, (_, line) => `step output line ${line}`).join(
+        '\n',
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        throw new Error('Devcontainer build/export failed: summary', {
+          cause: Object.assign(new Error('Build command exited 1'), { stdout: output, stderr: '' }),
+        });
+      });
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildFailureLogDirectory: logs,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow();
+      const failure = provisioner.lastBuildFailure(id);
+      expect(failure?.tail).toContain('step output line 149');
+      expect(failure?.tail).toContain('step output line 50');
+      expect(failure?.tail).not.toContain('step output line 49');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
+  it('forgets the last build failure once a build succeeds', async () => {
+    const { root } = makeCloneRoot(true);
+    const logs = mkdtempSync(join(tmpdir(), 'verity-build-failures-'));
+    try {
+      const id = await seedProject();
+      writeFileSync(
+        join(logs, `${id}.json`),
+        JSON.stringify({ recordedAt: new Date().toISOString(), tail: 'old failure' }),
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildFailureLogDirectory: logs,
+      });
+      expect(provisioner.lastBuildFailure(id)?.tail).toBe('old failure');
+      await provisioner.provision(id);
+      expect(build).toHaveBeenCalled();
+      expect(provisioner.lastBuildFailure(id)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
 
   it('(a) no .devcontainer/ → runs the base image, no build spawned', async () => {
     const { root } = makeCloneRoot(false);
@@ -10968,5 +11075,45 @@ describe('this repository’s own .devcontainer', () => {
     // signal would be provisions that got slower and no reason why.
     const dir = join(import.meta.dirname, '..', '..', '..', '.devcontainer');
     expect(devcontainerBuildInputsConfined(dir)).toBe(true);
+  });
+});
+
+describe('devcontainerBuilderIdle', () => {
+  const endpoint = { VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: 'unix:///run/buildkit.sock' };
+  const withEndpoint = async (run: Parameters<typeof devcontainerBuilderIdle>[1]) => {
+    const previous = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+    process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT =
+      endpoint.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+    try {
+      return await devcontainerBuilderIdle('unix:///var/run/docker.sock', run);
+    } finally {
+      if (previous === undefined) delete process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+      else process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = previous;
+    }
+  };
+  const history = (stdout: string) =>
+    (async (_command: string, args: readonly string[]) =>
+      args.includes('history') ? { stdout, stderr: '' } : { stdout: '', stderr: '' }) as never;
+
+  it('answers idle only when the worker lists no running build', async () => {
+    expect(await withEndpoint(history(''))).toBe(true);
+    expect(
+      await withEndpoint(
+        history('{"ref":"a","status":"Completed"}\n{"ref":"b","status":"Error"}\n'),
+      ),
+    ).toBe(true);
+    expect(
+      await withEndpoint(
+        history('{"ref":"a","status":"Completed"}\n{"ref":"b","status":"Running"}\n'),
+      ),
+    ).toBe(false);
+    // An entry it cannot read is never taken as finished.
+    expect(await withEndpoint(history('{"ref":"a"}'))).toBe(false);
+    expect(await withEndpoint(history('not json'))).toBeUndefined();
+    expect(
+      await withEndpoint((async () => {
+        throw new Error('worker unreachable');
+      }) as never),
+    ).toBeUndefined();
   });
 });

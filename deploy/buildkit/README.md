@@ -270,29 +270,49 @@ their owned files normally. Commands run in tracked process groups, but stopping
 a client does **not** establish that a remote solve or Engine import has stopped.
 
 Before each remote build/export or import, the Server durably records the
-operation, host identity and host boot ID, when the host storage report supplies
-the identity. Only a successful command completion
-clears that record. Failure, timeout, cancellation or Server crash retains the
-reservation **and all potentially in-use owned artifacts**, including private
-registry configuration. These files remain private (directory mode 0700,
-credential mode 0600); reconciliation removes them. A subsequent successful
-client cleanup command does not clear uncertainty. Admission remains blocked
-across Server restarts, missing PIDs, changed PID namespaces and arbitrary age.
-Without identity fields no record can be reconciled offline, so remote work then
-runs without one, as an unmanaged build does, and the Server logs that once.
-Repair an older builder installation to restore the record.
+operation, host identity, host boot ID and the attempt's admitted estimate, when
+the host storage report supplies the identity. The record is cleared when:
 
-Attempts with no pending remote operation may still be recovered when their
-recorded local owner and command groups are definitively gone in the same PID
-namespace. Unknown records remain blocked. No project volume, clone, worktree,
-rollback image or BuildKit snapshot is an owned attempt artifact.
+- the command succeeds;
+- the command exits on its own with the remote side's own final answer: a build
+  step that reported its exit code, a `failed to solve` that is not a transport
+  failure, or an Engine `Error response from daemon` for an import;
+- reconciliation proves the operation ended. The Server reconciles at start and
+  every five minutes. It releases a record when the host booted again since the
+  record was written, when the BuildKit worker lists no running build
+  (`docker buildx history ls` through a private remote-driver record), or, for an
+  import, when its client provably exited.
+
+A timeout, cancellation, lost connection or Server crash keeps the record **and
+all potentially in-use owned artifacts**, including private registry
+configuration. These files remain private (directory mode 0700, credential mode
+0600). Such an attempt no longer blocks other builds: it holds only its own
+admitted estimate (or `VERITY_BUILD_ESTIMATE_GIB` for a record written before
+estimates were recorded) against admission, and Control diagnostics list it
+under `buildStorageReservations` until reconciliation releases it. Without
+identity fields no record is written, so remote work then runs without one, as
+an unmanaged build does, and the Server logs that once. Repair an older builder
+installation to restore the record.
+
+Attempts with no pending remote operation are removed when their recorded local
+owner and command groups are definitively gone in the same PID namespace. An
+attempt of a previous Server process (another PID namespace) is kept, without
+blocking, until its host boot changed or it outlived every command bound (two
+hours). No project volume, clone, worktree, rollback image or BuildKit snapshot
+is an owned attempt artifact.
+
+The output tail of a project's last failed devcontainer build (100 lines) is kept
+under the Server data root's `build-failures` directory and reported as
+`projectBuildFailure` in project diagnostics until a build of that project
+succeeds.
 
 ### Offline reconciliation after an uncertain operation
 
-This conservative recovery path requires a **maintenance outage of the build
-host**, not just a Server restart. Do not delete marker files or infer remote
-termination from client PIDs, cache usage, image presence or elapsed time. No
-automatic reconciliation is attempted.
+No normal failure path needs this. It remains a last resort for a record that
+automatic reconciliation cannot release, for example while the BuildKit worker
+stays unreachable. It requires a **maintenance outage of the build host**, not
+just a Server restart. Do not delete marker files or infer remote termination
+from client PIDs, cache usage, image presence or elapsed time.
 
 1. Record the reported `attempt-*` name and locate its **host-side** directory
    under the Server data volume's `build-storage` root. Keep the reviewed
@@ -321,8 +341,8 @@ automatic reconciliation is attempted.
    Normal disk/inode admission still applies.
 
 This path does not cancel a live remote operation and does not prove that a
-smaller storage estimate is sufficient. Automated live reconciliation and
-representative native-workload sizing remain separate acceptance work.
+smaller storage estimate is sufficient. Representative native-workload sizing
+remains separate acceptance work.
 
 | Setting                     | Default | Meaning                                                                         |
 | --------------------------- | ------- | ------------------------------------------------------------------------------- |

@@ -597,3 +597,31 @@ it('judges storage evidence freshness when it reads the report', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// An unconfirmed build attempt no longer blocks every build, so what it still holds, and
+// the output of the build that failed, have to be visible where an operator looks.
+it('reports build storage reservations and the selected project’s last build failure', async () => {
+  const read = createRuntimeDiagnostics({
+    now: () => now,
+    buildStorageReservations: () => [
+      {
+        attempt: 'attempt-HS9hLo',
+        operation: 'build-export',
+        startedAt: new Date(now).toISOString(),
+        reservedBytes: 24 * 1024 ** 3,
+        reason: 'remote build/import termination is not yet confirmed',
+      },
+    ],
+    projectBuildFailure: (projectId) =>
+      projectId === 'p1'
+        ? { recordedAt: new Date(now).toISOString(), tail: 'ERROR: failed to solve: pip' }
+        : undefined,
+  });
+  const all = await read({});
+  expect(all.buildStorageReservations).toEqual([
+    expect.objectContaining({ attempt: 'attempt-HS9hLo', reservedBytes: 24 * 1024 ** 3 }),
+  ]);
+  expect(all.projectBuildFailure).toBeUndefined();
+  expect((await read({ projectId: 'p1' })).projectBuildFailure?.tail).toContain('pip');
+  expect((await read({ projectId: 'p2' })).projectBuildFailure).toBeUndefined();
+});

@@ -8,6 +8,7 @@ import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 import {
   createDevcontainerBuildSnapshot,
+  type DevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
   declaresDevcontainerBaseImageArg,
   pinDevcontainerBaseImage,
@@ -80,7 +81,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
@@ -504,6 +505,82 @@ export function devcontainerBuilderEndpoint(
   );
 }
 
+/**
+ * Whether one `docker buildx history ls --format json` entry is a build that is
+ * still running. buildx reports a `status` (`Running`, `Completed`, `Error`,
+ * `Canceled`) and a completion time; an entry with neither is treated as running,
+ * because an unknown shape must never read as idle.
+ */
+function historyEntryRunning(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return true;
+  const record = entry as Record<string, unknown>;
+  const status = record['status'] ?? record['Status'];
+  if (typeof status === 'string') return /running|pending|started/i.test(status);
+  const completed =
+    record['completed_at'] ?? record['completedAt'] ?? record['CompletedAt'] ?? record['completed'];
+  return completed === undefined || completed === null || completed === '';
+}
+
+/**
+ * Ask the private BuildKit worker whether any build is still running, through a
+ * throwaway remote-driver record like a build uses. `true` only when the worker
+ * answered and listed no running build; `undefined` whenever it could not be asked
+ * or its answer could not be read, which keeps every reservation in place.
+ */
+export async function devcontainerBuilderIdle(
+  dockerHost: string,
+  run: typeof execFileAsync = execFileAsync,
+): Promise<boolean | undefined> {
+  let endpoint: string;
+  try {
+    endpoint = devcontainerBuilderEndpoint();
+  } catch {
+    return undefined;
+  }
+  const builderName = `verity-probe-${randomUUID()}`;
+  const configDir = mkdtempSync(join(tmpdir(), 'verity-buildx-probe-'));
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: configDir,
+    DOCKER_HOST: dockerHost,
+    DOCKER_CONFIG: configDir,
+    BUILDX_BUILDER: builderName,
+  };
+  const options = { env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' as const };
+  try {
+    await run(
+      'docker',
+      ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
+      options,
+    );
+    const { stdout } = await run(
+      'docker',
+      ['buildx', 'history', 'ls', '--builder', builderName, '--format', 'json'],
+      options,
+    );
+    const text = stdout.trim();
+    if (text === '') return true;
+    let entries: unknown[];
+    try {
+      entries = text.startsWith('[')
+        ? (JSON.parse(text) as unknown[])
+        : text
+            .split('\n')
+            .filter((line) => line.trim() !== '')
+            .map((line) => JSON.parse(line) as unknown);
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(entries)) return undefined;
+    return !entries.some(historyEntryRunning);
+  } catch {
+    return undefined;
+  } finally {
+    await run('docker', ['buildx', 'rm', builderName], options).catch(() => undefined);
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
 /** Real devcontainer-build spawner: runs `devcontainer build` with `DOCKER_HOST`
  *  pointed at the target daemon so the official CLI builds the derived image onto
  *  the same Engine Verity spawns containers on. Rejects (via `execFileAsync`) on a
@@ -602,7 +679,7 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
     throw new Error(
       `Devcontainer ${phase} failed: ${buildFailureMessage(cause)}` +
         (storageLease?.retainArtifacts
-          ? '. Remote termination is unconfirmed; further builds are blocked and owned files retained. Follow deploy/buildkit/README.md offline reconciliation; do not delete reservation records.'
+          ? '. The builder has not confirmed that this attempt ended, so it keeps its files and its estimated space until it does; other builds continue and the reservation is released automatically.'
           : ''),
       { cause },
     );
@@ -894,6 +971,8 @@ export interface ProvisionerOptions {
   devcontainerBuild?: DevcontainerBuildSpawner | undefined;
   /** Instance-wide context/build/export/import admission and owned artifact recovery. */
   buildStorage?: BuildStorage | undefined;
+  /** Where the last failed devcontainer build of each project keeps its output tail. */
+  buildFailureLogDirectory?: string | undefined;
   /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
   imageReferences?: DerivedImageReferences | undefined;
   /** Durable audit trail for project image builds (ADR 0028). When wired, a build
@@ -1744,6 +1823,38 @@ function commandFailureMessage(error: unknown): string {
   const body = causes.length > 0 ? `${causes.join('\n')}\n…\n${tail}` : tail;
   const hint = devcontainerFailureHint(raw);
   return hint !== undefined ? `${hint}\n\n${body}` : body;
+}
+
+/** Lines a failed build keeps for diagnostics; the surfaced message keeps far fewer. */
+const BUILD_LOG_TAIL_LINES = 100;
+const BUILD_LOG_TAIL_CHARS = 16_000;
+
+/**
+ * The end of a failed build's own output, for diagnostics rather than the one-line
+ * project status. The provisioning error keeps a dozen lines, which a long pip or
+ * ansible-galaxy failure overflows with its own traceback before the cause is
+ * reached; this keeps the last {@link BUILD_LOG_TAIL_LINES}. Spawner wrappers hold
+ * the command output on their `cause`, so the chain is followed to it.
+ */
+export function buildOutputTail(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth++) {
+    const output = [
+      (current as { stdout?: unknown }).stdout,
+      (current as { stderr?: unknown }).stderr,
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join('\n');
+    if (output.length > 0) {
+      const lines = output
+        .split('\n')
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0 && !STACK_FRAME.test(line));
+      return keepLast(lines.slice(-BUILD_LOG_TAIL_LINES).join('\n'), BUILD_LOG_TAIL_CHARS);
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
 }
 
 /** Failure message for a devcontainer build (ADR 0003 R3.1). Prefers the
@@ -5976,12 +6087,9 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const storageLease = this.opts.buildStorage?.admit();
-    let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
-    try {
-      snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);
-      const snapshotDevcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
-      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(snapshotDevcontainerDir);
+    const derivedImage = (snapshot: DevcontainerBuildSnapshot) => {
+      const devcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
+      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(devcontainerDir);
       if (unsupportedKeys.length > 0) {
         throw new Error(
           `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
@@ -5990,14 +6098,64 @@ export class ProvisionerImpl implements Provisioner {
       }
       const pinsBase = declaresDevcontainerBaseImageArg(snapshot);
       const hash = devcontainerContentHash(
-        snapshotDevcontainerDir,
+        devcontainerDir,
         baseImageRef,
         `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
           // Only for Dockerfiles the pin applies to, so every other project keeps
           // its cached image across this change.
           (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
-      const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      return {
+        devcontainerDir,
+        pinsBase,
+        hash,
+        derivedTag: devcontainerImageTag(project.owner, project.repo, hash),
+      };
+    };
+    // Reusing an existing image builds nothing, so it must not need build storage.
+    // The derived tag depends only on `.devcontainer`, so name it from a copy of that
+    // directory alone, without a lease that a busy or blocked build storage would
+    // refuse — a Sandbox recreate whose image already exists then works even while
+    // another project's build holds or blocks the storage. Anything this shortcut
+    // cannot decide (an unconfined config, a configuration the snapshot refuses)
+    // falls through to the full path below, which reports it.
+    if (!forceRebuild && this.opts.docker.imageExists !== undefined) {
+      let probe: DevcontainerBuildSnapshot | undefined;
+      try {
+        probe = await createDevcontainerBuildSnapshot(dirs.clonePath, undefined, {
+          configurationOnly: true,
+        });
+        const named = derivedImage(probe);
+        if (devcontainerBuildInputsConfined(named.devcontainerDir)) {
+          // Held before the lookup, as below, so collection cannot remove it in between.
+          await this.opts.imageReferences?.reserve(project.id, named.derivedTag);
+        }
+        if (
+          devcontainerBuildInputsConfined(named.devcontainerDir) &&
+          (await this.opts.docker.imageExists(named.derivedTag))
+        ) {
+          return {
+            imageRef: named.derivedTag,
+            usesDevcontainerImage: true,
+            usesConfiguredOverride: !usesDefaultImage,
+          };
+        }
+      } catch {
+        // Decided below, with the full snapshot and its error reporting.
+      } finally {
+        await probe?.dispose();
+      }
+    }
+    const storageLease = this.opts.buildStorage?.admit();
+    let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
+    try {
+      snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);
+      const {
+        devcontainerDir: snapshotDevcontainerDir,
+        pinsBase,
+        hash,
+        derivedTag,
+      } = derivedImage(snapshot);
       await this.opts.imageReferences?.reserve(project.id, derivedTag);
       // Cache check: the derived tag on the daemon means an identical
       // (devcontainer + base) was already built — reuse it, skip the build.
@@ -6101,16 +6259,18 @@ export class ProvisionerImpl implements Provisioner {
         await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.
+        const secrets = [
+          registryToken,
+          registryToken
+            ? Buffer.from(`x-access-token:${registryToken}`).toString('base64')
+            : undefined,
+        ];
+        const tail = buildOutputTail(cause);
+        if (tail !== undefined) this.recordBuildFailure(project.id, redactSensitive(tail, secrets));
         // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
-        throw new Error(
-          redactSensitive(buildFailureMessage(cause), [
-            registryToken,
-            registryToken
-              ? Buffer.from(`x-access-token:${registryToken}`).toString('base64')
-              : undefined,
-          ]),
-        );
+        throw new Error(redactSensitive(buildFailureMessage(cause), secrets));
       }
+      this.clearBuildFailure(project.id);
       if (audit !== undefined)
         await audit
           .succeeded(await this.builtImageIdentity(derivedTag, auditBaseImageRef))
@@ -6126,6 +6286,47 @@ export class ProvisionerImpl implements Provisioner {
       } finally {
         storageLease?.dispose();
       }
+    }
+  }
+
+  private buildFailureFile(projectId: string): string | undefined {
+    const directory = this.opts.buildFailureLogDirectory;
+    if (directory === undefined || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return undefined;
+    return join(directory, `${projectId}.json`);
+  }
+
+  /** Keep the failing build's output tail for diagnostics. Best-effort: a write
+   *  failure must never replace the build error the caller reports. */
+  private recordBuildFailure(projectId: string, tail: string): void {
+    const file = this.buildFailureFile(projectId);
+    if (file === undefined) return;
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      writeFileSync(file, JSON.stringify({ recordedAt: new Date().toISOString(), tail }), {
+        mode: 0o600,
+      });
+    } catch {
+      /* diagnostics only */
+    }
+  }
+
+  private clearBuildFailure(projectId: string): void {
+    const file = this.buildFailureFile(projectId);
+    if (file !== undefined) rmSync(file, { force: true });
+  }
+
+  /** The output tail of this project's last failed devcontainer build, until a build succeeds. */
+  lastBuildFailure(projectId: string): { recordedAt: string; tail: string } | undefined {
+    const file = this.buildFailureFile(projectId);
+    if (file === undefined) return undefined;
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+      const record = parsed as { recordedAt?: unknown; tail?: unknown };
+      return typeof record.recordedAt === 'string' && typeof record.tail === 'string'
+        ? { recordedAt: record.recordedAt, tail: record.tail }
+        : undefined;
+    } catch {
+      return undefined;
     }
   }
 
