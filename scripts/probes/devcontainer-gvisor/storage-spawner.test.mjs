@@ -157,9 +157,13 @@ process.exit(1);
       assert.equal(attempts.length, 1);
       const attempt = join(crashRoot, attempts[0]);
       assert(existsSync(join(attempt, 'remote-operation.json')));
+      // A restarted Server is admitted again (the unconfirmed attempt reserves its
+      // estimate instead of blocking the host), yet must not release that record on
+      // local process death alone: the remote solve may still be running.
       const restarted = invoke();
-      assert.equal(restarted.status, 1, restarted.stderr);
-      assert.match(restarted.stderr, /termination is unconfirmed/);
+      assert.equal(restarted.signal, 'SIGKILL', restarted.stderr);
+      assert.doesNotMatch(restarted.stderr, /termination is unconfirmed/);
+      assert.equal(readdirSync(crashRoot).length, 2);
       assert(existsSync(join(attempt, 'remote-operation.json')));
     } finally {
       rmSync(root, { recursive: true, force: true });
