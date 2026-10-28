@@ -222,6 +222,74 @@ describe('build storage admission', () => {
   });
 });
 
+// A second project's build used to fail with "Build storage busy" whenever another
+// project was building; it now waits for its turn.
+describe('build queue', () => {
+  it('serves waiting builds in arrival order instead of refusing them', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const first = await storage.admitInTurn();
+    expect(() => storage.acquire()).toThrow('Build storage busy');
+    const order: string[] = [];
+    const queued: number[] = [];
+    const second = storage
+      .admitInTurn((ahead) => queued.push(ahead))
+      .then((lease) => {
+        order.push('second');
+        return lease;
+      });
+    const third = storage
+      .admitInTurn((ahead) => queued.push(ahead))
+      .then((lease) => {
+        order.push('third');
+        return lease;
+      });
+    expect(queued).toEqual([1, 2]);
+    await setTimeout(5);
+    expect(order).toEqual([]);
+    first.dispose();
+    // A newcomer arriving while the turn is handed over still queues behind.
+    const fourth = storage.admitInTurn().then((lease) => {
+      order.push('fourth');
+      return lease;
+    });
+    (await second).dispose();
+    (await third).dispose();
+    (await fourth).dispose();
+    expect(order).toEqual(['second', 'third', 'fourth']);
+    storage.acquire().dispose();
+  });
+
+  it('keeps the turn for a woken build against a newcomer', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const first = await storage.admitInTurn();
+    const woken = storage.admitInTurn();
+    first.dispose();
+    // The queue is empty again, but the turn already belongs to the woken build.
+    const newcomer = storage.admitInTurn();
+    (await woken).dispose();
+    (await newcomer).dispose();
+  });
+
+  it('still refuses at once for anything but a busy lease, and frees the turn', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const first = await storage.admitInTurn();
+    f.local.availableBytes = 0;
+    const refused = storage.admitInTurn();
+    const next = storage.admitInTurn();
+    first.dispose();
+    // Its turn comes, and a full disk is still an immediate answer, not a wait.
+    await expect(refused).rejects.toThrow('Build storage admission rejected');
+    // The refused build does not strand the one behind it: that one gets its turn
+    // and its own answer.
+    await expect(next).rejects.toThrow('Build storage admission rejected');
+    f.local.availableBytes = 100 * GiB;
+    (await storage.admitInTurn()).dispose();
+  });
+});
+
 describe('owned attempt recovery and cancellation', () => {
   it('keeps a dead owner reservation while its command group still exists', async () => {
     const f = fixture();

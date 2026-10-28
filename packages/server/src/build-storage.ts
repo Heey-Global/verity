@@ -339,6 +339,10 @@ const activeDirectories = new Set<string>();
  */
 export class BuildStorage {
   private held = false;
+  /** Builds waiting for this Server's one lease, first come first served. */
+  private readonly waiting: Array<() => void> = [];
+  /** A waiter was woken and has not yet taken its turn; newcomers queue behind it. */
+  private handingOver = false;
   private currentDirectory: string | undefined;
   private unresolved: UnresolvedBuildAttempt[] = [];
   private warnedUnprovisioned = false;
@@ -409,6 +413,38 @@ export class BuildStorage {
       }
     }
     return this.acquire();
+  }
+
+  /**
+   * {@link admit}, but a build that finds another project's build holding this
+   * Server's lease waits for its turn instead of failing with "busy". Waiters are
+   * served in arrival order. Every other refusal — capacity, host maintenance,
+   * an unreadable admission state — still fails at once, as {@link admit} does.
+   * A build holds the lease for at most its commands' bounds, so the wait is
+   * bounded too.
+   */
+  async admitInTurn(onQueued?: (ahead: number) => void): Promise<BuildStorageLease> {
+    if (this.held || this.handingOver || this.waiting.length > 0) {
+      const ahead = this.waiting.length + 1;
+      await new Promise<void>((resolve) => {
+        this.waiting.push(resolve);
+        onQueued?.(ahead);
+      });
+      this.handingOver = false;
+    }
+    try {
+      return this.admit();
+    } finally {
+      // An unmanaged lease or a refusal leaves the lease free for the next waiter.
+      if (!this.held) this.wakeNext();
+    }
+  }
+
+  private wakeNext(): void {
+    const next = this.waiting.shift();
+    if (next === undefined) return;
+    this.handingOver = true;
+    next();
   }
 
   /**
@@ -1021,6 +1057,7 @@ export class BuildStorage {
         this.held = false;
         this.currentDirectory = undefined;
         activeDirectories.delete(directory);
+        this.wakeNext();
       },
     };
   }

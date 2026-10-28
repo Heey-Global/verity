@@ -256,8 +256,12 @@ BuildKit service's cache follow their existing, separate retention policies.
 ## Storage admission and owned artifacts
 
 The Server admits one context/build/export/import attempt at a time across all
-projects. Another request receives an actionable busy error and can be retried;
-it does not allocate another context or TAR while waiting. A context requires
+projects. A project that needs a build while another project's build holds the
+lease waits for its turn, first come first served, and the Server logs how many
+builds are ahead of it; it does not allocate a context or TAR while waiting. A
+build holds the lease only for its commands' bounds, so the wait is bounded too.
+Any other refusal (capacity, builder maintenance, admission state) still fails
+at once rather than waiting. A context requires
 room for its existing 2 GiB input limit before copying starts. A cache miss then
 reserves the complete estimated remaining build growth through image import.
 Image-reference reservations continue to protect the imported image through
