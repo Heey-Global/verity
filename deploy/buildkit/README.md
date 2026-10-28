@@ -326,15 +326,20 @@ representative native-workload sizing remain separate acceptance work.
 
 | Setting                     | Default | Meaning                                                                         |
 | --------------------------- | ------- | ------------------------------------------------------------------------------- |
-| `VERITY_BUILD_ESTIMATE_GIB` | 42      | Total context, snapshot, export and import growth estimate for an unknown build |
+| `VERITY_BUILD_ESTIMATE_GIB` | 24      | Total context, snapshot, export and import growth estimate for an unknown build |
 | `VERITY_BUILD_FREE_GIB`     | 10      | Free-byte reserve left after admission                                          |
 | `VERITY_BUILD_FREE_INODES`  | 1000000 | Minimum free inode count                                                        |
 
 These positive integer settings belong to the trusted Server environment. The
-unknown-build estimate sizes an overlayfs build of a multi-gigabyte devcontainer:
-a step's snapshot grows by what it writes, and such a build exports an archive of
-about 4 GiB. It **is not an upper bound for arbitrary Dockerfiles**; raise it for
-workloads measured to need more. The running build's two-second reserve check
+unknown-build fallback is 24 GiB. When the target or previous project devcontainer
+image is present, admission instead uses 2 GiB for context plus twice the largest
+measured uncompressed image size, clamped to 12–96 GiB. One image-size allowance
+covers the export archive without assuming compression; the second covers changed
+snapshots and import growth with shared unchanged layers. Only two image references
+are inspected; missing, invalid or unavailable measurements use the fallback.
+This heuristic **is not an upper bound for arbitrary Dockerfiles** or a measured
+peak allocation. The fallback setting applies only to unmeasured builds.
+The running build's two-second reserve check
 still stops a build that outgrows the estimate before the disk is full. Admission
 estimates and periodic checks cannot enforce a filesystem quota or guarantee
 that another host workload will not exhaust the disk between samples.
