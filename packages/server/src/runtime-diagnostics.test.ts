@@ -524,3 +524,47 @@ it('reports whether the host provisioned build admission', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// Build admission no longer refuses on missing storage evidence, so the gap has
+// to be visible somewhere other than a failed build.
+it('reports gaps in the host storage evidence build admission relies on', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const read = createRuntimeDiagnostics({ buildStorageReportPath: path, now: () => now });
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['host storage report is missing or invalid'],
+    });
+    const observedAt = new Date(now).toISOString();
+    const root = (kind: string) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    });
+    const roots = ['buildkit', 'docker', 'export', 'project'].map(root);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        observedAt,
+        roots: [...roots, { kind: 'containerd', path: '/x', state: 'unavailable' }],
+      }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['containerd filesystem is not established'],
+    });
+    await writeFile(
+      path,
+      JSON.stringify({ schemaVersion: 1, observedAt, roots: [...roots, root('containerd')] }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

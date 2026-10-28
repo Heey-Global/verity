@@ -270,15 +270,17 @@ their owned files normally. Commands run in tracked process groups, but stopping
 a client does **not** establish that a remote solve or Engine import has stopped.
 
 Before each remote build/export or import, the Server durably records the
-operation, host identity and host boot ID. Only a successful command completion
+operation, host identity and host boot ID, when the host storage report supplies
+the identity. Only a successful command completion
 clears that record. Failure, timeout, cancellation or Server crash retains the
 reservation **and all potentially in-use owned artifacts**, including private
 registry configuration. These files remain private (directory mode 0700,
 credential mode 0600); reconciliation removes them. A subsequent successful
 client cleanup command does not clear uncertainty. Admission remains blocked
 across Server restarts, missing PIDs, changed PID namespaces and arbitrary age.
-The host storage reporter must supply identity fields; Repair an older builder
-installation before attempting a build with this Server version.
+Without identity fields no record can be reconciled offline, so remote work then
+runs without one, as an unmanaged build does, and the Server logs that once.
+Repair an older builder installation to restore the record.
 
 Attempts with no pending remote operation may still be recovered when their
 recorded local owner and command groups are definitively gone in the same PID
@@ -337,10 +339,14 @@ that another host workload will not exhaust the disk between samples.
 
 Every active command checks the reserve every two seconds. Host measurements
 come from the storage timer every 15 seconds and must be no more than 120 seconds
-old. Missing, invalid, stale, duplicate or unavailable root evidence rejects a
-cache miss. Unknown topology never permits independent free-space budgets:
-admission conservatively charges the full estimate against the lowest available
-capacity and inode count across the local staging filesystem and all host roots.
+old. Admission acts on measurements only: it charges the full estimate against
+the lowest available capacity and inode count across the local staging
+filesystem and every host root that was measured, and rejects when that is too
+little. Unknown topology never permits independent free-space budgets. A
+missing, invalid or stale report, or a duplicate or unavailable root, is a gap
+in that evidence, not a measurement of low space: the build is admitted on what
+was measured, the Server logs the gaps when they change, and Control diagnostics
+report them as `buildStorageEvidence` (`complete` or `partial`, with the gaps).
 
 ## Filesystem evidence and cache policy
 
@@ -368,7 +374,8 @@ dataVolume=verity-data
 The publisher obtains `DockerRootDir` and the named volume's actual mountpoint
 from Docker. For bind-mounted data, set `exportRoot=/absolute/host/data/path`;
 set `projectRoot=/absolute/host/project/path` when project data is elsewhere.
-Unset containerd roots remain unavailable and block new builds. Recheck these
+Unset containerd roots are reported unavailable; admission then checks only the
+roots it measured. Recheck these
 paths after moving Docker, containerd or data storage. Config files are parsed
 as data, never sourced as shell programs.
 
