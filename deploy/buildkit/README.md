@@ -364,13 +364,16 @@ is explicitly unavailable in this report.
 
 Docker Engine may keep image content and snapshots in containerd outside
 `DockerRootDir`. Without configuration, the publisher reads that root from the
-containerd Docker actually uses: it takes `root` from `containerd config dump`
-only when that configuration's gRPC address is the address `docker info` reports
-for Docker's containerd, and the directory exists. Both configuration formats
-(containerd 1.x `[grpc]` and 2.x `[plugins.'io.containerd.server.v1.grpc']`) are
-read. Any other arrangement, such as Docker's own managed containerd, stays
-unavailable rather than reporting a directory that may hold nothing; set the
-root explicitly for it. An explicit
+running root-owned containerd that serves the address `docker info` reports for
+Docker's containerd. The daemon's own command line decides: `--root` and
+`--address` override its configuration, and `--config` names the file, read as
+data in the containerd 1.x (`[grpc]`) or 2.x
+(`[plugins.'io.containerd.server.v1.grpc']`) format, with containerd's built-in
+defaults (`/var/lib/containerd`, `/run/containerd/containerd.sock`) where it is
+silent. Nothing a process names is executed. Docker's own managed containerd
+resolves the same way. No serving daemon, a root that does not exist, or more
+than one daemon claiming the address leave the root unavailable rather than
+naming a directory that may hold nothing. An explicit
 `/etc/verity-buildkit/storage-roots.conf` always takes precedence. For a host
 using the standard containerd root and managed data volume:
 
