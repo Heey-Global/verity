@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,8 @@ it('transports installer credentials only on stdin and leaves no credential byte
   const key = 'synthetic-recovery-' + randomUUID(),
     password = 'synthetic-master-' + randomUUID();
   const jobId = randomUUID();
+  const salt = randomBytes(16).toString('hex');
+  const expectedDigest = scryptSync(key + '\n' + password, salt, 32).toString('hex');
   try {
     const state = join(root, 'state');
     const bin = join(root, 'bin');
@@ -25,7 +27,7 @@ it('transports installer credentials only on stdin and leaves no credential byte
     );
     await writeFile(
       join(bin, 'docker'),
-      `#!/usr/bin/env python3\nimport os,sys,json,hashlib\nwith open(os.environ['ARGUMENT_LOG'],'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\nif sys.argv[1]=='volume':sys.exit(1)\ndata=json.load(sys.stdin)\nif data['configuration']['action']=='abort':assert data['recoveryKey']==data['masterPassword']==''\nelse:\n assert hashlib.sha256((data['recoveryKey']+'\\n'+data['masterPassword']).encode()).hexdigest()==os.environ['EXPECTED_DIGEST']\nif os.environ.get('WORKER_FAIL')=='1':sys.exit(1)\nprint('{"devices":[],"transport":"stdin-verified"}')\n`,
+      `#!/usr/bin/env python3\nimport os,sys,json,hashlib\nwith open(os.environ['ARGUMENT_LOG'],'a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\nif sys.argv[1]=='volume':sys.exit(1)\ndata=json.load(sys.stdin)\nif data['configuration']['action']=='abort':assert data['recoveryKey']==data['masterPassword']==''\nelse:\n assert hashlib.scrypt((data['recoveryKey']+'\\n'+data['masterPassword']).encode(),salt=os.environ['EXPECTED_SALT'].encode(),n=16384,r=8,p=1,dklen=32).hex()==os.environ['EXPECTED_DIGEST']\nif os.environ.get('WORKER_FAIL')=='1':sys.exit(1)\nprint('{"devices":[],"transport":"stdin-verified"}')\n`,
     );
     await chmod(join(bin, 'jq'), 0o700);
     await chmod(join(bin, 'docker'), 0o700);
@@ -64,9 +66,8 @@ verity_restore_install
           TEST_BACKUP: join(root, 'backup'),
           TEST_ACTION: action,
           ARGUMENT_LOG: join(root, 'arguments'),
-          EXPECTED_DIGEST: createHash('sha256')
-            .update(key + '\n' + password)
-            .digest('hex'),
+          EXPECTED_SALT: salt,
+          EXPECTED_DIGEST: expectedDigest,
           WORKER_FAIL: fail,
           VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
         },

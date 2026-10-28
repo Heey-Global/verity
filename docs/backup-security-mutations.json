@@ -40,7 +40,7 @@
     },
     {
       "path": "packages/server/src/backup/installer-secrets.test.ts",
-      "sha256": "bb4382a6065498029aa33dc1230b62ad0e67a58c3755901cab4087349039260d"
+      "sha256": "e634d9c4534f430f99f199df4f892e3efdc36b4224c780ee5c2910e238b6e5ef"
     },
     {
       "path": "packages/server/src/backup/service.test.ts",
@@ -351,6 +351,7 @@
       "originalSourceSha256": "681a7a8cf8bff179a0d5f68269fd4b4af131a389c11210e232e80ae57406a51f",
       "exitCode": 1,
       "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
         "FAIL  packages/server/src/backup/installer-secrets.test.ts > transports installer credentials only on stdin and leaves no credential bytes in arguments, files or logs after failure, retry and abort",
         "AssertionError: <tmp>/arguments: expected true to be false // Object.is equality",
         "Tests  1 failed (1)"
@@ -611,6 +612,11 @@
       "testsPassed": 2,
       "mutation": "ordinary-trial-route rerun failed as expected; original production source restored",
       "checks": "Server TypeScript build, scoped ESLint and changed-file Prettier passed"
+    },
+    "installerFixtureFollowUp": {
+      "change": "Match synthetic stdin credentials with salted scrypt in Node and Python instead of a fast SHA-256 digest.",
+      "test": "Installer secret-transport test passed; argument-leak mutation rerun detected, production source restored.",
+      "scope": "Fixture-only adjustment for the CodeQL insufficient-password-hashing alert; no production credential behavior changed."
     }
   }
 }
