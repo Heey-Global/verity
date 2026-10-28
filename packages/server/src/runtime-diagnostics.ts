@@ -1,4 +1,8 @@
-import { builderAdmissionMessage, readBuilderAdmissionState } from './build-storage.js';
+import {
+  builderAdmissionMessage,
+  readBuilderAdmissionState,
+  readHostStorageEvidence,
+} from './build-storage.js';
 import { request as httpRequest } from 'node:http';
 import { open, stat, statfs } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -128,8 +132,15 @@ const builderAdmissionSchema = z
     message: z.string().max(300),
   })
   .strict();
+const buildStorageEvidenceSchema = z
+  .object({
+    state: z.enum(['complete', 'partial']),
+    problems: z.array(z.string().max(200)).max(10),
+  })
+  .strict();
 export const runtimeDiagnosticSnapshotSchema = z.object({
   builderAdmission: builderAdmissionSchema.optional(),
+  buildStorageEvidence: buildStorageEvidenceSchema.optional(),
   builderMigration: builderMigrationSchema.optional(),
   observedAt: timestamp,
   window: z.object({ since: timestamp, until: timestamp }),
@@ -487,6 +498,8 @@ export function createRuntimeDiagnostics(deps: {
   builderMigrationPath?: string | undefined;
   /** Where the host provisions build admission; reported even when no migration status exists. */
   builderAdmissionDirectory?: string | undefined;
+  /** The host storage report build admission reads; gaps are reported, never fatal. */
+  buildStorageReportPath?: string | undefined;
   readHostSnapshot?: (() => Promise<string>) | undefined;
   now?: () => number;
 }) {
@@ -907,8 +920,22 @@ export function createRuntimeDiagnostics(deps: {
         };
       }
     }
+    let buildStorageEvidence: z.infer<typeof buildStorageEvidenceSchema> | undefined;
+    if (deps.buildStorageReportPath !== undefined) {
+      const { problems } = readHostStorageEvidence(
+        deps.buildStorageReportPath,
+        // Read after the Docker inspection, which can take seconds; the snapshot's
+        // own `now` would make a report published meanwhile look future-dated.
+        deps.now?.() ?? Date.now(),
+      );
+      buildStorageEvidence = {
+        state: problems.length === 0 ? 'complete' : 'partial',
+        problems: problems.slice(0, 10),
+      };
+    }
     return runtimeDiagnosticSnapshotSchema.parse({
       ...(builderAdmission === undefined ? {} : { builderAdmission }),
+      ...(buildStorageEvidence === undefined ? {} : { buildStorageEvidence }),
       ...(builderMigration === undefined ? {} : { builderMigration }),
       observedAt: new Date(now).toISOString(),
       window,

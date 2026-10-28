@@ -270,15 +270,17 @@ their owned files normally. Commands run in tracked process groups, but stopping
 a client does **not** establish that a remote solve or Engine import has stopped.
 
 Before each remote build/export or import, the Server durably records the
-operation, host identity and host boot ID. Only a successful command completion
+operation, host identity and host boot ID, when the host storage report supplies
+the identity. Only a successful command completion
 clears that record. Failure, timeout, cancellation or Server crash retains the
 reservation **and all potentially in-use owned artifacts**, including private
 registry configuration. These files remain private (directory mode 0700,
 credential mode 0600); reconciliation removes them. A subsequent successful
 client cleanup command does not clear uncertainty. Admission remains blocked
 across Server restarts, missing PIDs, changed PID namespaces and arbitrary age.
-The host storage reporter must supply identity fields; Repair an older builder
-installation before attempting a build with this Server version.
+Without identity fields no record can be reconciled offline, so remote work then
+runs without one, as an unmanaged build does, and the Server logs that once.
+Repair an older builder installation to restore the record.
 
 Attempts with no pending remote operation may still be recovered when their
 recorded local owner and command groups are definitively gone in the same PID
@@ -322,25 +324,31 @@ This path does not cancel a live remote operation and does not prove that a
 smaller storage estimate is sufficient. Automated live reconciliation and
 representative native-workload sizing remain separate acceptance work.
 
-| Setting                     | Default | Meaning                                                                                |
-| --------------------------- | ------- | -------------------------------------------------------------------------------------- |
-| `VERITY_BUILD_ESTIMATE_GIB` | 306     | Total context, snapshot, export and import growth estimate for an unknown/native build |
-| `VERITY_BUILD_FREE_GIB`     | 10      | Free-byte reserve left after admission                                                 |
-| `VERITY_BUILD_FREE_INODES`  | 1000000 | Minimum free inode count                                                               |
+| Setting                     | Default | Meaning                                                                         |
+| --------------------------- | ------- | ------------------------------------------------------------------------------- |
+| `VERITY_BUILD_ESTIMATE_GIB` | 42      | Total context, snapshot, export and import growth estimate for an unknown build |
+| `VERITY_BUILD_FREE_GIB`     | 10      | Free-byte reserve left after admission                                          |
+| `VERITY_BUILD_FREE_INODES`  | 1000000 | Minimum free inode count                                                        |
 
 These positive integer settings belong to the trusted Server environment. The
-unknown-build estimate is intentionally conservative and **has not been validated
-as an upper bound for arbitrary Dockerfiles**. Configure a smaller estimate only
-from bounded cold/warm build measurements for the intended workload. Admission
+unknown-build estimate sizes an overlayfs build of a multi-gigabyte devcontainer:
+a step's snapshot grows by what it writes, and such a build exports an archive of
+about 4 GiB. It **is not an upper bound for arbitrary Dockerfiles**; raise it for
+workloads measured to need more. The running build's two-second reserve check
+still stops a build that outgrows the estimate before the disk is full. Admission
 estimates and periodic checks cannot enforce a filesystem quota or guarantee
 that another host workload will not exhaust the disk between samples.
 
 Every active command checks the reserve every two seconds. Host measurements
 come from the storage timer every 15 seconds and must be no more than 120 seconds
-old. Missing, invalid, stale, duplicate or unavailable root evidence rejects a
-cache miss. Unknown topology never permits independent free-space budgets:
-admission conservatively charges the full estimate against the lowest available
-capacity and inode count across the local staging filesystem and all host roots.
+old. Admission acts on measurements only: it charges the full estimate against
+the lowest available capacity and inode count across the local staging
+filesystem and every host root that was measured, and rejects when that is too
+little. Unknown topology never permits independent free-space budgets. A
+missing, invalid or stale report, or a duplicate or unavailable root, is a gap
+in that evidence, not a measurement of low space: the build is admitted on what
+was measured, the Server logs the gaps when they change, and Control diagnostics
+report them as `buildStorageEvidence` (`complete` or `partial`, with the gaps).
 
 ## Filesystem evidence and cache policy
 
@@ -361,8 +369,8 @@ only when that configuration's gRPC address is the address `docker info` reports
 for Docker's containerd, and the directory exists. Both configuration formats
 (containerd 1.x `[grpc]` and 2.x `[plugins.'io.containerd.server.v1.grpc']`) are
 read. Any other arrangement, such as Docker's own managed containerd, stays
-unavailable and blocks new builds rather than reporting a directory that may
-hold nothing; set the root explicitly for it. An explicit
+unavailable rather than reporting a directory that may hold nothing; set the
+root explicitly for it. An explicit
 `/etc/verity-buildkit/storage-roots.conf` always takes precedence. For a host
 using the standard containerd root and managed data volume:
 
@@ -375,8 +383,8 @@ dataVolume=verity-data
 The publisher obtains `DockerRootDir` and the named volume's actual mountpoint
 from Docker. For bind-mounted data, set `exportRoot=/absolute/host/data/path`;
 set `projectRoot=/absolute/host/project/path` when project data is elsewhere.
-A containerd root that is neither configured nor established this way remains
-unavailable and blocks new builds. Recheck these
+A containerd root that is neither configured nor established this way is
+reported unavailable; admission then checks only the roots it measured. Recheck these
 paths after moving Docker, containerd or data storage. Config files are parsed
 as data, never sourced as shell programs.
 

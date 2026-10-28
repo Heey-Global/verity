@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BuildStorage, buildStoragePolicy } from './build-storage.js';
 
 const GiB = 1024 ** 3;
@@ -62,7 +62,11 @@ const commandOptions = { env: process.env, timeout: 5000, maxBuffer: 1024 * 1024
 
 describe('build storage admission', () => {
   it('rejects malformed settings and keeps conservative unknown-build defaults', () => {
-    expect(buildStoragePolicy({}).estimateBytes).toBeGreaterThan(100 * GiB);
+    // The default must let an ordinary host build at all: a 306 GiB estimate
+    // refused every build with 78 GiB free while the build needed about 15.
+    const fallback = buildStoragePolicy({});
+    expect(fallback.estimateBytes + fallback.reserveBytes).toBeLessThanOrEqual(64 * GiB);
+    expect(fallback.estimateBytes).toBeGreaterThanOrEqual(24 * GiB);
     expect(buildStoragePolicy({ VERITY_BUILD_ESTIMATE_GIB: '42' }).estimateBytes).toBe(42 * GiB);
     // Writing the documented default explicitly must not prevent Server startup.
     const defaults = buildStoragePolicy({});
@@ -120,15 +124,10 @@ describe('build storage admission', () => {
     lease.dispose();
   });
 
-  it('rejects unavailable, stale or exhausted independent project filesystems', () => {
+  it('rejects a measured independent project filesystem that is too full', () => {
     const f = fixture();
     const lease = f.manager().acquire();
-    for (const patch of [
-      { state: 'unavailable' },
-      { observedAt: new Date(Date.now() - 121_000).toISOString() },
-      { availableBytes: 9 * GiB },
-      { freeInodes: 999 },
-    ]) {
+    const patched = (patch: Record<string, unknown>) => {
       f.writeReport();
       const report = JSON.parse(readFileSync(f.report, 'utf8')) as {
         roots: { kind: string; filesystemId: string }[];
@@ -137,36 +136,54 @@ describe('build storage admission', () => {
       project.filesystemId = 'independent-project-filesystem';
       Object.assign(project, patch);
       writeFileSync(f.report, JSON.stringify(report));
-      expect(() => lease.reserveBuild()).toThrow(/project filesystem|admission rejected/);
+    };
+    for (const patch of [{ availableBytes: 9 * GiB }, { freeInodes: 999 }]) {
+      patched(patch);
+      expect(() => lease.reserveBuild()).toThrow('admission rejected');
+    }
+    // Unmeasured is not full: the remaining measured roots decide.
+    for (const patch of [
+      { state: 'unavailable' },
+      { observedAt: new Date(Date.now() - 121_000).toISOString() },
+    ]) {
+      patched(patch);
+      expect(() => lease.reserveBuild()).not.toThrow();
     }
     lease.dispose();
   });
 
-  it('rejects missing, stale, incomplete and ambiguous host reports without assuming topology', () => {
+  // A missing reporter or an unconfigured root used to refuse every build on a
+  // host with plenty of free space. Gaps are now reported, never a refusal.
+  it('admits on partial host evidence, names the gaps and still enforces what was measured', () => {
     const f = fixture();
     const lease = f.manager().acquire();
-    rmSync(f.report);
-    expect(() => lease.reserveBuild()).toThrow('missing or invalid');
-    f.writeReport(100 * GiB, 100_000, 121_000);
-    expect(() => lease.reserveBuild()).toThrow('stale');
-    f.writeReport();
-    const report = JSON.parse(readFileSync(f.report, 'utf8')) as { roots: { kind: string }[] };
-    report.roots = report.roots.filter((root: { kind: string }) => root.kind !== 'buildkit');
-    writeFileSync(f.report, JSON.stringify(report));
-    expect(() => lease.reserveBuild()).toThrow('buildkit filesystem');
-    f.writeReport();
-    const duplicate = JSON.parse(readFileSync(f.report, 'utf8')) as { roots: { kind: string }[] };
-    duplicate.roots.push(duplicate.roots[0]!);
-    writeFileSync(f.report, JSON.stringify(duplicate));
-    expect(() => lease.reserveBuild()).toThrow('buildkit filesystem');
-    f.writeReport();
-    const staleRoot = JSON.parse(readFileSync(f.report, 'utf8')) as {
-      roots: { observedAt: string }[];
-    };
-    staleRoot.roots[0]!.observedAt = new Date(Date.now() - 121_000).toISOString();
-    writeFileSync(f.report, JSON.stringify(staleRoot));
-    expect(() => lease.reserveBuild()).toThrow('filesystem sample is stale');
-    lease.dispose();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      rmSync(f.report);
+      expect(() => lease.reserveBuild()).not.toThrow();
+      expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('missing or invalid'));
+      f.writeReport(100 * GiB, 100_000, 121_000);
+      expect(() => lease.reserveBuild()).not.toThrow();
+      expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('stale'));
+
+      f.writeReport(9 * GiB);
+      const report = JSON.parse(readFileSync(f.report, 'utf8')) as {
+        roots: { kind: string; state: string }[];
+      };
+      report.roots.find((root) => root.kind === 'containerd')!.state = 'unavailable';
+      writeFileSync(f.report, JSON.stringify(report));
+      // containerd is a gap, but the measured roots are too full.
+      expect(() => lease.reserveBuild()).toThrow('admission rejected');
+      expect(warn).toHaveBeenLastCalledWith(
+        expect.stringContaining('containerd filesystem is not established'),
+      );
+      const calls = warn.mock.calls.length;
+      expect(() => lease.reserveBuild()).toThrow('admission rejected');
+      expect(warn.mock.calls.length).toBe(calls);
+    } finally {
+      warn.mockRestore();
+      lease.dispose();
+    }
   });
 });
 
@@ -371,24 +388,41 @@ describe('durable remote operation guard', () => {
   });
 });
 
-it('refuses remote work without host identity before starting any command', async () => {
+// The record keeps uncertain remote work reserved; one bad measurement in the
+// same report must not cost it.
+it('keeps the recovery record when only the measurements are malformed', async () => {
+  const f = fixture();
+  const data = JSON.parse(readFileSync(f.report, 'utf8'));
+  data.roots = 'not a list';
+  writeFileSync(f.report, JSON.stringify(data));
+  const lease = f.manager().acquire();
+  await expect(
+    lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+  ).rejects.toThrow();
+  expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
+  lease.dispose();
+});
+
+it('runs remote work without a recovery record when the host identity is unknown', async () => {
   const f = fixture();
   const data = JSON.parse(readFileSync(f.report, 'utf8'));
   delete data.hostIdentity;
   writeFileSync(f.report, JSON.stringify(data));
   const lease = f.manager().acquire();
   const marker = join(f.directory, 'command-started');
-  await expect(
-    lease.run(
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await lease.run(
       process.execPath,
       ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`],
-      {
-        ...commandOptions,
-        remoteOperation: 'build-export',
-      },
-    ),
-  ).rejects.toThrow('host identity is missing');
-  expect(existsSync(marker)).toBe(false);
+      { ...commandOptions, remoteOperation: 'build-export' },
+    );
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no host identity'));
+  } finally {
+    warn.mockRestore();
+  }
   lease.dispose();
   expect(existsSync(lease.directory)).toBe(false);
 });
