@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.64.0](https://github.com/Heey-Global/verity/compare/v4.63.0...v4.64.0) (2026-10-28)
+
+
+### Features
+
+* **server:** queue devcontainer builds instead of refusing them as busy ([#2015](https://github.com/Heey-Global/verity/issues/2015)) ([0af2f28](https://github.com/Heey-Global/verity/commit/0af2f289f5eb5d3045ad7e4c335d73aaaf338f69))
+
+
+### Bug Fixes
+
+* **server:** bound image pulls by progress instead of a fixed 300 s budget ([#2013](https://github.com/Heey-Global/verity/issues/2013)) ([cd5269f](https://github.com/Heey-Global/verity/commit/cd5269f5054a2da54ea2d818dd2f1c284c1fd22d))
+* **server:** keep woken Sandboxes on a valid Agent Gateway identity ([#2014](https://github.com/Heey-Global/verity/issues/2014)) ([58326e4](https://github.com/Heey-Global/verity/commit/58326e40311d3df2ae9b1aa79f861a74c1548490))
+* **server:** stop one interrupted build from blocking every build on the host ([#2012](https://github.com/Heey-Global/verity/issues/2012)) ([a5a28b5](https://github.com/Heey-Global/verity/commit/a5a28b5b947e36774c06362915300db95a84f7ad))
+
 ## [4.63.0](https://github.com/Heey-Global/verity/compare/v4.62.4...v4.63.0) (2026-10-28)
 
 
