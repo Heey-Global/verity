@@ -49,9 +49,7 @@ class EvidenceTests(unittest.TestCase):
                 "status": "pass",
                 "expected": expected_result(name),
                 "observed": expected_result(name),
-                "control": "embedded-dns-control"
-                if name == "embedded-dns"
-                else "positive",
+                "control": "system-dns-control" if name == "system-dns" else "positive",
             }
             for name in sorted(required_cases())
         ]
@@ -152,17 +150,17 @@ class EvidenceTests(unittest.TestCase):
             denied[field] = value
             self.assertTrue(verify(report))
 
-    def test_embedded_dns_requires_the_same_resolver_path_control(self):
+    def test_system_dns_requires_the_same_resolver_path_control(self):
         report = self.report()
-        denied = next(case for case in report["cases"] if case["id"] == "embedded-dns")
+        denied = next(case for case in report["cases"] if case["id"] == "system-dns")
         denied["control"] = "control-b-dns-4"
-        self.assertIn("mismatched embedded DNS control", verify(report))
-        denied["control"] = "embedded-dns-control"
+        self.assertIn("mismatched system DNS control", verify(report))
+        denied["control"] = "system-dns-control"
         control = next(
             case for case in report["cases"] if case["id"] == denied["control"]
         )
         control["observed"] = False
-        self.assertIn("broken positive control: embedded-dns", verify(report))
+        self.assertIn("broken positive control: system-dns", verify(report))
 
     def test_late_receipt_after_regrant_is_not_lost(self):
         case = {

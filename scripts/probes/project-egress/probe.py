@@ -338,6 +338,12 @@ def setup():
             "receiver",
         )
         wait_until(lambda: '"ready": true' in docker("logs", "pe-" + name))
+    # Docker's embedded loopback resolver is unreachable in isolated netstack.
+    resolver = ROOT / "project-resolv.conf"
+    resolver.write_text(
+        f"nameserver {ADDRESSES['receiver'][0]}\noptions timeout:1 attempts:1\n"
+    )
+    resolver.chmod(0o644)
     for project in ("a", "b"):
         docker("volume", "create", "pe-" + project)
         # Only this trusted initialization helper runs as root, with no networking.
@@ -375,8 +381,8 @@ def setup():
             ADDRESSES[project][0],
             "--ip6",
             ADDRESSES[project][1],
-            "--dns",
-            ADDRESSES["receiver"][0],
+            "--mount",
+            f"type=bind,src={resolver},dst=/etc/resolv.conf,readonly",
             "--user",
             "65532:65532",
             "--cap-drop",
@@ -454,13 +460,13 @@ def controls():
 def bypasses():
     grant([["b", "receiver"], ["a", "receiver"], ["a", "other"]])
     network(
-        "embedded-dns-control",
+        "system-dns-control",
         "b",
         "receiver",
         "dns",
         4,
         True,
-        request={"host": "127.0.0.11"},
+        request={"kind": "system-dns"},
         observer="receiver",
     )
     network("shell-control", "b", "receiver", "tcp", 4, True, child=True)
@@ -524,14 +530,14 @@ def bypasses():
         transport="tcp",
     )
     network(
-        "embedded-dns",
+        "system-dns",
         "b",
         "receiver",
         "dns",
         4,
         False,
-        "embedded-dns-control",
-        request={"host": "127.0.0.11"},
+        "system-dns-control",
+        request={"kind": "system-dns"},
         observer="receiver",
     )
     # A reachable host-side synthetic receiver proves that the input fence, not
@@ -800,8 +806,10 @@ def lifecycle():
             revoke()
         elif event == "expiry":
             # Stop refreshing naturally; no revoke transaction supplies the result.
-            (OUT / "controller-ready.expiry").write_text(str(time.monotonic() + 0.3))
-            CONTROLLER.wait(timeout=3)
+            # The closure budget begins at this request; do not add an artificial
+            # grace period or Popen.wait's exponential polling delay to it.
+            (OUT / "controller-ready.expiry").write_text(str(start))
+            wait_until(lambda: CONTROLLER.poll() is not None, seconds=3)
             time.sleep((LEASE_MS + 100) / 1000)
         else:
             stop_controller()  # SIGKILL, not graceful cleanup.

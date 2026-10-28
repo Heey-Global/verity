@@ -183,6 +183,18 @@ async def receiver():
 async def send(request):
     host, kind, marker = request["host"], request["kind"], request["marker"]
     port = request.get("port", 8080)
+    if kind == "system-dns":
+        # Exercise libc's configured resolver, not the direct DNS packet helper.
+        addresses = await asyncio.get_running_loop().getaddrinfo(
+            marker + ".allowed.test",
+            None,
+            family=socket.AF_INET,
+            type=socket.SOCK_STREAM,
+        )
+        return {
+            "received": bool(addresses),
+            "addresses": sorted({row[4][0] for row in addresses}),
+        }
     if kind in ("udp", "dns", "resolve"):
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         sock = socket.socket(family, socket.SOCK_DGRAM)

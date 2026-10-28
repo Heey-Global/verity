@@ -52,8 +52,11 @@ not a production latency promise or an exact measurement of the kernel transitio
 
 `verify.py` owns the required case manifest. Missing IPv6, QUIC, controls, runtime
 attestation, cases or mutation evidence fails the result; no runtime case may be
-skipped. An unavailable Docker embedded resolver therefore fails its required
-positive control; it is not counted as proof of the fence. Cases include:
+skipped. System DNS uses libc with a read-only `/etc/resolv.conf` naming the
+synthetic receiver; allowed and denied queries use the same resolver path.
+Docker's embedded `127.0.0.11` resolver is unavailable with the pinned isolated
+gVisor netstack ([gVisor FAQ](https://gvisor.dev/docs/user_guide/faq/)). It is not
+counted as a passed firewall case or supported DNS path. Cases include:
 
 - IPv4/IPv6 TCP, UDP, DNS over UDP/TCP and actual QUIC streams, with positive
   controls for both projects and both receiver destinations.
@@ -61,8 +64,8 @@ positive control; it is not counted as proof of the fence. Cases include:
   then B explicitly granted and revoked.
 - Shell and synthetic installation-hook children, forged project labels,
   redirects and a DNS answer changing the target to the second destination.
-- Docker embedded DNS access with a granted positive control through the same
-  `127.0.0.11` resolver, gateway input, synthetic metadata/foreign-project
+- System DNS access with a granted positive control through the same libc
+  resolver, gateway input, synthetic metadata/foreign-project
   addresses, private volume/socket checks and PID 1 visibility. Metadata and
   foreign-project network tests temporarily DNAT synthetic addresses to the
   controlled receiver, with a working positive control; they never contact a
