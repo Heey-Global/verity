@@ -13,7 +13,12 @@ import { setTimeout } from 'node:timers/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BuildStorage, buildStoragePolicy, estimateBuildStorageBytes } from './build-storage.js';
+import {
+  BuildStorage,
+  buildStoragePolicy,
+  estimateBuildStorageBytes,
+  remoteOperationEnded,
+} from './build-storage.js';
 
 const GiB = 1024 ** 3;
 const directories: string[] = [];
@@ -238,8 +243,13 @@ describe('owned attempt recovery and cancellation', () => {
     await once(child, 'spawn');
     writeFileSync(join(abandoned, 'child-0'), String(child.pid));
     try {
-      expect(() => f.manager().acquire()).toThrow('recovery');
+      // Kept with its files, but no longer a reason to refuse every other build.
+      const storage = f.manager();
+      storage.acquire().dispose();
       expect(existsSync(abandoned)).toBe(true);
+      expect(storage.unresolvedAttempts()).toEqual([
+        expect.objectContaining({ attempt: 'attempt-command', reservedBytes: 0 }),
+      ]);
     } finally {
       const exited = once(child, 'exit');
       process.kill(-child.pid!, 'SIGKILL');
@@ -319,13 +329,22 @@ describe('owned attempt recovery and cancellation', () => {
     const f = fixture();
     const unknown = join(f.root, 'attempt-unknown');
     mkdirSync(unknown, { recursive: true });
-    expect(() => f.manager().acquire()).toThrow('recovery');
+    // Retained, but a previous Server's leftovers no longer stop every build.
+    f.manager().acquire().dispose();
+    expect(existsSync(unknown)).toBe(true);
     writeFileSync(
       join(unknown, 'owner.json'),
       JSON.stringify({ version: 1, pid: 2147483647, start: '0', namespace: 'another-namespace' }),
     );
-    expect(() => f.manager().acquire()).toThrow('recovery');
+    const storage = f.manager();
+    storage.acquire().dispose();
     expect(existsSync(unknown)).toBe(true);
+    expect(storage.unresolvedAttempts()).toEqual([
+      expect.objectContaining({
+        attempt: 'attempt-unknown',
+        reason: expect.stringContaining('previous Server'),
+      }),
+    ]);
   });
 
   it('kills descendants on timeout before releasing owned archives', async () => {
@@ -388,8 +407,13 @@ describe('durable remote operation guard', () => {
       await expect(pending).rejects.toThrow();
       lease.dispose();
       expect(readFileSync(archive, 'utf8')).toBe('possibly in use remotely');
-      expect(() => storage.acquire()).toThrow('termination is unconfirmed');
-      expect(() => f.manager().acquire()).toThrow('termination is unconfirmed');
+      // The ambiguous attempt keeps its files and its estimate; other builds still run.
+      const next = storage.acquire();
+      expect(storage.unresolvedAttempts()).toEqual([
+        expect.objectContaining({ operation: 'image-import', reservedBytes: 8 * GiB }),
+      ]);
+      next.dispose();
+      expect(readFileSync(archive, 'utf8')).toBe('possibly in use remotely');
     },
   );
 
@@ -413,8 +437,14 @@ describe('durable remote operation guard', () => {
         namespace: readlinkSync('/proc/self/ns/pid'),
       }),
     );
-    expect(() => f.manager().acquire()).toThrow('termination is unconfirmed');
+    // The crashed Server's lease is gone; only its files and record remain.
+    lease.dispose();
+    const storage = f.manager();
+    storage.acquire().dispose();
     expect(existsSync(lease.directory)).toBe(true);
+    expect(storage.unresolvedAttempts()).toEqual([
+      expect.objectContaining({ attempt: lease.directory.slice(f.root.length + 1) }),
+    ]);
   });
 });
 
@@ -581,5 +611,362 @@ describe('host maintenance admission', () => {
     lease.dispose();
     expect(readdirSync(join(f.gate, 'leases'))).toHaveLength(1);
     expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
+  });
+});
+
+// A build that failed on its own used to keep its record, and every later build on the host
+// was refused until someone rebooted it into offline reconciliation.
+describe('remote operation release', () => {
+  const solveFailure = [
+    '#9 [dev_containers_target_stage 3/5] RUN pip3 install -r /tmp/requirements.txt',
+    '#9 ERROR: process "/bin/sh -c pip3 install -r /tmp/requirements.txt" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c pip3 install" did not complete successfully: exit code: 1',
+  ].join('\n');
+
+  it('recognises only answers from the worker or the Engine as definitive', () => {
+    expect(remoteOperationEnded('build-export', solveFailure)).toBe(true);
+    // Only a step's exit is the solve's own verdict; anything else is decided later.
+    expect(
+      remoteOperationEnded('build-export', 'ERROR: failed to solve: failed to read dockerfile'),
+    ).toBe(false);
+    // A build step can print anything, including BuildKit's own verdict; the client's
+    // last report after a lost connection is what counts.
+    expect(
+      remoteOperationEnded(
+        'build-export',
+        `${solveFailure}\nERROR: failed to solve: Unavailable: http2: client connection lost`,
+      ),
+    ).toBe(false);
+    expect(
+      remoteOperationEnded(
+        'build-export',
+        '#9 ERROR: process "/bin/sh -c x" did not complete successfully: exit code: 1\nERROR: failed to solve: failed to receive status: EOF',
+      ),
+    ).toBe(false);
+    for (const transport of [
+      'Canceled: grpc: the client connection is closing',
+      'DeadlineExceeded: context deadline exceeded',
+      'i/o timeout',
+    ])
+      expect(remoteOperationEnded('image-import', `Error response from daemon: ${transport}`)).toBe(
+        false,
+      );
+    // A lost connection says nothing about whether the solve is still running.
+    expect(
+      remoteOperationEnded(
+        'build-export',
+        'ERROR: failed to solve: rpc error: code = Unavailable desc = error reading from server: EOF',
+      ),
+    ).toBe(false);
+    expect(remoteOperationEnded('build-export', 'Build command exited 1')).toBe(false);
+    // Newer buildx wraps the same verdict; a later transport report under either
+    // prefix still wins over the earlier step verdict.
+    const wrapped = solveFailure.replace(
+      'ERROR: failed to solve:',
+      'ERROR: failed to build: failed to solve:',
+    );
+    expect(remoteOperationEnded('build-export', wrapped)).toBe(true);
+    for (const transport of [
+      'ERROR: failed to build: failed to solve: Unavailable: connection reset',
+      'ERROR: failed to build: failed to receive status: rpc error: code = Unavailable',
+    ]) {
+      expect(remoteOperationEnded('build-export', `${solveFailure}\n${transport}`)).toBe(false);
+      expect(remoteOperationEnded('build-export', `${wrapped}\n${transport}`)).toBe(false);
+    }
+    expect(
+      remoteOperationEnded('image-import', 'Error response from daemon: invalid tar header'),
+    ).toBe(true);
+    expect(remoteOperationEnded('image-import', 'Build command exited 1')).toBe(false);
+    expect(remoteOperationEnded('image-import', solveFailure)).toBe(false);
+    expect(
+      remoteOperationEnded(
+        'image-import',
+        'Error response from daemon: invalid tar header\nLoaded image: example:latest',
+      ),
+    ).toBe(false);
+  });
+
+  // The Server's own disposed attempts carry its own live pid; they once read as a
+  // build still running and refused every build until the Server restarted.
+  it('releases this process’s own ambiguous attempt once reconciliation proves it ended', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const lease = storage.acquire();
+    await expect(
+      lease.run(
+        process.execPath,
+        [
+          '-e',
+          'process.stderr.write("ERROR: failed to solve: Unavailable: connection reset"); process.exit(1)',
+        ],
+        { ...commandOptions, remoteOperation: 'build-export' },
+      ),
+    ).rejects.toThrow();
+    lease.dispose();
+    expect(existsSync(lease.directory)).toBe(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await setTimeout(5);
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(lease.directory)).toBe(false);
+    storage.acquire().dispose();
+  });
+
+  it('releases a deterministic build failure so the next project builds right away', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const lease = storage.acquire();
+    lease.reserveBuild();
+    await expect(
+      lease.run(
+        process.execPath,
+        ['-e', `process.stderr.write(${JSON.stringify(solveFailure)}); process.exit(1)`],
+        { ...commandOptions, remoteOperation: 'build-export' },
+      ),
+    ).rejects.toThrow();
+    expect(lease.retainArtifacts).toBe(false);
+    lease.dispose();
+    expect(existsSync(lease.directory)).toBe(false);
+    const next = storage.acquire();
+    expect(storage.unresolvedAttempts()).toEqual([]);
+    next.dispose();
+  });
+
+  it('keeps a transport failure reserved, bounded to its own estimate', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    const lease = storage.acquire();
+    lease.reserveBuild(10 * GiB);
+    await expect(
+      lease.run(
+        process.execPath,
+        [
+          '-e',
+          'process.stderr.write("ERROR: failed to solve: rpc error: code = Unavailable desc = connection reset"); process.exit(1)',
+        ],
+        { ...commandOptions, remoteOperation: 'build-export' },
+      ),
+    ).rejects.toThrow();
+    expect(lease.retainArtifacts).toBe(true);
+    lease.dispose();
+    const estimate = estimateBuildStorageBytes(f.policy, 10 * GiB);
+    const next = storage.acquire();
+    expect(storage.unresolvedAttempts()).toEqual([
+      expect.objectContaining({ operation: 'build-export', reservedBytes: estimate }),
+    ]);
+    // The reservation counts against admission, and names itself when it decides it.
+    f.local.availableBytes = estimate + f.policy.reserveBytes + f.policy.estimateBytes - 1;
+    expect(() => next.reserveBuild()).toThrow(lease.directory.slice(f.root.length + 1));
+    f.local.availableBytes = 100 * GiB;
+    next.dispose();
+  });
+});
+
+describe('build storage reconciliation', () => {
+  const namespace = () => readlinkSync('/proc/self/ns/pid');
+  const attempt = (
+    f: ReturnType<typeof fixture>,
+    name: string,
+    owner: Record<string, unknown>,
+    record?: Record<string, unknown>,
+  ) => {
+    const directory = join(f.root, name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'owner.json'),
+      JSON.stringify({ version: 1, pid: 2147483647, start: '0', namespace: namespace(), ...owner }),
+    );
+    if (record !== undefined)
+      writeFileSync(
+        join(directory, 'remote-operation.json'),
+        JSON.stringify({
+          version: 1,
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          ...record,
+        }),
+      );
+    writeFileSync(join(directory, 'image.tar'), 'archive');
+    return directory;
+  };
+  const quiet = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  it('releases a finished build once the worker reports no running build', async () => {
+    const f = fixture();
+    // The incident's shape: a failed solve left behind by an older Server.
+    const directory = attempt(f, 'attempt-HS9hLo', {}, { operation: 'build-export' });
+    const storage = f.manager();
+    const warn = quiet();
+    try {
+      // An unanswered question keeps the reservation.
+      expect(await storage.reconcile({ buildkitIdle: async () => undefined })).toHaveLength(1);
+      expect(await storage.reconcile({ buildkitIdle: async () => false })).toHaveLength(1);
+      expect(existsSync(directory)).toBe(true);
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  // The record is written before the client submits its solve, so an idle worker says
+  // nothing while that client can still submit.
+  it('trusts the worker only once the build client is gone', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-orphan', {}, { operation: 'build-export' });
+    const foreign = attempt(
+      f,
+      'attempt-foreign',
+      { namespace: 'old-container' },
+      { operation: 'build-export' },
+    );
+    const live = async (slot: number) => {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      await once(child, 'spawn');
+      writeFileSync(join(directory, `child-${slot}`), String(child.pid));
+      return child;
+    };
+    const stop = async (child: ReturnType<typeof spawn>) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, 'exit');
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+    };
+    const storage = f.manager();
+    const warn = quiet();
+    const children: ReturnType<typeof spawn>[] = [await live(0)];
+    try {
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toHaveLength(2);
+      await stop(children[0]!);
+      // A client that appears while the worker is asked keeps the record too.
+      expect(
+        await storage.reconcile({
+          buildkitIdle: async () => {
+            children.push(await live(1));
+            return true;
+          },
+        }),
+      ).toHaveLength(2);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+      await stop(children[1]!);
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toHaveLength(1);
+      expect(existsSync(directory)).toBe(false);
+      // Another PID namespace's client cannot be seen; it is trusted gone only once it
+      // outlived every command bound.
+      expect(existsSync(join(foreign, 'remote-operation.json'))).toBe(true);
+      expect(
+        await storage.reconcile({ buildkitIdle: async () => true }, Date.now() + 2 * 3600_000),
+      ).toEqual([]);
+      expect(existsSync(join(foreign, 'remote-operation.json'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+      for (const child of children) await stop(child);
+    }
+  });
+
+  it('stops charging a released attempt to a build that holds a lease', async () => {
+    const f = fixture();
+    attempt(f, 'attempt-earlier', {}, { operation: 'image-import' });
+    const storage = f.manager();
+    const lease = storage.acquire();
+    const warn = quiet();
+    try {
+      // Admission saw the earlier import; reconciliation proves it ended mid-lease.
+      expect(storage.unresolvedAttempts()).toEqual([
+        expect.objectContaining({ attempt: 'attempt-earlier' }),
+      ]);
+      expect(await storage.reconcile()).toEqual([]);
+      expect(storage.unresolvedAttempts()).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      lease.dispose();
+    }
+  });
+
+  it('applies the worker’s answer only to operations that began before it was asked', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-late', {}, { operation: 'build-export' });
+    const storage = f.manager();
+    const warn = quiet();
+    try {
+      const left = await storage.reconcile({
+        buildkitIdle: async () => {
+          // A new operation is recorded while the worker is being asked.
+          await setTimeout(5);
+          writeFileSync(
+            join(directory, 'remote-operation.json'),
+            JSON.stringify({
+              version: 1,
+              operation: 'build-export',
+              hostBootId: '11111111-1111-4111-8111-111111111111',
+              hostIdentity: 'a'.repeat(64),
+              startedAt: new Date().toISOString(),
+            }),
+          );
+          return true;
+        },
+      });
+      expect(left).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
+
+  it('treats a host restart as proof and an unreachable worker as no answer', async () => {
+    const f = fixture();
+    const rebooted = attempt(
+      f,
+      'attempt-rebooted',
+      { namespace: 'old-container' },
+      { operation: 'build-export', hostBootId: '22222222-2222-4222-8222-222222222222' },
+    );
+    const storage = f.manager();
+    const warn = quiet();
+    try {
+      await storage.reconcile({ buildkitIdle: async () => Promise.reject(new Error('down')) });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(join(rebooted, 'remote-operation.json'))).toBe(false);
+    // Its files belong to an older Server process and stay until that is proven over.
+    expect(existsSync(rebooted)).toBe(true);
+  });
+
+  it('releases an import once its client has exited', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-import', {}, { operation: 'image-import' });
+    const storage = f.manager();
+    const warn = quiet();
+    try {
+      expect(await storage.reconcile()).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(existsSync(directory)).toBe(false);
+  });
+
+  it('removes a previous Server attempt only after its boot changed or it outlived every command', async () => {
+    const f = fixture();
+    const young = attempt(f, 'attempt-young', { namespace: 'old-container' });
+    const otherBoot = attempt(f, 'attempt-boot', {
+      namespace: 'old-container',
+      hostBootId: '22222222-2222-4222-8222-222222222222',
+    });
+    const storage = f.manager();
+    expect(await storage.reconcile()).toEqual([
+      expect.objectContaining({ attempt: 'attempt-young' }),
+    ]);
+    expect(existsSync(young)).toBe(true);
+    expect(existsSync(otherBoot)).toBe(false);
+    expect(await storage.reconcile({}, Date.now() + 3 * 60 * 60 * 1000)).toEqual([]);
+    expect(existsSync(young)).toBe(false);
   });
 });

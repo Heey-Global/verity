@@ -142,7 +142,14 @@ try {
     /termination is unconfirmed/,
   );
   lease.dispose();
-  assert.throws(() => storage.acquire(), /termination is unconfirmed/);
+  // A later attempt is admitted; the unconfirmed one keeps its record and
+  // reserves its estimate until reconciliation proves the import ended.
+  storage.acquire().dispose();
+  assert(existsSync(join(lease.directory, 'remote-operation.json')));
+  assert(
+    storage.unresolvedAttempts().some((attempt) => lease.directory.endsWith(`/${attempt.attempt}`)),
+    'The unconfirmed import must stay reserved',
+  );
   writeFileSync(
     join(process.env.PROBE_EVIDENCE, 'import-cancellation.json'),
     JSON.stringify({
@@ -150,13 +157,14 @@ try {
       uploadedBytes,
       response,
       reservation: 'retained',
-      subsequentImport: 'blocked-pending-reconciliation',
+      sameAttemptImport: 'blocked-pending-reconciliation',
+      laterAttempt: 'admitted-with-reservation',
       limitation:
         'Controlled partial-input transport; direct-disconnect daemon cleanup is not established',
     }),
   );
   console.log(
-    'PASS: cancelled real load client; uncertain remote reservation retained and reuse blocked',
+    'PASS: cancelled real load client; uncertain remote reservation retained, same-attempt reuse blocked',
   );
 } finally {
   abort.abort();

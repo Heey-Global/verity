@@ -157,9 +157,21 @@ process.exit(1);
       assert.equal(attempts.length, 1);
       const attempt = join(crashRoot, attempts[0]);
       assert(existsSync(join(attempt, 'remote-operation.json')));
+      // A restarted Server is admitted again (the unconfirmed attempt reserves its
+      // estimate instead of blocking the host), yet must not release that record on
+      // local process death alone: the remote solve may still be running.
+      // Admission measures the real filesystem, so on a small runner the reserved
+      // estimate can legitimately decide it; the refusal must then name the
+      // reservation, never an unconfirmed termination.
       const restarted = invoke();
-      assert.equal(restarted.status, 1, restarted.stderr);
-      assert.match(restarted.stderr, /termination is unconfirmed/);
+      assert.doesNotMatch(restarted.stderr, /termination is unconfirmed/);
+      if (restarted.signal !== 'SIGKILL') {
+        assert.equal(restarted.status, 1, restarted.stderr);
+        assert.match(
+          restarted.stderr,
+          new RegExp(`held by 1 earlier build attempt\\(s\\)[^(]*\\(${attempts[0]}\\)`),
+        );
+      }
       assert(existsSync(join(attempt, 'remote-operation.json')));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -175,9 +187,9 @@ test('real Engine cancellation probe uses production remote tracking and a separ
   const host = readFileSync(new URL('./host-service.sh', import.meta.url), 'utf8');
   assert.match(cancellation, /signal: abort.signal,\s+remoteOperation: 'image-import'/);
   assert.match(cancellation, /assert.equal\(lease.retainArtifacts, true\)/);
-  assert.match(
-    cancellation,
-    /assert.throws\(\(\) => storage.acquire\(\), \/termination is unconfirmed\//,
-  );
+  // The cancelled attempt cannot reuse its own transport, and the next attempt
+  // must find it still reserved rather than released.
+  assert.match(cancellation, /\/termination is unconfirmed\/,\s+\);\s+lease.dispose\(\);/);
+  assert.match(cancellation, /storage\s*\.unresolvedAttempts\(\)/);
   assert.match(host, /PROBE_STORAGE_ROOT_OVERRIDE="\$work\/import-cancel-build-storage" run_probe/);
 });

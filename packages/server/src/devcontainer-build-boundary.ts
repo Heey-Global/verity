@@ -361,6 +361,11 @@ export interface DevcontainerBuildSnapshot {
 export async function createDevcontainerBuildSnapshot(
   workspaceFolder: string,
   temporaryRoot = tmpdir(),
+  options: {
+    /** Copy only `.devcontainer`: enough to name the derived image without staging the
+     *  project, so a reuse check needs no build storage. Never built from. */
+    configurationOnly?: boolean;
+  } = {},
 ): Promise<DevcontainerBuildSnapshot> {
   const snapshot = mkdtempSync(join(temporaryRoot, 'verity-build-'));
   const links: string[] = [];
@@ -379,6 +384,12 @@ export async function createDevcontainerBuildSnapshot(
       const source = join(pinned, name);
       const stat = lstatSync(source);
       if (!admitted(inputs, relativePath, stat.isDirectory())) continue;
+      if (
+        options.configurationOnly === true &&
+        relativePath !== '.devcontainer' &&
+        !relativePath.startsWith('.devcontainer/')
+      )
+        continue;
       if (++entries > 200_000) refuse('project exceeds the 200,000 build input limit');
       if (entries % 64 === 0) await setImmediate();
       const target = join(destination, name);
