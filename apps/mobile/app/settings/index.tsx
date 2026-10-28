@@ -192,7 +192,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Connections">
+      <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
             icon="link"
@@ -203,20 +203,66 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/services')}
           />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Access">
-        <SettingsListPanel>
           <SettingsNavRow
-            icon="monitor"
-            title="Devices & Web Browsers"
-            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage devices and web browsers"
+            icon="zap"
+            signature
+            title="Verity Premium"
+            subtitle="Online sharing, remote access"
+            status={
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkState === 'rejected'
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
+            }
+            onPress={() => router.push('/settings/premium')}
+          />
+
+          <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Known vulnerabilities in code projects"
+            onPress={() => router.push('/settings/vulnerability-scan')}
+          />
+          <SettingsNavRow
+            icon="check-square"
+            title="Tasks"
+            subtitle="Capture bubble, screenshot tips"
+            status={
+              taskPreferences.enabled
+                ? { intent: 'ready', label: 'On' }
+                : { intent: 'optional', label: 'Off' }
+            }
+            onPress={() => router.push('/settings/tasks')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
           />
         </SettingsListPanel>
+        <SettingsPanel>
+          <Text style={styles.disclosureTitle}>Verity Control</Text>
+          <Text style={styles.reproSubtitle}>
+            Show an internal Verity Control workspace for server administration sessions.
+          </Text>
+          <SettingsToggleRow
+            label="Advanced mode"
+            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
+            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
+            onValueChange={(value) => {
+              setPendingAdvancedMode(value);
+              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
+                setPendingAdvancedMode(undefined),
+              );
+            }}
+          />
+        </SettingsPanel>
       </SettingsGroup>
-      <SettingsGroup title="Server">
+
+      <SettingsGroup title="App & Server">
         <SettingsListPanel>
           <SettingsNavRow
             icon="download"
@@ -251,53 +297,28 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             />
           ) : null}
           <SettingsNavRow
-            icon="zap"
-            signature
-            title="Verity Premium"
-            subtitle="Online sharing, remote access"
-            status={
-              !settings?.uplinkSubscriptionKeyConfigured
-                ? { intent: 'optional', label: 'Not active' }
-                : uplinkState === 'rejected'
-                  ? { intent: 'needsSetup', label: 'Key rejected' }
-                  : uplinkState === 'active'
-                    ? { intent: 'ready', label: 'Active' }
-                    : { intent: 'optional', label: 'Configured' }
-            }
-            onPress={() => router.push('/settings/premium')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Features">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="shield"
-            title="Vulnerability scan"
-            subtitle="Known vulnerabilities in code projects"
-            onPress={() => router.push('/settings/vulnerability-scan')}
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
           />
           <SettingsNavRow
-            icon="check-square"
-            title="Tasks"
-            subtitle="Capture bubble, screenshot tips"
-            status={
-              taskPreferences.enabled
-                ? { intent: 'ready', label: 'On' }
-                : { intent: 'optional', label: 'Off' }
-            }
-            onPress={() => router.push('/settings/tasks')}
-          />
-          <SettingsNavRow
-            icon="mic"
-            title="Meeting transcription"
-            onPress={() => router.push('/settings/transcription')}
+            icon="server"
+            title="Server address"
+            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
+            accessibilityLabel="Change server address"
           />
         </SettingsListPanel>
       </SettingsGroup>
 
-      {/* Server connection — the recovery path if the saved address is wrong or the
-          server moved (IP / Tailscale name change). Routes to the onboarding step in
-          reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
           {!isDemoMode() ? (
@@ -341,40 +362,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               }}
             />
           ) : null}
-          <SettingsNavRow
-            icon="server"
-            title="Server address"
-            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
-            onPress={() => {
-              if (isDemoMode()) {
-                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
-              } else {
-                router.push('/onboarding/server-url?reconfigure=1');
-              }
-            }}
-            accessibilityLabel="Change server address"
-          />
         </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Advanced">
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>Verity Control</Text>
-          <Text style={styles.reproSubtitle}>
-            Show an internal Verity Control workspace for server administration sessions.
-          </Text>
-          <SettingsToggleRow
-            label="Advanced mode"
-            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
-            onValueChange={(value) => {
-              setPendingAdvancedMode(value);
-              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
-                setPendingAdvancedMode(undefined),
-              );
-            }}
-          />
-        </SettingsPanel>
       </SettingsGroup>
 
       <View style={styles.settingsGroup}>
