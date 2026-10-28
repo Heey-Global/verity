@@ -13,7 +13,7 @@ import { setTimeout } from 'node:timers/promises';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BuildStorage, buildStoragePolicy } from './build-storage.js';
+import { BuildStorage, buildStoragePolicy, estimateBuildStorageBytes } from './build-storage.js';
 
 const GiB = 1024 ** 3;
 const directories: string[] = [];
@@ -77,9 +77,39 @@ describe('build storage admission', () => {
     expect(() => buildStoragePolicy({ VERITY_BUILD_FREE_INODES: '1000000000000' })).toThrow(
       'Invalid',
     );
-    for (const value of ['0', '-1', '1.5', 'Infinity', '1000000', '']) {
-      expect(() => buildStoragePolicy({ VERITY_BUILD_FREE_GIB: value })).toThrow('Invalid');
+    for (const value of ['0', '-1', '1.5', 'Infinity', '1000000000000', '']) {
+      for (const name of [
+        'VERITY_BUILD_FREE_GIB',
+        'VERITY_BUILD_ESTIMATE_GIB',
+        'VERITY_BUILD_FREE_INODES',
+      ])
+        expect(() => buildStoragePolicy({ [name]: value })).toThrow('Invalid');
     }
+  });
+
+  it('sizes measured builds with bounded image allowances and preserves the fallback', () => {
+    const policy = buildStoragePolicy({ VERITY_BUILD_ESTIMATE_GIB: '35' });
+    expect(estimateBuildStorageBytes(policy, 10 * GiB)).toBe(22 * GiB);
+    expect(estimateBuildStorageBytes(policy, 12 * GiB)).toBe(26 * GiB);
+    expect(estimateBuildStorageBytes(policy, 1)).toBe(12 * GiB);
+    expect(estimateBuildStorageBytes(policy, 100 * GiB)).toBe(96 * GiB);
+    for (const size of [undefined, 0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      expect(estimateBuildStorageBytes(policy, size)).toBe(policy.estimateBytes);
+    expect(buildStoragePolicy({}).estimateBytes).toBe(24 * GiB);
+  });
+
+  it('uses the measured estimate while retaining byte and inode reserves', () => {
+    const f = fixture();
+    const lease = f.manager().acquire();
+    f.writeReport(23 * GiB);
+    expect(() => lease.reserveBuild(10 * GiB)).toThrow(
+      'requires 22 GiB estimated growth plus 2 GiB reserve',
+    );
+    f.writeReport(24 * GiB);
+    expect(() => lease.reserveBuild(10 * GiB)).not.toThrow();
+    f.writeReport(24 * GiB, 999);
+    expect(() => lease.reserveBuild(10 * GiB)).toThrow('free inodes');
+    lease.dispose();
   });
 
   it('reserves before staging and holds one shared slot through import', async () => {

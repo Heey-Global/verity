@@ -6020,7 +6020,26 @@ export class ProvisionerImpl implements Provisioner {
             usesConfiguredOverride: !usesDefaultImage,
           };
       }
-      storageLease?.reserveBuild();
+      if (storageLease !== undefined) {
+        // Inspect at most the target tag and the last selected derived image.
+        // Never use the unrelated default/base image to size a first build.
+        let imageBytes: number | undefined;
+        const refs = [
+          derivedTag,
+          project.imageRef?.startsWith(DEVCONTAINER_IMAGE_PREFIX) ? project.imageRef : undefined,
+        ];
+        for (const ref of new Set(refs)) {
+          if (ref === undefined) continue;
+          try {
+            const size = (await this.opts.docker.inspectImageIdentity?.(ref))?.sizeBytes;
+            if (size !== null && size !== undefined && Number.isSafeInteger(size) && size > 0)
+              imageBytes = Math.max(imageBytes ?? 0, size);
+          } catch {
+            // Missing/pruned images and unavailable diagnostics use the fallback.
+          }
+        }
+        storageLease.reserveBuild(imageBytes);
+      }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
       // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
