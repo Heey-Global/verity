@@ -225,10 +225,10 @@ import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from '.
 import {
   ProvisionerImpl,
   DeprovisionerImpl,
-  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   projectClonePath,
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
+  devcontainerBuilderIdle,
   projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
@@ -267,7 +267,10 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import type { ClaudeEgressMtlsMaterial, ClaudeEgressPeerBinding } from './claude-egress-mtls.js';
+import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import {
+  agentGatewayUnavailableMessage,
+  type AgentGatewayRepairFailure,
   claudeEgressAgentEnv,
   claudeEgressRelayHealthy,
   claudeEgressRouteEnabled,
@@ -627,6 +630,8 @@ import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
+import { openBackupRuntime } from './backup/runtime.js';
+import { BACKUP_RECOVERY_ACCEPTED } from './backup/routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -2566,11 +2571,17 @@ export async function buildEmbeddedServer(
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
   // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
   // the DB-backed GitHub App mint.
+  // Long image pulls (sandbox, toolkit, relay and preview images) report their
+  // progress here, rate-limited by the client.
+  const logDockerPull = (message: string): void => {
+    console.info(`verity: ${message}`);
+  };
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
       ? createDockerClient({
           baseUrl: config.dockerBaseUrl,
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+          pullLog: logDockerPull,
         })
       : undefined;
   if (projectDocker !== undefined) {
@@ -2591,6 +2602,7 @@ export async function buildEmbeddedServer(
       createDockerClient({
         baseUrl: config.dockerBaseUrl,
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+        pullLog: logDockerPull,
       }))
     : undefined;
   const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
@@ -2859,6 +2871,7 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  let buildStorage: BuildStorage | undefined;
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -3047,7 +3060,9 @@ export async function buildEmbeddedServer(
     projectId: string,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): boolean => {
-    const fingerprint = inspected.labels?.[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL];
+    // A woken Sandbox holds a certificate re-issued after its creation-time label
+    // was written; the provisioner vouches for that one per container generation.
+    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, projectId, inspected);
     return (
       fingerprint !== undefined &&
       agentGatewayBindings.some(
@@ -3073,16 +3088,17 @@ export async function buildEmbeddedServer(
    * the conductor's background backend resolutions must never trigger a rebuild.
    * The operator sees a transcript note and a `Waiting` badge for the duration, and
    * the turn resumes by itself — the alternative was a terminal error on a state
-   * that repairs itself in a minute. Failures are swallowed into `false` so the
-   * caller raises the one operator-facing message.
+   * that repairs itself in a minute. Failures are returned rather than thrown so
+   * the caller raises the one operator-facing message, naming the repair's own
+   * cause when there is one.
    */
   const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
     queuedSessionIds: ReadonlySet<string>,
-  ): Promise<boolean> => {
-    if (!preparation.canWait || docker === undefined) return false;
-    if (provisioner?.repairSandboxForTurn === undefined) return false;
+  ): Promise<{ ready: true } | { ready: false; failure?: AgentGatewayRepairFailure }> => {
+    if (!preparation.canWait || docker === undefined) return { ready: false };
+    if (provisioner?.repairSandboxForTurn === undefined) return { ready: false };
     preparation.waitingOn(
       'The project Sandbox has to be rebuilt before this message can run. Keeping the turn queued while Verity attempts the rebuild; it continues automatically if the Sandbox becomes ready.',
     );
@@ -3095,10 +3111,10 @@ export async function buildEmbeddedServer(
           { requireFreshAgentGatewayIdentity: true },
         ))
       )
-        return false;
+        return { ready: false };
     } catch (error) {
       app.log.warn({ err: error, projectId: project.id }, 'turn-time sandbox repair failed');
-      return false;
+      return { ready: false, failure: { stage: 'rebuild', cause: error } };
     }
     // Trust the recreate only as far as the same check that rejected the Sandbox in
     // the first place: a repair that reports success but leaves the relay unhealthy
@@ -3106,13 +3122,15 @@ export async function buildEmbeddedServer(
     try {
       const inspected = await docker.inspectContainer(project.containerName);
       await synchronizeAgentGatewayForTurn();
-      return await agentGatewayReady(project.id, inspected);
+      return (await agentGatewayReady(project.id, inspected))
+        ? { ready: true }
+        : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
       app.log.warn(
         { err: error, projectId: project.id },
         'could not verify the Agent Gateway identity after a turn-time sandbox repair',
       );
-      return false;
+      return { ready: false, failure: { stage: 'verify', cause: error } };
     }
   };
 
@@ -3733,19 +3751,21 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
+    buildStorage = new BuildStorage(
+      join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-storage',
+      ),
+      undefined,
+      undefined,
+      undefined,
+      '/run/verity-buildkit',
+    );
     provisioner = new ProvisionerImpl({
-      buildStorage: new BuildStorage(
-        join(
-          config.dataVolumeRoot ??
-            config.dataDir ??
-            config.workspacesDir ??
-            join(tmpdir(), 'verity'),
-          'build-storage',
-        ),
-        undefined,
-        undefined,
-        undefined,
-        '/run/verity-buildkit',
+      buildStorage,
+      buildFailureLogDirectory: join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'build-failures',
       ),
       imageReferences,
       audit: auditRecorder,
@@ -4494,8 +4514,32 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
+  const backupArchitecture =
+    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
+  const backup =
+    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
+      ? await openBackupRuntime({
+          recoveryAccepted: BACKUP_RECOVERY_ACCEPTED,
+          probe: {
+            docker: projectDocker,
+            network: 'verity-net',
+            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
+          },
+          root: config.dataVolumeRoot,
+          databaseUrl: config.databaseUrl,
+          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
+          architecture: backupArchitecture,
+          release: SERVER_COMPAT.serverVersion,
+          schema: SERVER_COMPAT.schema.current,
+          store: eventStore,
+          onError: () => {
+            console.warn('verity: backup operation unavailable; queued revocations remain durable');
+          },
+        })
+      : undefined;
   const app = buildControlPlane({
     eventStore,
+    ...(backup ? { backup } : {}),
     ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
     matrixConnectorToken: async () => {
       try {
@@ -4677,6 +4721,8 @@ export async function buildEmbeddedServer(
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
       builderAdmissionDirectory: '/run/verity-buildkit',
       buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
+      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
@@ -5226,6 +5272,7 @@ export async function buildEmbeddedServer(
                 throw new Error('Claude egress routing target cannot be verified');
               }
               let gatewayReady: boolean;
+              let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
                 const inspected = await docker.inspectContainer(project.containerName);
                 gatewayReady = await agentGatewayReady(project.id, inspected);
@@ -5247,15 +5294,16 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                gatewayReady = await repairSandboxForAgentTurn(
+                const repair = await repairSandboxForAgentTurn(
                   project,
                   preparation,
                   queuedSessionIds,
                 );
+                gatewayReady = repair.ready;
+                repairFailure = repair.ready ? undefined : repair.failure;
               }
               if (!gatewayReady) {
-                const message =
-                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again';
+                const message = agentGatewayUnavailableMessage(repairFailure);
                 // A background resolution never attempted the rebuild above, so its
                 // failure says nothing about whether the Sandbox is repairable — only
                 // that this resolution would not wait for one. Reporting it as the
@@ -5591,6 +5639,38 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // An interrupted build must not hold build storage until someone reboots the host.
+  // Ask at start and every five minutes whether earlier attempts provably ended.
+  if (buildStorage !== undefined) {
+    const storage = buildStorage;
+    const buildDockerHost =
+      config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
+    let reconciling = false;
+    const reconcileBuildStorage = async () => {
+      if (reconciling) return;
+      reconciling = true;
+      try {
+        const unresolved = await storage.reconcile(
+          buildDockerHost === undefined
+            ? {}
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
+        );
+        if (unresolved.length > 0)
+          app.log.warn(
+            { attempts: unresolved },
+            'Build storage holds space for earlier build attempts whose end is not yet confirmed',
+          );
+      } catch (err) {
+        app.log.warn({ err }, 'Build storage reconciliation failed');
+      } finally {
+        reconciling = false;
+      }
+    };
+    void reconcileBuildStorage();
+    const buildStorageTimer = setInterval(() => void reconcileBuildStorage(), 5 * 60_000);
+    buildStorageTimer.unref();
+    app.addHook('onClose', () => clearInterval(buildStorageTimer));
+  }
   app.addHook('onClose', () => listenerDiscovery?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);

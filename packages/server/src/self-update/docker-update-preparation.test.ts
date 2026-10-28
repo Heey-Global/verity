@@ -18,7 +18,8 @@ import {
 import type { UpdatePreparationDeps } from './update-preparation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
-import { beginUpdate } from './update-journal.js';
+import { beginUpdate, readUpdateJournal } from './update-journal.js';
+import { UPDATE_PULL_RETRY_DELAYS_MS } from './pull-retry.js';
 
 /** The two candidate builders share every refusal below, so the cases that apply
  *  to both are written once and run against each. */
@@ -352,7 +353,8 @@ describe('Docker update preparation', () => {
       phase: 'standby',
       candidate: { containerId: 'a'.repeat(64), containerName: 'verity-managed-server-g1' },
     });
-    expect(docker.pullImage).toHaveBeenCalledWith(newImage);
+    // The pull narrates its progress through the Updater's own log.
+    expect(docker.pullImage).toHaveBeenCalledWith(newImage, { log: expect.any(Function) });
     expect(verifyImage).toHaveBeenCalledOnce();
     expect(docker.createContainer).toHaveBeenCalledTimes(2);
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
@@ -566,6 +568,87 @@ describe('Docker update preparation', () => {
           }),
         ),
       ).rejects.toThrow('registry unreachable');
+    });
+  });
+
+  /**
+   * A failed preparation pull is terminal: the journal moves to `failed` and the
+   * device has to ask again. The incident this guards against was a pull that
+   * failed the same way on every attempt and needed a click each time; a stall
+   * or a dropped connection must instead be retried here, without anyone asking,
+   * and still stop after a bounded number of attempts.
+   */
+  describe('retrying the Server image pull', () => {
+    const stalled = () =>
+      new DockerError({
+        kind: 'pull_stalled',
+        image: newImage,
+        idleMs: 120_000,
+        message: `image pull of ${newImage} stalled`,
+      });
+    const prepare = async (docker: FakeDocker, sleep: (ms: number) => Promise<unknown>) => {
+      const { root } = await setup();
+      const log = vi.fn<(message: string) => void>();
+      const run = resumeUpdatePreparation(
+        root,
+        await dockerUpdatePreparation({
+          managedRoot: root,
+          docker,
+          environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+          verifyImage: async () => undefined,
+          pullRetrySleep: sleep,
+          log,
+        }),
+      );
+      return { root, run, log };
+    };
+
+    it('retries a stalled pull on its own and reaches standby', async () => {
+      const docker = fakeDocker();
+      docker.pullImage
+        .mockRejectedValueOnce(stalled())
+        .mockRejectedValueOnce(new DockerError({ kind: 'network', cause: new Error('reset') }))
+        .mockResolvedValueOnce(undefined);
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { run, log } = await prepare(docker, sleep);
+      await expect(run).resolves.toMatchObject({ phase: 'standby' });
+      expect(docker.pullImage.mock.calls.map(([ref]) => ref)).toEqual([
+        newImage,
+        newImage,
+        newImage,
+      ]);
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(UPDATE_PULL_RETRY_DELAYS_MS.slice(0, 2));
+      expect(log.mock.calls.some(([line]) => line.includes('retrying'))).toBe(true);
+    });
+
+    it('stops after its bound and fails the operation with the last stall', async () => {
+      const docker = fakeDocker();
+      docker.pullImage.mockImplementation(async () => {
+        throw stalled();
+      });
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { root, run } = await prepare(docker, sleep);
+      await expect(run).rejects.toMatchObject({ kind: 'pull_stalled' });
+      expect(docker.pullImage).toHaveBeenCalledTimes(UPDATE_PULL_RETRY_DELAYS_MS.length + 1);
+      expect(sleep).toHaveBeenCalledTimes(UPDATE_PULL_RETRY_DELAYS_MS.length);
+      await expect(readUpdateJournal(root)).resolves.toMatchObject({ phase: 'failed' });
+    });
+
+    it('does not spend the ceiling a second time', async () => {
+      const docker = fakeDocker();
+      docker.pullImage.mockRejectedValue(
+        new DockerError({
+          kind: 'timeout',
+          image: newImage,
+          timeoutMs: 7_200_000,
+          message: `image pull of ${newImage} did not finish`,
+        }),
+      );
+      const sleep = vi.fn<(ms: number) => Promise<unknown>>(async () => undefined);
+      const { run } = await prepare(docker, sleep);
+      await expect(run).rejects.toMatchObject({ kind: 'timeout' });
+      expect(docker.pullImage).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
     });
   });
 

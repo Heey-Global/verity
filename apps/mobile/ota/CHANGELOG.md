@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.80.2](https://github.com/Heey-Global/verity/compare/mobile-v1.80.1...mobile-v1.80.2) (2026-10-28)
+
+
+### Features
+
+* **backup:** add encrypted local backups and installer recovery ([#1975](https://github.com/Heey-Global/verity/issues/1975)) ([6d5bc40](https://github.com/Heey-Global/verity/commit/6d5bc40184649e6eeb47f0d519a4ef1e36558379))
+
+
+### Bug Fixes
+
+* **history:** recover oversized events in bounded chunks ([#2007](https://github.com/Heey-Global/verity/issues/2007)) ([91411a7](https://github.com/Heey-Global/verity/commit/91411a70ccf61236f8171e092f29393717c2fa3b))
+* **settings:** group features and app administration settings ([#2005](https://github.com/Heey-Global/verity/issues/2005)) ([82332ff](https://github.com/Heey-Global/verity/commit/82332ffe4eccf6517fc3777c789e070eba41dcb0))
+
 ## [1.80.1](https://github.com/Heey-Global/verity/compare/mobile-v1.80.0...mobile-v1.80.1) (2026-10-27)
 
 

@@ -32,6 +32,7 @@ import {
   WorktreeMissingError,
 } from '@verity/session';
 import {
+  boundedHistoryResultSchema,
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -2880,6 +2881,31 @@ describe('GET /sessions/:id/events (backward pagination)', () => {
       kind: 'oversized-event',
     });
     expect(Buffer.byteLength(bounded.body)).toBeLessThanOrEqual(256 * 1024);
+    const boundary = bounded.json();
+    const chunks: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/sessions/s1/history/v1?beforeSeq=${boundary.seq + 1}&snapshotSeq=${boundary.snapshotSeq}&eventOffset=${offset}`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(Buffer.byteLength(response.body)).toBeLessThanOrEqual(256 * 1024);
+      const chunk = boundedHistoryResultSchema.parse(response.json());
+      if (chunk.kind !== 'event-chunk') throw new Error('expected chunk');
+      expect(chunk).toMatchObject({ kind: 'event-chunk', seq: boundary.seq, offset });
+      chunks.push(chunk.data);
+      offset += chunk.data.length;
+      if (offset === chunk.totalChars) break;
+    }
+    const recovered = JSON.parse(chunks.join(''));
+    expect(recovered.events[0].event.delta).toBe('界'.repeat(100_000));
+    expect(recovered.hasMore).toBe(false);
+    const invalidOffset = await app.inject({
+      method: 'GET',
+      url: `/sessions/s1/history/v1?eventOffset=${offset}`,
+    });
+    expect(invalidOffset.statusCode).toBe(400);
     const legacy = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
     expect(legacy.json().events[0].event.delta).toBe('界'.repeat(100_000));
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'complete tail '.repeat(1000) });
