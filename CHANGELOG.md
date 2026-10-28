@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.63.0](https://github.com/Heey-Global/verity/compare/v4.62.4...v4.63.0) (2026-10-28)
+
+
+### Features
+
+* **backup:** add encrypted local backups and installer recovery ([#1975](https://github.com/Heey-Global/verity/issues/1975)) ([6d5bc40](https://github.com/Heey-Global/verity/commit/6d5bc40184649e6eeb47f0d519a4ef1e36558379))
+
+
+### Bug Fixes
+
+* **code-review:** avoid nested Codex sandbox under gVisor ([#2010](https://github.com/Heey-Global/verity/issues/2010)) ([d83f18a](https://github.com/Heey-Global/verity/commit/d83f18a6de463b75c304871a95128378cb3c823f))
+* **history:** recover oversized events in bounded chunks ([#2007](https://github.com/Heey-Global/verity/issues/2007)) ([91411a7](https://github.com/Heey-Global/verity/commit/91411a70ccf61236f8171e092f29393717c2fa3b))
+
 ## [4.62.4](https://github.com/Heey-Global/verity/compare/v4.62.3...v4.62.4) (2026-10-28)
 
 
