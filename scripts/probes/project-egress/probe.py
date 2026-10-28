@@ -211,6 +211,20 @@ def wait_project(project):
     wait_until(ready)
 
 
+def validate_mounts(project, mounts):
+    by_destination = {mount["Destination"]: mount for mount in mounts}
+    assert len(mounts) == 2 and set(by_destination) == {"/work", "/etc/resolv.conf"}
+    work = by_destination["/work"]
+    assert (
+        work["Type"] == "volume"
+        and work.get("Name") == "pe-" + project
+        and work["RW"] is True
+    )
+    resolver = by_destination["/etc/resolv.conf"]
+    assert resolver["Type"] == "bind" and resolver["RW"] is False
+    assert resolver["Source"] == str(ROOT / "project-resolv.conf")
+
+
 def profiles():
     for project in ("a", "b"):
         inspected = json.loads(docker("inspect", "pe-" + project))[0]
@@ -233,10 +247,7 @@ def profiles():
         assert config["Runtime"] == "runsc-project" and not config["Privileged"]
         assert config["CapDrop"] == ["ALL"] and not config["CapAdd"]
         assert inspected["Config"]["User"] == "65532:65532"
-        assert (
-            len(inspected["Mounts"]) == 1
-            and inspected["Mounts"][0]["Name"] == "pe-" + project
-        )
+        validate_mounts(project, inspected["Mounts"])
     assert REPORT["profiles"]["a"]["id"] != REPORT["profiles"]["b"]["id"]
     save()
 

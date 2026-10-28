@@ -40,6 +40,33 @@ class ReadinessTests(unittest.TestCase):
         )
 
 
+class MountTests(unittest.TestCase):
+    def test_resolver_mount_is_read_only_and_does_not_expose_extra_paths(self):
+        mounts = [
+            {"Destination": "/work", "Type": "volume", "Name": "pe-a", "RW": True},
+            {
+                "Destination": "/etc/resolv.conf",
+                "Type": "bind",
+                "Source": str(probe.ROOT / "project-resolv.conf"),
+                "RW": False,
+            },
+        ]
+        probe.validate_mounts("a", mounts)
+        for index, field, value in (
+            (1, "RW", True),
+            (1, "Source", "/evidence/result.json"),
+            (0, "Name", "pe-b"),
+        ):
+            changed = copy.deepcopy(mounts)
+            changed[index][field] = value
+            with self.assertRaises(AssertionError):
+                probe.validate_mounts("a", changed)
+        with self.assertRaises(AssertionError):
+            probe.validate_mounts(
+                "a", mounts + [{"Destination": "/var/run/docker.sock"}]
+            )
+
+
 class EvidenceTests(unittest.TestCase):
     def report(self):
         cases = [
