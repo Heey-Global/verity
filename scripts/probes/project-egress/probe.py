@@ -188,18 +188,27 @@ def forwarding():
 
 
 def wait_project(project):
-    wait_until(
-        lambda: run(
-            "docker",
-            "exec",
-            "pe-" + project,
-            "test",
-            "-S",
-            "/work/control.sock",
-            check=False,
-        ).returncode
-        == 0
-    )
+    def ready():
+        # A stale socket inode survives on the volume until the new agent starts.
+        try:
+            result = run(
+                "docker",
+                "exec",
+                "pe-" + project,
+                "python3",
+                "/probe/agent.py",
+                "command",
+                json.dumps({"action": "ping"}),
+                timeout=1,
+                check=False,
+            )
+            return result.returncode == 0 and json.loads(result.stdout) == {
+                "ready": True
+            }
+        except (subprocess.TimeoutExpired, json.JSONDecodeError):
+            return False
+
+    wait_until(ready)
 
 
 def profiles():

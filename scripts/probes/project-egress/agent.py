@@ -257,6 +257,8 @@ FLOWS = {}
 
 async def operation(request):
     action = request.get("action", "send")
+    if action == "ping":
+        return {"ready": True}
     if action == "flow-send-batch":
         return {
             "results": [

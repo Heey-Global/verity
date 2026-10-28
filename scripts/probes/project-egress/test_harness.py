@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import socket
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,29 @@ import agent
 import policy
 import probe
 from verify import BOUNDARY_CASES, expected_result, required_cases, verify
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_stale_socket_and_unresponsive_agent_do_not_signal_readiness(self):
+        replies = [
+            subprocess.CompletedProcess([], 1, "", "Connection refused"),
+            subprocess.TimeoutExpired("docker", 1),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, '{"ready": false}', ""),
+            subprocess.CompletedProcess([], 0, '{"ready": true}', ""),
+        ]
+        with (
+            patch.object(probe, "run", side_effect=replies) as run,
+            patch.object(probe.time, "sleep"),
+        ):
+            probe.wait_project("a")
+        self.assertEqual(run.call_count, len(replies))
+        self.assertEqual(run.call_args.args[-2:], ("command", '{"action": "ping"}'))
+
+    def test_ping_response(self):
+        self.assertEqual(
+            asyncio.run(agent.bounded({"action": "ping"})), {"ready": True}
+        )
 
 
 class EvidenceTests(unittest.TestCase):
