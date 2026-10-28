@@ -128,10 +128,18 @@ export class RestorePreviousRuntime {
         !current.find((candidate) => candidate.id === container.id)!.names?.includes(container.name)
       )
         await docker.renameContainer!(container.id, container.name);
+    }
+    // Enable reboot paths only after every previous container has its canonical name again.
+    for (const container of previous.containers) {
+      signal?.throwIfAborted();
       await docker.setContainerRestartPolicy!(container.id, {
         name: container.restartPolicy,
         maximumRetryCount: container.maximumRetryCount,
       });
+    }
+    // Restore every canonical name before an updater can recreate a still-archived container.
+    for (const container of previous.containers) {
+      signal?.throwIfAborted();
       if (container.running && !(await docker.inspectContainer(container.id)).running)
         await docker.startContainer(container.id);
     }

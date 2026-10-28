@@ -76,6 +76,11 @@ it('keeps previous container IDs and restart intent across interrupted stop and 
       }
     },
     startContainer: async (id: string) => {
+      // A resumed updater may recreate any canonical name still left vacant after interruption.
+      expect(containers.slice(0, 2).map((container) => container.name)).toEqual([
+        'verity-server',
+        'verity-updater',
+      ]);
       containers.find((container) => container.id === id)!.running = true;
     },
   } as unknown as DockerClient;
