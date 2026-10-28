@@ -1,5 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import Svg, { Defs, LinearGradient, Stop, Text as SvgText } from 'react-native-svg';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -33,53 +32,6 @@ export function SectionLabel({ children, right }: { children: ReactNode; right?:
     <View style={styles.sectionRow}>
       <Text style={styles.sectionLabel}>{children}</Text>
       {right ? <Text style={styles.sectionHint}>{right}</Text> : null}
-    </View>
-  );
-}
-
-export function MeetingMetrics({ values }: { values: { label: string; value: number }[] }) {
-  const { theme } = useUnistyles();
-  const colors = theme.colors;
-  const gradient = useId();
-  return (
-    <View style={{ flexDirection: 'row', gap: 8 }}>
-      {values.map(({ label, value }, index) => (
-        <View
-          key={label}
-          accessible
-          accessibilityLabel={`${value} ${label}`}
-          style={{
-            flex: 1,
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: 18,
-            backgroundColor: colors.surfaceAlt,
-            paddingVertical: 10,
-            alignItems: 'center',
-          }}
-        >
-          <Svg width="100%" height={30} viewBox="0 0 80 30" accessibilityElementsHidden>
-            <Defs>
-              <LinearGradient id={`${gradient}-${index}`} x1="0" y1="0" x2="1" y2="0">
-                <Stop offset="0" stopColor={colors.signature} />
-                <Stop offset="0.5" stopColor="#a968f3" />
-                <Stop offset="1" stopColor={colors.action} />
-              </LinearGradient>
-            </Defs>
-            <SvgText
-              x={40}
-              y={23}
-              textAnchor="middle"
-              fontSize={22}
-              fontWeight="800"
-              fill={`url(#${gradient}-${index})`}
-            >
-              {value}
-            </SvgText>
-          </Svg>
-          <Text style={{ color: colors.textMuted, ...theme.typography.label }}>{label}</Text>
-        </View>
-      ))}
     </View>
   );
 }

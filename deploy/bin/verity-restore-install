@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Sourced only by the privileged installer while its host lock is held.
+verity_restore_install() {
+  local source_path root job_file worker_image backup_directory previous_project managed_mount='' job_id='' selection='null'
+  local recovery_key='' master_password='' response phase keep_ids='[]' config action addresses
+  local -a mounts
+  [[ $STATE_DIR =~ ^/[A-Za-z0-9/_.-]+$ ]] || die 'restore requires a normalized installer state path'
+  source_path=$(readlink -m -- "$opt_restore")
+  [[ $source_path = /* && $source_path != / && $source_path != *[,:]* ]] || die 'invalid restore source path'
+  root="$STATE_DIR/restore"
+  job_file="$root/job"
+  [[ ! -L $root ]] || die 'restore state must not be a symlink'
+  if [[ -e $root ]]; then
+    [[ -d $root && $(stat -c %u "$root") = 0 && $(stat -c %a "$root") = 700 ]] || die 'restore state must be a private root-owned directory'
+  else
+    install -d -o root -g root -m 0700 "$root"
+  fi
+  if [[ -e $job_file || -L $job_file ]]; then
+    [[ -f $job_file && ! -L $job_file ]] || die 'invalid restore checkpoint'
+    job_id=$(jq -er '.id' "$job_file") || die 'invalid restore checkpoint'
+    if [[ $(jq -er '.selection.source' "$job_file") != "$source_path" ]]; then
+      [[ $opt_restore_action = trial && -n $opt_restore_repository && $(jq -er '.phase' "$job_file") =~ ^(accepted|aborted)$ ]] || die 'source differs from the active restore checkpoint'
+    fi
+  fi
+  if [[ -n $job_id && ! $(jq -er '.phase' "$job_file") =~ ^(accepted|aborted)$ ]]; then
+    [[ -z $opt_restore_repository || $opt_restore_repository = "$(jq -er '.selection.repository' "$job_file")" ]] || die 'repository differs from the active restore checkpoint'
+    [[ -z $opt_restore_snapshot || $opt_restore_snapshot = "$(jq -er '.selection.sequence' "$job_file")" ]] || die 'snapshot differs from the active restore checkpoint'
+    [[ -z $opt_restore_kind || $opt_restore_kind = "$(jq -er '.selection.kind' "$job_file")" ]] || die 'snapshot kind differs from the active restore checkpoint'
+    [[ $opt_restore_new_identity != 1 || $(jq -er '.selection.newIdentity' "$job_file") = true ]] || die 'identity mode differs from the active restore checkpoint'
+  fi
+  backup_directory=${opt_backup_dir:-$(read_state "$STATE_DIR/backup-dir")}
+  backup_directory=${backup_directory:-/var/lib/verity/backups}
+  [[ $backup_directory =~ ^/[A-Za-z0-9/_.-]+$ && $backup_directory != / && $(readlink -m -- "$backup_directory") = "$backup_directory" ]] || die 'invalid restore backup destination'
+  previous_project=${opt_project:-$(read_state "$PROJECT_PATH")}
+  previous_project=${previous_project:-verity}
+  addresses=$(verity_pairing_ipv4_addresses | jq -Rsc 'split("\n") | map(split(" ")[]) | map(select(length > 0))')
+  worker_image=$opt_image
+  if [[ -z $worker_image ]]; then
+    docker pull --quiet "$SERVER_REPO:$opt_tag" >/dev/null || die 'could not pull the installer recovery image'
+    worker_image=$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$SERVER_REPO:$opt_tag" | grep "^$SERVER_REPO@sha256:" | head -n1)
+  fi
+  valid_server_image "$worker_image" || die 'restore worker requires an official digest-pinned image'
+  if docker volume inspect "$MANAGED_DEPLOYMENT_VOLUME" >/dev/null 2>&1; then managed_mount=/restore-previous-managed; fi
+  if [[ $opt_restore_action != status && $opt_restore_action != abort ]]; then
+    if [[ $opt_restore_secrets_stdin = 1 ]]; then
+      IFS= read -r recovery_key || die 'missing recovery key on stdin'
+      IFS= read -r master_password || die 'missing master password on stdin'
+    else
+      [[ -r /dev/tty && -w /dev/tty ]] || die 'restore needs a terminal or --restore-secrets-stdin'
+      if [[ $opt_restore_action = trial || $opt_restore_action = accept ]]; then
+        printf 'Recovery key: ' >/dev/tty; IFS= read -rs recovery_key </dev/tty || die 'cannot read recovery key'; printf '\n' >/dev/tty
+      fi
+      if [[ $opt_restore_action != trial ]]; then
+        printf 'Master password: ' >/dev/tty; IFS= read -rs master_password </dev/tty || die 'cannot read master password'; printf '\n' >/dev/tty
+      fi
+    fi
+  fi
+  if [[ ${#opt_restore_keep_devices[@]} -gt 0 ]]; then
+    [[ $opt_restore_keep_none = 0 ]] || die 'choose devices or --keep-no-devices'
+    keep_ids=$(printf '%s\n' "${opt_restore_keep_devices[@]}" | jq -Rsc 'split("\n")[:-1]')
+  elif [[ $opt_restore_action = review && $opt_restore_keep_none != 1 ]]; then
+    die 'review requires --keep-device or --keep-no-devices'
+  fi
+  _verity_restore_services() {
+    local operation=$1 services="$root/$job_id/host-services" temporary enabled=false active=false
+    [[ -n $job_id ]] || die 'restore service fencing requires a job'
+    [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null || return 0
+    if [[ $operation = freeze ]]; then
+      if [[ ! -e $services && ! -L $services ]]; then
+        systemctl is-enabled --quiet verity-backup-identity.path && enabled=true
+        systemctl is-active --quiet verity-backup-identity.path && active=true
+        temporary=$(mktemp "$root/$job_id/.host-services.XXXXXXXX")
+        jq -cn --arg job "$job_id" --argjson enabled "$enabled" --argjson active "$active" '{format:1,jobId:$job,enabled:$enabled,active:$active}' >"$temporary"
+        chmod 0600 "$temporary"
+        mv -T -- "$temporary" "$services"
+        sync -f "$root/$job_id"
+      fi
+      [[ -f $services && ! -L $services ]] && jq -e --arg job "$job_id" '.format == 1 and .jobId == $job and (.enabled|type)=="boolean" and (.active|type)=="boolean"' "$services" >/dev/null || die 'invalid recovery service checkpoint'
+      if systemctl cat verity-backup-identity.path >/dev/null 2>&1; then
+        systemctl disable --now verity-backup-identity.path >/dev/null 2>&1 || die 'cannot fence the backup identity helper'
+        systemctl stop verity-backup-identity.service || die 'cannot stop the backup identity helper'
+      fi
+    elif [[ -f $services && ! -L $services ]]; then
+      jq -e --arg job "$job_id" '.format == 1 and .jobId == $job' "$services" >/dev/null || die 'invalid recovery service checkpoint'
+      if [[ $(jq -r '.enabled' "$services") = true ]]; then systemctl enable verity-backup-identity.path >/dev/null || die 'cannot restore the backup helper policy'; fi
+      if [[ $(jq -r '.active' "$services") = true ]]; then systemctl start verity-backup-identity.path || die 'cannot restore the backup helper'; fi
+    fi
+  }
+  _verity_restore_call() {
+    action=$1
+    local phase_before='' controller_name='verity-restore-controller' mount_source_mode=readonly
+    [[ -z $job_id ]] || controller_name="verity-restore-${job_id//-/}-controller"
+    [[ ! -f $job_file ]] || phase_before=$(jq -er '.phase' "$job_file")
+    if [[ $action = advance && $phase_before =~ ^(staged|starting-trial)$ ]]; then _verity_restore_services freeze; fi
+    mounts=(--mount "type=bind,src=$STATE_DIR,dst=$STATE_DIR" --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock)
+    if [[ $action = advance && $phase_before =~ ^(promoted|accepting|accepted)$ ]]; then
+      local staged_target
+      staged_target=$(read_state "$STATE_DIR/backup-dir")
+      [[ -z $opt_backup_dir || $opt_backup_dir = "$staged_target" ]] || die 'backup destination differs from the staged restore; abort and stage again to change it'
+      backup_directory=$staged_target
+      mounts+=(--mount type=volume,src=verity-data,dst=/restore-live)
+      mkdir -p -- "$backup_directory"
+      [[ ! -L $backup_directory && $(readlink -f -- "$backup_directory") = "$backup_directory" ]] || die 'backup destination changed'
+      mounts+=(--mount "type=bind,src=$backup_directory,dst=$backup_directory")
+      [[ $source_path != "$backup_directory" ]] || mount_source_mode=''
+    fi
+    if [[ -d $source_path && !( $source_path = "$backup_directory" && -z $mount_source_mode ) ]]; then
+      mounts+=(--mount "type=bind,src=$source_path,dst=$source_path,readonly")
+    fi
+    [[ -z $managed_mount ]] || mounts+=(--mount "type=volume,src=$MANAGED_DEPLOYMENT_VOLUME,dst=$managed_mount")
+    config=$(jq -cn --arg action "$action" --arg root "$root" --arg hostRoot "$STATE_DIR" --arg project "$previous_project" --arg cache "$root/tuf" --arg target "$backup_directory" --arg job "$job_id" --arg managed "$managed_mount" --arg hostname "${VERITY_PAIRING_HOST:-}" --argjson addresses "$addresses" --argjson selection "$selection" --argjson keep "$keep_ids" \
+      '{action:$action,root:$root,hostRoot:$hostRoot,previousComposeProject:$project,tufCachePath:$cache,backupDirectory:$target,addresses:$addresses} + (if $hostname == "" then {} else {hostname:$hostname} end) + (if $job == "" then {} else {jobId:$job} end) + (if $managed == "" then {} else {previousManagedRoot:$managed} end) + (if $selection == null then {} else {selection:$selection} end) + (if $action == "review" then {keepIds:$keep} else {} end)')
+    # jq reads credentials from stdin; neither shell nor Docker arguments contain them.
+    response=$({ printf '%s\n' "$config"; printf '%s\n%s\n' "$recovery_key" "$master_password"; } \
+      | jq -Rn '{configuration:(input|fromjson),recoveryKey:input,masterPassword:input}' \
+      | docker run --rm --interactive --name "$controller_name" --label "verity.restore-job=$job_id" --label verity.restore-controller=1 \
+          --network host --user 0:0 --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64m "${mounts[@]}" "$worker_image" backup-restore-installer) \
+      || die 'restore operation failed; use status, retry the same action, or abort before acceptance'
+  }
+  if [[ $opt_restore_action = status ]]; then _verity_restore_call status; printf '%s\n' "$response"; return; fi
+  if [[ -z $job_id || $(jq -er '.phase' "$job_file") = aborted || ( $opt_restore_action = trial && -n $opt_restore_repository && $(jq -er '.phase' "$job_file") = accepted ) ]]; then
+    [[ $opt_restore_action = trial ]] || die 'begin a restore trial first'
+    [[ -n $opt_restore_repository && $opt_restore_snapshot =~ ^[1-9][0-9]*$ && $opt_restore_kind =~ ^(manual|scheduled|pre-update)$ ]] || die 'new restore requires explicit repository, snapshot and kind'
+    selection=$(jq -n --arg source "$source_path" --arg repository "$opt_restore_repository" --argjson sequence "$opt_restore_snapshot" --arg kind "$opt_restore_kind" --argjson newIdentity "$opt_restore_new_identity" '{source:$source,repository:$repository,sequence:$sequence,kind:$kind,newIdentity:($newIdentity==1)}')
+    _verity_restore_call begin
+    job_id=$(jq -er '.id' <<<"$response")
+    selection='null'
+  fi
+  case "$opt_restore_action" in
+    trial)
+      while :; do
+        phase=$(jq -er '.phase' "$job_file")
+        case "$phase" in verifying|verified|staging|staged|starting-trial) _verity_restore_call advance ;; trial) break ;; *) die 'trial already passed; use status, review, accept or abort' ;; esac
+      done
+      printf '%s\n' 'Restricted recovery trial is ready. Inspect devices, then explicitly review them before acceptance.' ;;
+    devices) _verity_restore_call devices; printf '%s\n' "$response" ;;
+    review) _verity_restore_call review; _verity_restore_call advance; printf '%s\n' "$response" ;;
+    abort) _verity_restore_call abort; _verity_restore_services resume; printf '%s\n' "$response" ;;
+    accept)
+      while :; do
+        phase=$(jq -er '.phase' "$job_file")
+        case "$phase" in reviewed|promoting|promoted|accepting) _verity_restore_call advance ;; accepted) _verity_restore_call advance; break ;; *) die 'complete device review before acceptance' ;; esac
+      done
+      opt_image=$(jq -er '.verified.image' "$job_file")
+      # Use the authenticated release's deployment files and host runtime pins.
+      local payload="$root/$job_id/activation-payload" payload_name="verity-restore-${job_id//-/}-payload" payload_id
+      if docker inspect "$payload_name" >/dev/null 2>&1; then
+        [[ $(docker inspect --format '{{index .Config.Labels "verity.restore-job"}}' "$payload_name") = "$job_id" ]] || die 'restore payload container ownership mismatch'
+        docker rm -f "$payload_name" >/dev/null || die 'cannot remove interrupted restore payload container'
+      fi
+      payload_id=$(docker create --name "$payload_name" --label "verity.restore-job=$job_id" "$opt_image") || die 'cannot open the pinned restore payload'
+      rm -rf -- "$payload"
+      mkdir -m 0700 -- "$payload"
+      docker cp "$payload_id:/opt/verity-install/." "$payload" || die 'cannot extract the pinned restore payload'
+      docker rm "$payload_id" >/dev/null || die 'cannot close the pinned restore payload'
+      [[ -x $payload/deploy/bin/verity-compose && -f $payload/deploy/docker-compose.yml && -f $payload/deploy/host/verity-backup-prerequisites ]] || die 'restore release has an incomplete installer payload'
+      repo_root=$payload
+      script_dir="$payload/deploy/bin"
+      opt_project=''
+      unset COMPOSE_PROJECT_NAME
+      restore_activation=1 ;;
+  esac
+  recovery_key=''; master_password=''
+  unset -f _verity_restore_call
+  unset -f _verity_restore_services
+}

@@ -214,6 +214,9 @@ export type ClientOverrides = {
   stopReturnPathDiagnostics?: VerityClient['stopReturnPathDiagnostics'];
   settings?: VeritySettings;
   listPairedDevices?: jest.Mock;
+  auditHealth?: jest.Mock;
+  auditOperations?: jest.Mock;
+  auditOperation?: jest.Mock;
   getUplinkDiagnostics?: jest.Mock;
   getVeritySettings?: jest.Mock;
   updateVeritySettings?: jest.Mock;
@@ -303,6 +306,10 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     listProviderLimits: opts.listProviderLimits ?? jest.fn().mockResolvedValue([]),
     listPairedDevices: opts.listPairedDevices ?? jest.fn().mockResolvedValue([]),
+    // Audit logs are administrator-only; by default this device is not one.
+    auditHealth: opts.auditHealth ?? jest.fn().mockResolvedValue(null),
+    auditOperations: opts.auditOperations ?? jest.fn().mockResolvedValue(null),
+    auditOperation: opts.auditOperation ?? jest.fn(notImplemented('auditOperation')),
     getUplinkDiagnostics:
       opts.getUplinkDiagnostics ??
       jest.fn().mockResolvedValue({

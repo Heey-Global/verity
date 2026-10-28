@@ -27,6 +27,7 @@ jest.mock('../lib/automaticUpdates', () =>
 );
 
 import SettingsIndexScreen from '../app/settings/index';
+import { SettingsGroup } from '../components/settings/SettingsChrome';
 import {
   VERITY_BASE_URL,
   expectPatchClearsNothing,
@@ -51,6 +52,41 @@ afterEach(() => {
 });
 
 describe('settings index — destinations', () => {
+  it('groups server access and feature controls under their respective categories', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        auditHealth: jest.fn().mockResolvedValue({ status: 'healthy', pendingFailedWrites: 0 }),
+      }),
+    );
+    const { UNSAFE_getAllByType } = render(<SettingsIndexScreen />);
+    await screen.findByText('Audit logs');
+
+    const groups = UNSAFE_getAllByType(SettingsGroup);
+    expect(groups.map((group) => group.props.title)).toEqual([
+      'Features',
+      'App & Server',
+      'This app',
+    ]);
+    const expectedRows = [
+      [
+        'Connections',
+        'Verity Premium',
+        'Vulnerability scan',
+        'Tasks',
+        'Meeting transcription',
+        'Verity Control',
+        'Advanced mode',
+      ],
+      ['Updates', 'Audit logs', 'Devices & Web Browsers', 'Server address'],
+      ['Show welcome tour again', 'Diagnostics', 'Try demo'],
+    ];
+    groups.forEach((group, index) => {
+      for (const title of expectedRows[index]!) {
+        expect(group.findAll((node) => node.props.children === title).length).toBeGreaterThan(0);
+      }
+    });
+  });
+
   it('keeps destinations usable while settings are pending', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -117,6 +153,27 @@ describe('settings index — destinations', () => {
 
     fireEvent.press(await screen.findByLabelText(rowLabel(label)));
     expect(mockPush).toHaveBeenCalledWith(href);
+  });
+
+  // Members' devices and Servers without the trail must not see a dead entry; a
+  // trail that is losing writes must be visible without opening it.
+  it('shows Audit logs only to administrators and flags lost writes', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    const { unmount } = render(<SettingsIndexScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(rowLabel('Audit logs'))).toBeNull();
+    unmount();
+
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        auditHealth: jest.fn().mockResolvedValue({ status: 'degraded', pendingFailedWrites: 2 }),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    const row = await screen.findByLabelText(rowLabel('Audit logs'));
+    expect(screen.getByText('Needs review')).toBeOnTheScreen();
+    fireEvent.press(row);
+    expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');
   });
 
   it('keeps update channel preferences inside server update', async () => {

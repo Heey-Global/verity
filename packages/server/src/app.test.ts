@@ -56,6 +56,22 @@ function fakeProcess(lines: string[]): SpawnedProcess {
 }
 
 describe('buildControlPlane', () => {
+  it('forwards backup runtime ownership without activating the closed acceptance gate', async () => {
+    const close = vi.fn(async () => undefined);
+    const start = vi.fn();
+    const backup = { close, service: { start } } as unknown as NonNullable<
+      ControlPlaneDeps['backup']
+    >;
+    const app = buildControlPlane({ eventStore: ctx.store, bus: new InMemoryEventBus(), backup });
+    try {
+      await app.ready();
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('composes local preview discovery and sharing without an Uplink manager', async () => {
     await ctx.store.createSession({
       sessionId: 'local-preview',

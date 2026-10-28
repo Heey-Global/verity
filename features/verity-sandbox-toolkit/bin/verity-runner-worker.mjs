@@ -25228,6 +25228,15 @@ var boundedHistoryResultSchema = import_zod11.z.discriminatedUnion("kind", [
   boundedHistoryPageSchema,
   import_zod11.z.object({
     contract: import_zod11.z.literal("bounded-history-v1"),
+    kind: import_zod11.z.literal("event-chunk"),
+    seq: import_zod11.z.number().int().positive(),
+    snapshotSeq: import_zod11.z.number().int().nonnegative(),
+    offset: import_zod11.z.number().int().nonnegative(),
+    totalChars: import_zod11.z.number().int().positive(),
+    data: import_zod11.z.string().min(1)
+  }),
+  import_zod11.z.object({
+    contract: import_zod11.z.literal("bounded-history-v1"),
     kind: import_zod11.z.literal("oversized-event"),
     seq: import_zod11.z.number().int().positive(),
     requiredBytes: import_zod11.z.number().int().positive(),

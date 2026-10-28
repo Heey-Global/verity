@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DockerError } from '../docker.js';
+import { createDockerClient, DockerError } from '../docker.js';
 import {
   UPDATE_ATTEMPT_FILE,
   UPDATER_STALL_MS,
@@ -55,6 +55,26 @@ describe('classifyUpdateError', () => {
     expect(classifyUpdateError(new DockerError({ kind: 'conflict', message: 'busy' }))).toBe(
       'docker',
     );
+  });
+
+  /** The cause set is closed and parsed strictly by both generations, so the two
+   *  pull watchdog kinds report as the existing `network-timeout` rather than a
+   *  new value. The errors come from the real client, so a reworded message that
+   *  happened to match another pattern (say, `registry`) would show up here. */
+  it.each([
+    ['pull_stalled', { pullIdleTimeoutMs: 5 }],
+    ['timeout', { pullTimeoutMs: 5, pullIdleTimeoutMs: 60_000 }],
+  ] as const)('reports a %s pull as a network timeout', async (kind, bounds) => {
+    const docker = createDockerClient({
+      baseUrl: 'http://127.0.0.1:9234/v1.41',
+      fetch: () => new Promise<never>(() => undefined),
+      ...bounds,
+    });
+    const error = await docker.pullImage!(
+      `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`,
+    ).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ kind });
+    expect(classifyUpdateError(error)).toBe('network-timeout');
   });
 });
 

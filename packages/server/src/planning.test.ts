@@ -75,6 +75,38 @@ describe('planning routes', () => {
     );
   });
 
+  it('runs the implementation for the authenticated user who approved it', async () => {
+    // The server's auth gate stamps the caller; the route must carry it onto the turn, or an
+    // authenticated server refuses every tool call of the approved plan.
+    const authed = Fastify();
+    authed.decorateRequest('localUserId', null);
+    authed.addHook('onRequest', async (request) => {
+      request.localUserId = 'u1';
+    });
+    registerPlanningRoutes(authed, {
+      eventStore: store,
+      planning: createSessionPlanning({ eventStore: store, dispatchTurn }),
+    });
+    try {
+      await store.setSessionPlanning('s1', 'active');
+      await store.presentSessionPlan('s1', '1. Do it');
+      const res = await authed.inject({
+        method: 'POST',
+        url: '/sessions/s1/planning',
+        payload: { action: 'implement', planningRevision: 1 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        's1',
+        expect.any(String),
+        {},
+        expect.objectContaining({ initiatedBy: { userId: 'u1' } }),
+      );
+    } finally {
+      await authed.close();
+    }
+  });
+
   it('recovers an accepted implementation if dispatch is interrupted before the live queue update', async () => {
     await store.startSessionPlanning('s1');
     const revision = await store.presentSessionPlan('s1', 'Approved work');

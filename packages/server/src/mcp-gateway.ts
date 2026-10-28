@@ -185,6 +185,7 @@ export interface McpGatewayDeps {
     sessionId: string;
     callId: string;
     invocationId: string;
+    authorizationSnapshot?: string;
     requestMac: string;
     macKeyId: string;
     toolName: GatewayToolName;
@@ -209,6 +210,12 @@ export interface McpGatewayDeps {
    * the early refusal and nothing else — the tool still refuses the call itself. So this must
    * never be the only place a check lives.
    */
+  /** Revalidate execution rights after approval and before adapter dispatch. */
+  authorizeExecution?(input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<void>;
   authorizeCall?(
     input: McpGatewayCaller & {
       projectId: string;
@@ -241,6 +248,7 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      authorizationSnapshot?: string;
       toolName: GatewayToolName;
       request: unknown;
     },
@@ -834,7 +842,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         'unavailable',
         keyed,
         toolName,
-        toolError(id, 'Google access changed. Try again.'),
+        toolError(id, 'Tool access changed. Try again.'),
       );
     }
     let answer: ExternalPermissionAnswer;
@@ -880,6 +888,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           sessionId,
           callId,
           invocationId,
+          ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
           ...keyed,
           toolName: toolName,
           input: request.data,
@@ -936,7 +945,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         });
         if (current !== authorizationSnapshot)
           throw new ControlPlaneSessionAuthorityError(
-            'Google access changed while waiting for approval. Submit the operation again.',
+            'Tool access changed while waiting for approval. Submit the operation again.',
           );
       }
       // A card can be parked for minutes, and the caller's turn may settle while it waits —
@@ -948,6 +957,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // release cannot interleave there. A turn that settles once the call is on the wire is
       // not a window any check could close — the request has left. What bounds that case is
       // the tool's own at-most-once fence, which keys on the turn this bearer named.
+      await deps.authorizeExecution?.({ projectId, sessionId, turnId });
       const still =
         token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
       if (still === undefined || still.sessionId !== sessionId || still.turnId !== turnId) {
@@ -961,6 +971,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         callId,
         invocationId,
         approvedByCard: !standingAuthorization,
+        ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
         toolName: toolName,
         request: request.data,
       });

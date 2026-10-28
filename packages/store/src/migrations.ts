@@ -4617,6 +4617,106 @@ migrations['0166_devcontainer_policy'] = {
   },
 };
 
+migrations['0167_managed_server_provider_authority'] = {
+  async up(db) {
+    await sql`alter table managed_dev_servers add column approved_provider_authority text`.execute(
+      db,
+    );
+  },
+  async down(db) {
+    await sql`alter table managed_dev_servers drop column approved_provider_authority`.execute(db);
+  },
+};
+
+migrations['0168_audit_events'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // The allocation counter lives apart from the event rows, so a sequence is never
+    // reissued after its row is gone. The head columns are filled by verification runs.
+    await sql`create table audit_streams (
+        stream_id text primary key,
+        next_sequence integer not null default 0 check (next_sequence >= 0),
+        head_sequence integer,
+        head_hash text,
+        unverified boolean not null default false,
+        created_at timestamptz not null default now()
+      )`.execute(db);
+    await sql`create table audit_events (
+        stream_id text not null,
+        sequence integer not null check (sequence >= 0),
+        event_id text not null unique,
+        schema_version integer not null,
+        recorded_at timestamptz not null,
+        operation_id text not null,
+        domain text not null,
+        kind text not null,
+        project_id text,
+        project_label text,
+        image_id text,
+        event_json text not null,
+        prev_hash text not null,
+        event_hash text not null unique,
+        primary key (stream_id, sequence)
+      )`.execute(db);
+    await sql`create index audit_events_operation on audit_events(operation_id)`.execute(db);
+    await sql`create index audit_events_recorded on audit_events(recorded_at)`.execute(db);
+    await sql`create index audit_events_project on audit_events(project_id, recorded_at)`.execute(
+      db,
+    );
+    await sql`create index audit_events_image on audit_events(image_id)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table audit_events`.execute(db);
+    await sql`drop table audit_streams`.execute(db);
+  },
+};
+
+migrations['0169_live_meeting_results'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table live_meeting_results (
+      meeting_id text primary key references live_meetings(id) on delete cascade,
+      revision bigint not null,
+      status text not null check (status in ('working', 'ready', 'failed')),
+      filed_revision bigint,
+      title text,
+      summary text,
+      decisions_json text not null default '[]',
+      tasks_json text not null default '[]',
+      open_questions_json text not null default '[]',
+      model text,
+      created_at bigint not null,
+      updated_at bigint not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.dropTable('live_meeting_results').execute();
+  },
+};
+
+migrations['0170_backup_foundation'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
+      db,
+    );
+    await sql`insert into backup_policy(id) values (1)`.execute(db);
+    await sql`create table backup_revocation_outbox (
+      id text primary key, device_id text not null, created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table backup_git_repositories (
+      project_id text not null references projects(id) on delete cascade,
+      path text not null, repo_key text not null unique, primary key (project_id, path)
+    )`.execute(db);
+    await sql`create table backup_unassigned_git_repositories (
+      path text primary key, repo_key text not null unique
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table backup_unassigned_git_repositories`.execute(db);
+    await sql`drop table backup_git_repositories`.execute(db);
+    await sql`drop table backup_revocation_outbox`.execute(db);
+    await sql`drop table backup_policy`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

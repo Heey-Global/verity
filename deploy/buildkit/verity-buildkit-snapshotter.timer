@@ -1,0 +1,10 @@
+[Unit]
+Description=Retry deferred Verity BuildKit snapshotter migration
+
+[Timer]
+OnActiveSec=90s
+OnUnitInactiveSec=60s
+Unit=verity-buildkit-snapshotter.service
+
+[Install]
+WantedBy=timers.target

@@ -26,6 +26,12 @@
     },
     "expo-router": {
       "query-string": "$query-string"
+    },
+    "@bacons/xcode": {
+      "uuid": "11.1.1",
+      "@expo/plist": {
+        "@xmldom/xmldom": "0.8.15"
+      }
     }
   },
   "scripts": {
@@ -53,6 +59,7 @@
     "@agentclientprotocol/codex-acp": "2.2.2",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
+    "@expo/plist": "0.10.1",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@openai/codex": "0.164.0",
     "@types/node": "26.6.5",
@@ -61,7 +68,7 @@
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
     "ignore": "7.0.14",
-    "knip": "6.42.1",
+    "knip": "6.43.0",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",

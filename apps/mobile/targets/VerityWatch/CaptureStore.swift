@@ -8,7 +8,10 @@ import WatchKit
 /// sent back its transcript, so a capture survives an unreachable phone, a
 /// relaunch, a watch restart or an iPhone that could not store the file, and is
 /// offered again from `resend()`. A capture is only sent once it has a
-/// project; until then it waits on the watch as "Choose project".
+/// project: picked after the recording, or the last project used when the
+/// picker is left without a tap. It waits on the watch as "Choose project"
+/// when no list is on the watch, when its account is unknown or differs from
+/// the list's (`settle`), or when it was recovered from a cut-short recording.
 struct Capture: Codable, Identifiable, Equatable {
   enum State: String, Codable {
     /// Recorded; waiting for a project, then for WatchConnectivity to deliver the file.
@@ -49,6 +52,8 @@ struct ProjectList: Codable, Equatable, Sendable {
   var phoneLastProjectId: String?
   /// Most recently picked on the watch; wins over the iPhone's choice.
   var watchLastProjectId: String?
+  /// Picked before that; the second shortcut in the picker.
+  var watchPreviousProjectId: String?
 
   /// Parses an application context; nil for anything that is not a project list.
   init?(context: [String: Any]) {
@@ -84,13 +89,20 @@ final class CaptureStore: NSObject, ObservableObject {
   @Published var error: String?
   @Published private(set) var projectList = ProjectList()
   /// The capture the project picker is open for.
-  @Published var choosing: String?
+  @Published private(set) var choosing: String?
+  /// The picker was opened from a row, not by a recording: it offers "Back".
+  @Published private(set) var reopened = false
   /// Brief feedback after a project was picked.
-  @Published private(set) var confirmation: String?
+  @Published private(set) var confirmation: Confirmation?
+
+  struct Confirmation: Equatable {
+    let title: String
+    let detail: String
+  }
 
   private var recorder: AVAudioRecorder?
   private var meter: Timer?
-  private var current: (id: String, start: Date)?
+  private var current: (id: String, start: Date, scope: String?)?
   private var starting = false
   private var heardSpeech = false
   private var quietSince: Date?
@@ -117,6 +129,7 @@ final class CaptureStore: NSObject, ObservableObject {
       projectList = saved
     }
     recoverInterruptedRecordings()
+    settleProjectless()
   }
 
   /// A recording only enters the index when it stops. If watchOS ended the app
@@ -132,6 +145,8 @@ final class CaptureStore: NSObject, ObservableObject {
       guard UUID(uuidString: id) != nil, !known.contains(id) else { continue }
       let created =
         (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+      // No scope: the file may be cut short, so it waits for a tap rather than
+      // being filed by the fallback.
       captures.insert(Capture(id: id, createdAt: created, durationMs: 0, state: .queued), at: 0)
       recovered = true
     }
@@ -146,45 +161,115 @@ final class CaptureStore: NSObject, ObservableObject {
 
   // MARK: Projects
 
-  /// The picker's order: the last project picked here, else on the iPhone, then
-  /// the iPhone's order (most recently captured into first).
+  /// The picker's order: the projects picked here last and before that, then
+  /// the iPhone's last, then the iPhone's order (most recently captured into first).
   var orderedProjects: [WatchProject] {
     let projects = projectList.projects
-    let last = [projectList.watchLastProjectId, projectList.phoneLastProjectId]
-      .compactMap { $0 }
-      .first { id in projects.contains { $0.id == id } }
-    guard let last, let index = projects.firstIndex(where: { $0.id == last }) else {
-      return projects
+    var ordered: [WatchProject] = []
+    for id in [
+      projectList.watchLastProjectId, projectList.watchPreviousProjectId,
+      projectList.phoneLastProjectId,
+    ].compactMap({ $0 }) {
+      if let project = projects.first(where: { $0.id == id }), !ordered.contains(project) {
+        ordered.append(project)
+      }
     }
-    var ordered = projects
-    ordered.insert(ordered.remove(at: index), at: 0)
-    return ordered
+    return ordered + projects.filter { !ordered.contains($0) }
+  }
+
+  /// The two shortcuts on top of the picker.
+  var shortcutProjects: [WatchProject] { Array(orderedProjects.prefix(2)) }
+  var otherProjects: [WatchProject] { Array(orderedProjects.dropFirst(2)) }
+  /// Where a capture goes when the picker is left without a tap.
+  var fallbackProject: WatchProject? { orderedProjects.first }
+
+  /// Opens the picker for a capture still waiting as "Choose project".
+  func reopen(_ id: String) {
+    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else { return }
+    reopened = true
+    choosing = id
+  }
+
+  /// Closes a reopened picker without a pick; the capture keeps waiting.
+  func closePicker() {
+    choosing = nil
+    reopened = false
   }
 
   /// Files the capture under `project` and hands it to the iPhone.
   func assign(_ id: String, to project: WatchProject) {
-    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else {
+    guard fileCapture(id, under: project) else {
       choosing = nil
       return
     }
+    if project.id != projectList.watchLastProjectId {
+      projectList.watchPreviousProjectId = projectList.watchLastProjectId
+      projectList.watchLastProjectId = project.id
+      saveProjects()
+    }
+    choosing = nil
+    reopened = false
+    WKInterfaceDevice.current().play(.success)
+    confirm(
+      Confirmation(
+        title: "Saved to \(project.name)",
+        detail: phoneReachable ? "Transcribing on iPhone…" : "Sends when iPhone is nearby"))
+  }
+
+  /// Closes the picker without a pick: the capture goes to the last project
+  /// used. Without any project list it stays as "Choose project".
+  func settleChoice() {
+    guard let id = choosing else { return }
+    choosing = nil
+    // A picker reopened from a row closes like "Back": the capture keeps waiting.
+    if reopened {
+      reopened = false
+      return
+    }
+    settle(id)
+  }
+
+  /// Files every capture of the current account that still has no project
+  /// (one left in the picker while the list changed) under the last project
+  /// used. A capture spoken before any list was on the watch has no account
+  /// and keeps waiting for a tap, like one from another account.
+  private func settleProjectless() {
+    for capture in captures where capture.projectId == nil && capture.id != choosing {
+      settle(capture.id)
+    }
+  }
+
+  /// Files the capture under the fallback project, but only when it was spoken
+  /// under the account whose list is on the watch now. A capture from another
+  /// account, or one whose account is unknown (recorded before any list came,
+  /// or filed by an older version), keeps waiting as "Choose project": only a
+  /// tap may cross accounts.
+  private func settle(_ id: String) {
+    guard let project = fallbackProject,
+      let capture = captures.first(where: { $0.id == id }),
+      capture.scope != nil && capture.scope == projectList.scope
+    else { return }
+    _ = fileCapture(id, under: project)
+  }
+
+  /// Records the project on the capture and sends it. False if the capture is
+  /// unknown or already filed.
+  private func fileCapture(_ id: String, under project: WatchProject) -> Bool {
+    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else { return false }
     update(id) {
       $0.projectId = project.id
       $0.projectName = project.name
       $0.scope = projectList.scope
     }
-    projectList.watchLastProjectId = project.id
-    saveProjects()
-    choosing = nil
-    if let assigned = captures.first(where: { $0.id == id }) { send(assigned) }
-    WKInterfaceDevice.current().play(.success)
-    confirm(phoneReachable ? "Saved to \(project.name)" : "Waiting for iPhone")
+    if let filed = captures.first(where: { $0.id == id }) { send(filed) }
+    return true
   }
 
-  private func confirm(_ message: String) {
+  private func confirm(_ message: Confirmation) {
     confirmation = message
     confirmationReset?.cancel()
     confirmationReset = Task {
-      try? await Task.sleep(for: .seconds(2.5))
+      try? await Task.sleep(for: .seconds(1.5))
       guard !Task.isCancelled else { return }
       confirmation = nil
     }
@@ -193,10 +278,14 @@ final class CaptureStore: NSObject, ObservableObject {
   private func receive(_ list: ProjectList) {
     var next = list
     // A pick on the watch only means something within the same account.
-    if list.scope == projectList.scope { next.watchLastProjectId = projectList.watchLastProjectId }
+    if list.scope == projectList.scope {
+      next.watchLastProjectId = projectList.watchLastProjectId
+      next.watchPreviousProjectId = projectList.watchPreviousProjectId
+    }
     guard next != projectList else { return }
     projectList = next
     saveProjects()
+    settleProjectless()
   }
 
   private func saveProjects() {
@@ -237,10 +326,14 @@ final class CaptureStore: NSObject, ObservableObject {
         recorder.isMeteringEnabled = true
         guard recorder.record() else { throw CaptureError.recorder }
         self.recorder = recorder
-        current = (id, Date())
+        // The account whose list is on the watch as the recording starts: a
+        // fallback never files the capture under a list that arrives later.
+        current = (id, Date(), projectList.scope)
         heardSpeech = false
         quietSince = nil
         elapsed = 0
+        // A picker still open for the previous capture: file it under the last project.
+        settleChoice()
         choosing = nil
         confirmation = nil
         recording = true
@@ -265,10 +358,12 @@ final class CaptureStore: NSObject, ObservableObject {
     level = 0
     let capture = Capture(
       id: current.id, createdAt: current.start,
-      durationMs: Int(Date().timeIntervalSince(current.start) * 1000), state: .queued)
+      durationMs: Int(Date().timeIntervalSince(current.start) * 1000), state: .queued,
+      scope: current.scope)
     captures.insert(capture, at: 0)
     persist()
-    // Sent once a project is picked; until then it waits as "Choose project".
+    // Sent once a project is picked, or filed under the last one on leaving the picker.
+    reopened = false
     choosing = capture.id
   }
 

@@ -2367,6 +2367,24 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('stamps the initiator on a server-awaited turn', async () => {
+    // Save to project awaits its turn through sendTurn; without the initiator on the prompt,
+    // an authenticated server refuses every gateway call in that turn.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(Promise.resolve()).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'save it', {}, 'Save to project', {
+      initiatedBy: { userId: 'alice' },
+    });
+    expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject({
+      text: 'Save to project',
+      initiatedBy: { userId: 'alice' },
+    });
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
@@ -10368,6 +10386,69 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       target: 'api.revenuecat.com',
       channel: 'acp',
     });
+  });
+
+  it('keeps the server-resolved binding for grant lookup and persistence across approval waits', async () => {
+    await createProjectSession('binding-frozen');
+    let resolveCheck!: (covered: boolean) => void;
+    const check = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const persist = vi.fn(async () => {});
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const params = {
+      sessionId: 'binding-frozen',
+      toolUseId: 'binding-request',
+      toolName: 'verity_http_request',
+      input: { ...gatewayInput, bindingId: 'untrusted-tool-binding' },
+      channel: 'acp' as const,
+      brokeredGrantBindingId: 'original-provider-binding',
+    };
+    const answered = conductor.requestExternalPermission(params);
+    // A provider update while the card waits must not retarget the saved consent.
+    params.brokeredGrantBindingId = 'replacement-provider-binding';
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(check).toHaveBeenCalledWith({
+      projectId: 'project-x',
+      sessionId: 'binding-frozen',
+      secretAlias: 'REVENUECAT_ADMIN_KEY',
+      toolName: 'verity_http_request',
+      target: 'api.revenuecat.com',
+      channel: 'acp',
+      bindingId: 'original-provider-binding',
+    });
+    resolveCheck(false);
+    await vi.waitFor(async () =>
+      expect((await ctx.store.getEvents('binding-frozen')).length).toBe(1),
+    );
+    const onScopeSaved = vi.fn();
+    await conductor.decidePermission(
+      'binding-frozen',
+      'binding-request',
+      { behavior: 'allow' },
+      { scope: 'session', onScopeSaved },
+    );
+    await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
+    expect(conductor.pendingPermissions('binding-frozen')).toEqual([]);
+    expect(persist).toHaveBeenCalledWith({
+      projectId: 'project-x',
+      sessionId: 'binding-frozen',
+      secretAlias: 'REVENUECAT_ADMIN_KEY',
+      toolName: 'verity_http_request',
+      target: 'api.revenuecat.com',
+      channel: 'acp',
+      scope: 'session',
+      bindingId: 'original-provider-binding',
+    });
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
   });
 
   it('binds project CLI grants to the server-resolved execution directory', async () => {

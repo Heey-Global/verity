@@ -1,0 +1,14 @@
+[Unit]
+Description=Export Verity build storage filesystem evidence
+After=docker.service verity-buildkit.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/verity-buildkit/publish-storage-report.sh
+Environment="VERITY_HOST_DIAGNOSTIC_DIR=@DIAGNOSTIC_DIR@"
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths="@DIAGNOSTIC_DIR@"
