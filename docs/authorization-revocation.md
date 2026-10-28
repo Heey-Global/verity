@@ -7,13 +7,22 @@ memberships, revoked execution permission, and failed lookups block dispatch.
 An approval from another person does not restore these rights.
 
 Turns that the server starts on a user's behalf carry that user as their
-initiator. An accepted plan's implementation runs for the user who approved
-it in the app, or for the planning turn's initiator when it is approved from
-the conversation. A Control handoff that starts a turn in the target session
-runs for the user behind the sending Control turn; a handoff folded into a
-turn that is already running is judged as part of that turn. Gateway calls in
-these turns are checked against the target project like any other turn, and
-a turn without an initiator is refused when authentication is enabled.
+initiator:
+
+- an accepted plan's implementation runs for the user who approved it in the
+  app, or for the planning turn's initiator when it is approved from the
+  conversation;
+- save to project, a local merge and a rejected pull request merge run their
+  follow-up turns for the user who asked for them;
+- a Control handoff or a linked session message that starts a turn in the
+  target session runs for the user behind the sending turn, and a saved
+  linked-message approval answered later runs for the user who approves it.
+
+A message folded into a turn that is already running is judged as part of
+that turn. Gateway calls in these turns are checked against the target
+project like any other turn, and a turn without an initiator is refused when
+authentication is enabled. Pull request repair turns that Verity starts on its
+own have no user behind them and remain subject to that refusal.
 
 Scheduled automations check their sponsor before script execution, before
 prompt dispatch, and at queued turn admission. A failed authority check skips

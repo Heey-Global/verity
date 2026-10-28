@@ -937,6 +937,70 @@ it('hands a linked message for a sleeping project to the turn that wakes it', as
   ]);
 });
 
+it('delivers a linked message as a turn of the user behind the sending turn', async () => {
+  const harness = build({ linkedTools: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  for (const [sessionId, projectId] of [
+    ['s1', 'p1'],
+    ['s2', 'p2'],
+  ] as const)
+    await harness.store.createSession({
+      sessionId,
+      projectId,
+      worktree: `/tmp/verity-linked-${sessionId}`,
+      model: 'claude-opus-5',
+    });
+  await harness.store.createSessionLink('s1', 's2');
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Ask the other session',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const response = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_send_session_message',
+        arguments: { targetSessionId: 's2', message: 'Are you there?' },
+      },
+    });
+    expect(
+      (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+      response.body,
+    ).toBeUndefined();
+  });
+  // Without an initiator the peer's turn belongs to nobody, and an authenticated server
+  // refuses every gateway call in it.
+  expect(harness.dispatches).toEqual([
+    expect.objectContaining({
+      sessionId: 's2',
+      dispatchOpts: expect.objectContaining({ initiatedBy: { userId: 'u1' } }),
+    }),
+  ]);
+});
+
 it('keeps an expired linked-message approval until a later decision sends it once', async () => {
   const harness = build({ linkedTools: true, deferLinkedApproval: true });
   for (const [id, repo] of [

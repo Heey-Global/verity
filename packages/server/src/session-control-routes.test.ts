@@ -72,6 +72,38 @@ describe('Session control routes', () => {
     expect(deps.permissionResolved).toHaveBeenCalledWith('s1', 'tool-1');
   });
 
+  it('passes the deciding user to a saved linked-message approval', async () => {
+    // The sending turn has usually ended by the time a saved approval is answered, so the
+    // delivered message runs for the user who approves it; without one it belongs to nobody.
+    const authed = Fastify();
+    authed.decorateRequest('localUserId', null);
+    authed.addHook('onRequest', async (request) => {
+      request.localUserId = 'u1';
+    });
+    const decidePendingLinkedMessage = vi.fn(async () => true);
+    registerSessionControlRoutes(authed, {
+      ...deps,
+      conductor: { ...deps.conductor, decidePermission: vi.fn(async () => false) },
+      decidePendingLinkedMessage,
+    });
+    try {
+      const response = await authed.inject({
+        method: 'POST',
+        url: '/sessions/s1/permissions/link-1',
+        payload: { behavior: 'allow' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(decidePendingLinkedMessage).toHaveBeenCalledWith(
+        's1',
+        'link-1',
+        expect.objectContaining({ behavior: 'allow' }),
+        { userId: 'u1' },
+      );
+    } finally {
+      await authed.close();
+    }
+  });
+
   it('preserves attachments when retracting a queued turn', async () => {
     vi.mocked(deps.conductor.dequeue).mockResolvedValueOnce({
       prompt: 'revise this',

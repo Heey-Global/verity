@@ -5878,6 +5878,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId: string,
         id: string,
         decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+        decidedBy?: { userId: string },
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
@@ -5923,6 +5924,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       message: string;
       invocationId: string;
       approvedByCard: boolean;
+      // The user the delivered turn runs for. Without one, an authenticated server
+      // refuses every gateway call in the peer's turn.
+      initiatedBy: { userId: string } | undefined;
     }): Promise<{ sessionId: string; queued: boolean }> => {
       const source = await deps.eventStore.getSession(input.sourceSessionId);
       const link = await linkedSessionTarget(input.sourceSessionId, input.targetSessionId);
@@ -5975,6 +5979,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             {
               displayPrompt: prompt,
               clientReplyId: `linked:${input.invocationId}`,
+              ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
               peer: {
                 sessionId: input.sourceSessionId,
                 projectId: source.projectId!,
@@ -5993,7 +5998,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       string,
       { behavior: 'allow' | 'deny'; promise: Promise<boolean> }
     >();
-    decidePendingLinkedMessage = (sessionId, id, decision) => {
+    decidePendingLinkedMessage = (sessionId, id, decision, decidedBy) => {
       const key = `${sessionId}\0${id}`;
       const existing = pendingLinkDecisions.get(key);
       if (existing) {
@@ -6018,6 +6023,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           message: pending.message,
           invocationId: pending.invocationId,
           approvedByCard: true,
+          // The sending turn has usually ended by now; the user who approved delivery is
+          // the one the message runs for.
+          initiatedBy: decidedBy,
         });
         // The original gateway call recorded a timeout refusal. Pair it with a
         // served record under the same call id when this saved approval delivers.
@@ -6937,6 +6945,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             message: request.message,
             invocationId: input.invocationId,
             approvedByCard: input.approvedByCard === true,
+            initiatedBy: await runningTurnInitiator(input.sessionId, input.turnId),
           });
           await deps.eventStore.deletePendingSessionLinkMessage(input.sessionId, input.callId);
           return result;
@@ -10324,6 +10333,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
 
     localSavesInFlight.add(id);
+    // The save and its follow-up turns run for the user who asked for it, so they keep
+    // gateway tool access under authentication.
+    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
+    const origin = initiatedBy ? { initiatedBy } : {};
     const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
     const prompt =
       "Save this session's work to the local project. Review the working tree and the branch changes. " +
@@ -10334,7 +10347,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
     void (async () => {
       try {
-        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project');
+        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project', origin);
         if (result.aborted || result.exitCode !== 0) return;
         let approvedTip: string;
         try {
@@ -10353,11 +10366,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
           return;
         }
-        const merged = await mergeLocalSession(id, () => undefined, approvedTip);
+        const merged = await mergeLocalSession(id, () => undefined, approvedTip, initiatedBy);
         if ('error' in merged) {
           await conductor.dispatchTurn(
             id,
@@ -10367,7 +10380,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               { error: merged.error },
             ),
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
         }
       } catch (error) {
@@ -10377,7 +10390,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           )
           .catch(() => undefined);
       } finally {
