@@ -568,3 +568,32 @@ it('reports gaps in the host storage evidence build admission relies on', async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// The Docker inspection before this read can take seconds; a report published
+// meanwhile is fresh, not future-dated.
+it('judges storage evidence freshness when it reads the report', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-clock-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const later = now + 30_000;
+    const observedAt = new Date(later).toISOString();
+    const roots = ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    }));
+    await writeFile(path, JSON.stringify({ schemaVersion: 1, observedAt, roots }));
+    let calls = 0;
+    const read = createRuntimeDiagnostics({
+      buildStorageReportPath: path,
+      now: () => (calls++ === 0 ? now : later),
+    });
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

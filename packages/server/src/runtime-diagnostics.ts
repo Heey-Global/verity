@@ -922,7 +922,12 @@ export function createRuntimeDiagnostics(deps: {
     }
     let buildStorageEvidence: z.infer<typeof buildStorageEvidenceSchema> | undefined;
     if (deps.buildStorageReportPath !== undefined) {
-      const { problems } = readHostStorageEvidence(deps.buildStorageReportPath, now);
+      const { problems } = readHostStorageEvidence(
+        deps.buildStorageReportPath,
+        // Read after the Docker inspection, which can take seconds; the snapshot's
+        // own `now` would make a report published meanwhile look future-dated.
+        deps.now?.() ?? Date.now(),
+      );
       buildStorageEvidence = {
         state: problems.length === 0 ? 'complete' : 'partial',
         problems: problems.slice(0, 10),

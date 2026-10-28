@@ -388,6 +388,21 @@ describe('durable remote operation guard', () => {
   });
 });
 
+// The record keeps uncertain remote work reserved; one bad measurement in the
+// same report must not cost it.
+it('keeps the recovery record when only the measurements are malformed', async () => {
+  const f = fixture();
+  const data = JSON.parse(readFileSync(f.report, 'utf8'));
+  data.roots = 'not a list';
+  writeFileSync(f.report, JSON.stringify(data));
+  const lease = f.manager().acquire();
+  await expect(
+    lease.run('false', [], { ...commandOptions, remoteOperation: 'build-export' }),
+  ).rejects.toThrow();
+  expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
+  lease.dispose();
+});
+
 it('runs remote work without a recovery record when the host identity is unknown', async () => {
   const f = fixture();
   const data = JSON.parse(readFileSync(f.report, 'utf8'));

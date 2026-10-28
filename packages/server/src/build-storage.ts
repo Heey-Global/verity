@@ -41,6 +41,10 @@ const reportSchema = z.object({
     }),
   ),
 });
+const identitySchema = z.object({
+  hostBootId: z.uuid(),
+  hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
+});
 const ownerSchema = z.object({
   version: z.literal(1),
   pid: z.number().int().positive(),
@@ -507,13 +511,15 @@ export class BuildStorage {
           // The record names the host so offline reconciliation can prove its
           // boot ended. Without that identity no such proof is possible, and the
           // work proceeds as an unmanaged build would rather than not at all.
-          let report: z.infer<typeof reportSchema> | undefined;
+          // Read on its own: a malformed measurement must not discard a valid
+          // identity and with it the record that keeps uncertain work reserved.
+          let report: z.infer<typeof identitySchema> | undefined;
           try {
-            report = reportSchema.parse(JSON.parse(readFileSync(this.reportFile, 'utf8')));
+            report = identitySchema.parse(JSON.parse(readFileSync(this.reportFile, 'utf8')));
           } catch {
             report = undefined;
           }
-          if (report?.hostBootId === undefined || report.hostIdentity === undefined) {
+          if (report === undefined) {
             if (!this.warnedRemoteRecord) {
               this.warnedRemoteRecord = true;
               console.warn(
