@@ -6,6 +6,15 @@ user against current project execution permission. Disabled users, removed
 memberships, revoked execution permission, and failed lookups block dispatch.
 An approval from another person does not restore these rights.
 
+Turns that the server starts on a user's behalf carry that user as their
+initiator. An accepted plan's implementation runs for the user who approved
+it in the app, or for the planning turn's initiator when it is approved from
+the conversation. A Control handoff that starts a turn in the target session
+runs for the user behind the sending Control turn; a handoff folded into a
+turn that is already running is judged as part of that turn. Gateway calls in
+these turns are checked against the target project like any other turn, and
+a turn without an initiator is refused when authentication is enabled.
+
 Scheduled automations check their sponsor before script execution, before
 prompt dispatch, and at queued turn admission. A failed authority check skips
 the run. Confirmation-time script checks carry the confirming user's identity.

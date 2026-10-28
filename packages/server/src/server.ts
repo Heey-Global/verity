@@ -3781,6 +3781,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
     );
   };
+  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
+  // `undefined` when the turn is not the session's running one or has no initiator.
+  const runningTurnInitiator = async (
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> => {
+    const running = (await deps.eventStore.listRunningTurns()).find(
+      (t) => t.sessionId === sessionId,
+    );
+    if (running?.turnId !== turnId) return undefined;
+    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
+      (event) => event.seq === running.promptSeq,
+    )?.event;
+    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
+  };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
       try {
@@ -6119,13 +6134,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // the first delivery's answer without a second turn. That is the same trade ADR 0008 made
       // for every dispatch, and it is the safe direction — the failure is a briefing not sent
       // twice, and a caller that meant it can say it differently or send it from a new call.
-      dispatchTurn: ({ sessionId, prompt, displayPrompt, idempotencyKey }) =>
-        conductor.dispatchTurn(
+      dispatchTurn: async ({ sessionId, prompt, displayPrompt, idempotencyKey, caller }) => {
+        const initiatedBy = await runningTurnInitiator(caller.sessionId, caller.turnId);
+        return conductor.dispatchTurn(
           sessionId,
           prompt,
           {},
-          { displayPrompt, clientReplyId: idempotencyKey },
-        ),
+          {
+            displayPrompt,
+            clientReplyId: idempotencyKey,
+            ...(initiatedBy ? { initiatedBy } : {}),
+          },
+        );
+      },
       createSession: async ({ projectId, name, idempotencyKey }) => {
         const existing = controlHandoffSessionCreates.get(idempotencyKey);
         if (existing !== undefined) return existing;
@@ -6856,6 +6877,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               input.sessionId,
               planningRevision,
               planningConsents.get(input.request as object),
+              // Approved from the planning turn, so the implementation runs for its initiator.
+              await runningTurnInitiator(input.sessionId, input.turnId),
             ))
           )
             throw new ControlPlaneSessionAuthorityError(
