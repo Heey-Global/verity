@@ -7423,6 +7423,53 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
+  // The devcontainer CLI ends a failed build with its own stack trace. Kept as
+  // the tail, it replaced the one line that says which step failed and why.
+  it('keeps the BuildKit failure ahead of the CLI stack trace', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const cause =
+        'ERROR: failed to build: failed to solve: process "/bin/sh -c npm install -g example" did not complete successfully: exit code: 1';
+      const frames = Array.from(
+        { length: 20 },
+        (_, index) =>
+          `    at Object.step${index} (/usr/lib/node_modules/@devcontainers/cli/dist/spec-node/devContainersSpecCLI.js:470:${index})`,
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        const error = new Error('Command failed: devcontainer build');
+        (error as Error & { stderr?: string }).stderr = [
+          '#9 [4/6] RUN npm install -g example',
+          '#9 12.40 npm error code E404',
+          `#9 ERROR: process "/bin/sh -c npm install -g example" did not complete successfully: exit code: 1`,
+          cause,
+          'Error: Command failed: docker buildx build --load',
+          ...frames,
+        ].join('\n');
+        throw error;
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists: async () => false }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
+      const row = await ctx.store.getProject(id);
+      expect(row?.provisionError).toContain(cause);
+      expect(row?.provisionError).toContain('npm error code E404');
+      expect(row?.provisionError).not.toContain('devContainersSpecCLI.js');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('redacts inherited and scoped registry credentials from failed build output', async () => {
     const { root } = makeCloneRoot(true);
     const previous = process.env.GITHUB_TOKEN;

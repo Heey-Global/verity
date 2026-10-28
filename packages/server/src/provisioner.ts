@@ -1644,6 +1644,10 @@ function failureMessage(error: unknown): string {
 
 const COMMAND_OUTPUT_TAIL_LINES = 12;
 const COMMAND_OUTPUT_MAX_CHARS = 1000;
+const COMMAND_OUTPUT_CAUSE_LINES = 3;
+const COMMAND_OUTPUT_CAUSE_CHARS = 500;
+const STACK_FRAME = /^\s+at\s.+(?:\(.*\)|:\d+:\d+)$/;
+const BUILD_FAILURE_LINE = /^(?:#\d+ )?ERROR\b|failed to solve|did not complete successfully/;
 
 /** Actionable hint for common devcontainer failures under Verity's sandbox
  *  hardening. The raw command output often BURIES the real cause (e.g. a long
@@ -1703,15 +1707,22 @@ function commandFailureMessage(error: unknown): string {
   const raw = output.length > 0 ? output : error instanceof Error ? error.message : String(error);
   // Surface the TAIL lines — where the real failure is — not an arbitrary
   // char-slice that leads with earlier success noise (e.g. a long install log).
-  const tail = raw
+  // A failing devcontainer CLI ends with its own Node stack trace, which alone
+  // fills the tail; its frames name the CLI, never the cause, so they are dropped.
+  const lines = raw
     .split('\n')
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(-COMMAND_OUTPUT_TAIL_LINES)
-    .join('\n')
-    .slice(-COMMAND_OUTPUT_MAX_CHARS);
+    .filter((line) => line.trim().length > 0 && !STACK_FRAME.test(line));
+  const tail = lines.slice(-COMMAND_OUTPUT_TAIL_LINES).join('\n').slice(-COMMAND_OUTPUT_MAX_CHARS);
+  // BuildKit names the failed step and its exit status once, mid-output; keep it
+  // even when later output pushes it out of the tail.
+  const causes = [...new Set(lines.filter((line) => BUILD_FAILURE_LINE.test(line)))]
+    .slice(-COMMAND_OUTPUT_CAUSE_LINES)
+    .map((line) => line.slice(0, COMMAND_OUTPUT_CAUSE_CHARS))
+    .filter((line) => !tail.includes(line));
+  const body = causes.length > 0 ? `${causes.join('\n')}\n…\n${tail}` : tail;
   const hint = devcontainerFailureHint(raw);
-  return hint !== undefined ? `${hint}\n\n${tail}` : tail;
+  return hint !== undefined ? `${hint}\n\n${body}` : body;
 }
 
 /** Failure message for a devcontainer build (ADR 0003 R3.1). Prefers the
