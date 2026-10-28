@@ -87,10 +87,13 @@ export function buildStoragePolicy(
     return Number(value);
   };
   return {
-    // Unknown/native builds are deliberately expensive. This is an admission
-    // estimate, never a claim that cache GC bounds active snapshot growth.
-    // Allowances: context 2 + snapshots 256 + archive 16 + import 32 GiB.
-    estimateBytes: positive('VERITY_BUILD_ESTIMATE_GIB', 2 + 256 + 16 + 32) * GiB,
+    // An admission estimate for an unknown build, never a claim that cache GC
+    // bounds active snapshot growth. Overlay snapshots grow by what the steps
+    // write, not by a copy of the image per step: a multi-gigabyte devcontainer
+    // exports a ~4 GiB archive. Allowances: context 2 + snapshots 16 + archive 8
+    // + import 16 GiB. The former 256 GiB snapshot allowance sized the native
+    // snapshotter and refused every build on hosts with less than 316 GiB free.
+    estimateBytes: positive('VERITY_BUILD_ESTIMATE_GIB', 2 + 16 + 8 + 16) * GiB,
     reserveBytes: positive('VERITY_BUILD_FREE_GIB', 10) * GiB,
     reserveInodes: positive('VERITY_BUILD_FREE_INODES', 1_000_000, 12),
   };

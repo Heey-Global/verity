@@ -62,7 +62,11 @@ const commandOptions = { env: process.env, timeout: 5000, maxBuffer: 1024 * 1024
 
 describe('build storage admission', () => {
   it('rejects malformed settings and keeps conservative unknown-build defaults', () => {
-    expect(buildStoragePolicy({}).estimateBytes).toBeGreaterThan(100 * GiB);
+    // The default must let an ordinary host build at all: a 306 GiB estimate
+    // refused every build with 78 GiB free while the build needed about 15.
+    const fallback = buildStoragePolicy({});
+    expect(fallback.estimateBytes + fallback.reserveBytes).toBeLessThanOrEqual(64 * GiB);
+    expect(fallback.estimateBytes).toBeGreaterThanOrEqual(24 * GiB);
     expect(buildStoragePolicy({ VERITY_BUILD_ESTIMATE_GIB: '42' }).estimateBytes).toBe(42 * GiB);
     // Writing the documented default explicitly must not prevent Server startup.
     const defaults = buildStoragePolicy({});
