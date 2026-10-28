@@ -7470,6 +7470,50 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
+  // Redaction matches whole values after formatting. A length cut inside a
+  // credential would leave a fragment no redaction recognises.
+  it('never cuts a credential when shortening failed build output', async () => {
+    const { root } = makeCloneRoot(true);
+    const registryToken = 'ghs_' + 'k'.repeat(60);
+    try {
+      const id = await seedProject();
+      // The cause line's 500-character limit and the tail's 1000-character limit
+      // both fall inside the token.
+      const cause = `ERROR: failed to solve: ${'x'.repeat(450)} ${registryToken} rejected`;
+      const filler = Array.from({ length: 11 }, (_, index) => `#9 ${index} ${'y'.repeat(80)}`);
+      const lead = `#9 ${'z'.repeat(1000 - 11 * 84 - 30)} ${registryToken}`;
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        const error = new Error('Command failed: devcontainer build');
+        (error as Error & { stderr?: string }).stderr = [
+          cause,
+          'later output',
+          lead,
+          ...filler,
+        ].join('\n');
+        throw error;
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists: async () => false }).client,
+        projectTokenMint: async () => 'server-side-token',
+        registryTokenMint: async () => registryToken,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
+      const row = await ctx.store.getProject(id);
+      expect(row?.provisionError).toContain('ERROR: failed to solve');
+      expect(row?.provisionError).not.toMatch(/k{8}/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('redacts inherited and scoped registry credentials from failed build output', async () => {
     const { root } = makeCloneRoot(true);
     const previous = process.env.GITHUB_TOKEN;

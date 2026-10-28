@@ -1697,6 +1697,23 @@ async function serverCanReachSupervisor(runtimePath: string): Promise<void> {
   );
 }
 
+// Callers redact credentials by exact value after formatting. A cut inside a
+// token would leave a fragment that redaction no longer matches, so output is
+// cut only at whitespace and the token the limit falls in is dropped whole.
+function keepLast(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const window = text.slice(-max);
+  const boundary = window.search(/\s/);
+  return boundary === -1 ? '' : window.slice(boundary + 1);
+}
+
+function keepFirst(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const window = text.slice(0, max + 1);
+  const boundary = window.search(/\s\S*$/);
+  return boundary === -1 ? '' : `${window.slice(0, boundary)} …`;
+}
+
 function commandFailureMessage(error: unknown): string {
   const stdout = (error as { stdout?: unknown } | null)?.stdout;
   const stderr = (error as { stderr?: unknown } | null)?.stderr;
@@ -1713,12 +1730,15 @@ function commandFailureMessage(error: unknown): string {
     .split('\n')
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0 && !STACK_FRAME.test(line));
-  const tail = lines.slice(-COMMAND_OUTPUT_TAIL_LINES).join('\n').slice(-COMMAND_OUTPUT_MAX_CHARS);
+  const tail = keepLast(
+    lines.slice(-COMMAND_OUTPUT_TAIL_LINES).join('\n'),
+    COMMAND_OUTPUT_MAX_CHARS,
+  );
   // BuildKit names the failed step and its exit status once, mid-output; keep it
   // even when later output pushes it out of the tail.
   const causes = [...new Set(lines.filter((line) => BUILD_FAILURE_LINE.test(line)))]
     .slice(-COMMAND_OUTPUT_CAUSE_LINES)
-    .map((line) => line.slice(0, COMMAND_OUTPUT_CAUSE_CHARS))
+    .map((line) => keepFirst(line, COMMAND_OUTPUT_CAUSE_CHARS))
     .filter((line) => !tail.includes(line));
   const body = causes.length > 0 ? `${causes.join('\n')}\n…\n${tail}` : tail;
   const hint = devcontainerFailureHint(raw);
