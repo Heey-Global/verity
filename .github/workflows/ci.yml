@@ -1000,7 +1000,7 @@ jobs:
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe
+      VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,

@@ -2,7 +2,7 @@
 # adapter at /usr/local/bin/verity-secret-job-pilot; the server pins the resulting image by digest.
 
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS builder
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS builder
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
@@ -29,7 +29,7 @@ COPY features features
 RUN npm run build
 
 # renovate: datasource=docker depName=node
-FROM node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS deps
+FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 AS deps
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./

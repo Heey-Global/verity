@@ -104,7 +104,7 @@ postgres_url="postgresql://verity:$db_password@$postgres:5432/verity"
 server_args=(--network "$network" --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$(pwd):/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe node packages/server/dist/runner-claude-live-server.js)
+  node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70 node packages/server/dist/runner-claude-live-server.js)
 
 docker run -d --name "$server_a" "${server_args[@]}" start >/dev/null
 for _ in $(seq 1 120); do
