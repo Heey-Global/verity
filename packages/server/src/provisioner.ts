@@ -6168,7 +6168,11 @@ export class ProvisionerImpl implements Provisioner {
         await probe?.dispose();
       }
     }
-    const storageLease = this.opts.buildStorage?.admit();
+    const storageLease = await this.opts.buildStorage?.admitInTurn((ahead) => {
+      console.log(
+        `Devcontainer build for ${project.owner}/${project.repo} waits for ${ahead} other image build(s) on this Server to finish.`,
+      );
+    });
     let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
     try {
       snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);

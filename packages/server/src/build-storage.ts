@@ -339,6 +339,10 @@ const activeDirectories = new Set<string>();
  */
 export class BuildStorage {
   private held = false;
+  /** Builds waiting for this Server's one lease, first come first served. */
+  private readonly waiting: Array<() => void> = [];
+  /** A waiter was woken and has not yet taken its turn; newcomers queue behind it. */
+  private handingOver = false;
   private currentDirectory: string | undefined;
   private unresolved: UnresolvedBuildAttempt[] = [];
   private warnedUnprovisioned = false;
@@ -409,6 +413,71 @@ export class BuildStorage {
       }
     }
     return this.acquire();
+  }
+
+  /**
+   * {@link admit}, but a build that finds another project's build holding this
+   * Server's lease waits for its turn instead of failing with "busy". Waiters are
+   * served in arrival order. Every other refusal — capacity, host maintenance,
+   * an unreadable admission state — still fails at once, as {@link admit} does.
+   * A build holds the lease for at most its commands' bounds, so the wait is
+   * bounded too.
+   */
+  async admitInTurn(onQueued?: (ahead: number) => void): Promise<BuildStorageLease> {
+    if (this.held || this.handingOver || this.waiting.length > 0) {
+      // A refusal that does not depend on the lease answers now, not after the wait;
+      // admit() checks everything again once the turn comes.
+      this.refuseUnadmittableHost();
+      const ahead = this.waiting.length + 1;
+      const turn = new Promise<void>((resolve) => this.waiting.push(resolve));
+      // Only a notice: a failing one must not leave a woken turn unclaimed.
+      try {
+        onQueued?.(ahead);
+      } catch {
+        /* the wait goes on */
+      }
+      await turn;
+      this.handingOver = false;
+    }
+    try {
+      return this.admit();
+    } finally {
+      // An unmanaged lease or a refusal leaves the lease free for the next waiter.
+      if (!this.held) this.wakeNext();
+    }
+  }
+
+  /** The host-side refusals of {@link acquire}, without taking a lease or marker. */
+  private refuseUnadmittableHost(): void {
+    if (this.admissionDirectory === undefined) return;
+    const admission = this.admissionState(this.admissionDirectory);
+    if (admission.state === 'not-provisioned') return;
+    if (admission.state !== 'provisioned')
+      throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
+    let reason: string | undefined;
+    const fd = openSync(join(this.admissionDirectory, 'build-admission.lock'), 'r');
+    try {
+      const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
+        stdio: ['ignore', 'ignore', 'pipe', fd],
+        timeout: 5000,
+      });
+      if (locked.status !== 0) reason = 'builder maintenance is in progress';
+      else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
+        reason = 'builder migration recovery is pending';
+    } finally {
+      closeSync(fd);
+    }
+    if (reason !== undefined)
+      throw new Error(
+        `Builder admission unavailable: ${reason}; retry after managed maintenance completes`,
+      );
+  }
+
+  private wakeNext(): void {
+    const next = this.waiting.shift();
+    if (next === undefined) return;
+    this.handingOver = true;
+    next();
   }
 
   /**
@@ -1021,6 +1090,7 @@ export class BuildStorage {
         this.held = false;
         this.currentDirectory = undefined;
         activeDirectories.delete(directory);
+        this.wakeNext();
       },
     };
   }

@@ -7271,6 +7271,63 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
+  // A build that met another project's build used to fail with "Build storage busy".
+  it('waits for another project’s build to finish instead of failing', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const report = join(root, 'report.json');
+      writeFileSync(
+        report,
+        JSON.stringify({
+          schemaVersion: 1,
+          observedAt: new Date().toISOString(),
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
+          roots: [],
+        }),
+      );
+      const storage = new BuildStorage(
+        join(root, 'build-storage'),
+        report,
+        { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+        () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+      );
+      // Another project's build holds this Server's lease.
+      const other = storage.acquire();
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+      });
+      try {
+        const provisioned = provisioner.provision(id);
+        await vi.waitFor(() =>
+          expect(log).toHaveBeenCalledWith(
+            expect.stringContaining('waits for 1 other image build'),
+          ),
+        );
+        expect(build).not.toHaveBeenCalled();
+        other.dispose();
+        expect((await provisioned).state).toBe('active');
+        expect(build).toHaveBeenCalledOnce();
+      } finally {
+        log.mockRestore();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // The provisioning error keeps a dozen lines; a pip or ansible-galaxy failure fills those
   // with its own traceback before the cause, which was then lost.
   it('keeps the last hundred lines of a failed build for diagnostics', async () => {
