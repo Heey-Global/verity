@@ -1630,6 +1630,40 @@ describe('self-update release gate', () => {
     // the text of this step would agree with a broken version of it.
   });
 
+  // The live smoke gates every Server release, so its critical path is the release's.
+  // Building the harness only after the registry pull and daemon start added its whole
+  // duration to that path; starting it before them and joining it before the image build
+  // keeps it off the path without ever running it beside the image build.
+  it('builds the smoke harness alongside the predecessor pull, never beside the image build', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsed.jobs['live-smoke']?.steps ?? [];
+    const index = (name: string) => {
+      const position = steps.findIndex((step) => step.name === name);
+      expect(position, name).toBeGreaterThanOrEqual(0);
+      return position;
+    };
+    const start = steps[index('Start the host-side harness build')];
+    const join = steps[index('Join the host-side harness build')];
+    expect(start?.run).toContain('npm ci --ignore-scripts && npm run build');
+    expect(start?.run).toContain('setsid bash -c');
+    expect(index('Start the host-side harness build')).toBeLessThan(
+      index('Fetch the previously released Server image'),
+    );
+    expect(index('Load the previous release into the isolated daemon')).toBeLessThan(
+      index('Join the host-side harness build'),
+    );
+    expect(index('Join the host-side harness build')).toBeLessThan(
+      index('Build the Server image into the isolated daemon'),
+    );
+    // A join that does not read the exit code turns a broken harness into a smoke that
+    // fails later and for the wrong reason, or not at all.
+    expect(join?.run).toContain('verity-harness-build.status');
+    expect(join?.run).toMatch(/if \[\[ "\$code" != 0 \]\]; then/u);
+    expect(steps.some((step) => /^\s*npm run build\s*$/mu.test(step.run ?? ''))).toBe(false);
+  });
+
   it('prepares a candidate-backed predecessor only for the first package bootstrap', () => {
     const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
