@@ -56,6 +56,8 @@ interface LayerState {
   downloaded: number;
   /** The layer's bytes are on the host; what is left is local work. */
   settled: boolean;
+  /** A retry countdown ran; the next attempt's counter starts a new epoch. */
+  retrying: boolean;
 }
 
 /**
@@ -109,10 +111,30 @@ export class PullProgressTracker {
       this.messages.add(key);
       return true;
     }
-    if (RETRY_COUNTDOWN.test(status)) return false;
     let layer = this.layers.get(id);
+    if (RETRY_COUNTDOWN.test(status)) {
+      // The retried attempt restarts its counter, possibly below the previous
+      // high-water mark; comparing against that mark would read a healthy
+      // retry as a stall. The countdown itself is still not progress.
+      if (layer !== undefined) layer.retrying = true;
+      return false;
+    }
+    if (layer?.retrying === true) {
+      layer.retrying = false;
+      layer.status = status;
+      layer.current = 0;
+      this.apply(layer, status, current, total);
+      return true;
+    }
     if (layer === undefined) {
-      layer = { status, current: 0, downloadTotal: undefined, downloaded: 0, settled: false };
+      layer = {
+        status,
+        current: 0,
+        downloadTotal: undefined,
+        downloaded: 0,
+        settled: false,
+        retrying: false,
+      };
       this.layers.set(id, layer);
       this.apply(layer, status, current, total);
       return true;

@@ -272,19 +272,27 @@ describe('DockerClient.pullImage over the unix socket', () => {
 });
 
 describe('PullProgressTracker', () => {
-  it('ignores the classic store counting down its own layer retry', () => {
+  it('ignores the retry countdown but follows the retried counter from zero', () => {
     const tracker = new PullProgressTracker();
-    expect(
-      tracker.observe({ status: 'Downloading', id: 'a', progressDetail: { current: 1 } }),
-    ).toBe(true);
+    const downloading = (current: number) =>
+      tracker.observe({
+        status: 'Downloading',
+        id: 'a',
+        progressDetail: { current, total: 1000 },
+      });
+    expect(downloading(1)).toBe(true);
+    expect(downloading(800)).toBe(true);
     expect(tracker.observe({ status: 'Retrying in 5 seconds', id: 'a' })).toBe(false);
     expect(tracker.observe({ status: 'Retrying in 4 seconds', id: 'a' })).toBe(false);
-    expect(
-      tracker.observe({ status: 'Downloading', id: 'a', progressDetail: { current: 1 } }),
-    ).toBe(false);
-    expect(
-      tracker.observe({ status: 'Downloading', id: 'a', progressDetail: { current: 2 } }),
-    ).toBe(true);
+    // The retried attempt restarts below the previous mark of 800. Measuring it
+    // against that mark would fail a healthy transfer as stalled.
+    expect(downloading(0)).toBe(true);
+    expect(downloading(0)).toBe(false);
+    expect(downloading(100)).toBe(true);
+    expect(downloading(200)).toBe(true);
+    expect(downloading(200)).toBe(false);
+    // The byte summary keeps what was already received.
+    expect(tracker.summary()).toMatchObject({ bytesDone: 800, bytesTotal: 1000 });
   });
 
   it('keeps waiting on the network while any layer is still queued', () => {
