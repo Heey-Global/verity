@@ -182,7 +182,7 @@ function finiteNonNegative(value: unknown): number | undefined {
 }
 
 /** `1536` → `1.5 KB`; decimal units, as `docker pull` prints them. */
-export function formatBytes(bytes: number): string {
+function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
   let unit = 0;

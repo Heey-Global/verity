@@ -677,7 +677,7 @@ const DEFAULT_PULL_LOG_INTERVAL_MS = 30_000;
 const CONTAINER_WAIT_TIMEOUT_MS = 300_000;
 
 /** Per-call options for {@link DockerClient.pullImage}. */
-export interface PullImageOptions {
+interface PullImageOptions {
   /** Abort a caller-owned disposable operation, including image download. */
   signal?: AbortSignal;
   /** Override the client-level `registryAuth` for this single pull. */
