@@ -9731,12 +9731,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
       // a long session with only its tail and fetch older turns on scroll-up, instead
       // of replaying the whole event log. Live updates still arrive over the WS stream.
-      boundedHistory: async (reply, id, beforeSeq, snapshotSeq) => {
+      boundedHistory: async (reply, id, beforeSeq, snapshotSeq, eventOffset) => {
         if (!(await deps.eventStore.getSession(id))) {
           reply.code(404);
           return { error: `session ${id} not found` };
         }
-        return deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq);
+        try {
+          return await deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq, eventOffset);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          reply.code(400);
+          return { error: 'invalid history offset' };
+        }
       },
       history: async (reply, id, limit, beforeSeq) => {
         const session = await deps.eventStore.getSession(id);

@@ -4462,11 +4462,12 @@ export class EventStore implements EventSink {
     sessionId: string,
     beforeSeq?: number,
     snapshotSeq?: number,
+    eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
     // One query establishes the initial snapshot, including the empty-log case.
     const source = await this.getEventsBeforeSeq(
       sessionId,
-      HISTORY_MAX_EVENTS,
+      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
       snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
     );
     const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
@@ -4488,7 +4489,23 @@ export class EventStore implements EventSink {
       };
       const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
       if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0)
+        if (page.events.length === 0) {
+          if (eventOffset !== undefined) {
+            const serialized = JSON.stringify(candidate);
+            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
+            // Leave room for the chunk envelope, including all numeric cursors.
+            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
+            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
+            return {
+              contract: 'bounded-history-v1',
+              kind: 'event-chunk',
+              seq: event.seq,
+              snapshotSeq: snapshot,
+              offset: eventOffset,
+              totalChars: serialized.length,
+              data: serialized.slice(eventOffset, eventOffset + chunkChars),
+            };
+          }
           return {
             contract: 'bounded-history-v1',
             kind: 'oversized-event',
@@ -4497,6 +4514,7 @@ export class EventStore implements EventSink {
             maxBytes: HISTORY_MAX_BYTES,
             snapshotSeq: snapshot,
           };
+        }
         return page;
       }
       Object.assign(page, candidate);
