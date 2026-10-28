@@ -524,3 +524,76 @@ it('reports whether the host provisioned build admission', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// Build admission no longer refuses on missing storage evidence, so the gap has
+// to be visible somewhere other than a failed build.
+it('reports gaps in the host storage evidence build admission relies on', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const read = createRuntimeDiagnostics({ buildStorageReportPath: path, now: () => now });
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['host storage report is missing or invalid'],
+    });
+    const observedAt = new Date(now).toISOString();
+    const root = (kind: string) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    });
+    const roots = ['buildkit', 'docker', 'export', 'project'].map(root);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        observedAt,
+        roots: [...roots, { kind: 'containerd', path: '/x', state: 'unavailable' }],
+      }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['containerd filesystem is not established'],
+    });
+    await writeFile(
+      path,
+      JSON.stringify({ schemaVersion: 1, observedAt, roots: [...roots, root('containerd')] }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// The Docker inspection before this read can take seconds; a report published
+// meanwhile is fresh, not future-dated.
+it('judges storage evidence freshness when it reads the report', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-clock-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const later = now + 30_000;
+    const observedAt = new Date(later).toISOString();
+    const roots = ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    }));
+    await writeFile(path, JSON.stringify({ schemaVersion: 1, observedAt, roots }));
+    let calls = 0;
+    const read = createRuntimeDiagnostics({
+      buildStorageReportPath: path,
+      now: () => (calls++ === 0 ? now : later),
+    });
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

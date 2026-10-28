@@ -41,6 +41,10 @@ const reportSchema = z.object({
     }),
   ),
 });
+const identitySchema = z.object({
+  hostBootId: z.uuid(),
+  hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
+});
 const ownerSchema = z.object({
   version: z.literal(1),
   pid: z.number().int().positive(),
@@ -87,10 +91,13 @@ export function buildStoragePolicy(
     return Number(value);
   };
   return {
-    // Unknown/native builds are deliberately expensive. This is an admission
-    // estimate, never a claim that cache GC bounds active snapshot growth.
-    // Allowances: context 2 + snapshots 256 + archive 16 + import 32 GiB.
-    estimateBytes: positive('VERITY_BUILD_ESTIMATE_GIB', 2 + 256 + 16 + 32) * GiB,
+    // An admission estimate for an unknown build, never a claim that cache GC
+    // bounds active snapshot growth. Overlay snapshots grow by what the steps
+    // write, not by a copy of the image per step: a multi-gigabyte devcontainer
+    // exports a ~4 GiB archive. Allowances: context 2 + snapshots 16 + archive 8
+    // + import 16 GiB. The former 256 GiB snapshot allowance sized the native
+    // snapshotter and refused every build on hosts with less than 316 GiB free.
+    estimateBytes: positive('VERITY_BUILD_ESTIMATE_GIB', 2 + 16 + 8 + 16) * GiB,
     reserveBytes: positive('VERITY_BUILD_FREE_GIB', 10) * GiB,
     reserveInodes: positive('VERITY_BUILD_FREE_INODES', 1_000_000, 12),
   };
@@ -163,6 +170,66 @@ export function readBuilderAdmissionState(directory: string): BuilderAdmissionSt
   return { state: 'incomplete', missing };
 }
 
+export interface HostStorageEvidence {
+  /** Lowest measured free bytes across the host roots, when any was measured. */
+  availableBytes?: number;
+  freeInodes?: number;
+  /** Why a root was not measured; empty when every root was. */
+  problems: string[];
+}
+
+const HOST_STORAGE_ROOTS = ['buildkit', 'docker', 'containerd', 'export', 'project'] as const;
+
+/**
+ * Reads the host storage report as measurements. A missing, stale or partial
+ * report is not evidence of low space: admission then checks what was measured
+ * and names the gaps, instead of refusing every build because a reporter or its
+ * configuration is missing while the disks have room.
+ */
+export function readHostStorageEvidence(
+  reportFile: string,
+  now: number = Date.now(),
+): HostStorageEvidence {
+  let report: z.infer<typeof reportSchema>;
+  try {
+    const input = readFileSync(reportFile, 'utf8');
+    if (input.length > 262144) return { problems: ['host storage report exceeds its size limit'] };
+    report = reportSchema.parse(JSON.parse(input));
+  } catch {
+    return { problems: ['host storage report is missing or invalid'] };
+  }
+  const fresh = (observedAt: string | undefined) => {
+    if (observedAt === undefined) return false;
+    const age = now - Date.parse(observedAt);
+    return age >= -5000 && age <= 120_000;
+  };
+  if (!fresh(report.observedAt)) return { problems: ['host storage report is stale'] };
+  const evidence: HostStorageEvidence = { problems: [] };
+  for (const kind of HOST_STORAGE_ROOTS) {
+    const roots = report.roots.filter((root) => root.kind === kind);
+    const root = roots[0];
+    if (
+      roots.length !== 1 ||
+      root?.state !== 'available' ||
+      root.availableBytes === undefined ||
+      root.freeInodes === undefined ||
+      root.filesystemId === undefined
+    ) {
+      evidence.problems.push(`${kind} filesystem is not established`);
+      continue;
+    }
+    if (!fresh(root.observedAt)) {
+      evidence.problems.push(`${kind} filesystem sample is stale or missing`);
+      continue;
+    }
+    // Treat all roots as aliases for admission. Summing independent free
+    // budgets would over-admit on the common single-host-filesystem layout.
+    evidence.availableBytes = Math.min(evidence.availableBytes ?? Infinity, root.availableBytes);
+    evidence.freeInodes = Math.min(evidence.freeInodes ?? Infinity, root.freeInodes);
+  }
+  return evidence;
+}
+
 /** One active Server owns an Engine, as with derived-image collection. All
  * projects share this admission gate, including context staging and import.
  * Recovery only removes positively identified abandoned attempts; ambiguous
@@ -171,6 +238,8 @@ export function readBuilderAdmissionState(directory: string): BuilderAdmissionSt
 export class BuildStorage {
   private held = false;
   private warnedUnprovisioned = false;
+  private evidenceWarning = '';
+  private warnedRemoteRecord = false;
   constructor(
     readonly root: string,
     private readonly reportFile = '/run/verity-host-diagnostics/storage.json',
@@ -187,42 +256,28 @@ export class BuildStorage {
     let available = local.availableBytes;
     let inodes = local.freeInodes;
     if (host) {
-      let report: z.infer<typeof reportSchema>;
-      try {
-        const input = readFileSync(this.reportFile, 'utf8');
-        if (input.length > 262144) unavailable('host storage report exceeds its size limit');
-        report = reportSchema.parse(JSON.parse(input));
-      } catch {
-        unavailable('host storage report is missing or invalid');
-      }
-      const age = Date.now() - Date.parse(report.observedAt);
-      if (age < -5000 || age > 120_000) unavailable('host storage report is stale');
-      for (const kind of ['buildkit', 'docker', 'containerd', 'export', 'project']) {
-        const roots = report.roots.filter((root) => root.kind === kind);
-        const root = roots[0];
-        if (
-          roots.length !== 1 ||
-          root?.state !== 'available' ||
-          root.availableBytes === undefined ||
-          root.freeInodes === undefined ||
-          root.filesystemId === undefined
-        )
-          unavailable(`${kind} filesystem is not established`);
-        const rootAge =
-          root.observedAt === undefined ? Infinity : Date.now() - Date.parse(root.observedAt);
-        if (rootAge < -5000 || rootAge > 120_000)
-          unavailable(`${kind} filesystem sample is stale or missing`);
-        // Treat all roots as aliases for admission. Summing independent free
-        // budgets would over-admit on the common single-host-filesystem layout.
-        available = Math.min(available, root.availableBytes);
-        inodes = Math.min(inodes, root.freeInodes);
-      }
+      const evidence = readHostStorageEvidence(this.reportFile);
+      if (evidence.availableBytes !== undefined)
+        available = Math.min(available, evidence.availableBytes);
+      if (evidence.freeInodes !== undefined) inodes = Math.min(inodes, evidence.freeInodes);
+      this.reportEvidence(evidence.problems);
     }
     if (available < bytes + this.policy.reserveBytes || inodes < this.policy.reserveInodes) {
       throw new Error(
         `Build storage admission rejected: available ${Math.floor(available / GiB)} GiB and ${inodes} free inodes; requires ${Math.ceil(bytes / GiB)} GiB estimated growth plus ${Math.ceil(this.policy.reserveBytes / GiB)} GiB reserve and ${this.policy.reserveInodes} free inodes. Retry after capacity is available or configure an estimate supported by bounded build measurements.`,
       );
     }
+  }
+
+  // Logged when the set of evidence gaps changes, not on every two-second sample.
+  private reportEvidence(problems: string[]): void {
+    const warning = problems.join('; ');
+    if (warning === this.evidenceWarning) return;
+    this.evidenceWarning = warning;
+    if (warning !== '')
+      console.warn(
+        `Build storage admission is using partial host evidence (${warning}); only measured filesystems are checked.`,
+      );
   }
 
   /**
@@ -453,29 +508,44 @@ export class BuildStorage {
             );
           // Persist before spawning: a Server crash must never turn an unknown
           // remote solve/import into a positively abandoned local-only attempt.
-          const report = reportSchema.parse(JSON.parse(readFileSync(this.reportFile, 'utf8')));
-          if (report.hostBootId === undefined || report.hostIdentity === undefined)
-            unavailable(
-              'host identity is missing; repair the host storage reporter before remote work',
+          // The record names the host so offline reconciliation can prove its
+          // boot ended. Without that identity no such proof is possible, and the
+          // work proceeds as an unmanaged build would rather than not at all.
+          // Read on its own: a malformed measurement must not discard a valid
+          // identity and with it the record that keeps uncertain work reserved.
+          let report: z.infer<typeof identitySchema> | undefined;
+          try {
+            report = identitySchema.parse(JSON.parse(readFileSync(this.reportFile, 'utf8')));
+          } catch {
+            report = undefined;
+          }
+          if (report === undefined) {
+            if (!this.warnedRemoteRecord) {
+              this.warnedRemoteRecord = true;
+              console.warn(
+                'Build storage has no host identity in the storage report; remote build work runs without a durable recovery record.',
+              );
+            }
+          } else {
+            writeFileSync(
+              remoteRecord,
+              JSON.stringify({
+                version: 1,
+                operation: options.remoteOperation,
+                hostBootId: report.hostBootId,
+                hostIdentity: report.hostIdentity,
+                startedAt: new Date().toISOString(),
+              }),
+              { mode: 0o600, flag: 'wx', flush: true },
             );
-          writeFileSync(
-            remoteRecord,
-            JSON.stringify({
-              version: 1,
-              operation: options.remoteOperation,
-              hostBootId: report.hostBootId,
-              hostIdentity: report.hostIdentity,
-              startedAt: new Date().toISOString(),
-            }),
-            { mode: 0o600, flag: 'wx', flush: true },
-          );
-          syncDirectory();
-          for (const path of [this.root, dirname(this.root)]) {
-            const rootFd = openSync(path, 'r');
-            try {
-              fsyncSync(rootFd);
-            } finally {
-              closeSync(rootFd);
+            syncDirectory();
+            for (const path of [this.root, dirname(this.root)]) {
+              const rootFd = openSync(path, 'r');
+              try {
+                fsyncSync(rootFd);
+              } finally {
+                closeSync(rootFd);
+              }
             }
           }
         }
@@ -571,7 +641,7 @@ export class BuildStorage {
               });
             },
           );
-          if (options.remoteOperation !== undefined) {
+          if (options.remoteOperation !== undefined && existsSync(remoteRecord)) {
             unlinkSync(remoteRecord);
             syncDirectory();
           }
