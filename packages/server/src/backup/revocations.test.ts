@@ -172,6 +172,14 @@ it('commits the signed journal floor before interrupted retirement and preserves
     result = await readRevocations(target, recoveryKey);
     expect(result.findings).toEqual([]);
     expect([...result.revokedIds]).toEqual(['later']);
+    await journal.queue('also-later');
+    let checks = 0;
+    await journal.retire(() => Promise.resolve(++checks <= 2));
+    result = await readRevocations(target, recoveryKey);
+    expect(result.findings).toEqual([]);
+    expect(result.revokedIds.size).toBe(1);
+    await journal.retire();
+    expect((await readRevocations(target, recoveryKey)).revokedIds.size).toBe(0);
   } finally {
     await destination.close();
   }

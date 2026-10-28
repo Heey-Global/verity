@@ -211,6 +211,7 @@ export class BackupRevocationJournal {
         );
         for (const name of entries)
           if (/^[1-9][0-9]*$/.test(name)) {
+            if (!(await shouldPrune())) return;
             await this.destination.assertPresent();
             await rm(join(this.root, name), { force: true });
           }
