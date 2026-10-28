@@ -25,16 +25,20 @@ if [[ -e $policy ]]; then
 fi
 docker_root=$(timeout 5s docker info --format '{{.DockerRootDir}}' 2>/dev/null) || docker_root=
 # Unconfigured, the containerd root is read from the running containerd that
-# serves the address Docker reports. Its own command line decides: --root and
-# --address override the configuration, and --config names the file the same
-# binary resolves. A configuration file alone can disagree with a daemon started
+# serves the address Docker reports. That daemon's own command line decides:
+# --root and --address override its configuration file, and --config names
+# that file. Only root's processes count, and nothing a process names is ever
+# executed; the file is read as data, with containerd's built-in defaults where
+# it is silent. A configuration file alone can disagree with a daemon started
 # with overrides, and another filesystem would then be measured instead.
-# Anything that does not resolve stays unavailable rather than guessed.
+# Anything that does not resolve to exactly one daemon stays unavailable.
 proc=${VERITY_PROC_ROOT:-/proc}
-# Prints "<address> <root>" for one running containerd, or nothing.
+default_config=${VERITY_CONTAINERD_CONFIG:-/etc/containerd/config.toml}
+# Prints "<address> <root>" for one running root-owned containerd, or nothing.
 containerd_effective() {
-    local pid=$1 argument value flag= config= root= address= dump
+    local pid=$1 argument value flag= config=$default_config root= address= file=
     local -a arguments=()
+    [[ $(awk '/^Uid:/ { print $2; exit }' "$proc/$pid/status" 2>/dev/null) == 0 ]] || return 0
     mapfile -d '' -t arguments < "$proc/$pid/cmdline" 2>/dev/null || return 0
     for argument in "${arguments[@]:1}"; do
         if [[ -n $flag ]]; then value=$argument
@@ -52,26 +56,32 @@ containerd_effective() {
         esac
         flag=
     done
-    dump=$(timeout 5s "$proc/$pid/exe" ${config:+--config "$config"} config dump 2>/dev/null) || dump=
+    if [[ -f $config && ! -L $config ]]; then file=$(head -c 262144 -- "$config"); fi
     # containerd 1.x writes [grpc] and double quotes; 2.x the grpc plugin table and single quotes.
     [[ -n $address ]] || address=$(awk '/^[[:space:]]*\[/ {
             grpc = ($0 ~ /^[[:space:]]*\[grpc\][[:space:]]*$/ ||
                     $0 ~ /^[[:space:]]*\[plugins\.["\x27]io\.containerd\.server\.v1\.grpc["\x27]\][[:space:]]*$/) }
-        grpc && /^[[:space:]]*address[[:space:]]*=/ { sub(/^[^"\x27]*["\x27]/, ""); sub(/["\x27].*$/, ""); print; exit }' <<< "$dump")
-    [[ -n $root ]] || root=$(sed -nE "s/^root[[:space:]]*=[[:space:]]*[\"']([/][^\"']*)[\"'][[:space:]]*$/\1/p" <<< "$dump" | head -n 1)
-    if [[ -n $address && $root == /* ]]; then printf '%s %s\n' "$address" "$root"; fi
+        grpc && /^[[:space:]]*address[[:space:]]*=/ { sub(/^[^"\x27]*["\x27]/, ""); sub(/["\x27].*$/, ""); print; exit }' <<< "$file")
+    [[ -n $root ]] || root=$(sed -nE "s/^root[[:space:]]*=[[:space:]]*[\"']([/][^\"']*)[\"'][[:space:]]*$/\1/p" <<< "$file" | head -n 1)
+    # containerd's compiled-in defaults, the same in 1.x and 2.x.
+    printf '%s %s\n' "${address:-/run/containerd/containerd.sock}" "${root:-/var/lib/containerd}"
 }
 if [[ $containerd_root == /.verity-storage-unavailable ]]; then
     docker_containerd=$(timeout 5s docker info --format '{{.Containerd.Address}}' 2>/dev/null) || docker_containerd=
-    candidates=()
-    for comm in "$proc"/[0-9]*/comm; do
-        [[ $(cat "$comm" 2>/dev/null) == containerd ]] || continue
-        pid=${comm%/comm}
-        read -r address root < <(containerd_effective "${pid##*/}") || continue
-        [[ -n $docker_containerd && $address == "$docker_containerd" && -d $root ]] && candidates+=("$root")
-    done
-    # One serving daemon, one root; anything ambiguous is not measured.
-    if ((${#candidates[@]} == 1)); then containerd_root=${candidates[0]}; fi
+    serving=()
+    if [[ -n $docker_containerd ]]; then
+        for comm in "$proc"/[0-9]*/comm; do
+            [[ $(cat "$comm" 2>/dev/null) == containerd ]] || continue
+            pid=${comm%/comm}
+            read -r address root < <(containerd_effective "${pid##*/}") || continue
+            [[ $address == "$docker_containerd" ]] && serving+=("$root")
+        done
+    fi
+    # Count every daemon claiming the address before judging its root: dropping
+    # an unresolved one first would make the other look unique.
+    if ((${#serving[@]} == 1)) && [[ ${serving[0]} == /* && -d ${serving[0]} ]]; then
+        containerd_root=${serving[0]}
+    fi
 fi
 if [[ -z $export_root ]]; then
     export_root=$(timeout 5s docker volume inspect --format '{{.Mountpoint}}' "$volume" 2>/dev/null) || export_root=

@@ -140,18 +140,29 @@ test('publisher takes the containerd root from the daemon Docker uses', () => {
     const v2 = (address) =>
       `version = 3\nroot = '${root}'\n\n[plugins]\n  [plugins.'io.containerd.server.v1.grpc']\n    address = '${address}'\n  [plugins.'io.containerd.server.v1.ttrpc']\n    address = '${address}.ttrpc'\n`;
     const v1 = `version = 2\nroot = "${root}"\n\n[debug]\n  address = ""\n\n[grpc]\n  address = "/run/containerd/containerd.sock"\n`;
-    // A fake process table: each daemon's binary prints the configuration it
-    // would resolve, the default one or the file named by --config.
-    const daemon = (pid, args, defaultConfig) => {
+    // A fake process table. The publisher reads each daemon's command line and
+    // configuration file; its binary only records that it was executed.
+    const executed = join(work, 'executed');
+    const daemon = (pid, args, { config, uid = 0 } = {}) => {
       const dir = join(work, 'proc', String(pid));
       spawnSync('mkdir', ['-p', dir]);
       writeFileSync(join(dir, 'comm'), 'containerd\n');
-      writeFileSync(join(dir, 'cmdline'), ['/usr/bin/containerd', ...args, ''].join('\0'));
-      writeFileSync(join(work, `default-${pid}.toml`), defaultConfig);
-      script(
-        `bin/containerd-${pid}`,
-        `if [ "$1" = --config ]; then cat "$2"; else cat '${join(work, `default-${pid}.toml`)}'; fi`,
+      writeFileSync(
+        join(dir, 'status'),
+        `Name:\tcontainerd\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`,
       );
+      const configFile = join(work, `config-${pid}.toml`);
+      if (config !== undefined) writeFileSync(configFile, config);
+      writeFileSync(
+        join(dir, 'cmdline'),
+        [
+          '/usr/bin/containerd',
+          ...(config === undefined ? [] : ['--config', configFile]),
+          ...args,
+          '',
+        ].join('\0'),
+      );
+      script(`bin/containerd-${pid}`, `touch '${executed}'`);
       spawnSync('ln', ['-sfn', join(work, 'bin', `containerd-${pid}`), join(dir, 'exe')]);
     };
     const publish = (dockerAddress, roots) => {
@@ -165,6 +176,7 @@ test('publisher takes the containerd root from the daemon Docker uses', () => {
           ...process.env,
           PATH: `${join(work, 'bin')}:${process.env.PATH}`,
           VERITY_PROC_ROOT: join(work, 'proc'),
+          VERITY_CONTAINERD_CONFIG: join(work, 'absent-default.toml'),
           VERITY_HOST_DIAGNOSTIC_DIR: join(work, 'state'),
           VERITY_BUILDKIT_LIBEXEC: join(work, 'libexec'),
           VERITY_BUILD_STORAGE_ROOTS: roots ?? join(work, 'absent.conf'),
@@ -182,23 +194,34 @@ test('publisher takes the containerd root from the daemon Docker uses', () => {
 
     for (const config of [v2(system), v1]) {
       reset();
-      daemon(100, [], config);
+      daemon(100, [], { config });
       assert.equal(publish(system), root);
     }
     reset();
-    daemon(100, ['--root', other], v2(system));
+    daemon(100, ['--root', other], { config: v2(system) });
     assert.equal(publish(system), other, 'a --root override names the filesystem in use');
     reset();
-    writeFileSync(join(work, 'custom.toml'), v2('/run/custom/containerd.sock'));
-    daemon(100, ['--config', join(work, 'custom.toml')], v2(system));
-    assert.equal(publish('/run/custom/containerd.sock'), root, 'its --config file is resolved');
+    daemon(100, ['--address', '/run/custom/containerd.sock'], { config: v2(system) });
+    assert.equal(publish('/run/custom/containerd.sock'), root, 'an --address override is honoured');
     assert.equal(publish(system), unavailable, 'a daemon not serving Docker is ignored');
     reset();
-    daemon(100, [], v2(system));
-    daemon(200, ['--root', other], v2(system));
+    daemon(100, [], { config: v2(system) });
+    daemon(200, ['--root', other], { config: v2(system) });
     assert.equal(publish(system), unavailable, 'two daemons claiming one address are ambiguous');
     reset();
-    daemon(100, [], v2(system));
+    daemon(100, [], { config: v2(system) });
+    daemon(200, ['--root', join(work, 'missing-root')], { config: v2(system) });
+    assert.equal(publish(system), unavailable, 'an unresolved second claimant is still a claimant');
+    reset();
+    // Anyone can name a process containerd; only root's daemons count, and no
+    // process binary is ever run.
+    daemon(100, ['--root', other], { config: v2(system), uid: 1000 });
+    assert.equal(publish(system), unavailable);
+    daemon(200, [], { config: v2(system) });
+    assert.equal(publish(system), root);
+    assert.equal(existsSync(executed), false, 'a process binary was executed');
+    reset();
+    daemon(100, [], { config: v2(system) });
     writeFileSync(join(work, 'roots.conf'), 'version=1\ncontainerdRoot=/srv/containerd\n');
     assert.equal(publish(system, join(work, 'roots.conf')), '/srv/containerd');
   } finally {
