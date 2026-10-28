@@ -16,6 +16,7 @@ import {
 } from './vulnerability.js';
 import {
   boundedHistoryResultSchema,
+  boundedHistoryPageSchema,
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
 } from '@verity/events';
@@ -4957,44 +4958,91 @@ export class VerityClient {
     const params = new URLSearchParams();
     if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
     if (opts.snapshotSeq !== undefined) params.set('snapshotSeq', String(opts.snapshotSeq));
-    let res;
-    try {
-      res = await this.request(
-        `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
-        { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
-        this.fetchImpl,
-        { trace: opts.timing },
-      );
-    } catch (error) {
-      if (error instanceof VerityApiError && error.status === 404) {
-        throw new Error(
-          'Bounded history is unavailable. Update Core and check that this session still exists.',
-          { cause: error },
+    const read = async () => {
+      let res;
+      try {
+        res = await this.request(
+          `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
+          { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
+          this.fetchImpl,
+          { trace: opts.timing },
         );
+      } catch (error) {
+        if (error instanceof VerityApiError && error.status === 404) {
+          throw new Error(
+            'Bounded history is unavailable. Update Core and check that this session still exists.',
+            { cause: error },
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    markSessionSwitch(opts.timing, 'events-body-read-start');
-    const body = await res.text();
-    markSessionSwitch(opts.timing, 'events-body-read-end');
-    if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
-      throw new Error('Core returned history above the supported size limit. Update Core.');
-    }
-    let json: unknown;
-    try {
-      json = JSON.parse(body);
-    } catch {
-      throw new Error('Core does not support the required history contract. Update Core.');
-    }
-    const parsed = boundedHistoryResultSchema.safeParse(json);
-    if (!parsed.success)
-      throw new Error('Core does not support the required history contract. Update Core.');
-    const page = parsed.data;
+      markSessionSwitch(opts.timing, 'events-body-read-start');
+      const body = await res.text();
+      markSessionSwitch(opts.timing, 'events-body-read-end');
+      if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
+        throw new Error('Core returned history above the supported size limit. Update Core.');
+      }
+      let json: unknown;
+      try {
+        json = JSON.parse(body);
+      } catch {
+        throw new Error('Core does not support the required history contract. Update Core.');
+      }
+      const parsed = boundedHistoryResultSchema.safeParse(json);
+      if (!parsed.success)
+        throw new Error('Core does not support the required history contract. Update Core.');
+      return parsed.data;
+    };
+    let page = await read();
     if (page.kind === 'oversized-event') {
-      throw new Error(
-        `History event ${page.seq} exceeds the page size limit. No events were skipped.`,
-      );
+      const boundary = page;
+      if (
+        (opts.snapshotSeq !== undefined && boundary.snapshotSeq !== opts.snapshotSeq) ||
+        boundary.seq > boundary.snapshotSeq ||
+        (opts.beforeSeq !== undefined && boundary.seq >= opts.beforeSeq)
+      )
+        throw new Error('Core returned invalid history cursors.');
+      // Pin all chunks to this event and snapshot. No history cursor advances
+      // until the complete original page has been reconstructed and validated.
+      params.set('snapshotSeq', String(boundary.snapshotSeq));
+      params.set('beforeSeq', String(boundary.seq + 1));
+      const chunks: string[] = [];
+      let offset = 0;
+      let totalChars: number | undefined;
+      do {
+        if (opts.signal?.aborted) throw new Error('History loading was cancelled.');
+        params.set('eventOffset', String(offset));
+        const chunk = await read();
+        if (chunk.kind === 'oversized-event')
+          throw new Error(
+            'Oversized history recovery is unavailable. Update Core. No events were skipped.',
+          );
+        if (
+          chunk.kind !== 'event-chunk' ||
+          chunk.seq !== boundary.seq ||
+          chunk.snapshotSeq !== boundary.snapshotSeq ||
+          chunk.offset !== offset ||
+          chunk.totalChars > boundary.requiredBytes ||
+          (totalChars !== undefined && chunk.totalChars !== totalChars) ||
+          offset + chunk.data.length > chunk.totalChars
+        )
+          throw new Error('Core returned invalid history chunks.');
+        totalChars = chunk.totalChars;
+        chunks.push(chunk.data);
+        offset += chunk.data.length;
+      } while (offset < totalChars);
+      const serialized = chunks.join('');
+      if (new TextEncoder().encode(serialized).byteLength !== boundary.requiredBytes)
+        throw new Error('Core returned incomplete history chunks.');
+      page = boundedHistoryPageSchema.parse(JSON.parse(serialized));
+      if (
+        page.snapshotSeq !== boundary.snapshotSeq ||
+        page.events.length !== 1 ||
+        page.events[0]?.seq !== boundary.seq
+      )
+        throw new Error('Core returned invalid history chunks.');
     }
+    if (page.kind !== 'page') throw new Error('Core returned unexpected history chunks.');
     if (
       (opts.snapshotSeq !== undefined && page.snapshotSeq !== opts.snapshotSeq) ||
       page.events.some(

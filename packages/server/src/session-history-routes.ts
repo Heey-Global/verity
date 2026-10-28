@@ -48,6 +48,7 @@ export interface SessionHistoryRouteDeps {
     sessionId: string,
     beforeSeq?: number,
     snapshotSeq?: number,
+    eventOffset?: number,
   ) => Promise<unknown>;
   diagnostics: (reply: FastifyReply, sessionId: string) => Promise<unknown>;
 }
@@ -85,8 +86,14 @@ export function registerSessionHistoryRoutes(
     { compress: { encodings: ['gzip', 'deflate'] } },
     async (request, reply): Promise<unknown> => {
       const { id } = sessionParams.parse(request.params);
-      const { beforeSeq, snapshotSeq } = z
+      const { beforeSeq, snapshotSeq, eventOffset } = z
         .object({
+          eventOffset: z.coerce
+            .number()
+            .int()
+            .nonnegative()
+            .max(Number.MAX_SAFE_INTEGER)
+            .optional(),
           beforeSeq: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
           snapshotSeq: z.coerce
             .number()
@@ -96,7 +103,7 @@ export function registerSessionHistoryRoutes(
             .optional(),
         })
         .parse(request.query);
-      return deps.boundedHistory(reply, id, beforeSeq, snapshotSeq);
+      return deps.boundedHistory(reply, id, beforeSeq, snapshotSeq, eventOffset);
     },
   );
   app.get('/sessions/:id/diagnostics', async (request, reply): Promise<unknown> => {
