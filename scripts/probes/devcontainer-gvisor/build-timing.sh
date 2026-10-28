@@ -5,6 +5,8 @@
 set -euo pipefail
 [[ ${GITHUB_ACTIONS:-} == true ]] || { echo 'GitHub Actions only' >&2; exit 1; }
 : "${RUNNER_TEMP:?}" "${PROBE_EVIDENCE:?}" "${DEVCONTAINER_CLI:?}"
+[[ -x $DEVCONTAINER_CLI ]] || { echo "No devcontainer CLI at $DEVCONTAINER_CLI" >&2; exit 1; }
+failed=0
 mkdir -p "$PROBE_EVIDENCE"
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 
@@ -63,6 +65,7 @@ run() {
         grep -E '^(ERROR|#[0-9]+ ERROR)' "$log" | head -n 5 || true
         printf '```\n'
     } | tee -a "$summary"
+    if ((status != 0)); then failed=1; fi
 }
 
 run gvisor-production timing-gvisor
@@ -70,3 +73,4 @@ run runc-reference timing-runc
 # Same production service without its CPU and memory ceilings, for attribution.
 sudo systemctl set-property --runtime verity-buildkit CPUQuota= MemoryMax=infinity
 run gvisor-unbounded timing-gvisor
+exit "$failed"

@@ -89,7 +89,7 @@ jobs:
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Time the repository devcontainer build per step
         env:
-          DEVCONTAINER_CLI: ${{ github.workspace }}/features/verity-sandbox-toolkit/npm/devcontainers/node_modules/.bin/devcontainer
+          DEVCONTAINER_CLI: ${{ github.workspace }}/node_modules/.bin/devcontainer
           PROBE_EVIDENCE: ${{ runner.temp }}/build-timing
         run: bash scripts/probes/devcontainer-gvisor/build-timing.sh
       - name: Retain build logs
