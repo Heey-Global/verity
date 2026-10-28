@@ -89,7 +89,10 @@ published CI covers them. They do not retroactively extend that baseline run.
   assertion requires review when an enrollment/recovery-named table appears.
 - [Route authorization](../packages/server/src/backup/routes.test.ts) repeats
   actor denials after availability opens. [Trial routes](../packages/server/src/backup/restore-trial.test.ts)
-  reject normal operations even with a valid recovery session; the
+  reject actual project, turn and update endpoints even with a valid recovery
+  session. The complete flat-router table is restricted to health and recovery
+  routes, including routes registered before readiness; the accidental pairing
+  route mutation was rerun against this allowlist and failed. The
   [runtime specification](../packages/server/src/backup/restore-trial-runtime.test.ts)
   restricts mounts/environment, ports, capabilities and entrypoint.
 - [Probe jobs](../packages/server/src/backup/probe-jobs.test.ts) scan job files and

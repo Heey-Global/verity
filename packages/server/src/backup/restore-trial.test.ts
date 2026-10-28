@@ -61,7 +61,19 @@ describe('isolated recovery trial', () => {
       () => clock,
     );
     try {
-      expect((await app.inject('/api/projects')).statusCode).toBe(404);
+      expect((await app.inject('/projects')).statusCode).toBe(404);
+      // Inspect the complete flat router, including routes registered before app.ready().
+      const registered = app
+        .printRoutes({ commonPrefix: false })
+        .trim()
+        .split('\n')
+        .map((line) => line.replace(/^[^/]*(?=\/)/, ''))
+        .sort();
+      expect(registered).toEqual([
+        '/health (GET, HEAD)',
+        '/recovery/authenticate (POST)',
+        '/recovery/devices (GET, HEAD, POST)',
+      ]);
       expect((await app.inject('/recovery/devices')).statusCode).toBe(401);
       expect(
         (
@@ -91,17 +103,18 @@ describe('isolated recovery trial', () => {
       const { token } = authenticated.json<{ token: string }>();
       const headers = { authorization: `Bearer ${token}` };
       // A valid recovery session authorizes review only, never normal installation operations.
-      for (const url of [
-        '/api/projects',
-        '/pair/enroll',
-        '/devices/pairing-invitations',
-        '/projects/p/wake',
-        '/sessions/s/messages',
-        '/api/server/update',
-        '/api/backups/setup',
-      ]) {
-        const denied = await app.inject({ method: 'POST', url, headers, payload: {} });
-        expect(denied.statusCode, url).toBe(404);
+      for (const [method, url] of [
+        ['GET', '/projects'],
+        ['POST', '/projects'],
+        ['POST', '/pair/enroll'],
+        ['POST', '/devices/pairing-invitations'],
+        ['POST', '/projects/p/wake'],
+        ['POST', '/sessions/s/turns'],
+        ['POST', '/server/updates'],
+        ['POST', '/api/backups/setup'],
+      ] as const) {
+        const denied = await app.inject({ method, url, headers });
+        expect(denied.statusCode, `${method} ${url}`).toBe(404);
       }
 
       expect((await app.inject({ url: '/recovery/devices', headers })).json()).toEqual({

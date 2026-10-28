@@ -24,7 +24,7 @@
     },
     {
       "path": "packages/server/src/backup/restore-trial.test.ts",
-      "sha256": "5615e656c1f44f4ee267a02f51865a6da6509332d62eb55e8c91636f252cc43d"
+      "sha256": "a8f05d7ce1deea3f788486ff5fad9a9d2a2ae055d1e0b7f377cf8c8f04dd3607"
     },
     {
       "path": "packages/server/src/backup/restore-trial-runtime.test.ts",
@@ -242,8 +242,10 @@
       "originalSourceSha256": "00b0617ad1f8467d5d050086c11aeceeae7f6f4b56ba88870333f3f5e1e1c345",
       "exitCode": 1,
       "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
         "FAIL  packages/server/src/backup/restore-trial.test.ts > isolated recovery trial > requires password and explicit device review, never retains revoked devices or serves ordinary routes",
-        "AssertionError: /pair/enroll: expected 200 to be 404 // Object.is equality",
+        "AssertionError: expected [ '/health (GET, HEAD)', \u2026(3) ] to deeply equal [ '/health (GET, HEAD)', \u2026(2) ]",
+        "+   \"/pair/enroll (POST)\",",
         "Tests  1 failed | 1 skipped (2)"
       ]
     },
@@ -548,7 +550,8 @@
   "guardRefinements": [
     "An initial hostile-config mutation passed with a version-only include; malformed included configuration now detects sanitizer bypass.",
     "An initial preview-deletion mutation passed because assertions iterated only the implementation reset list; seeded tables now have independent postconditions and every reset table must have nonempty fixtures.",
-    "An initial logging mutation passed because JSON.stringify(Error) omits its message; captured console arguments now use node:util format, including Error messages/stacks."
+    "An initial logging mutation passed because JSON.stringify(Error) omits its message; captured console arguments now use node:util format, including Error messages/stacks.",
+    "Some initial trial probes used nonexistent normal API paths. Actual project/turn/update endpoints and a complete flat-router allowlist now reject accidental ordinary-route registration, including early registration; the trial-route mutation was rerun and detected."
   ],
   "verification": {
     "backupSuite": {
@@ -602,6 +605,12 @@
       "verification": "Independent pg_database query against exact runDatabaseNames(namespace, 64), after original teardown completed."
     },
     "digestVerification": "All 23 mutation source digests and all recorded test digests matched after restoration",
-    "globalRecoveryAccepted": false
+    "globalRecoveryAccepted": false,
+    "reviewFollowUp": {
+      "scope": "restore-trial.test.ts after replacing stale endpoint probes and adding complete flat-router allowlist",
+      "testsPassed": 2,
+      "mutation": "ordinary-trial-route rerun failed as expected; original production source restored",
+      "checks": "Server TypeScript build, scoped ESLint and changed-file Prettier passed"
+    }
   }
 }
