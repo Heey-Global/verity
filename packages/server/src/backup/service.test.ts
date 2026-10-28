@@ -1,7 +1,8 @@
+import { BackupDestination } from './destination.js';
 import type { DockerClient } from '../docker.js';
 import * as snapshotProbe from './probe.js';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -98,7 +99,9 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(state.repositoryNumber).toBe(2);
     expect(state.keyGeneration).toBe(2);
     expect(JSON.stringify(state)).not.toContain(candidate.recoveryKey);
+    await service!.setPolicy({ intervalMs: 3600000 });
     await service!.setPaused(true);
+    await expect(service!.setPolicy({ intervalMs: 1 })).rejects.toThrow();
     await service!.tick();
     expect(store.listBackupRevocations).toHaveBeenCalledOnce();
     expect(connect).not.toHaveBeenCalled();
@@ -157,6 +160,37 @@ it('commits only after identity confirmation, skips abandoned repositories and s
         }
       })
       .toBe(true);
+    const alert = vi.fn(async () => true);
+    service!.setAlertNotifier(alert);
+    await rename(join(destination, '.verity-backup-target'), join(destination, 'missing-marker'));
+    await expect(service!.tick()).resolves.toBeUndefined();
+    expect((await service!.status()).alerts).toContain('destination-unavailable');
+    await rename(join(destination, 'missing-marker'), join(destination, '.verity-backup-target'));
+    await service!.tick();
+    expect((await service!.status()).alerts).not.toContain('destination-unavailable');
+    const capacity = vi
+      .spyOn(BackupDestination.prototype, 'assertWritable')
+      .mockResolvedValue({ availableBytes: 0n, nearlyFull: true });
+    try {
+      await service!.tick();
+      expect((await service!.status()).alerts).toContain('insufficient-space');
+    } finally {
+      capacity.mockRestore();
+    }
+    await service!.tick();
+    expect((await service!.status()).alerts).not.toContain('insufficient-space');
+    const tlsKey = join(root, 'identity', 'tls-key.pem');
+    await rename(tlsKey, tlsKey + '.offline');
+    try {
+      await service!.tick();
+      expect((await service!.status()).alerts).toContain('identity-unreadable');
+      expect(alert).toHaveBeenCalledWith('identity-unreadable');
+    } finally {
+      await rename(tlsKey + '.offline', tlsKey);
+    }
+    await service!.tick();
+    expect((await service!.status()).alerts).not.toContain('identity-unreadable');
+
     const proof = (await service!.status()).lastProbe;
     expect(proof).toMatchObject({ repository: repositoryName, sequence: 1 });
     probe.mockRejectedValueOnce(new Error('private-recovery-key'));
@@ -173,6 +207,7 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(await service!.status()).toMatchObject({
       configured: true,
       paused: true,
+      intervalMs: 3600000,
       alerts: [],
     });
   } finally {

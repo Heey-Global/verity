@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, opendir, rm } from 'node:fs/promises';
+import { mkdir, opendir, rm, open, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { type BackupHostKeys, openMetadata, sealMetadata } from './crypto.js';
@@ -47,7 +49,11 @@ async function names(path: string, limit: number): Promise<string[]> {
 
 /** Queue before deleting a token. Destination failure never loses a successfully queued revocation. */
 export class BackupRevocationJournal {
-  private readonly root: string;
+  private readonly generationRoot: string;
+  private readonly pinnedRoot = new AsyncLocalStorage<string>();
+  private get root(): string {
+    return this.pinnedRoot.getStore() ?? this.generationRoot;
+  }
   private readonly outbox: string;
   constructor(
     private readonly destination: BackupDestination,
@@ -58,8 +64,29 @@ export class BackupRevocationJournal {
   ) {
     z.string().uuid().parse(installationId);
     z.number().int().min(1).max(999999999).parse(keyGeneration);
-    this.root = destination.pinnedPath('revocations', `${installationId}-k${keyGeneration}`);
+    this.generationRoot = destination.pinnedPath(
+      'revocations',
+      `${installationId}-k${keyGeneration}`,
+    );
     this.outbox = join(stateRoot, 'revocation-outbox');
+  }
+  private async withJournalLock<T>(action: () => Promise<T>): Promise<T> {
+    const info = await lstat(this.generationRoot);
+    if (!info.isDirectory()) throw new Error('Revocation journal must be a directory');
+    const directory = await open(
+      this.generationRoot,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const actual = await directory.stat();
+      if (actual.ino !== info.ino || actual.dev !== info.dev)
+        throw new Error('Revocation journal changed during open');
+      return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
+        withRepositoryLock(join(this.root, 'lock'), action),
+      );
+    } finally {
+      await directory.close();
+    }
   }
   async queue(id: string, event?: { eventId: string; revokedAt: string }): Promise<boolean> {
     deviceId.parse(id);
@@ -97,6 +124,105 @@ export class BackupRevocationJournal {
       return false;
     }
   }
+
+  private async lowWater(): Promise<number> {
+    try {
+      const value = z
+        .object({
+          installationId: z.string().uuid(),
+          keyGeneration: z.number().int(),
+          lowWater: z.number().int().min(1).safe(),
+        })
+        .strict()
+        .parse(
+          decodeLocalIndex(
+            await readBounded(join(this.stateRoot, 'journal-pruning'), 4096),
+            this.host.fingerprintKey,
+          ),
+        );
+      if (
+        value.installationId !== this.installationId ||
+        value.keyGeneration !== this.keyGeneration
+      )
+        throw new Error('Journal pruning identity mismatch');
+      return value.lowWater;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 1;
+      throw error;
+    }
+  }
+  /** Internal maintenance only: caller has proved no retained snapshot needs this retired generation. */
+  async retire(shouldPrune: () => Promise<boolean> = () => Promise.resolve(true)): Promise<void> {
+    await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
+    await withRepositoryLock(join(this.stateRoot, 'revocation-outbox.lock'), async () => {
+      await mkdir(this.outbox, { recursive: true, mode: 0o700 });
+      if ((await names(this.outbox, 100000)).length)
+        throw new Error('Retired journal has pending revocations');
+      await this.destination.assertPresent();
+      await mkdir(this.root, { recursive: true, mode: 0o700 });
+      await this.withJournalLock(async () => {
+        if (!(await shouldPrune())) return;
+        const entries = await names(this.root, 100000);
+        let highWater = (await this.lowWater()) - 1;
+        try {
+          const counter = (await readBounded(join(this.root, 'sequence'), 32)).toString();
+          if (!/^(0|[1-9][0-9]*)$/.test(counter) || !Number.isSafeInteger(Number(counter)))
+            throw new Error('Invalid retired journal sequence');
+          highWater = Math.max(highWater, Number(counter));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        for (const name of entries) {
+          if (/^[1-9][0-9]*$/.test(name) && Number.isSafeInteger(Number(name)))
+            highWater = Math.max(highWater, Number(name));
+          else if (
+            !['lock', 'sequence', 'checkpoint'].includes(name) &&
+            !name.startsWith('.pending-')
+          )
+            throw new Error('Unexpected retired journal entry');
+        }
+        if (!Number.isSafeInteger(highWater + 1)) throw new Error('Journal sequence exhausted');
+        const lowWater = highWater + 1;
+        // Keep the floor durable before deleting anything; subsequent flushes must never reset it.
+        await writeDurable(
+          join(this.stateRoot, 'journal-pruning'),
+          encodeLocalIndex(
+            { installationId: this.installationId, keyGeneration: this.keyGeneration, lowWater },
+            this.host.fingerprintKey,
+          ),
+          false,
+        );
+        await writeDurable(join(this.root, 'sequence'), Buffer.from(String(highWater)), false);
+        await writeDurable(
+          join(this.root, 'checkpoint'),
+          await sealMetadata(
+            this.host,
+            Buffer.from(
+              JSON.stringify({
+                kind: 'revocation-checkpoint',
+                installationId: this.installationId,
+                keyGeneration: this.keyGeneration,
+                lowWater,
+                highWater,
+              }),
+            ),
+          ),
+          false,
+        );
+        for (const name of entries)
+          if (/^[1-9][0-9]*$/.test(name)) {
+            await this.destination.assertPresent();
+            await rm(join(this.root, name), { force: true });
+          }
+        const directory = await open(this.root, 'r');
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+      });
+    });
+  }
   async flush(): Promise<void> {
     await mkdir(this.outbox, { recursive: true, mode: 0o700 });
     await withRepositoryLock(join(this.stateRoot, 'revocation-outbox.lock'), async () => {
@@ -104,8 +230,9 @@ export class BackupRevocationJournal {
       if (!pending.length) return;
       await this.destination.assertWritable();
       await mkdir(this.root, { recursive: true, mode: 0o700 });
-      await withRepositoryLock(join(this.root, 'lock'), async () => {
-        let sequence = 0;
+      await this.withJournalLock(async () => {
+        const lowWater = await this.lowWater();
+        let sequence = lowWater - 1;
         for await (const { name } of await opendir(this.root)) {
           if (/^[1-9][0-9]*$/.test(name)) {
             const number = Number(name);
@@ -161,7 +288,7 @@ export class BackupRevocationJournal {
                   kind: 'revocation-checkpoint',
                   installationId: this.installationId,
                   keyGeneration: this.keyGeneration,
-                  lowWater: 1,
+                  lowWater,
                   highWater: sequence,
                 }),
               ),

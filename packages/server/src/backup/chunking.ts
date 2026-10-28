@@ -1,3 +1,4 @@
+import { setImmediate as yieldToServer } from 'node:timers/promises';
 /** Bounded, content-defined chunks. Gear state resets at each boundary. */
 const MIN_CHUNK = 64 * 1024;
 export const MAX_CHUNK = 1024 * 1024;
@@ -15,6 +16,7 @@ export async function* chunkContent(source: AsyncIterable<Uint8Array>): AsyncGen
   let hash = 0;
   for await (const block of source) {
     for (const byte of block) {
+      if ((length & 65535) === 0) await yieldToServer();
       buffer[length++] = byte;
       hash = ((hash << 1) + GEAR[byte]!) >>> 0;
       if (length >= MIN_CHUNK && ((hash & MASK) === 0 || length === MAX_CHUNK)) {

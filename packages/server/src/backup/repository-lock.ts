@@ -1,5 +1,11 @@
 import { spawn } from 'node:child_process';
 
+export class BackupLockBusyError extends Error {
+  constructor() {
+    super('Backup repository locked');
+  }
+}
+
 /** A kernel-held lock survives neither process death nor reboot; there is no stale lock recovery. */
 export async function withRepositoryLock<T>(path: string, action: () => Promise<T>): Promise<T> {
   const child = spawn(
@@ -25,7 +31,9 @@ export async function withRepositoryLock<T>(path: string, action: () => Promise<
         if (output === 'locked\n') resolve();
       });
       child.once('error', reject);
-      child.once('exit', () => reject(new Error('Backup repository locked or flock unavailable')));
+      child.once('exit', (code) =>
+        reject(code === 1 ? new BackupLockBusyError() : new Error('Backup flock unavailable')),
+      );
     });
     const result = await action();
     if (lost) throw new Error('Backup repository lock lost');

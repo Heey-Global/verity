@@ -48,7 +48,7 @@ const schema = z
   .strict();
 export type BackupState = z.infer<typeof schema>;
 
-function validateState(value: unknown, installationId: string): BackupState {
+export function validateBackupState(value: unknown, installationId: string): BackupState {
   const state = schema.parse(value);
   if (state.installationId !== installationId)
     throw new Error('Backup state belongs to another installation');
@@ -83,7 +83,7 @@ export class BackupStateStore {
   }
   async load(): Promise<BackupState | undefined> {
     try {
-      return validateState(
+      return validateBackupState(
         JSON.parse((await readBounded(join(this.root, 'state'), 64 * 1024)).toString('utf8')),
         this.installationId,
       );
@@ -95,7 +95,7 @@ export class BackupStateStore {
   async create(state: BackupState): Promise<void> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await withRepositoryLock(join(this.root, 'state.lock'), async () => {
-      const checked = validateState(state, this.installationId);
+      const checked = validateBackupState(state, this.installationId);
       await writeDurable(join(this.root, 'state'), Buffer.from(JSON.stringify(checked)), true);
     });
   }
@@ -103,7 +103,7 @@ export class BackupStateStore {
     return withRepositoryLock(join(this.root, 'state.lock'), async () => {
       const current = await this.load();
       if (!current) throw new Error('Backups are not configured');
-      const next = validateState(change(structuredClone(current)), this.installationId);
+      const next = validateBackupState(change(structuredClone(current)), this.installationId);
       if (
         next.targetId !== current.targetId ||
         next.repositoryNumber !== current.repositoryNumber ||

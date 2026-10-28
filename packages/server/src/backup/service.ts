@@ -1,8 +1,11 @@
+import { maintainBackupGenerations, registerBackupGeneration } from './generation-maintenance.js';
+import { BackupOperationalAlerts, type BackupAlert } from './operational-alerts.js';
+import { validateReadableIdentity } from './restore-identity.js';
 import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PoolClient } from 'pg';
 import { captureInstallation } from './capture.js';
-import { BackupDestination } from './destination.js';
+import { BackupDestination, BackupSpaceError } from './destination.js';
 import { readCaptureInventory, UNASSIGNED_BACKUP_SCOPE } from './inventory.js';
 import { requestBackupIdentity } from './identity-request.js';
 import { backupLifecycle } from './lifecycle.js';
@@ -14,7 +17,12 @@ import {
   syncRevocationOutbox,
   type BackupRevocationOutboxStore,
 } from './revocations.js';
-import { BackupScheduler, DEFAULT_BACKUP_INTERVAL_MS, backupScheduleAlerts } from './scheduler.js';
+import {
+  BackupScheduler,
+  DEFAULT_BACKUP_INTERVAL_MS,
+  backupScheduleAlerts,
+  validateScheduleState,
+} from './scheduler.js';
 import { BackupSetup } from './setup.js';
 import { BackupStateStore, type BackupState } from './state.js';
 import { BackupProbeJobs, probeVerificationAlerts, type ProbeJob } from './probe-jobs.js';
@@ -44,6 +52,7 @@ export interface BackupServiceOptions {
 
 /** Internal runtime composition. Routes remain gated until full fresh-host acceptance passes. */
 export class BackupService {
+  private alerts!: BackupOperationalAlerts;
   private probes: BackupProbeJobs | undefined;
   private readonly setup: BackupSetup;
   private readonly scheduler: BackupScheduler;
@@ -51,6 +60,7 @@ export class BackupService {
   private active: Promise<unknown> | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private closed = false;
+  private healthActive: Promise<void> | undefined;
   private readonly unsubscribeRevocations: () => void;
   private revocationActive: Promise<void> | undefined;
   private revocationRequested = false;
@@ -70,11 +80,19 @@ export class BackupService {
       },
       maintain: async () => {
         const current = await this.configured();
-        await this.repository(current).maintain({
-          installationId: current.installationId,
-          now: Date.now(),
-          paused: current.schedule.paused,
-        });
+        try {
+          await maintainBackupGenerations(
+            this.state.root,
+            this.destination,
+            current,
+            Date.now(),
+            async () => !(await this.configured()).schedule.paused,
+          );
+          await this.alerts.maintenanceFailed(false);
+        } catch (error) {
+          await this.alerts.maintenanceFailed(true);
+          throw error;
+        }
       },
       syncRevocations: () => this.syncRevocations(),
     });
@@ -129,6 +147,8 @@ export class BackupService {
     const destination = await BackupDestination.open(options.destination, capabilities.targetId);
     const service = new BackupService(options, state, destination);
     try {
+      service.alerts = await BackupOperationalAlerts.open(state.root);
+      if (current) await registerBackupGeneration(state.root, current);
       const probe = options.probe;
       if (probe)
         service.probes = await service.run(() =>
@@ -244,6 +264,7 @@ export class BackupService {
           };
           // Reserve the repository before requesting CA material. A crash leaves an orphan, never configured state.
           await this.repository(current).initialize();
+          await registerBackupGeneration(this.state.root, current);
           await this.identity(current, this.shutdown.signal);
           await this.state.create(current);
           await this.options.store.setBackupJournaling(true);
@@ -279,6 +300,7 @@ export class BackupService {
       schema: this.options.schema,
       architecture: this.options.architecture,
       kind: 'scheduled',
+      onEstimate: (bytes) => this.alerts.estimate(bytes),
       connect: this.options.connect,
       repository: this.repository(current),
       lifecycle: backupLifecycle,
@@ -305,13 +327,20 @@ export class BackupService {
   }
   async tick(): Promise<void> {
     if (!(await this.state.load())) return;
-    return this.run(() => this.scheduler.tick());
+    return this.run(async () => {
+      try {
+        await this.scheduler.tick();
+      } finally {
+        await this.health();
+      }
+    });
   }
   start(): void {
     if (this.closed) throw new Error('Backup service is closed');
     if (this.timer) return;
     const tick = (): void => {
       if (!this.active) void this.tick().catch(this.options.onError);
+      else if (!this.closed) void this.health().catch(this.options.onError);
     };
     this.timer = setInterval(tick, 30000);
     this.timer.unref();
@@ -320,6 +349,7 @@ export class BackupService {
   async status(): Promise<{
     configured: boolean;
     paused?: boolean;
+    intervalMs?: number;
     lastSuccess?: number | null;
     lastProbe?: BackupState['lastProbe'];
     probe?: ProbeJob | null;
@@ -330,22 +360,87 @@ export class BackupService {
       ? {
           configured: true,
           paused: current.schedule.paused,
+          intervalMs: current.schedule.intervalMs,
           lastSuccess: current.schedule.lastSuccess,
           lastProbe: current.lastProbe,
           probe: this.probes?.status() ?? null,
           alerts: [
             ...backupScheduleAlerts(current.schedule, Date.now()),
             ...probeVerificationAlerts(current.confirmedAt, current.lastProbe, Date.now()),
+            ...this.alerts
+              .status()
+              .filter(
+                (code) => !['stale-backup', 'consecutive-failures', 'probe-overdue'].includes(code),
+              ),
           ],
         }
       : { configured: false, alerts: [] };
   }
+
+  setAlertNotifier(notify: (code: BackupAlert) => Promise<boolean>): void {
+    this.alerts.setNotifier(notify);
+  }
+  private health(): Promise<void> {
+    if (this.healthActive) return this.healthActive;
+    const work = this.refreshAlerts();
+    this.healthActive = work;
+    void work
+      .finally(() => {
+        if (this.healthActive === work) this.healthActive = undefined;
+      })
+      .catch(() => undefined);
+    return work;
+  }
+  private async refreshAlerts(): Promise<void> {
+    const current = await this.configured();
+    const codes = [
+      ...backupScheduleAlerts(current.schedule, Date.now()),
+      ...probeVerificationAlerts(current.confirmedAt, current.lastProbe, Date.now()),
+    ];
+    let present = true;
+    try {
+      await this.destination.assertPresent();
+    } catch {
+      present = false;
+      codes.push('destination-unavailable');
+    }
+    if (present) {
+      try {
+        const capacity = await this.destination.assertWritable(this.alerts.requiredBytes());
+        if (capacity.nearlyFull) codes.push('insufficient-space');
+        await this.destination.checkWritable();
+      } catch (error) {
+        codes.push(
+          error instanceof BackupSpaceError ? 'insufficient-space' : 'destination-unwritable',
+        );
+      }
+    }
+    try {
+      const files = new Map<string, Buffer>();
+      for (const name of [
+        'deployment-id',
+        'pairing-identity.pem',
+        'tls-key.pem',
+        'tls-cert.pem',
+        'tls-ca-cert.pem',
+      ])
+        files.set(name, await readBounded(join(this.options.identityRoot, name), 1024 * 1024));
+      validateReadableIdentity(files);
+    } catch {
+      codes.push('identity-unreadable');
+    }
+    await this.alerts.refresh(codes);
+  }
   async setPaused(paused: boolean): Promise<void> {
+    await this.setPolicy({ paused });
+  }
+  async setPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
     if (this.closed) throw new Error('Backup service is closed');
-    await this.state.update((current) => ({
-      ...current,
-      schedule: { ...current.schedule, paused },
-    }));
+    await this.state.update((current) => {
+      const schedule = { ...current.schedule, ...policy };
+      validateScheduleState(schedule);
+      return { ...current, schedule };
+    });
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -354,7 +449,7 @@ export class BackupService {
     this.shutdown.abort();
     this.probes?.abort();
     try {
-      await Promise.allSettled([this.active, this.revocationActive]);
+      await Promise.allSettled([this.active, this.revocationActive, this.healthActive]);
     } finally {
       this.setup.cancel();
       await this.destination.close();

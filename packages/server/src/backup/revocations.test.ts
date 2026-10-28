@@ -12,11 +12,18 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const synthetic = vi.hoisted(() => ({ large: false }));
+const synthetic = vi.hoisted(() => ({ large: false, failRemove: false }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...original,
+    rm: async (...args: Parameters<typeof original.rm>) => {
+      if (synthetic.failRemove && /\/[1-9][0-9]*$/.test(String(args[0]))) {
+        synthetic.failRemove = false;
+        throw new Error('Simulated deletion interruption');
+      }
+      return original.rm(...args);
+    },
     opendir: async (...args: Parameters<typeof original.opendir>) => {
       const directory = await original.opendir(...args);
       if (!synthetic.large) return directory;
@@ -40,6 +47,7 @@ import { BackupRevocationJournal, readRevocations } from './revocations.js';
 const roots: string[] = [];
 afterEach(async () => {
   synthetic.large = false;
+  synthetic.failRemove = false;
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe('durable device revocation journal', () => {
@@ -131,4 +139,40 @@ describe('durable device revocation journal', () => {
       await destination.close();
     }
   });
+});
+
+it('commits the signed journal floor before interrupted retirement and preserves it on subsequent flush', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'journal-retirement-'));
+  roots.push(root);
+  const target = join(root, 'backup'),
+    state = join(root, 'state');
+  await mkdir(target);
+  await mkdir(state);
+  const targetId = randomUUID(),
+    installationId = randomUUID();
+  await writeFile(join(target, '.verity-backup-target'), targetId);
+  const destination = await BackupDestination.open(target, targetId);
+  const { host, recoveryKey } = await generateBackupKeys();
+  const journal = new BackupRevocationJournal(destination, state, installationId, 1, host);
+  try {
+    await journal.queue('first');
+    await journal.queue('second');
+    synthetic.failRemove = true;
+    await expect(journal.retire()).rejects.toThrow('interruption');
+    await journal.queue('after-interruption');
+    let result = await readRevocations(target, recoveryKey);
+    expect(result.findings).toEqual([]);
+    expect(result.revokedIds.has('after-interruption')).toBe(true);
+    await journal.retire();
+    await journal.retire();
+    result = await readRevocations(target, recoveryKey);
+    expect(result.findings).toEqual([]);
+    expect(result.revokedIds.size).toBe(0);
+    await journal.queue('later');
+    result = await readRevocations(target, recoveryKey);
+    expect(result.findings).toEqual([]);
+    expect([...result.revokedIds]).toEqual(['later']);
+  } finally {
+    await destination.close();
+  }
 });

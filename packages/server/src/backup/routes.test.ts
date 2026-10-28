@@ -22,7 +22,7 @@ it('checks current administrator authority and the recovery gate on every regist
     })),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
-    setPaused: vi.fn(async () => undefined),
+    setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => {
       throw new Error('not configured');
     }),
@@ -90,7 +90,33 @@ it('checks current administrator authority and the recovery gate on every regist
         })
       ).statusCode,
     ).toBe(200);
-    expect(service.setPaused).toHaveBeenCalledWith(true);
+    expect(service.setPolicy).toHaveBeenCalledWith({ paused: true });
+    for (const intervalMs of [3600000, 86400000]) {
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: '/api/backups/policy',
+            headers,
+            payload: { intervalMs },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(service.setPolicy).toHaveBeenLastCalledWith({ intervalMs });
+    }
+    for (const payload of [
+      {},
+      { intervalMs: 3599999 },
+      { intervalMs: 86400001 },
+      { intervalMs: 3600000.5 },
+      { paused: 'true' },
+      { extra: true },
+    ])
+      expect(
+        (await app.inject({ method: 'PATCH', url: '/api/backups/policy', headers, payload }))
+          .statusCode,
+      ).toBe(400);
+
     expect(
       (await app.inject({ method: 'POST', url: '/api/backups/setup/cancel', headers })).statusCode,
     ).toBe(200);
@@ -112,7 +138,7 @@ it('requires installer resources, validates input and never echoes recovery mate
     }),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
-    setPaused: vi.fn(async () => undefined),
+    setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => {
       throw new Error('not configured');
     }),
@@ -200,7 +226,7 @@ it('starts, polls and cancels probe jobs with current admin checks and safe fail
     }),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
-    setPaused: vi.fn(async () => undefined),
+    setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => job),
     probeStatus: vi.fn((requested) => (requested === id ? job : null)),
     cancelProbe: vi.fn(async () => ({ ...job, status: 'cancelling' as const })),

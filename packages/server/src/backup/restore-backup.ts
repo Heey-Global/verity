@@ -1,3 +1,4 @@
+import { registerBackupGeneration } from './generation-maintenance.js';
 import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RestoreJob } from './restore-job.js';
@@ -83,6 +84,7 @@ export async function initializeRestoredBackup(options: {
         host,
         destination,
       ).initialize();
+      await registerBackupGeneration(store.root, current);
     }
     signal?.throwIfAborted();
     const repository = `${job.installationId}-r${current.repositoryNumber}`;

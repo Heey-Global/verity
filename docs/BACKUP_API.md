@@ -15,10 +15,28 @@ use `Cache-Control: no-store`.
 | `POST /api/backups/setup` | None | `{ id, recoveryKey, expiresAt }` |
 | `POST /api/backups/setup/confirm` | `{ id, recoveryKey }` | `{ ok: true }` |
 | `POST /api/backups/setup/cancel` | None | `{ ok: true }` |
-| `PATCH /api/backups/policy` | `{ paused: boolean }` | `{ ok: true }` |
+| `PATCH /api/backups/policy` | `{ paused?: boolean, intervalMs?: number }` | `{ ok: true }` |
 | `POST /api/backups/probes` | `{ recoveryKey }` | `202` with a key-free job record |
 | `GET /api/backups/probes/:id` | None | Current or most recent job record |
 | `POST /api/backups/probes/:id/cancel` | None | Job record after requesting cancellation |
+
+Policy changes require at least one field. `intervalMs` is an integer from
+3,600,000 (hourly) through 86,400,000 (daily); the default is six hours. Omitted
+fields retain their values, including changes made during capture. Status includes
+`intervalMs`, `paused`, the last successful backup and the last verified probe.
+Retries start after 15 minutes and double up to the configured interval; restart
+performs one overdue capture, never a run for every missed slot.
+
+Operational alerts persist as fixed codes, clear when resolved and notify only
+active installation administrators through the existing push sender. Repeated
+checks of an unchanged delivered alert do not send another notification. Destination
+and identity health checks continue while capture is paused; pausing stops capture,
+retention and object collection, but never revocation publication. Disk pressure
+reports an actionable warning and does not authorize additional snapshot deletion.
+Missing generation catalogs or authenticated references stop maintenance rather than
+risking deletion of recoverable history. Retired generation CA material and journal
+entries are removed only when no retained snapshot needs that generation; signed
+journal checkpoints preserve its sequence floor across interrupted cleanup.
 
 Status returns `{ available: false, reason: "recovery-validation-pending" }`
 while the acceptance gate is closed. Once that gate opens, hosts without the

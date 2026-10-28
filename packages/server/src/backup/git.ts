@@ -1,3 +1,4 @@
+import { backupCommand, backupWork } from './priority.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import {
@@ -149,32 +150,29 @@ export async function runBackupGit(
     'pack.useBitmaps=false',
   ];
   return new Promise<boolean>((done) => {
-    const child = spawn(
-      '/usr/bin/git',
-      [
-        ...settings.flatMap((setting) => ['-c', setting]),
-        ...(command === 'fsck'
-          ? ['fsck', '--connectivity-only']
-          : ['worktree', 'repair', '--', ...worktrees]),
-      ],
-      {
-        cwd: privateRoot,
-        env: {
-          PATH: '/usr/bin:/bin',
-          HOME: privateRoot,
-          LANG: 'C',
-          GIT_DIR: git,
-          GIT_WORK_TREE: work,
-          GIT_CONFIG_NOSYSTEM: '1',
-          GIT_CONFIG_GLOBAL: '/dev/null',
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_PAGER: 'cat',
-          GIT_NO_REPLACE_OBJECTS: '1',
-          GIT_OPTIONAL_LOCKS: '0',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
+    const [commandPath, commandArgs] = backupCommand('/usr/bin/git', [
+      ...settings.flatMap((setting) => ['-c', setting]),
+      ...(command === 'fsck'
+        ? ['fsck', '--connectivity-only']
+        : ['worktree', 'repair', '--', ...worktrees]),
+    ]);
+    const child = spawn(commandPath, commandArgs, {
+      cwd: privateRoot,
+      env: {
+        PATH: '/usr/bin:/bin',
+        HOME: privateRoot,
+        LANG: 'C',
+        GIT_DIR: git,
+        GIT_WORK_TREE: work,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_PAGER: 'cat',
+        GIT_NO_REPLACE_OBJECTS: '1',
+        GIT_OPTIONAL_LOCKS: '0',
       },
-    );
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     const abort = () => child.kill('SIGKILL');
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
@@ -267,8 +265,11 @@ export async function freezeGitDirectory(
       try {
         for await (const chunk of typeof entry.source === 'function'
           ? entry.source(2)
-          : entry.source)
-          await file.writeFile(chunk);
+          : entry.source) {
+          const work = backupWork();
+          if (work) await work.call('file', chunk, { fd: file.fd });
+          else await file.writeFile(chunk);
+        }
         await file.chmod(entry.mode);
       } finally {
         await file.close();

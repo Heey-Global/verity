@@ -74,7 +74,7 @@ export class BackupScheduler {
     const due = (state: BackupScheduleState): boolean => {
       const backoff = Math.min(
         FIRST_RETRY_MS * 2 ** Math.min(state.failures - 1, 10),
-        DEFAULT_BACKUP_INTERVAL_MS,
+        state.intervalMs,
       );
       const next =
         state.failures > 0 && state.lastAttempt !== null

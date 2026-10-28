@@ -1,6 +1,15 @@
 import { decodeLocalIndex } from './local-state.js';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, writeFile, utimes } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+  utimes,
+  rename,
+  symlink,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -113,4 +122,29 @@ describe('fail-closed backup retention and garbage collection', () => {
     ).rejects.toThrow('another installation');
     expect(await readdir(join(f.repository.root, 'snapshots'))).toHaveLength(2);
   });
+});
+
+it('refuses a substituted repository symlink before maintenance can touch another path', async () => {
+  const f = await fixture();
+  const original = f.repository.root;
+  await rename(original, original + '-moved');
+  await symlink(original + '-moved', original);
+  await expect(
+    f.repository.maintain({ installationId: f.installationId, now: Date.now(), paused: false }),
+  ).rejects.toThrow();
+  expect(await readdir(original + '-moved')).toContain('header');
+});
+
+it('keeps a snapshot published after the installation retention catalog was read', async () => {
+  const f = await fixture();
+  await capture(f.repository, 'published after catalog');
+  const before = await readdir(join(f.repository.root, 'snapshots'));
+  await f.repository.maintain({
+    installationId: f.installationId,
+    now: Date.now(),
+    paused: false,
+    retained: new Set(),
+    catalogued: new Set(),
+  });
+  expect(await readdir(join(f.repository.root, 'snapshots'))).toEqual(before);
 });

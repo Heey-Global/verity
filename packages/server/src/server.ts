@@ -1,3 +1,4 @@
+import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
@@ -4541,6 +4542,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   if (deps.backup) {
     app.addHook('onClose', () => deps.backup!.close());
     if (BACKUP_RECOVERY_ACCEPTED) {
+      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
       app.addHook('onReady', (done) => {
         deps.backup!.service?.start();
         done();

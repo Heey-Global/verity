@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, statfs, type FileHandle } from 'node:fs/promises';
+import { lstat, open, rm, statfs, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
+
+export class BackupSpaceError extends Error {}
 
 /** Pin the mounted directory, and recheck both its pathname and installer marker before writes. */
 export class BackupDestination {
@@ -58,11 +61,23 @@ export class BackupDestination {
     // Preserve room for filesystem metadata and publication even if the inventory estimate is zero.
     const reserve = 64n * 1024n * 1024n;
     if (availableBytes < estimateBytes + reserve)
-      throw new Error('Insufficient backup destination space');
+      throw new BackupSpaceError('Insufficient backup destination space');
     return {
       availableBytes,
       nearlyFull: availableBytes < (filesystem.blocks * filesystem.bsize) / 10n,
     };
+  }
+
+  async checkWritable(): Promise<void> {
+    await this.assertPresent();
+    const path = this.pinnedPath(`.health-${randomUUID()}`);
+    const file = await open(path, 'wx', 0o600);
+    try {
+      await file.writeFile('');
+    } finally {
+      await file.close();
+      await rm(path);
+    }
   }
 
   pinnedPath(...parts: string[]): string {

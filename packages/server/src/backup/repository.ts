@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { backupWork } from './priority.js';
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, mkdir, open, rename, rm, opendir, lstat } from 'node:fs/promises';
@@ -68,6 +70,11 @@ export async function writeDurable(
   bytes: Uint8Array,
   immutable: boolean,
 ): Promise<void> {
+  const work = backupWork();
+  if (work) {
+    await work.call('write', bytes, { path, immutable });
+    return;
+  }
   const temporary = join(dirname(path), `.pending-${randomBytes(16).toString('hex')}`);
   try {
     const file = await open(temporary, 'wx', 0o600);
@@ -85,7 +92,7 @@ export async function writeDurable(
   }
 }
 export async function readBounded(path: string, maximum: number): Promise<Buffer> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > maximum) throw new Error('Invalid backup file size or type');
@@ -107,7 +114,11 @@ const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 
 /** Low-level format writer; not exposed by routes until the full recovery acceptance gate passes. */
 export class BackupRepository {
-  readonly root: string;
+  private readonly repositoryRoot: string;
+  private readonly pinnedRoot = new AsyncLocalStorage<string>();
+  get root(): string {
+    return this.pinnedRoot.getStore() ?? this.repositoryRoot;
+  }
   readonly stateRoot: string;
   readonly name: string;
   readonly host: BackupHostKeys;
@@ -121,12 +132,30 @@ export class BackupRepository {
     validateRepositoryName(name);
     if (destination && resolve(root) !== resolve(destination.path))
       throw new Error('Backup destination path mismatch');
-    this.root = destination ? destination.repositoryPath(name) : join(root, name);
+    this.repositoryRoot = destination ? destination.repositoryPath(name) : join(root, name);
     this.stateRoot = join(stateRoot, name);
     this.name = name;
     this.host = host;
   }
 
+  private async withLock<T>(action: () => Promise<T>): Promise<T> {
+    const info = await lstat(this.repositoryRoot);
+    if (!info.isDirectory()) throw new Error('Backup repository must be a directory');
+    const directory = await open(
+      this.repositoryRoot,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const actual = await directory.stat();
+      if (actual.ino !== info.ino || actual.dev !== info.dev)
+        throw new Error('Backup repository changed during open');
+      return await this.pinnedRoot.run(`/proc/${process.pid}/fd/${directory.fd}/.`, () =>
+        withRepositoryLock(join(this.root, 'lock'), action),
+      );
+    } finally {
+      await directory.close();
+    }
+  }
   private async write(path: string, bytes: Uint8Array, immutable: boolean): Promise<void> {
     await this.destination?.assertWritable(BigInt(bytes.length));
     await writeDurable(path, bytes, immutable);
@@ -136,7 +165,7 @@ export class BackupRepository {
     await this.destination?.assertWritable();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
-    await withRepositoryLock(join(this.root, 'lock'), async () => {
+    await this.withLock(async () => {
       await mkdir(join(this.root, 'objects'), { mode: 0o700 });
       await mkdir(join(this.root, 'snapshots'), { mode: 0o700 });
       await mkdir(join(this.stateRoot, 'references'), { mode: 0o700 });
@@ -170,7 +199,7 @@ export class BackupRepository {
     info: { release: string; schema: string | number; capturedAt: string; kind?: BackupKind },
     finalizeMetadata?: () => CaptureMetadata,
   ): Promise<BackupManifest> {
-    return withRepositoryLock(join(this.root, 'lock'), async () => {
+    return this.withLock(async () => {
       const state = await this.readState();
       const manifest: BackupManifest = {
         format: 1,
@@ -205,23 +234,31 @@ export class BackupRepository {
             for await (const chunk of chunkContent(
               typeof file.source === 'function' ? file.source(attempt) : file.source,
             )) {
-              const fingerprint = createHmac(
-                'sha256',
-                Buffer.from(this.host.fingerprintKey, 'base64url'),
-              )
-                .update(chunk)
-                .digest('hex');
+              const work = backupWork();
+              const fingerprint = work
+                ? ((await work.call('fingerprint', chunk, {
+                    key: this.host.fingerprintKey,
+                  })) as string)
+                : createHmac('sha256', Buffer.from(this.host.fingerprintKey, 'base64url'))
+                    .update(chunk)
+                    .digest('hex');
               let object = state.index[fingerprint];
               if (object && !(await this.objectValid(object))) object = undefined;
               if (!object) {
-                const ciphertext = Buffer.from(
-                  await new Response(
-                    await encryptStream(
-                      this.host.recipient,
-                      Readable.toWeb(Readable.from([chunk])) as ReadableStream<Uint8Array>,
-                    ),
-                  ).arrayBuffer(),
-                );
+                const ciphertext = work
+                  ? Buffer.from(
+                      (await work.call('encrypt', chunk, {
+                        key: this.host.recipient,
+                      })) as Uint8Array,
+                    )
+                  : Buffer.from(
+                      await new Response(
+                        await encryptStream(
+                          this.host.recipient,
+                          Readable.toWeb(Readable.from([chunk])) as ReadableStream<Uint8Array>,
+                        ),
+                      ).arrayBuffer(),
+                    );
                 object = {
                   id: randomBytes(32).toString('hex'),
                   digest: digest(ciphertext),
@@ -303,80 +340,40 @@ export class BackupRepository {
     installationId: string;
     now: number;
     paused: boolean;
+    retained?: ReadonlySet<string>;
+    catalogued?: ReadonlySet<string>;
+    emptyRetired?: boolean;
+    shouldPrune?: () => Promise<boolean>;
   }): Promise<{ snapshots: number; objects: number }> {
     if (this.name.slice(0, this.name.lastIndexOf('-')) !== options.installationId)
       throw new Error('Cannot prune another installation repository');
     if (options.paused) return { snapshots: 0, objects: 0 };
     if (!Number.isFinite(options.now)) throw new Error('Invalid backup maintenance time');
-    return withRepositoryLock(join(this.root, 'lock'), async () => {
+    return this.withLock(async () => {
       await this.destination?.assertPresent();
-      const references = new Map<
-        number,
-        { filename: string; capturedAt: string; preUpdate: boolean; objects: string[] }
-      >();
-      const snapshots = await boundedDirectory(join(this.root, 'snapshots'), 50000);
-      let referenceBytes = 0;
-      let referenceCount = 0;
-      for (const name of snapshots) {
-        const match = /^([1-9][0-9]*)-(manual|scheduled|pre-update)$/.exec(name);
-        if (!match || !Number.isSafeInteger(Number(match[1])))
-          throw new Error('Unexpected backup snapshot entry');
-        const sequence = Number(match[1]);
-        if (references.has(sequence)) throw new Error('Duplicate backup snapshot sequence');
-        const sealed = await readBounded(join(this.root, 'snapshots', name), 9 * 1024 * 1024);
-        verifyMetadata(this.host.verificationKey, sealed);
-        const referenceData = await readBounded(
-          join(this.stateRoot, 'references', String(sequence)),
-          16 * 1024 * 1024,
-        );
-        referenceBytes += referenceData.length;
-        if (referenceBytes > 32 * 1024 * 1024)
-          throw new Error('Backup maintenance reference budget exceeded');
-        const raw = decodeLocalIndex(referenceData, this.host.fingerprintKey);
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw))
-          throw new Error('Missing backup references');
-        const reference = raw as Record<string, unknown>;
-        if (
-          reference['repository'] !== this.name ||
-          reference['sequence'] !== sequence ||
-          reference['kind'] !== match[2] ||
-          reference['digest'] !== digest(sealed) ||
-          typeof reference['capturedAt'] !== 'string' ||
-          !Number.isFinite(Date.parse(reference['capturedAt'])) ||
-          typeof reference['preUpdate'] !== 'boolean' ||
-          !Array.isArray(reference['objects']) ||
-          reference['objects'].length > 200000 ||
-          !reference['objects'].every(
-            (id: unknown) => typeof id === 'string' && /^[0-9a-f]{64}$/.test(id),
-          )
-        )
-          throw new Error('Invalid backup references; maintenance refused');
-        referenceCount += reference['objects'].length;
-        if (referenceCount > 200000) throw new Error('Backup maintenance reference count exceeded');
-        references.set(sequence, {
-          filename: name,
-          capturedAt: reference['capturedAt'],
-          preUpdate: reference['preUpdate'],
-          objects: reference['objects'] as string[],
-        });
-      }
+      const references = await this.maintenanceReferences();
       const repositoryNumber = Number(this.name.slice(this.name.lastIndexOf('r') + 1));
-      const retained = retainedSnapshots(
-        [...references].map(([sequence, reference]) => ({
-          repositoryNumber,
-          sequence,
-          capturedAt: reference.capturedAt,
-          preUpdate: reference.preUpdate,
-        })),
-        options.now,
-      );
+      const retained =
+        options.retained ??
+        retainedSnapshots(
+          [...references].map(([sequence, reference]) => ({
+            repositoryNumber,
+            sequence,
+            capturedAt: reference.capturedAt,
+            preUpdate: reference.preUpdate,
+          })),
+          options.now,
+        );
       const reachable = new Set<string>();
       let removedSnapshots = 0;
       for (const [sequence, reference] of references) {
-        if (retained.has(`${repositoryNumber}/${sequence}`)) {
+        const key = `${repositoryNumber}/${sequence}`;
+        if (retained.has(key) || (options.catalogued && !options.catalogued.has(key))) {
           for (const id of reference.objects) reachable.add(id);
         } else {
           await this.destination?.assertPresent();
+          if (options.shouldPrune && !(await options.shouldPrune()))
+            return { snapshots: removedSnapshots, objects: 0 };
           await rm(join(this.root, 'snapshots', reference.filename));
           await syncDirectory(join(this.root, 'snapshots'));
           await rm(join(this.stateRoot, 'references', String(sequence)));
@@ -384,7 +381,13 @@ export class BackupRepository {
         }
       }
       // An empty/missing catalog is never enough evidence to delete a repository's objects.
-      if (!references.size) return { snapshots: removedSnapshots, objects: 0 };
+      if (!references.size && !options.emptyRetired)
+        return { snapshots: removedSnapshots, objects: 0 };
+      if (!references.size)
+        verifyMetadata(
+          this.host.verificationKey,
+          await readBounded(join(this.root, 'header'), 65536),
+        );
       // Persist cache pruning before deletion so an interrupted GC cannot strand stale entries.
       const state = await this.readState();
       for (const [fingerprint, object] of Object.entries(state.index))
@@ -403,12 +406,82 @@ export class BackupRepository {
         if (!info.isFile()) throw new Error('Unexpected backup object type');
         if (info.mtimeMs > options.now - GC_GRACE_MS) continue;
         await this.destination?.assertPresent();
+        if (options.shouldPrune && !(await options.shouldPrune()))
+          return { snapshots: removedSnapshots, objects: removedObjects };
         await rm(path);
         removedObjects++;
       }
       await syncDirectory(join(this.root, 'objects'));
       return { snapshots: removedSnapshots, objects: removedObjects };
     });
+  }
+
+  /** Authenticated local reference catalog; missing references fail closed before any deletion. */
+  async retentionCatalog(): Promise<import('./retention.js').RetentionSnapshot[]> {
+    return this.withLock(async () => {
+      await this.destination?.assertPresent();
+      const references = await this.maintenanceReferences();
+      const repositoryNumber = Number(this.name.slice(this.name.lastIndexOf('r') + 1));
+      return [...references].map(([sequence, value]) => ({
+        repositoryNumber,
+        sequence,
+        capturedAt: value.capturedAt,
+        preUpdate: value.preUpdate,
+      }));
+    });
+  }
+  private async maintenanceReferences() {
+    const references = new Map<
+      number,
+      { filename: string; capturedAt: string; preUpdate: boolean; objects: string[] }
+    >();
+    const snapshots = await boundedDirectory(join(this.root, 'snapshots'), 50000);
+    let referenceBytes = 0;
+    let referenceCount = 0;
+    for (const name of snapshots) {
+      const match = /^([1-9][0-9]*)-(manual|scheduled|pre-update)$/.exec(name);
+      if (!match || !Number.isSafeInteger(Number(match[1])))
+        throw new Error('Unexpected backup snapshot entry');
+      const sequence = Number(match[1]);
+      if (references.has(sequence)) throw new Error('Duplicate backup snapshot sequence');
+      const sealed = await readBounded(join(this.root, 'snapshots', name), 9 * 1024 * 1024);
+      verifyMetadata(this.host.verificationKey, sealed);
+      const referenceData = await readBounded(
+        join(this.stateRoot, 'references', String(sequence)),
+        16 * 1024 * 1024,
+      );
+      referenceBytes += referenceData.length;
+      if (referenceBytes > 32 * 1024 * 1024)
+        throw new Error('Backup maintenance reference budget exceeded');
+      const raw = decodeLocalIndex(referenceData, this.host.fingerprintKey);
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        throw new Error('Missing backup references');
+      const reference = raw as Record<string, unknown>;
+      if (
+        reference['repository'] !== this.name ||
+        reference['sequence'] !== sequence ||
+        reference['kind'] !== match[2] ||
+        reference['digest'] !== digest(sealed) ||
+        typeof reference['capturedAt'] !== 'string' ||
+        !Number.isFinite(Date.parse(reference['capturedAt'])) ||
+        typeof reference['preUpdate'] !== 'boolean' ||
+        !Array.isArray(reference['objects']) ||
+        reference['objects'].length > 200000 ||
+        !reference['objects'].every(
+          (id: unknown) => typeof id === 'string' && /^[0-9a-f]{64}$/.test(id),
+        )
+      )
+        throw new Error('Invalid backup references; maintenance refused');
+      referenceCount += reference['objects'].length;
+      if (referenceCount > 200000) throw new Error('Backup maintenance reference count exceeded');
+      references.set(sequence, {
+        filename: name,
+        capturedAt: reference['capturedAt'],
+        preUpdate: reference['preUpdate'],
+        objects: reference['objects'] as string[],
+      });
+    }
+    return references;
   }
 
   private async readState(): Promise<RepositoryState> {

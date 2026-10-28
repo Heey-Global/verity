@@ -10,7 +10,7 @@ type BackupApi = Pick<
   | 'beginSetup'
   | 'confirmSetup'
   | 'cancelSetup'
-  | 'setPaused'
+  | 'setPolicy'
   | 'startProbe'
   | 'probeStatus'
   | 'cancelProbe'
@@ -25,7 +25,13 @@ export interface BackupRouteDependencies {
 const confirmation = z
   .object({ id: z.string().uuid(), recoveryKey: z.string().min(1).max(4096) })
   .strict();
-const policy = z.object({ paused: z.boolean() }).strict();
+const policy = z
+  .object({
+    paused: z.boolean().optional(),
+    intervalMs: z.number().int().min(3600000).max(86400000).optional(),
+  })
+  .strict()
+  .refine((value) => value.paused !== undefined || value.intervalMs !== undefined);
 const probeRequest = z.object({ recoveryKey: z.string().min(1).max(4096) }).strict();
 const probeId = z.object({ id: z.string().uuid() }).strict();
 
@@ -82,7 +88,10 @@ export function registerBackupRoutes(app: FastifyInstance, deps: BackupRouteDepe
       const body = policy.safeParse(request.body);
       if (!body.success) return reply.code(400).send({ error: 'invalid backup policy' });
       return execute(reply, async () => {
-        await deps.service!.setPaused(body.data.paused);
+        await deps.service!.setPolicy({
+          ...(body.data.paused !== undefined ? { paused: body.data.paused } : {}),
+          ...(body.data.intervalMs !== undefined ? { intervalMs: body.data.intervalMs } : {}),
+        });
         return { ok: true };
       });
     });

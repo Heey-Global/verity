@@ -1,6 +1,7 @@
+import { withBackupWork } from './priority.js';
 import { constants } from 'node:fs';
 import { Readable } from 'node:stream';
-import { mkdir, mkdtemp, open, rm } from 'node:fs/promises';
+import { open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PoolClient } from 'pg';
 import { beginDatabaseExport } from './database.js';
@@ -11,7 +12,7 @@ import { type BackupRepository, type CaptureEntry } from './repository.js';
 import { type BackupKind, type BackupManifest } from './format.js';
 import { type CaptureMetadata, captureMetadataSchema } from './capture-metadata.js';
 import type { BackupDestination } from './destination.js';
-import { withRepositoryLock } from './repository-lock.js';
+import { withCaptureStaging } from './capture-staging.js';
 import { openCaIdentityReceipt } from './identity-receipt.js';
 import { validateReadableIdentity } from './restore-identity.js';
 
@@ -47,6 +48,7 @@ export interface CompleteCaptureOptions {
   /** Persisted project bookkeeping; never trust a sandbox marker or inode as identity. */
   repoKey: (projectId: string, path: string) => Promise<string>;
   signal: AbortSignal;
+  onEstimate?: (bytes: bigint) => Promise<void>;
 }
 
 async function bytesAt(path: string, maximum: number): Promise<Buffer> {
@@ -79,14 +81,9 @@ export async function captureInstallation(
   options: CompleteCaptureOptions,
 ): Promise<BackupManifest> {
   options.signal.throwIfAborted();
-  const stagingParent = join(options.root, 'capture');
-  await mkdir(stagingParent, { recursive: true, mode: 0o700 });
-  const run = await mkdtemp(join(stagingParent, 'run-'));
-  try {
-    return await withRepositoryLock(join(run, 'lock'), () => captureInRun(options, run));
-  } finally {
-    await rm(run, { recursive: true, force: true });
-  }
+  return withBackupWork(() =>
+    withCaptureStaging(options.root, (run) => captureInRun(options, run)),
+  );
 }
 
 async function captureInRun(options: CompleteCaptureOptions, run: string): Promise<BackupManifest> {
@@ -188,6 +185,7 @@ async function captureInRun(options: CompleteCaptureOptions, run: string): Promi
             estimate += entry.sizeBytes ?? 0n;
         frozen.push({ path: discovery.path, projectId: project.id, repoKey, copy });
       }
+      await options.onEstimate?.(estimate);
       await options.destination.assertWritable(estimate);
       metadata.barrierMs = performance.now() - barrierStarted;
       return { projectIds: metadata.projects.map((project) => project.id), value: undefined };

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BackupScheduler,
   backupScheduleAlerts,
@@ -113,5 +113,33 @@ describe('durable backup schedule', () => {
     await new BackupScheduler(f.dependencies).tick();
     expect(f.events).toEqual(['revocations']);
     expect(f.state().lastAttempt).toBeNull();
+  });
+  it('caps restart retry backoff at the configured interval', async () => {
+    const f = fixture();
+    f.change({ intervalMs: 3600000, failures: 12, lastAttempt: f.dependencies.now() });
+    f.advance(3600000 - 1);
+    await new BackupScheduler(f.dependencies).tick();
+    expect(f.events).not.toContain('capture');
+    f.advance(1);
+    await new BackupScheduler(f.dependencies).tick();
+    expect(f.events.filter((event) => event === 'capture')).toHaveLength(1);
+  });
+  it('never marks an aborted six-hour capture successful or prunes its objects', async () => {
+    const f = fixture();
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const abort = new AbortController();
+    timeout.mockReturnValue(abort.signal);
+    f.setCapture(async () => {
+      abort.abort();
+    });
+    try {
+      await new BackupScheduler(f.dependencies).tick();
+      expect(timeout).toHaveBeenCalledWith(6 * 3600000);
+      expect(f.state().lastSuccess).toBeNull();
+      expect(f.state().failures).toBe(1);
+      expect(f.events).not.toContain('maintain');
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });
