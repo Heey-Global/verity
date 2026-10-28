@@ -76,9 +76,10 @@ type RemoteOperation = z.infer<typeof remoteRecordSchema>['operation'];
  * local writer left.
  */
 const FOREIGN_ATTEMPT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-/** `docker load` is bounded by a 15-minute client timeout, and the Engine ends a load
- *  whose client connection is gone. */
-const IMPORT_MAX_AGE_MS = 60 * 60 * 1000;
+/** Age after which a remote operation's client in another PID namespace is trusted
+ *  gone: `docker load` is bounded by a 15-minute client timeout and a build command
+ *  by at most 30 minutes, and a replaced Server container takes its commands along. */
+const CLIENT_MAX_AGE_MS = 60 * 60 * 1000;
 
 // A failing transport is not an answer from the remote side: the work may still run.
 const TRANSPORT_FAILURE =
@@ -90,7 +91,8 @@ const TRANSPORT_FAILURE =
  *
  * Deliberately narrow, and read from the client's own last report rather than from
  * any line: build steps print arbitrary text, including text that looks like a
- * BuildKit error. For an export, the last `ERROR: failed to solve:` line must name a
+ * BuildKit error. For an export, the client's last `ERROR:` line must be the solve
+ * report (`failed to solve:`, optionally wrapped in `failed to build:`) and name a
  * build step's process exit — the solve's own verdict. For an import, the last line
  * must be the Engine's `Error response from daemon:` and not a transport failure.
  * Everything else — a killed client, a timeout, a lost connection, any other error —
@@ -102,7 +104,13 @@ export function remoteOperationEnded(operation: RemoteOperation, output: string)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
   if (operation === 'build-export') {
-    const verdict = lines.filter((line) => line.startsWith('ERROR: failed to solve:')).at(-1);
+    // Newer buildx wraps the solve error as `ERROR: failed to build: failed to solve:`.
+    // The client's last `ERROR:` line is its final report; a later transport error
+    // must win over an earlier step verdict.
+    const verdict = lines
+      .filter((line) => line.startsWith('ERROR: '))
+      .at(-1)
+      ?.replace(/^ERROR: failed to build: (?=failed to solve:)/, 'ERROR: ');
     return (
       verdict !== undefined &&
       /^ERROR: failed to solve: process ".*" did not complete successfully: exit code: \d+$/.test(
@@ -705,23 +713,28 @@ export class BuildStorage {
           (identity.hostBootId !== record.hostBootId ||
             identity.hostIdentity !== record.hostIdentity);
         const age = now - Date.parse(record.startedAt);
+        // The record is written before the client submits its work, so a client that
+        // is still alive can submit after the worker answered idle. Its own process is
+        // only visible from this PID namespace; a foreign client is trusted gone once
+        // it outlived every command bound.
+        const clientGone = (): boolean =>
+          sameNamespace ? !this.liveChild(directory) : age > CLIENT_MAX_AGE_MS;
         let reason: string | undefined;
         if (rebooted) reason = 'the host has restarted since the remote operation began';
         else if (
           record.operation === 'build-export' &&
+          clientGone() &&
           (await buildkitIdle()) === true &&
           Date.parse(record.startedAt) < askedAt
         )
-          reason = 'the builder reports no running build';
-        else if (
-          record.operation === 'image-import' &&
-          ((sameNamespace && !this.liveChild(directory)) ||
-            (!sameNamespace && age > IMPORT_MAX_AGE_MS))
-        )
+          reason = 'the build client has exited and the builder reports no running build';
+        else if (record.operation === 'image-import' && clientGone())
           reason = 'the image import client has exited';
         if (reason === undefined) continue;
-        // A lease may have been taken, or this record rewritten, while the worker was asked.
+        // A lease may have been taken, a client started, or this record rewritten,
+        // while the worker was asked.
         if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
+        if (!rebooted && !clientGone()) continue;
         const current = this.readRemoteRecord(directory);
         if (
           current === undefined ||
@@ -751,7 +764,15 @@ export class BuildStorage {
       if (otherBoot || now - modified > FOREIGN_ATTEMPT_MAX_AGE_MS)
         this.removeAttempt(directory, owner);
     }
-    this.unresolved = this.held ? this.unresolved : this.survey(namespace);
+    // While a lease is held, a full survey could refuse on another live attempt, so
+    // drop just what this pass released; a held build must not keep paying for it.
+    this.unresolved = this.held
+      ? this.unresolved.filter((attempt) => {
+          const directory = join(this.root, attempt.attempt);
+          if (!existsSync(directory)) return false;
+          return attempt.operation === 'local' || this.readRemoteRecord(directory) !== undefined;
+        })
+      : this.survey(namespace);
     return this.unresolvedAttempts();
   }
 

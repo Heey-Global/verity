@@ -659,6 +659,20 @@ describe('remote operation release', () => {
       ),
     ).toBe(false);
     expect(remoteOperationEnded('build-export', 'Build command exited 1')).toBe(false);
+    // Newer buildx wraps the same verdict; a later transport report under either
+    // prefix still wins over the earlier step verdict.
+    const wrapped = solveFailure.replace(
+      'ERROR: failed to solve:',
+      'ERROR: failed to build: failed to solve:',
+    );
+    expect(remoteOperationEnded('build-export', wrapped)).toBe(true);
+    for (const transport of [
+      'ERROR: failed to build: failed to solve: Unavailable: connection reset',
+      'ERROR: failed to build: failed to receive status: rpc error: code = Unavailable',
+    ]) {
+      expect(remoteOperationEnded('build-export', `${solveFailure}\n${transport}`)).toBe(false);
+      expect(remoteOperationEnded('build-export', `${wrapped}\n${transport}`)).toBe(false);
+    }
     expect(
       remoteOperationEnded('image-import', 'Error response from daemon: invalid tar header'),
     ).toBe(true);
@@ -797,6 +811,83 @@ describe('build storage reconciliation', () => {
       warn.mockRestore();
     }
     expect(existsSync(directory)).toBe(false);
+  });
+
+  // The record is written before the client submits its solve, so an idle worker says
+  // nothing while that client can still submit.
+  it('trusts the worker only once the build client is gone', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-orphan', {}, { operation: 'build-export' });
+    const foreign = attempt(
+      f,
+      'attempt-foreign',
+      { namespace: 'old-container' },
+      { operation: 'build-export' },
+    );
+    const live = async (slot: number) => {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      await once(child, 'spawn');
+      writeFileSync(join(directory, `child-${slot}`), String(child.pid));
+      return child;
+    };
+    const stop = async (child: ReturnType<typeof spawn>) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, 'exit');
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+    };
+    const storage = f.manager();
+    const warn = quiet();
+    const children: ReturnType<typeof spawn>[] = [await live(0)];
+    try {
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toHaveLength(2);
+      await stop(children[0]!);
+      // A client that appears while the worker is asked keeps the record too.
+      expect(
+        await storage.reconcile({
+          buildkitIdle: async () => {
+            children.push(await live(1));
+            return true;
+          },
+        }),
+      ).toHaveLength(2);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+      await stop(children[1]!);
+      expect(await storage.reconcile({ buildkitIdle: async () => true })).toHaveLength(1);
+      expect(existsSync(directory)).toBe(false);
+      // Another PID namespace's client cannot be seen; it is trusted gone only once it
+      // outlived every command bound.
+      expect(existsSync(join(foreign, 'remote-operation.json'))).toBe(true);
+      expect(
+        await storage.reconcile({ buildkitIdle: async () => true }, Date.now() + 2 * 3600_000),
+      ).toEqual([]);
+      expect(existsSync(join(foreign, 'remote-operation.json'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+      for (const child of children) await stop(child);
+    }
+  });
+
+  it('stops charging a released attempt to a build that holds a lease', async () => {
+    const f = fixture();
+    attempt(f, 'attempt-earlier', {}, { operation: 'image-import' });
+    const storage = f.manager();
+    const lease = storage.acquire();
+    const warn = quiet();
+    try {
+      // Admission saw the earlier import; reconciliation proves it ended mid-lease.
+      expect(storage.unresolvedAttempts()).toEqual([
+        expect.objectContaining({ attempt: 'attempt-earlier' }),
+      ]);
+      expect(await storage.reconcile()).toEqual([]);
+      expect(storage.unresolvedAttempts()).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      lease.dispose();
+    }
   });
 
   it('applies the worker’s answer only to operations that began before it was asked', async () => {

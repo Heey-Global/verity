@@ -7176,11 +7176,13 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
   it('keeps the last hundred lines of a failed build for diagnostics', async () => {
     const { root } = makeCloneRoot(true);
     const logs = mkdtempSync(join(tmpdir(), 'verity-build-failures-'));
+    const inherited = 'ghp_inheritedServerToken0123456789';
+    vi.stubEnv('GITHUB_TOKEN', inherited);
     try {
       const id = await seedProject();
-      const output = Array.from({ length: 150 }, (_, line) => `step output line ${line}`).join(
-        '\n',
-      );
+      const output = Array.from({ length: 150 }, (_, line) =>
+        line === 140 ? `step echoed ${inherited}` : `step output line ${line}`,
+      ).join('\n');
       const build = vi.fn<DevcontainerBuildSpawner>(async () => {
         throw new Error('Devcontainer build/export failed: summary', {
           cause: Object.assign(new Error('Build command exited 1'), { stdout: output, stderr: '' }),
@@ -7203,7 +7205,11 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       expect(failure?.tail).toContain('step output line 149');
       expect(failure?.tail).toContain('step output line 50');
       expect(failure?.tail).not.toContain('step output line 49');
+      // The build inherits the Server env; its credentials never reach diagnostics.
+      expect(failure?.tail).toContain('step echoed [redacted]');
+      expect(failure?.tail).not.toContain(inherited);
     } finally {
+      vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
       rmSync(logs, { recursive: true, force: true });
     }
@@ -11109,6 +11115,16 @@ describe('devcontainerBuilderIdle', () => {
     ).toBe(false);
     // An entry it cannot read is never taken as finished.
     expect(await withEndpoint(history('{"ref":"a"}'))).toBe(false);
+    for (const status of ['', 'Unknown', 'Queued', 7])
+      expect(
+        await withEndpoint(history(JSON.stringify([{ ref: 'a', status, completed_at: 'x' }]))),
+      ).toBe(false);
+    expect(await withEndpoint(history('[{"ref":"a","status":"Canceled"}]'))).toBe(true);
+    expect(await withEndpoint(history('[{"ref":"a","completed_at":"2026-10-28T00:00:00Z"}]'))).toBe(
+      true,
+    );
+    // An empty list is no more evidence of idleness than no output.
+    expect(await withEndpoint(history('[]'))).toBeUndefined();
     expect(await withEndpoint(history('not json'))).toBeUndefined();
     expect(
       await withEndpoint((async () => {

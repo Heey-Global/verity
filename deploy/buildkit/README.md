@@ -275,17 +275,22 @@ the host storage report supplies the identity. The record is cleared when:
 
 - the command succeeds;
 - the command exits on its own and its last report is the remote side's final
-  answer: for an export, `failed to solve` naming a build step's exit code; for
+  answer: for an export, `failed to solve` (also when wrapped in `failed to
+build`) naming a build step's exit code; for
   an import, the Engine's `Error response from daemon` that is not a transport
   failure;
 - reconciliation proves the operation ended. The Server reconciles at start and
   every five minutes. It releases a record when the host booted again since the
-  record was written, when the BuildKit worker lists build history with no
-  running build (`docker buildx history ls` through a private remote-driver
-  record; an empty or unreadable history is no answer) for a record written
-  before it was asked, or, for an import, when its client exited (in the same
-  Server process) or more than an hour passed (a previous Server process; the
-  import client is bounded by 15 minutes). A malformed record is never released
+  record was written, or once the operation's client is gone and — for an
+  export — the BuildKit worker then lists build history with only finished
+  builds (`docker buildx history ls` through a private remote-driver record; an
+  empty or unreadable history, or an unrecognised status, is no answer) for a
+  record written before it was asked. The record is written before the client
+  submits its work, so the worker's answer alone is never enough. A client in
+  the same PID namespace is gone when its process group has exited, checked
+  again after the worker answered; one of a previous Server container cannot be
+  observed and is trusted gone after an hour (an import client is bounded by 15
+  minutes, a build command by 30). A malformed record is never released
   automatically and holds the default estimate until it is reconciled offline.
 
 A timeout, cancellation, lost connection or Server crash keeps the record **and

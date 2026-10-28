@@ -508,14 +508,18 @@ export function devcontainerBuilderEndpoint(
 /**
  * Whether one `docker buildx history ls --format json` entry is a build that is
  * still running. buildx reports a `status` (`Running`, `Completed`, `Error`,
- * `Canceled`) and a completion time; an entry with neither is treated as running,
- * because an unknown shape must never read as idle.
+ * `Canceled`) and a completion time. Only a recognised terminal status, or a
+ * completion time without any status, reads as finished: an unknown status or
+ * shape must never read as idle.
  */
+const TERMINAL_HISTORY_STATUS = /^(?:completed?|error|failed|cancell?ed)$/i;
+
 function historyEntryRunning(entry: unknown): boolean {
   if (typeof entry !== 'object' || entry === null) return true;
   const record = entry as Record<string, unknown>;
   const status = record['status'] ?? record['Status'];
-  if (typeof status === 'string') return /running|pending|started/i.test(status);
+  if (status !== undefined && status !== null)
+    return typeof status !== 'string' || !TERMINAL_HISTORY_STATUS.test(status.trim());
   const completed =
     record['completed_at'] ?? record['completedAt'] ?? record['CompletedAt'] ?? record['completed'];
   return completed === undefined || completed === null || completed === '';
@@ -573,7 +577,8 @@ export async function devcontainerBuilderIdle(
     } catch {
       return undefined;
     }
-    if (!Array.isArray(entries)) return undefined;
+    // `[]` is no more evidence of idleness than empty output.
+    if (!Array.isArray(entries) || entries.length === 0) return undefined;
     return !entries.some(historyEntryRunning);
   } catch {
     return undefined;
@@ -6268,7 +6273,18 @@ export class ProvisionerImpl implements Provisioner {
             : undefined,
         ];
         const tail = buildOutputTail(cause);
-        if (tail !== undefined) this.recordBuildFailure(project.id, redactSensitive(tail, secrets));
+        // The build inherits the Server env, so the persisted tail also needs the
+        // inherited credentials the outer failure handlers redact.
+        if (tail !== undefined)
+          this.recordBuildFailure(
+            project.id,
+            redactSensitive(tail, [
+              ...secrets,
+              process.env.GITHUB_TOKEN,
+              process.env.GH_TOKEN,
+              process.env.VERITY_REGISTRY_AUTH,
+            ]),
+          );
         // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
         throw new Error(redactSensitive(buildFailureMessage(cause), secrets));
       }
@@ -6312,9 +6328,16 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  /** Best-effort like {@link recordBuildFailure}: a diagnostics cleanup error must
+   *  not turn a successful build into a provisioning failure. */
   private clearBuildFailure(projectId: string): void {
     const file = this.buildFailureFile(projectId);
-    if (file !== undefined) rmSync(file, { force: true });
+    if (file === undefined) return;
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      /* diagnostics only */
+    }
   }
 
   /** The output tail of this project's last failed devcontainer build, until a build succeeds. */

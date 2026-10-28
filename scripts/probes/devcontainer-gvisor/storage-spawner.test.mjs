@@ -179,9 +179,9 @@ test('real Engine cancellation probe uses production remote tracking and a separ
   const host = readFileSync(new URL('./host-service.sh', import.meta.url), 'utf8');
   assert.match(cancellation, /signal: abort.signal,\s+remoteOperation: 'image-import'/);
   assert.match(cancellation, /assert.equal\(lease.retainArtifacts, true\)/);
-  assert.match(
-    cancellation,
-    /assert.throws\(\(\) => storage.acquire\(\), \/termination is unconfirmed\//,
-  );
+  // The cancelled attempt cannot reuse its own transport, and the next attempt
+  // must find it still reserved rather than released.
+  assert.match(cancellation, /\/termination is unconfirmed\/,\s+\);\s+lease.dispose\(\);/);
+  assert.match(cancellation, /storage\s*\.unresolvedAttempts\(\)/);
   assert.match(host, /PROBE_STORAGE_ROOT_OVERRIDE="\$work\/import-cancel-build-storage" run_probe/);
 });
