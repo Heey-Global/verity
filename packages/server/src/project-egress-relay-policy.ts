@@ -46,7 +46,7 @@ const relay = z
         UsernsMode: z.literal(''),
         Binds: z.array(z.string()).nullable(),
         VolumesFrom: z.array(z.string()).nullable(),
-        Devices: z.array(z.unknown()),
+        Devices: z.array(z.unknown()).nullable(),
         DeviceRequests: z.array(z.unknown()).nullable(),
         GroupAdd: z.array(z.string()).nullable(),
         Mounts: z.array(mount),
@@ -130,7 +130,7 @@ export function verifyEgressRelay(
     Object.keys(volume.Options ?? {}).length !== 0 ||
     (config.Binds?.length ?? 0) !== 0 ||
     (config.VolumesFrom?.length ?? 0) !== 0 ||
-    config.Devices.length !== 0 ||
+    (config.Devices?.length ?? 0) !== 0 ||
     (config.DeviceRequests?.length ?? 0) !== 0 ||
     (config.GroupAdd?.length ?? 0) !== 0 ||
     Object.keys(config.PortBindings ?? {}).length !== 0 ||

@@ -60,7 +60,7 @@ function fixture(root = '/var/lib/docker/volumes/data/_data') {
           UsernsMode: '',
           Binds: null as string[] | null,
           VolumesFrom: null,
-          Devices: [],
+          Devices: [] as unknown[] | null,
           DeviceRequests: null,
           GroupAdd: null,
           PortBindings: {},
@@ -90,6 +90,13 @@ it('accepts exact host-owned relay configuration and rejects unsafe substitution
   const check = (f: ReturnType<typeof fixture>) =>
     verifyEgressRelay(binding, policy, f.reply, image, f.volume);
   expect(check(fixture())).toHaveLength(3);
+  const noDevices = fixture();
+  noDevices.reply[0]!.HostConfig.Devices = null;
+  expect(check(noDevices)).toHaveLength(3);
+  noDevices.reply[0]!.HostConfig.Devices = [
+    { PathOnHost: '/dev/kvm', PathInContainer: '/dev/kvm', CgroupPermissions: 'rwm' },
+  ];
+  expect(() => check(noDevices)).toThrow();
   const healthcheck = fixture();
   Object.assign(healthcheck.reply[0]!.Config, {
     Healthcheck: { Test: ['CMD', '/nodejs/bin/node', '-e', 'arbitrary()'] },
