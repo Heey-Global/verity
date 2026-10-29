@@ -1,4 +1,4 @@
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import pg from 'pg';
@@ -299,3 +299,127 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
     }
   });
 });
+
+it.skipIf(!adminUrl)(
+  'records the actual lifecycle barrier for a bounded Git dataset without reflinks',
+  async () => {
+    const parent = join(process.cwd(), '.cache');
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, 'capture-measurement-'));
+    const name = 'verity_measure_' + randomBytes(12).toString('hex');
+    const admin = new pg.Pool({ connectionString: adminUrl!, max: 1 });
+    const url = new URL(adminUrl!);
+    url.pathname = '/' + name;
+    const database = new pg.Pool({ connectionString: url.toString(), max: 1 });
+    let destination: BackupDestination | undefined;
+    try {
+      await admin.query(`CREATE DATABASE "${name}"`);
+      await database.query(
+        'CREATE TABLE fixture(id integer PRIMARY KEY); INSERT INTO fixture VALUES (1)',
+      );
+      const source = join(root, 'source');
+      const project = join(source, 'workspaces/project');
+      await mkdir(project, { recursive: true });
+      for (const scope of ['sessions', 'knowledge']) await mkdir(join(source, scope));
+      // Incompressible content exercises a real Git object copy, not a sparse or reflink fixture.
+      await writeFile(
+        join(project, 'dataset'),
+        createHash('shake256', { outputLength: 16 * 1024 * 1024 })
+          .update('backup-freeze-measurement-v1')
+          .digest(),
+      );
+      await exec('git', ['init', project]);
+      await exec('git', ['-C', project, 'add', '.']);
+      await exec('git', [
+        '-C',
+        project,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'fixture',
+      ]);
+      const { host } = await generateBackupKeys();
+      const installationId = randomUUID();
+      const identity = join(root, 'identity-fixture');
+      await writeBackupIdentityFixture(identity, host, installationId);
+      const backup = join(root, 'backup');
+      await mkdir(backup);
+      const targetId = randomUUID();
+      await writeFile(join(backup, '.verity-backup-target'), targetId);
+      destination = await BackupDestination.open(backup, targetId);
+      const repository = new BackupRepository(
+        backup,
+        join(root, 'state'),
+        `${installationId}-r1`,
+        host,
+        destination,
+      );
+      await repository.initialize();
+      const started = performance.now();
+      const cpu = process.cpuUsage();
+      const manifest = await captureInstallation({
+        root: source,
+        identityRoot: join(identity, 'identity'),
+        caCiphertext: join(identity, 'ca.age'),
+        installationId,
+        keyGeneration: 1,
+        image: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+        release: 'measurement',
+        schema: '0001_fixture',
+        architecture: 'amd64',
+        kind: 'manual',
+        connect: () => database.connect(),
+        repository,
+        destination,
+        lifecycle: new BackupLifecycleCoordinator(),
+        signal: new AbortController().signal,
+        inventory: async () => ({
+          activeTurns: [],
+          projects: [
+            {
+              id: 'project',
+              state: 'active',
+              archived: false,
+              paths: ['workspaces/project'],
+              warnings: [],
+            },
+          ],
+        }),
+        repoKey: async () => installationId,
+      });
+      const elapsedMs = performance.now() - started;
+      const used = process.cpuUsage(cpu);
+      expect(manifest.capture!.git[0]!.status).toBe('validated');
+      expect(manifest.capture!.barrierMs).toBeGreaterThan(0);
+      expect(manifest.capture!.barrierMs).toBeLessThanOrEqual(elapsedMs);
+      expect(BigInt(manifest.capture!.projects[0]!.bytes)).toBeGreaterThanOrEqual(
+        16n * 1024n * 1024n,
+      );
+      const report = {
+        datasetBytes: 16 * 1024 * 1024,
+        gitRepositories: 1,
+        copyMethod:
+          'freezeGitDirectory streams through file descriptors; no reflink/copy_file_range',
+        barrierMs: manifest.capture!.barrierMs,
+        elapsedMs,
+        cpuMicros: used.user + used.system,
+        maxRssKiB: process.resourceUsage().maxRSS,
+        performanceAcceptance: false,
+      };
+      if (process.env.VERITY_BACKUP_FREEZE_REPORT)
+        await writeFile(
+          process.env.VERITY_BACKUP_FREEZE_REPORT,
+          JSON.stringify(report, null, 2) + '\n',
+        );
+    } finally {
+      await destination?.close();
+      await database.end();
+      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+      await admin.end();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

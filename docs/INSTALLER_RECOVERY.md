@@ -157,3 +157,17 @@ private. All devices must remove their saved server and pair again using it. Aft
 Offline devices still retain their old pin and identity until you reset them.
 Rotation does not invalidate external copies for those offline devices. Native
 device and pin-reset acceptance remains open until tested on actual devices.
+
+## Repairing backup prerequisites
+
+Re-running the installer at the configured destination preserves its installation
+ID, destination marker and dedicated database credential while repairing paired
+mounts and the privileged identity helper. An explicit `--backup-dir` that differs
+from persisted installer state is refused. It is not an archive migration command;
+the prerequisite helper rejects that mismatch before creating the new directory.
+Keep the original destination and repositories intact when repairing a host.
+
+Backend acceptance uses disposable Docker daemons and a locally built test image
+to exercise scheduled capture while the production recovery gate remains closed.
+That image is never published to an external registry. These test results do not
+authorize enabling the production gate or establish native-device trust reset.

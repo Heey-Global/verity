@@ -13,6 +13,8 @@ chmod 0700 "$work"
 prefix="verity-backup-restore-dind-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 original="$prefix-original"
 fresh="$prefix-fresh"
+first_fresh=$fresh
+second="$prefix-second"
 root=/opt/verity-restore-fixture
 repo=ghcr.io/heey-global/verity/verity-server
 registry=registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
@@ -24,7 +26,7 @@ cleanup() {
   local status=$?
   trap - EXIT
   # Never print the private input or installer output, even on an assertion failure.
-  for name in "$original" "$fresh"; do
+  for name in "$original" "$first_fresh" "$second"; do
     host_docker rm -f "$name" >/dev/null 2>&1 || true
     host_docker volume rm "$name-data" >/dev/null 2>&1 || true
   done
@@ -34,7 +36,7 @@ cleanup() {
 trap cleanup EXIT
 start_host() {
   daemon_name=$1
-  [[ $daemon_name = "$original" || $daemon_name = "$fresh" ]]
+  [[ $daemon_name = "$original" || $daemon_name = "$fresh" || $daemon_name = "$second" ]]
   local socket_dir="$work/${daemon_name##*-}"
   mkdir -m 0700 "$socket_dir"
   socket="unix://$socket_dir/docker.sock"
@@ -74,6 +76,9 @@ start_host() {
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
   local -a mounts=(--mount "type=bind,src=$root,dst=$root")
+  if [[ $action = destination-full ]]; then
+    mounts+=(--mount "type=tmpfs,dst=$root/enospc,tmpfs-size=4194304,tmpfs-mode=0700")
+  fi
   if [[ $action != capture && $action != diagnose-activation && $action != monitor-activation ]]; then
     if [[ $action != late-revoke ]]; then mounts+=(--mount "type=bind,src=$root/backup,dst=$root/backup,readonly"); fi
     if [[ $action = no-space ]]; then mounts+=(--mount "type=tmpfs,dst=$root/host/restore,tmpfs-size=33554432,tmpfs-mode=0700"); fi
@@ -90,7 +95,7 @@ run_driver() {
   inner run --rm --init --user 0:0 --network host --label "verity.restore-job=$job" \
     --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock "${mounts[@]}" \
     --env VERITY_RESTORE_DOCKER_ACCEPTANCE=1 --env "VERITY_RESTORE_TEST_DAEMON_ID=$daemon_id" \
-    --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \
+    --env "VERITY_RESTORE_ENABLED_IMAGE=${enabled_digest:-}" --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \
     --env "VERITY_RESTORE_TEST_NEW_IDENTITY=${new_identity:-0}" \
     --entrypoint node "$digest" "$root/driver.mjs" "$action"
 }
@@ -111,6 +116,11 @@ prepare_reviewed() {
   for step in 1 2 3; do run_driver advance; done
   run_driver wrong-password
   sleep 6
+  if [[ ${trial_surfaces_checked:-0} = 0 ]]; then
+    run_driver trial-surfaces
+    trial_surfaces_checked=1
+    sleep 6
+  fi
   run_driver review
   run_driver advance
 }
@@ -119,6 +129,8 @@ start_host "$original"
 original_id=$daemon_id
 original_digest=$digest
 run_driver capture
+echo '--- recovery: actual ENOSPC on a private destination'
+run_driver destination-full
 mkdir -m 0700 "$work/copied"
 host_docker cp "$original:$root/backup" "$work/copied/backup"
 host_docker cp "$original:$root/input" "$work/copied/input"
@@ -222,6 +234,31 @@ activate_installer() {
 activate_installer
 run_driver verify-api
 
+# Keep the production image unchanged. The enabled derivative exists only on this disposable daemon.
+run_driver verify-backup-gate
+run_driver assert-prerequisites
+inside mkdir -p "$root/enabled-build"
+inside sh -c 'cat >"$1/Dockerfile"' sh "$root/enabled-build" <<'DOCKERFILE'
+ARG BASE
+FROM ${BASE}
+USER 0
+RUN node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const p="/app/packages/server/dist/backup/routes.js"; const s=readFileSync(p,"utf8"); const a="export const BACKUP_RECOVERY_ACCEPTED = false;"; if(s.split(a).length!==2) throw Error("test gate patch mismatch"); writeFileSync(p,s.replace(a,"export const BACKUP_RECOVERY_ACCEPTED = true;"));'
+USER 1000:1000
+DOCKERFILE
+inside docker build --quiet --build-arg "BASE=$digest" --tag "$repo:backup-enabled-acceptance" "$root/enabled-build" >/dev/null
+inner push --quiet "$repo:backup-enabled-acceptance" >/dev/null
+enabled_digest=$(inner image inspect --format '{{index .RepoDigests 0}}' "$repo:backup-enabled-acceptance")
+[[ $enabled_digest =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ && $enabled_digest != "$digest" ]]
+install_test_image() {
+  host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+    --env VERITY_API_HOST_PORT=0 --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
+    sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" >"$2/test-image-install.log" 2>&1' sh "$1" "$root"
+}
+install_test_image "$enabled_digest"
+run_driver verify-enabled-restart
+install_test_image "$digest"
+run_driver assert-prerequisites
+
 echo '--- recovery: real root helper exposed-generation retirement'
 run_driver prepare-exposure-original
 run_identity_helper() {
@@ -272,4 +309,33 @@ run_driver assert-restored
 run_driver advance
 activate_installer
 run_driver verify-api
+echo '--- recovery: two independently accepted hosts retain and collect only owned repositories'
+run_driver owned-maintenance
+host_docker cp "$first_fresh:$root/ownership-result" "$work/first-ownership.json"
+first_daemon_id=$daemon_id
+# Park the first disposable installation while the second runs to bound CI memory use.
+mapfile -t parked_containers < <(inner ps -q)
+if (( ${#parked_containers[@]} )); then inner stop "${parked_containers[@]}" >/dev/null; fi
+fresh=$second
+new_identity=0
+start_host "$fresh"
+[[ $daemon_id != "$first_daemon_id" && $daemon_id != "$original_id" ]]
+host_docker cp "$work/copied/." "$fresh:$root"
+run_driver seed-compose
+prepare_reviewed
+run_driver late-revoke
+run_driver advance
+run_driver assert-restored
+run_driver advance
+activate_installer
+run_driver verify-api
+run_driver owned-maintenance
+host_docker cp "$second:$root/ownership-result" "$work/second-ownership.json"
+node --input-type=module -e 'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; const [a,b]=process.argv.slice(1).map(p=>JSON.parse(readFileSync(p))); assert.notEqual(a.installationId,b.installationId); assert.notEqual(a.repository,b.repository);' "$work/first-ownership.json" "$work/second-ownership.json"
+run_driver verify-owned-unchanged
+fresh=$first_fresh
+daemon_name=$first_fresh
+socket="unix://$work/fresh/docker.sock"
+daemon_id=$first_daemon_id
+run_driver verify-owned-unchanged
 echo 'Separate-host capture, restore, interruption, abort, acceptance and identity checks passed.'

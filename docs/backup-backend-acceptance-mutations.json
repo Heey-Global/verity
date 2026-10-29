@@ -1,0 +1,201 @@
+{
+  "baselineCommit": "7a3c3ff07c42ba83d22c413880433ef5c1d77b21",
+  "cases": [
+    {
+      "id": "recent-window",
+      "file": "packages/server/src/backup/retention.ts",
+      "before": "48 * HOUR",
+      "after": "47 * HOUR",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/retention.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "428d2a27c57b8d67a072dd3cdf14fe838bb3a817860b2d9a9db9ae88e3b7b2cf",
+      "test": "retention.test.ts",
+      "testSha256": "b6711a590d404dd4d34fc6d7068bd1405b29081ca04ecdbdec01170465b6a68c"
+    },
+    {
+      "id": "daily-count",
+      "file": "packages/server/src/backup/retention.ts",
+      "before": "['day', 7]",
+      "after": "['day', 6]",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/retention.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "428d2a27c57b8d67a072dd3cdf14fe838bb3a817860b2d9a9db9ae88e3b7b2cf",
+      "test": "retention.test.ts",
+      "testSha256": "b6711a590d404dd4d34fc6d7068bd1405b29081ca04ecdbdec01170465b6a68c"
+    },
+    {
+      "id": "weekly-count",
+      "file": "packages/server/src/backup/retention.ts",
+      "before": "['week', 4]",
+      "after": "['week', 3]",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/retention.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "428d2a27c57b8d67a072dd3cdf14fe838bb3a817860b2d9a9db9ae88e3b7b2cf",
+      "test": "retention.test.ts",
+      "testSha256": "b6711a590d404dd4d34fc6d7068bd1405b29081ca04ecdbdec01170465b6a68c"
+    },
+    {
+      "id": "monthly-count",
+      "file": "packages/server/src/backup/retention.ts",
+      "before": "['month', 6]",
+      "after": "['month', 5]",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/retention.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "428d2a27c57b8d67a072dd3cdf14fe838bb3a817860b2d9a9db9ae88e3b7b2cf",
+      "test": "retention.test.ts",
+      "testSha256": "b6711a590d404dd4d34fc6d7068bd1405b29081ca04ecdbdec01170465b6a68c"
+    },
+    {
+      "id": "pre-update-count",
+      "file": "packages/server/src/backup/retention.ts",
+      "before": ".slice(0, 2)",
+      "after": ".slice(0, 1)",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/retention.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "428d2a27c57b8d67a072dd3cdf14fe838bb3a817860b2d9a9db9ae88e3b7b2cf",
+      "test": "retention.test.ts",
+      "testSha256": "b6711a590d404dd4d34fc6d7068bd1405b29081ca04ecdbdec01170465b6a68c"
+    },
+    {
+      "id": "episode-dedup",
+      "file": "packages/server/src/backup/operational-alerts.ts",
+      "before": "this.state.notified.includes(value) || !this.notify",
+      "after": "!this.notify",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/operational-alerts.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "cf95ec5085cf386e72505233e9ce64eb895de7d859292b776b6029db284ee5d0",
+      "test": "operational-alerts.test.ts",
+      "testSha256": "149322c19b25b51f07a67478f5f324de43cd0088387f68241e16fed486a175c7"
+    },
+    {
+      "id": "episode-clear",
+      "file": "packages/server/src/backup/operational-alerts.ts",
+      "before": "this.state.notified.filter((value) => active.has(value))",
+      "after": "this.state.notified",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/operational-alerts.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "cf95ec5085cf386e72505233e9ce64eb895de7d859292b776b6029db284ee5d0",
+      "test": "operational-alerts.test.ts",
+      "testSha256": "149322c19b25b51f07a67478f5f324de43cd0088387f68241e16fed486a175c7"
+    },
+    {
+      "id": "administrator-recheck",
+      "file": "packages/server/src/backup/alert-notifier.ts",
+      "before": "await store.isActiveAdministrator(userId)",
+      "after": "true",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/alert-notifier.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "ac3383eaa6da78068d818503eca22cb41b4ef20957d3fb0258309c20c62922fc",
+      "test": "alert-notifier.test.ts",
+      "testSha256": "52ca8b9da5dcdf36efdbdce03131b63c22ada9f419ad39d16c74ed3e23effb32"
+    },
+    {
+      "id": "export-isolation",
+      "file": "packages/server/src/backup/database.ts",
+      "before": "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      "after": "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/database-prerequisites.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "3debf8c4ac7cf589707c3a037522d9c20645126160068f04d7131ad00184b7cd",
+      "test": "database-prerequisites.test.ts",
+      "testSha256": "9d454d47ca3c60672103c090a12a6c0e9d2b32457385367ec842bd86950a155e"
+    },
+    {
+      "id": "export-readonly",
+      "file": "packages/server/src/backup/database.ts",
+      "before": "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      "after": "BEGIN ISOLATION LEVEL REPEATABLE READ READ WRITE",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/database-prerequisites.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "3debf8c4ac7cf589707c3a037522d9c20645126160068f04d7131ad00184b7cd",
+      "test": "database-prerequisites.test.ts",
+      "testSha256": "9d454d47ca3c60672103c090a12a6c0e9d2b32457385367ec842bd86950a155e"
+    },
+    {
+      "id": "installer-relocation-before-writes",
+      "file": "deploy/host/verity-backup-prerequisites",
+      "mutation": "Move the existing destination mismatch check after path creation and identity validation, immediately before the first write_state call.",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/installer-destination.test.ts"
+      ],
+      "observedExitCode": 1,
+      "originalSourceSha256": "8a482eaf3f7247e6d53c10fd6ff8e4c8fa580b136df8a14ee99f867ff3b0763a",
+      "test": "packages/server/src/backup/installer-destination.test.ts",
+      "testSha256": "ade322a43aaec05d3ee3a069299d5236d8c8ff247f5aa65e9032e3446614b614"
+    }
+  ]
+}
