@@ -1,0 +1,73 @@
+{
+  "node": "v26.12.1",
+  "workers": 1,
+  "incremental": {
+    "dataset": "SHAKE256 backup-measurement-v1, 8 MiB, 32-byte overwrite",
+    "transport": "local destination writes; no network transfer claim",
+    "measurements": [
+      {
+        "phase": "full",
+        "newlyWrittenObjectBytes": 8396416,
+        "retainedObjectBytes": 8396416,
+        "newlyWrittenDestinationBytes": 8402938,
+        "retainedDestinationBytes": 8403893,
+        "elapsedMs": 1342.3265890000002,
+        "cpuMicros": 890000,
+        "maxRssKiB": 280984
+      },
+      {
+        "phase": "unchanged",
+        "newlyWrittenObjectBytes": 0,
+        "retainedObjectBytes": 8396416,
+        "newlyWrittenDestinationBytes": 6522,
+        "retainedDestinationBytes": 8410414,
+        "elapsedMs": 593.859352,
+        "cpuMicros": 250000,
+        "maxRssKiB": 284840
+      },
+      {
+        "phase": "small-edit",
+        "newlyWrittenObjectBytes": 849758,
+        "retainedObjectBytes": 9246174,
+        "newlyWrittenDestinationBytes": 856280,
+        "retainedDestinationBytes": 9266693,
+        "elapsedMs": 1475.4815859999999,
+        "cpuMicros": 730000,
+        "maxRssKiB": 285860
+      }
+    ]
+  },
+  "freeze": {
+    "datasetBytes": 16777216,
+    "gitRepositories": 1,
+    "copyMethod": "freezeGitDirectory streams through file descriptors; no reflink/copy_file_range",
+    "barrierMs": 1118.7098220000007,
+    "elapsedMs": 13013.840279,
+    "cpuMicros": 4470000,
+    "maxRssKiB": 331940,
+    "performanceAcceptance": false
+  },
+  "limits": [
+    "Process observations include test harness overhead.",
+    "Destination sizes are ciphertext file bytes, excluding filesystem allocation overhead.",
+    "No off-host transport measurement or performance budget acceptance."
+  ],
+  "files": [
+    {
+      "path": "packages/server/src/backup/capture.test.ts",
+      "sha256": "885c111e2365b37e5b33d3e8bbf480b87ef89619e21a769d4a12b3801734f847"
+    },
+    {
+      "path": "packages/server/src/backup/incremental-measurement.test.ts",
+      "sha256": "f038e50da6f073b2d8678a25e4ca8efe06e5a81da42c9c6b6246c83dc3b3d2ef"
+    },
+    {
+      "path": "packages/server/src/backup/git.ts",
+      "sha256": "8edd3fef87da0d820aef577ef22613d1f0dfd4f68020eedf0cbd5697efde9ae6"
+    },
+    {
+      "path": "packages/server/src/backup/capture.ts",
+      "sha256": "c21c438ebb239e5ababa58326e9825057d78c77afbf10a7fa15abd3a6a7c113b"
+    }
+  ]
+}

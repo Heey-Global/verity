@@ -1592,6 +1592,8 @@ export interface VulnDigestsTable {
   day: string;
 }
 export interface Database {
+  qa_dispatches: QADispatchesTable;
+  repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
   repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
@@ -1801,6 +1803,8 @@ interface RepairMandatesTable {
   checked_at: Date | null;
 }
 interface RepairIncidentsTable {
+  verified_success: Generated<boolean>;
+  repair_pr: number | null;
   id: string;
   project_id: string;
   resource: string;
@@ -1884,4 +1888,18 @@ interface QADecisionsTable {
   snapshot: string;
   outcome: string | null;
   created_at: Generated<Date>;
+}
+
+interface QADispatchesTable {
+  id: string;
+  session_id: string;
+  state: 'reserved' | 'admitted' | 'cancelled' | 'legacy';
+  prompt_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  created_at: Generated<Date>;
+}
+interface RepairResourceBudgetsTable {
+  project_id: string;
+  resource: string;
+  used: Generated<number>;
+  cycle: Generated<number>;
 }

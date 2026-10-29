@@ -2008,6 +2008,54 @@ describe('Conductor.dispatchTurn', () => {
     },
   );
 
+  it('durably admits a QA dispatch once and rejects a cancelled reservation before backend execution', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect((await ctx.store.repairs.dispatchReceipt(id))?.state).toBe('admitted');
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'duplicate', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    expect(fake.calls).toHaveLength(1);
+    await ctx.store.repairs.qaFinish(id, 'done');
+    const cancelled = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(await ctx.store.repairs.cancelReservedDispatch(cancelled)).toBe(true);
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'late', {}, { durableDispatchId: cancelled }),
+    ).toEqual({ accepted: false });
+    expect(fake.calls).toHaveLength(1);
+    expect((await ctx.store.getEvents('s1')).filter((row) => row.t === 'prompt')).toHaveLength(1);
+  });
+
+  it('settles acceptance interrupted before backend launch without replaying the prompt', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    await ctx.store.admitBackgroundDispatch(id, 's1', { t: 'prompt', text: 'review' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    expect(fake.calls).toHaveLength(0);
+    expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
+  });
+
   it('validates idle dispatch under its lock and releases rejected admissions', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({

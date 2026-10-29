@@ -1,3 +1,4 @@
+import { hasFreshRepairEvidence } from './qa-coordinator.js';
 import type { EventStore } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -75,14 +76,15 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
     if (
       !incident ||
       incident.owner_session_id ||
-      (await store.repairs.incidents(id))
-        .filter((row) => row.resource === incident.resource && row.state !== 'resolved')
-        .reduce((sum, row) => sum + row.attempts, 0) >= 2
+      !hasFreshRepairEvidence(incident) ||
+      !(await store.repairs.qa()).enabled ||
+      (await store.repairs.budgetUsed(id, incident.resource)) >= 2
     )
       return reply
         .code(409)
         .send({ error: 'Incident cannot be retried; inspect the assigned session' });
-    await store.repairs.retry(incidentId);
+    if (!(await store.repairs.retry(incidentId)))
+      return reply.code(409).send({ error: 'Incident did not transition to retry' });
     return { accepted: true };
   });
 }

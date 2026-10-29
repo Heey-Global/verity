@@ -2137,6 +2137,32 @@ describe('createDockerClient network primitives (H2)', () => {
     await expect(client(fetch409).ensureNetwork!('verity-proj-abc')).resolves.toBeUndefined();
   });
 
+  it('creates generation bridges with explicit identity and never accepts a conflict', async () => {
+    const name = `verity-egress-${'a'.repeat(32)}`;
+    const bridge = 'vep0123456789ab';
+    const id = 'b'.repeat(64);
+    const fetch = fakeFetch([
+      { match: /\/networks\/create/, method: 'POST', resp: res({ Id: id }, { status: 201 }) },
+    ]);
+    expect(await client(fetch).createEgressNetwork!(name, bridge)).toEqual({ id });
+    expect(JSON.parse(fetch.calls[0]?.init?.body ?? '{}')).toEqual({
+      Name: name,
+      Driver: 'bridge',
+      CheckDuplicate: true,
+      EnableIPv6: true,
+      IPAM: { Config: [{ Subnet: 'fdaa:aaaa:aaaa:aaaa::/64' }] },
+      Options: { 'com.docker.network.bridge.name': bridge },
+    });
+    const conflict = fakeFetch([
+      {
+        match: /\/networks\/create/,
+        method: 'POST',
+        resp: res({ message: 'exists' }, { ok: false, status: 409 }),
+      },
+    ]);
+    await expect(client(conflict).createEgressNetwork!(name, bridge)).rejects.toThrow();
+  });
+
   it('ensureNetwork throws on a real failure (500)', async () => {
     const fetch = fakeFetch([
       {

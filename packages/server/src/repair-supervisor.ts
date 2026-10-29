@@ -20,6 +20,8 @@ export interface RepairDiscovery {
 }
 export interface RepairSupervisorDeps {
   store: EventStore;
+  /** Shared by QA and repair recovery while local admission is still being prepared. */
+  preparingDispatches?: Set<string>;
   discover(this: void, project: ProjectRecord, page: number): Promise<RepairDiscovery>;
   changed?(projectId: string): void;
   enabled?(): Promise<boolean>;
@@ -27,6 +29,11 @@ export interface RepairSupervisorDeps {
   authorized(this: void, userId: string, projectId: string): Promise<boolean>;
   busy(this: void, sessionId: string): boolean;
   terminated(this: void, sessionId: string, dispatchId: string): Promise<boolean>;
+  pullRequest?(
+    this: void,
+    project: ProjectRecord,
+    number: number,
+  ): Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   result(sessionId: string): Promise<PullRequestStatus | null>;
   target(
     this: void,
@@ -51,6 +58,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
   let stopped = false;
   let pending: Promise<void> | undefined;
   const store = deps.store.repairs;
+  const preparing = deps.preparingDispatches ?? new Set<string>();
   const fingerprints = new Map<string, string>();
   async function delegate(mandate: RepairMandate, incident: RepairIncident): Promise<void> {
     if (
@@ -62,9 +70,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
       return;
     if (!(await deps.authorized(mandate.sponsor_user_id, mandate.project_id))) return;
     const globalRevision = deps.enabled ? (await store.qa()).revision : undefined;
-    const attempts = (await store.incidents(incident.project_id))
-      .filter((i) => i.resource === incident.resource && i.state !== 'resolved')
-      .reduce((sum, i) => sum + i.attempts, 0);
+    const attempts = await store.budgetUsed(incident.project_id, incident.resource);
     if (attempts >= 2) {
       await store.blockUnowned(incident.id);
       return;
@@ -79,6 +85,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     const sessionId = target.sessionId ?? randomUUID();
     const claim = await store.claim(incident.id, sessionId, mandate.revision, globalRevision);
     if (!claim?.dispatch_id) return;
+    preparing.add(claim.dispatch_id);
     let dispatchAttempted = false;
     try {
       if (!(await deps.store.getSession(sessionId)))
@@ -91,7 +98,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
         latest.revision !== mandate.revision ||
         !(await deps.authorized(mandate.sponsor_user_id, incident.project_id))
       ) {
-        await store.finishAttempt(claim.id, claim.dispatch_id, 'blocked', incident.evidence);
+        await store.cancelReservedDispatch(claim.dispatch_id);
         return;
       }
       await store.associate(incident.project_id, incident.resource, sessionId);
@@ -120,19 +127,24 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           incident.project_id,
         ))
       )
-        await store.finishAttempt(claim.id, claim.dispatch_id, 'blocked', incident.evidence);
+        await store.cancelReservedDispatch(claim.dispatch_id);
     } catch {
       // A missing local busy marker does not prove that a remote dispatch stopped.
       // Keep the claim until the normal terminal-evidence path releases it.
       if (dispatchAttempted)
         await store.health(incident.project_id, 'dispatch-uncertain', mandate.cursor);
-      else await store.finishAttempt(claim.id, claim.dispatch_id, 'blocked', incident.evidence);
+      else await store.cancelReservedDispatch(claim.dispatch_id);
+    } finally {
+      preparing.delete(claim.dispatch_id);
     }
   }
   async function sweep(): Promise<void> {
     if (running || stopped) return;
     running = true;
     try {
+      for (const dispatch of await store.reservedDispatches())
+        if (!preparing.has(dispatch.id) && !deps.busy(dispatch.session_id))
+          await store.cancelReservedDispatch(dispatch.id);
       if (deps.enabled && !(await deps.enabled())) return;
       if (deps.coordinate) {
         const qa = await store.qa();
@@ -205,7 +217,10 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           for (const run of [...page.runs].sort((a, b) => Number(b.id) - Number(a.id)))
             if (!latestRuns.has(run.workflow)) latestRuns.set(run.workflow, run);
           for (const run of latestRuns.values()) {
-            if (!(await store.acceptWorkflow(project.id, run.workflow, run.id))) continue;
+            if (!(await store.acceptWorkflow(project.id, run.workflow, run.id))) {
+              latestRuns.delete(run.workflow);
+              continue;
+            }
             await store.supersede(project.id, `workflow:${run.workflow}`, run.sha);
             if (!['failure', 'timed_out', 'action_required'].includes(run.conclusion ?? ''))
               await store.invalidateObservation(project.id, `workflow:${run.workflow}`);
@@ -266,8 +281,24 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           );
           for (const incident of await store.incidents(project.id)) {
             if (incident.owner_session_id) await store.flagStalled(incident.id);
+            // Upgrade legacy waiting incidents using their associated session once;
+            // subsequent reconciliation is independent of branch/worktree lifetime.
             if (
-              incident.state === 'verifying' &&
+              incident.state === 'awaiting_merge' &&
+              incident.repair_pr === null &&
+              incident.last_session_id
+            ) {
+              const proposal = await deps.result(incident.last_session_id);
+              if (proposal) {
+                await store.trackRepairPr(incident.id, proposal.number);
+                incident.repair_pr = proposal.number;
+              }
+            }
+            if (
+              (incident.state === 'verifying' ||
+                (incident.state === 'awaiting_merge' &&
+                  incident.repair_pr !== null &&
+                  (await deps.pullRequest?.(project, incident.repair_pr))?.state === 'closed')) &&
               (statuses.some(
                 (row) =>
                   `pr:${row.status.number}` === incident.resource &&
@@ -281,23 +312,25 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
                     ['failure', 'timed_out', 'action_required'].includes(run.conclusion ?? ''),
                 ))
             )
-              await store.retry(incident.id);
+              await store.retry(incident.id, incident.state === 'awaiting_merge');
             if (
               incident.owner_session_id &&
               incident.dispatch_id &&
               !deps.busy(incident.owner_session_id) &&
               (await deps.terminated(incident.owner_session_id, incident.dispatch_id))
-            )
+            ) {
+              const proposal = incident.resource.startsWith('workflow:')
+                ? await deps.result(incident.owner_session_id)
+                : null;
+              if (proposal?.phase === 'open')
+                await store.trackRepairPr(incident.id, proposal.number);
               await store.finishAttempt(
                 incident.id,
                 incident.dispatch_id,
-                incident.resource.startsWith('workflow:') &&
-                  (await deps.result(incident.owner_session_id))?.phase === 'open'
-                  ? 'awaiting_merge'
-                  : 'verifying',
+                proposal?.phase === 'open' ? 'awaiting_merge' : 'verifying',
                 incident.evidence,
               );
-            else if (!deps.coordinate) await delegate(mandate, incident);
+            } else if (!deps.coordinate) await delegate(mandate, incident);
           }
         } catch {
           // A forge outage cannot keep a confirmed terminated worker holding capacity.

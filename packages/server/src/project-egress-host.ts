@@ -12,6 +12,7 @@ const networkBinding = z.strictObject({
 });
 const reference = { projectId: identity, generation: identity };
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
+  z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
   z.strictObject({
@@ -22,6 +23,15 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   }),
   z.strictObject({ operation: z.literal('retire'), ...reference }),
 ]);
+export const projectEgressHostResponse = z.discriminatedUnion('state', [
+  z.strictObject({
+    state: z.literal('current'),
+    projectId: identity,
+    binding: networkBinding.nullable(),
+  }),
+  z.strictObject({ state: z.enum(['denied', 'started-denied', 'retired']), generation: identity }),
+]);
+export type ProjectEgressHostResponse = z.infer<typeof projectEgressHostResponse>;
 export type ProjectEgressHostRequest = z.infer<typeof projectEgressHostRequest>;
 export type ProjectEgressNetworkBinding = z.infer<typeof networkBinding>;
 const recordSchema = z.strictObject({
@@ -153,11 +163,20 @@ export class ProjectEgressHost {
         await this.deps.apply(projectEgressStartupRules(record.binding));
     });
   }
-  execute(
-    input: unknown,
-  ): Promise<{ state: 'denied' | 'started-denied' | 'retired'; generation: string }> {
+  execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
     return this.serialize(async () => {
+      if (request.operation === 'current') {
+        const record = this.state.records.find(
+          (record) => !record.retired && record.binding.projectId === request.projectId,
+        );
+        // Read authority, not health: querying must not alter rules or renew a lease.
+        return {
+          state: 'current',
+          projectId: request.projectId,
+          binding: record === undefined ? null : structuredClone(record.binding),
+        };
+      }
       if (request.operation === 'register') {
         const existing = this.state.records.find(
           (record) => key(record.binding) === key(request.binding),

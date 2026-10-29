@@ -1360,6 +1360,10 @@ export interface ServerDeps {
   /** Live compact PR status for the current branch: title, URL, check counts and
    * whether the Merge button should be enabled. Absent → older token-less behavior. */
   invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
@@ -10107,11 +10111,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.eventStore.isActiveAdministrator(state.sponsor))
       );
     };
+    const preparingDispatches = new Set<string>();
     const supervisor = createRepairSupervisor({
+      preparingDispatches,
       enabled: qaEnabled,
       coordinate: true,
       store: deps.eventStore,
       discover: deps.repairDiscovery,
+      ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
         void deps.eventStore.repairs
@@ -10152,7 +10159,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return match ? { sessionId: match, blocked: false } : { blocked: false };
       },
       terminated: async (id, dispatchId) => {
-        const boundary = await deps.eventStore.repairs.attemptBoundary(dispatchId);
+        const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
+        const boundary =
+          receipt?.prompt_seq == null
+            ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
+            : Number(receipt.prompt_seq);
         if (boundary === undefined) return false;
         const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
         return repairTurnTerminated(events.filter((row) => row.seq > boundary));
@@ -10166,13 +10177,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (result.statusCode >= 300) throw new Error('Repair session could not be created');
       },
       dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
-        if (await deps.eventStore.hasSessionAutomationMarker(sessionId, dispatchId)) return true;
+        if ((await deps.eventStore.repairs.dispatchReceipt(dispatchId))?.state === 'admitted')
+          return true;
         const result = await conductor.dispatchTurnWhenIdle(
           sessionId,
           prompt,
           {},
           {
             displayPrompt: 'QA: investigate assigned CI failure',
+            durableDispatchId: dispatchId,
             initiatedBy: { userId: sponsorUserId },
             validateSession: async (session) => {
               if (session.projectId !== projectId || !(await validate())) return false;
@@ -10184,11 +10197,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             },
           },
         );
-        if (result.accepted) await deps.eventStore.markSessionAutomation(sessionId, dispatchId);
         return result.accepted;
       },
     });
     const qa = createQACoordinator({
+      preparingDispatches,
       store: deps.eventStore,
       authorized: canExecuteAs,
       administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
@@ -10202,13 +10215,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
         if (result.statusCode >= 300) throw new Error('QA session could not be created');
       },
-      dispatch: async (id, prompt, validate, sponsor) => {
+      dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
         const result = await conductor.dispatchTurnWhenIdle(
           id,
           prompt,
           { timeoutMs: 180_000 },
           {
             displayPrompt: 'QA: review changes in CI supervision',
+            durableDispatchId: dispatchId,
             initiatedBy: { userId: sponsor },
             validateSession: validate,
           },

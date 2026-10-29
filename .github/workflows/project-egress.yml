@@ -11,6 +11,9 @@ on:
       - 'scripts/build-project-egress-host.mjs'
       - 'packages/server/src/provisioner.ts'
       - 'packages/server/src/project-egress-*.ts'
+      - 'packages/server/src/project-relay-*.ts'
+      - 'packages/server/src/provisioner.ts'
+      - 'packages/server/src/docker.ts'
       - 'packages/store/src/project-egress.ts'
   workflow_dispatch: {}
 

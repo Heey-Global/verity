@@ -171,6 +171,8 @@ export interface DockerClient {
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create-only generation bridge. Conflicts must never adopt an existing network. */
+  createEgressNetwork?(name: string, bridge: string): Promise<{ id: string }>;
   /** Create a named local volume if absent (Engine `POST /volumes/create`) and
    *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
    *  create for an existing name with that volume, labels untouched. Optional so
@@ -2331,6 +2333,25 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    createEgressNetwork: async (name, bridge) => {
+      if (!/^verity-egress-[a-f0-9]{32}$/u.test(name) || !/^vep[a-f0-9]{12}$/u.test(bridge))
+        throw new Error('Invalid generation network');
+      const digest = name.slice('verity-egress-'.length);
+      const subnet = `fd${digest.slice(0, 2)}:${digest.slice(2, 6)}:${digest.slice(6, 10)}:${digest.slice(10, 14)}::/64`;
+      const res = await callDocker(doFetch, `${base}/networks/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'bridge',
+        CheckDuplicate: true,
+        EnableIPv6: true,
+        IPAM: { Config: [{ Subnet: subnet }] },
+        Options: { 'com.docker.network.bridge.name': bridge },
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown };
+      if (typeof json.Id !== 'string' || !/^[a-f0-9]{64}$/u.test(json.Id))
+        throw new Error('Invalid generation network identity');
+      return { id: json.Id };
     },
     ensureVolume: async (name, opts) => {
       const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {

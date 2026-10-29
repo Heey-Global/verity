@@ -3493,6 +3493,8 @@ export class Conductor {
     dispatchOpts: DispatchTurnOptions & {
       /** Validate background work while the session admission lock is held. */
       validateSession?: (session: SessionRecord) => Promise<boolean>;
+      /** Server-owned receipt; atomically persisted with the prompt and recovery marker. */
+      durableDispatchId?: string;
     } = {},
   ): Promise<{ accepted: boolean }> {
     let session: SessionRecord;
@@ -3513,6 +3515,32 @@ export class Conductor {
       this.drainNext(sessionId);
       throw error;
     }
+    let admittedSeq: number | undefined;
+    if (dispatchOpts.durableDispatchId) {
+      try {
+        const event: AgentEvent = {
+          t: 'prompt',
+          text: dispatchOpts.displayPrompt ?? prompt,
+          ...originFields(dispatchOpts),
+        };
+        const receipt = await this.deps.store.admitBackgroundDispatch(
+          dispatchOpts.durableDispatchId,
+          sessionId,
+          event,
+        );
+        if (!receipt || receipt.existing) {
+          this.releaseInFlight(sessionId);
+          this.drainNext(sessionId);
+          return { accepted: receipt?.existing ?? false };
+        }
+        admittedSeq = receipt.seq;
+        this.deps.bus?.publish(sessionId, { seq: receipt.seq, ts: receipt.ts, event });
+      } catch (error) {
+        this.releaseInFlight(sessionId);
+        this.drainNext(sessionId);
+        throw error;
+      }
+    }
     this.launchAcceptedTurn(
       sessionId,
       prompt,
@@ -3520,8 +3548,9 @@ export class Conductor {
       opts,
       dispatchOpts.displayPrompt ?? prompt,
       {
-        persistPrompt: true,
+        persistPrompt: admittedSeq === undefined,
         ...originFields(dispatchOpts),
+        ...(admittedSeq === undefined ? {} : { admittedSeq }),
       },
     );
     return { accepted: true };
@@ -3536,6 +3565,7 @@ export class Conductor {
     launchOpts: PromptOrigin & {
       persistPrompt: boolean;
       autoResumeCount?: number;
+      admittedSeq?: number;
     },
   ): void {
     // Register the in-flight handle synchronously so the operator can cancel/steer
@@ -3561,13 +3591,13 @@ export class Conductor {
         );
         this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       }
-      const sinceSeq = await this.deps.store.latestEventSeq(sessionId);
+      const sinceSeq = launchOpts.admittedSeq ?? (await this.deps.store.latestEventSeq(sessionId));
       markerSeq = sinceSeq;
       handle.markerSeq = sinceSeq; // scope for a potential force-settle marker clear
       // Durable in-flight marker (lifecycle Phase 1) — see {@link sendTurn}. Written
       // before the backend runs so a mid-turn crash is settled by recovery, not
       // re-inferred from the tail; cleared in the `finally` below.
-      await this.markTurnRunning(sessionId, sinceSeq);
+      if (launchOpts.admittedSeq === undefined) await this.markTurnRunning(sessionId, sinceSeq);
       const result = await this.runBackendTurnWithResumeRecovery(sessionId, prompt, session, opts);
       // Operator-cancelled (#79): append the terminal `interrupted` marker (best
       // effort — don't let a failed marker insert block the lock release in the

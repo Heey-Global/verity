@@ -1,3 +1,6 @@
+import { createDockerClient } from '../../../packages/server/src/docker.js';
+import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
+import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { request, type Server } from 'node:http';
@@ -21,7 +24,8 @@ import { listenProjectEgressHost } from '../../../packages/server/src/project-eg
 import { applyProjectFenceRules } from '../../../packages/server/src/project-egress-fence.js';
 assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
 const exec = promisify(execFile);
-const bridge = 'vep000000000001';
+let bridge = '';
+let generationNetwork = '';
 const directory = await mkdtemp('/tmp/egress-host-');
 const token = randomBytes(32).toString('hex');
 const store = await openProjectEgressHostStore(directory);
@@ -40,10 +44,7 @@ const dependencies = {
 let server: Server | undefined;
 const results: string[] = [];
 try {
-  for (const [name, subnet] of [
-    [bridge, '172.30.104.0/24'],
-    ['veh-receiver', '172.30.105.0/24'],
-  ])
+  for (const [name, subnet] of [['veh-receiver', '172.30.105.0/24']])
     await docker(
       'network',
       'create',
@@ -60,17 +61,6 @@ try {
       'com.docker.network.bridge.enable_ip_masquerade=false',
       name!,
     );
-  await exec('iptables', [
-    '-I',
-    'FORWARD',
-    '1',
-    '-i',
-    bridge,
-    '-o',
-    'veh-receiver',
-    '-j',
-    'ACCEPT',
-  ]);
   const receiver = `import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.bind(('0.0.0.0',8080))\nprint('ready',flush=True)\nwhile True:\n d,a=s.recvfrom(1024)\n print(d.decode(),flush=True)\n`;
   const emitter = `import socket,time\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\nprint('sending',flush=True)\nwhile True:\n s.sendto(b'host-startup-marker',('172.30.105.2',8080))\n time.sleep(0.01)\n`;
   await docker(
@@ -100,14 +90,6 @@ try {
   for (let i = 0; i < 50 && !(await docker('logs', 'veh-receiver')).includes('ready'); i++)
     await delay(100);
   assert.ok((await docker('logs', 'veh-receiver')).includes('ready'));
-  const networkId = (await docker('network', 'inspect', '--format', '{{.Id}}', bridge)).trim();
-  const binding = {
-    projectId: 'host-smoke',
-    generation: 'gen1',
-    networkId,
-    networkName: bridge,
-    bridge,
-  };
   const host = new ProjectEgressHost(await store.load(), dependencies);
   await host.restore();
   server = await listenProjectEgressHost({ directory, token, controller: host });
@@ -128,7 +110,27 @@ try {
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
-  assert.equal(await send({ operation: 'register', binding }), 200);
+  const command = createProjectEgressHostClient({ socketPath: `${directory}/control.sock`, token });
+  const lifecycle = new ProjectEgressLifecycle(
+    command,
+    createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
+  );
+  const identity = { projectId: 'host-smoke', containerGeneration: 'gen1' };
+  const binding = await lifecycle.create(identity);
+  bridge = binding.bridge;
+  generationNetwork = binding.networkName;
+  assert.deepEqual(await lifecycle.prepare(identity), binding);
+  await exec('iptables', [
+    '-I',
+    'FORWARD',
+    '1',
+    '-i',
+    bridge,
+    '-o',
+    'veh-receiver',
+    '-j',
+    'ACCEPT',
+  ]);
   const rejectedId = (
     await docker(
       'create',
@@ -139,7 +141,7 @@ try {
       '--restart',
       'no',
       '--network',
-      bridge,
+      generationNetwork,
       '--cap-drop',
       'ALL',
       '--entrypoint',
@@ -176,15 +178,14 @@ try {
       '--restart',
       'no',
       '--network',
-      bridge,
-      '--ip',
-      '172.30.104.2',
+      generationNetwork,
       '--memory',
       '128m',
       '--pids-limit',
       '64',
       '--cap-drop',
       'ALL',
+      ...['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'].flatMap((cap) => ['--cap-add', cap]),
       '--security-opt',
       'no-new-privileges=true',
       '--entrypoint',
@@ -195,16 +196,7 @@ try {
       emitter,
     )
   ).trim();
-  assert.equal(
-    await send({
-      operation: 'start',
-      projectId: binding.projectId,
-      generation: binding.generation,
-      role: 'sandbox',
-      containerId,
-    }),
-    200,
-  );
+  await lifecycle.start(identity, 'sandbox', containerId);
   await delay(2000);
   assert.ok((await docker('logs', 'veh-source')).includes('sending'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
@@ -219,21 +211,10 @@ try {
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
+  assert.deepEqual(await lifecycle.current(binding.projectId), binding);
   results.push('registry recovery retains denial');
-  await recovered.execute({
-    operation: 'retire',
-    projectId: binding.projectId,
-    generation: binding.generation,
-  });
-  await assert.rejects(
-    recovered.execute({
-      operation: 'start',
-      projectId: binding.projectId,
-      generation: binding.generation,
-      role: 'sandbox',
-      containerId,
-    }),
-  );
+  await lifecycle.retire(identity);
+  await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   results.push('retired generation cannot restart');
   // Deliberately broken boundary: the same source must reach the independent receiver.
   const table = projectEgressStartupRules(binding).match(/add table inet (\w+)/)![1];
@@ -271,7 +252,7 @@ try {
     );
     await docker('rm', '-f', name).catch(() => undefined);
   }
-  for (const name of [bridge, 'veh-receiver'])
+  for (const name of [generationNetwork, 'veh-receiver'].filter(Boolean))
     await docker('network', 'rm', name).catch(() => undefined);
   await rm(directory, { recursive: true, force: true });
 }
