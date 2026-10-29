@@ -1414,8 +1414,8 @@ export class Conductor {
     }
     // Every assistant turn, fresh or resumed: it reads untrusted mail and notes, so it
     // acts only through Verity's server-checked tools (docs/assistant.md).
-    if ((await this.deps.store.assistant.settings()).session_id === sessionId)
-      builtRunOpts.gatewayToolsOnly = true;
+    const assistantSession = (await this.deps.store.assistant.settings()).session_id === sessionId;
+    if (assistantSession) builtRunOpts.gatewayToolsOnly = true;
     const runOpts = {
       ...builtRunOpts,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
@@ -1437,8 +1437,7 @@ export class Conductor {
       const sessionSystemPrompt = (await this.deps.sessionSystemPrompt?.(session))?.trim();
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
       // The assistant keeps its tools; its role is the stored session id, as for QA.
-      if ((await this.deps.store.assistant.settings()).session_id === sessionId)
-        runOpts.appendSystemPrompt += `\n\n${ASSISTANT_SYSTEM_PROMPT}`;
+      if (assistantSession) runOpts.appendSystemPrompt += `\n\n${ASSISTANT_SYSTEM_PROMPT}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
     runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);

@@ -3827,7 +3827,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     'verity_session_handoff',
     'verity_tasks',
     'verity_app_help',
-    'verity_knowledge',
     'verity_gmail',
     'verity_google_calendar',
     'verity_google_contacts',
@@ -10100,7 +10099,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (await deps.eventStore.getSession(id)) return id;
     const project = await ensureVerityControlProject();
     const result = await sessionCreate.spawn(
-      { projectId: project.id, sessionId: id, name: 'Verity · Assistant' },
+      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
       app.log,
     );
     if (result.statusCode >= 300) throw new Error('Assistant session could not be created');

@@ -49,15 +49,17 @@ Verity Control itself can never be granted.
   Verity Control sessions are unchanged.
 - Because it processes mail and voice notes, the assistant session may only call
   an allow-list of tools: `verity_assistant`, `verity_session_handoff`, its own
-  tasks, app help, the knowledge of Verity Control, the Google tools and the
-  planning tools. Control's fleet-wide reads (`verity_diagnostics`,
+  tasks, app help, the Google tools and the planning tools. Knowledge operations
+  are refused too: they only write, and a mail must not be able to publish
+  shared knowledge. Control's fleet-wide reads (`verity_diagnostics`,
   `verity_list_sessions`, `verity_session_progress`,
   `verity_recent_session_messages`), secrets and brokered HTTP are refused. To hand
   off, it targets a project or a new session.
 - Its turns also run without the backend's built-in tools (shell, files, web)
   and without the operator's own MCP connections; only the Verity gateway
   remains. A backend that cannot enforce this refuses the turn, so the assistant
-  runs on Claude.
+  session is created with the default Claude model; switching it to another
+  backend makes its turns fail instead of running unrestricted.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
