@@ -50,7 +50,7 @@ separately by `TRADEMARKS.md`.
 | (MIT OR CC0-1.0) | 1 |
 | (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
-| Apache-2.0 | 59 |
+| Apache-2.0 | 61 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 9 |
@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 68 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1051 |
+| MIT | 1054 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -334,6 +334,9 @@ separately by `TRADEMARKS.md`.
 | @keyv/bigmap | MIT | [source](https://www.npmjs.com/package/%40keyv%2Fbigmap) |
 | @keyv/serialize | MIT | [source](https://www.npmjs.com/package/%40keyv%2Fserialize) |
 | @lukeed/ms | MIT | [source](https://www.npmjs.com/package/%40lukeed%2Fms) |
+| @modelcontextprotocol/client | Apache-2.0 | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fclient) |
+| @modelcontextprotocol/core | Apache-2.0 | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fcore) |
+| @modelcontextprotocol/ext-apps | MIT | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fext-apps) |
 | @modelcontextprotocol/sdk | MIT | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fsdk) |
 | @napi-rs/canvas-android-arm64 | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-android-arm64) |
 | @napi-rs/canvas-darwin-arm64 | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-arm64) |
@@ -477,6 +480,7 @@ separately by `TRADEMARKS.md`.
 | @sinonjs/commons | BSD-3-Clause | [source](https://www.npmjs.com/package/%40sinonjs%2Fcommons) |
 | @sinonjs/fake-timers | BSD-3-Clause | [source](https://www.npmjs.com/package/%40sinonjs%2Ffake-timers) |
 | @stablelib/base64 | MIT | [source](https://www.npmjs.com/package/%40stablelib%2Fbase64) |
+| @standard-schema/spec | MIT | [source](https://www.npmjs.com/package/%40standard-schema%2Fspec) |
 | @testing-library/react-native | MIT | [source](https://www.npmjs.com/package/%40testing-library%2Freact-native) |
 | @tootallnate/once | MIT | [source](https://www.npmjs.com/package/%40tootallnate%2Fonce) |
 | @tufjs/canonical-json | MIT | [source](https://www.npmjs.com/package/%40tufjs%2Fcanonical-json) |
@@ -506,6 +510,7 @@ separately by `TRADEMARKS.md`.
 | @types/pg-copy-streams | MIT | [source](https://www.npmjs.com/package/%40types%2Fpg-copy-streams) |
 | @types/pg | MIT | [source](https://www.npmjs.com/package/%40types%2Fpg) |
 | @types/qrcode | MIT | [source](https://www.npmjs.com/package/%40types%2Fqrcode) |
+| @types/react-dom | MIT | [source](https://www.npmjs.com/package/%40types%2Freact-dom) |
 | @types/react-test-renderer | MIT | [source](https://www.npmjs.com/package/%40types%2Freact-test-renderer) |
 | @types/react | MIT | [source](https://www.npmjs.com/package/%40types%2Freact) |
 | @types/sanitize-html | MIT | [source](https://www.npmjs.com/package/%40types%2Fsanitize-html) |

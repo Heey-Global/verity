@@ -4299,3 +4299,26 @@ it('preserves the provider snapshot returned with managed server views', async (
     providerSnapshot,
   );
 });
+
+it('loads MCP app documents and sends tool actions through authenticated session-scoped requests', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ document: '<html>app</html>' })))
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ content: [], structuredContent: { count: 2 } })),
+    );
+  const client = new VerityClient({
+    baseUrl: 'https://verity.example',
+    getToken: () => 'paired-device',
+    fetch: fetcher,
+  });
+  expect(await client.getMcpAppDocument('s', 'app')).toBe('<html>app</html>');
+  expect(await client.callMcpAppTool('s', 'app', { name: 'refresh', arguments: {} })).toMatchObject(
+    { structuredContent: { count: 2 } },
+  );
+  expect(fetcher.mock.calls[0]?.[0]).toBe('https://verity.example/sessions/s/mcp-apps/app');
+  expect(fetcher.mock.calls[1]?.[1]).toMatchObject({
+    method: 'POST',
+    body: JSON.stringify({ name: 'refresh', arguments: {} }),
+  });
+});

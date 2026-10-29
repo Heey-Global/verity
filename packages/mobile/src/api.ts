@@ -2398,6 +2398,27 @@ export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
+      { method: 'GET', ...(signal ? { signal } : {}) },
+    );
+    return z.object({ document: z.string() }).parse(await response.json()).document;
+  }
+
+  async callMcpAppTool(
+    sessionId: string,
+    appId: string,
+    call: { name: string; arguments?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
+      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
+    );
+    return z.record(z.string(), z.unknown()).parse(await response.json());
+  }
+
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
       .object({ configured: z.boolean() })

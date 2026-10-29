@@ -49,6 +49,31 @@ Hiding it does not change access, and project settings remain available.
 Drive file actions and approval/recovery behavior are described in [File connections](file-connections.md). NAS/SMB remains a separate planned feature and is not presented as usable before
 its implementation exists.
 
+## MCP Apps in web chat
+
+Enabled HTTP MCP connections can provide interactive tool results through the
+[MCP Apps extension](https://apps.extensions.modelcontextprotocol.io/). Verity web
+shows these as separate app cards alongside the tool's ordinary text result.
+Native clients display the text fallback.
+
+The first implementation supports inline HTML views and app-to-server tool calls.
+Each action uses the app's original MCP connection, checks current project access
+and tool visibility, and requires a fresh permission decision. App-only tools are
+hidden from the agent. Views cannot call tools on another connection or access
+Verity credentials, page storage, or the parent document.
+
+Views run in sandboxed iframes. Network access defaults to disabled; declared CSP
+resource and connection domains must be exact HTTPS origins. Nested frames,
+workers, forms, native device permissions, chat-context updates, downloads and
+external-link requests are not enabled in this first implementation.
+
+The last tool result is restored from session history without running the tool
+again. Loading a view or performing an action opens a fresh upstream MCP session;
+servers should carry application state in tool arguments/results rather than rely
+on the original transport session. Removing the project binding, disabling the
+connection, or changing its credentials makes existing cards unavailable for new
+reads and actions. The stored text result remains in chat history.
+
 ## Google accounts
 
 Settings → Google lists connected accounts by email, with optional display names,
