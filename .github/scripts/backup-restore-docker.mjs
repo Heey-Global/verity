@@ -1158,6 +1158,7 @@ async function restore() {
           if (line.startsWith('BACKUP_ACCEPTANCE_RECEIPT ')) console.log(line);
         throw error;
       }
+      console.log('BACKUP_ACCEPTANCE_RESTART receipt verified; fencing updater');
       const updaters = [];
       for (const container of await docker.listContainers())
         if (
@@ -1181,6 +1182,7 @@ async function restore() {
       };
       await writeFile('/srv/verity/backup-state/state', JSON.stringify(before), { mode: 0o600 });
       await exec('docker', ['start', server.id]);
+      console.log('BACKUP_ACCEPTANCE_RESTART exact Server restarted; awaiting capture');
       const deadline = Date.now() + 180000;
       let state;
       while (Date.now() < deadline) {
@@ -1206,12 +1208,23 @@ async function restore() {
           if (line.startsWith('BACKUP_ACCEPTANCE_')) console.log(line);
       }
       assert.ok(state.schedule.lastSuccess > 0, 'normal server must complete overdue capture');
+      console.log('BACKUP_ACCEPTANCE_RESTART scheduled capture committed');
       assert.equal(state.schedule.failures, 0);
       assert.deepEqual(
         (await activeServers()).map((container) => container.id),
         [server.id],
       );
-      assert.equal((await transport('/healthz')).status, 200);
+      // A committed startup capture does not establish gateway/HTTP readiness.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          assert.equal((await transport('/healthz')).status, 200);
+          break;
+        } catch (error) {
+          if (attempt === 120) throw error;
+          await delay(250);
+        }
+      }
+      console.log('BACKUP_ACCEPTANCE_RESTART pinned health ready');
       assert.equal((await api('/secret/status')).body.status, 'sealed');
       const available = await api('/api/backups/status');
       assert.equal(available.status, 200);
@@ -1230,6 +1243,7 @@ async function restore() {
         'scheduled',
       );
       assert.equal(manifest.kind, 'scheduled');
+      console.log('BACKUP_ACCEPTANCE_RESTART sealed API and scheduled manifest verified');
       const restored = await stageSnapshot(
         root,
         join(root, 'new-backups/repositories'),
@@ -1238,6 +1252,7 @@ async function restore() {
       );
       await assertRestoredFiles(restored, input.expectedContent);
       assert.ok(manifest.files.some((file) => file.path.startsWith('database/tables/')));
+      console.log('BACKUP_ACCEPTANCE_RESTART authenticated filesystem restored');
       const network = 'verity-sealed-scheduled-probe';
       await docker.ensureNetwork(network);
       // The fixture caller uses the daemon host network; migration workers use private Docker DNS.
