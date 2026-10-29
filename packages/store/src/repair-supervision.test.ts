@@ -204,7 +204,7 @@ describe('durable dispatch receipts', () => {
     expect(await ctx.store.getEvents('worker')).toHaveLength(1);
     expect(await ctx.store.repairs.budgetUsed('a', 'pr:1')).toBe(1);
   });
-  it('rolls back acceptance if the recovery marker cannot be committed', async () => {
+  it('defers acceptance while the predecessor has no settlement proof', async () => {
     const claim = await reserve();
     await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: 0 });
     await expect(
@@ -212,10 +212,121 @@ describe('durable dispatch receipts', () => {
         t: 'prompt',
         text: 'repair',
       }),
-    ).rejects.toThrow();
+    ).resolves.toBeUndefined();
     expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('reserved');
     expect(await ctx.store.getEvents('worker')).toEqual([]);
   });
+  it('replaces only a proven settled predecessor and ignores late cleanup', async () => {
+    const claim = await reserve();
+    const { seq } = await ctx.store.appendEvent('worker', { t: 'prompt', text: 'old' });
+    await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: seq, markerId: 'old' });
+    await ctx.store.appendEvent('worker', { t: 'status', state: 'completed' });
+    expect(
+      await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'new',
+      }),
+    ).toBeUndefined();
+    await ctx.store.confirmTurnSettled('worker', seq, 'wrong');
+    expect(
+      await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'new',
+      }),
+    ).toBeUndefined();
+    await ctx.store.confirmTurnSettled('worker', seq, 'old');
+    const admitted = await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+      t: 'prompt',
+      text: 'new',
+    });
+    expect(admitted?.existing).toBe(false);
+    await ctx.store.clearRunningTurn('worker', seq, 'old');
+    expect((await ctx.store.listRunningTurns())[0]?.promptSeq).toBe(admitted!.seq);
+    expect(
+      await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'duplicate',
+      }),
+    ).toMatchObject({ existing: true });
+  });
+
+  it('rejects a late completion and delete after a resume reuses the same prompt anchor', async () => {
+    const claim = await reserve();
+    await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: 0, markerId: 'old' });
+    await ctx.store.confirmTurnSettled('worker', 0, 'old');
+    await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: 0, markerId: 'resumed' });
+    await ctx.store.confirmTurnSettled('worker', 0, 'old');
+    await ctx.store.clearRunningTurn('worker', 0, 'old');
+    expect((await ctx.store.listRunningTurns())[0]?.markerId).toBe('resumed');
+    expect(
+      await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'new',
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each(['active', 'wrong-turn', 'wrong-session', 'fenced'] as const)(
+    'requires exact Runner settlement: %s',
+    async (mode) => {
+      const claim = await reserve();
+      await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: 0, markerId: 'runner' });
+      await ctx.store.bindTurnIdentity('worker', {
+        turnId: 'current-runner',
+        startCommandId: 'start',
+      });
+      await ctx.store.confirmTurnSettled('worker', 0, 'runner');
+      await ctx.store.appendEvent('worker', { t: 'interrupted' });
+      if (mode === 'wrong-turn') await ctx.store.fenceAbandonedTurn('worker', 'other-runner');
+      if (mode === 'wrong-session') {
+        await ctx.store.createSession({ sessionId: 'other', worktree: '/wt/other', model: 'm' });
+        await ctx.store.fenceAbandonedTurn('other', 'current-runner');
+      }
+      if (mode === 'fenced') await ctx.store.fenceAbandonedTurn('worker', 'current-runner');
+      const admitted = await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'new',
+      });
+      expect(!!admitted).toBe(mode === 'fenced');
+      if (!admitted)
+        expect(
+          (await ctx.store.listRunningTurns()).find((m) => m.sessionId === 'worker')?.turnId,
+        ).toBe('current-runner');
+    },
+  );
+
+  it('rolls back predecessor removal and prompt persistence if successor insertion fails', async () => {
+    const claim = await reserve();
+    await ctx.store.markTurnRunning({ sessionId: 'worker', promptSeq: 0, markerId: 'old' });
+    await ctx.store.confirmTurnSettled('worker', 0, 'old');
+    await sql`create function reject_qa_marker() returns trigger language plpgsql as $$ begin raise exception 'injected marker failure'; end $$`.execute(
+      ctx.db,
+    );
+    await sql`create trigger reject_qa_marker before insert on running_turns for each row execute function reject_qa_marker()`.execute(
+      ctx.db,
+    );
+    try {
+      await expect(
+        ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+          t: 'prompt',
+          text: 'new',
+        }),
+      ).rejects.toThrow('injected marker failure');
+      expect((await ctx.store.listRunningTurns())[0]?.markerId).toBe('old');
+      expect(await ctx.store.getEvents('worker')).toEqual([]);
+      expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('reserved');
+    } finally {
+      await sql`drop trigger reject_qa_marker on running_turns`.execute(ctx.db);
+      await sql`drop function reject_qa_marker()`.execute(ctx.db);
+    }
+    expect(
+      await ctx.store.admitBackgroundDispatch(claim.dispatch_id!, 'worker', {
+        t: 'prompt',
+        text: 'new',
+      }),
+    ).toMatchObject({ existing: false });
+  });
+
   it('serializes cancellation against admission so exactly one wins', async () => {
     const claim = await reserve();
     const [receipt, cancelled] = await Promise.all([

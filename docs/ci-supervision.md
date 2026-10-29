@@ -150,3 +150,21 @@ Inbox limits apply after enabled, authorized projects are selected, so inactive
 entries cannot starve active projects. Re-enabled projects receive reconciled
 observations. Repository-bound Forgejo reads bypass the provider's inner cache;
 the shared cache still isolates credentials and owns mutation invalidation.
+
+
+## Admission after delayed turn cleanup
+
+Background admission can replace a predecessor marker only after server-confirmed
+backend completion for that marker's unique identity, prompt sequence and Runner
+identity, or an exact Runner terminal/recovery-fence claim. Transcript status and
+interruption events alone are not proof. Legacy markers without proof continue
+through normal recovery.
+
+The predecessor check and removal, new prompt, new marker and dispatch receipt
+commit together under the session event lock. Repeated dispatch identities do not
+start another backend. A resumed attempt gets a fresh marker identity even when
+it reuses its prompt anchor, so delayed completion or cleanup cannot settle or
+erase the successor. Recording completion is bounded; a database failure does
+not turn Stop into an unbounded wait. Without a durable proof, admission defers
+without starting work and the existing recovery path remains responsible for
+the predecessor.

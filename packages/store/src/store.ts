@@ -1002,6 +1002,7 @@ export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
  * Written before a turn launches, cleared on its terminal event; a record still
  * present at startup means the turn was abandoned by a crash/restart. */
 export interface RunningTurnRecord {
+  markerId?: string | null;
   sessionId: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   promptSeq: number;
@@ -3779,7 +3780,7 @@ export class EventStore implements EventSink {
     id: string,
     sessionId: string,
     event: AgentEvent,
-  ): Promise<{ seq: number; ts: number; existing: boolean } | undefined> {
+  ): Promise<{ seq: number; ts: number; existing: boolean; markerId?: string } | undefined> {
     const eventRow = await this.prepareEventRow(event);
     const result = await this.db.transaction().execute(async (trx) => {
       const receipt = await trx
@@ -3799,6 +3800,34 @@ export class EventStore implements EventSink {
       await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
         trx,
       );
+      const predecessor = await trx
+        .selectFrom('running_turns')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (predecessor) {
+        // Transcript terminal events may be late, unrelated or merely announce
+        // cancellation. Only a server-confirmed completion or the exact
+        // Runner's durable terminal/fence claim establishes relinquished ownership.
+        const runnerClosed =
+          predecessor.turn_id === null
+            ? undefined
+            : await trx
+                .selectFrom('runner_frames')
+                .select('turn_id')
+                .where('session_id', '=', sessionId)
+                .where('turn_id', '=', predecessor.turn_id)
+                .where('terminal', '=', true)
+                .executeTakeFirst();
+        if (!predecessor.settled && !runnerClosed) return undefined;
+        await trx
+          .deleteFrom('running_turns')
+          .where('session_id', '=', sessionId)
+          .where('prompt_seq', '=', predecessor.prompt_seq)
+          .execute();
+      }
+      const markerId = randomUUID();
       const row = await trx
         .insertInto('events')
         .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
@@ -3806,14 +3835,14 @@ export class EventStore implements EventSink {
         .executeTakeFirstOrThrow();
       await trx
         .insertInto('running_turns')
-        .values({ session_id: sessionId, prompt_seq: row.id })
+        .values({ session_id: sessionId, prompt_seq: row.id, marker_id: markerId })
         .execute();
       await trx
         .updateTable('qa_dispatches')
         .set({ state: 'admitted', prompt_seq: row.id })
         .where('id', '=', id)
         .execute();
-      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false };
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false, markerId };
     });
     if (result && !result.existing)
       this.enqueuePersistedMessageEvent(
@@ -5299,16 +5328,25 @@ export class EventStore implements EventSink {
   /** Mark a turn in flight for `sessionId` (upsert — only one turn runs at a time).
    * Recovery reads these at startup: a marker still present means the turn was
    * abandoned by a crash/restart and must be settled rather than re-inferred. */
-  async markTurnRunning(input: { sessionId: string; promptSeq: number }): Promise<void> {
+  async markTurnRunning(input: {
+    sessionId: string;
+    promptSeq: number;
+    markerId?: string;
+  }): Promise<void> {
+    const markerId = input.markerId ?? randomUUID();
     await this.db
       .insertInto('running_turns')
       .values({
         session_id: input.sessionId,
         prompt_seq: input.promptSeq,
+        marker_id: markerId,
+        settled: false,
       })
       .onConflict((oc) =>
         oc.column('session_id').doUpdateSet({
           prompt_seq: input.promptSeq,
+          marker_id: markerId,
+          settled: false,
           started_at: sql`now()`,
           // Re-anchoring the marker (a resume-retry starts a FRESH attempt) drops the
           // previous attempt's bound identity — the new attempt rebinds via
@@ -5318,6 +5356,26 @@ export class EventStore implements EventSink {
           start_command_id: null,
         }),
       )
+      .execute();
+  }
+
+  /** Record backend-confirmed completion, independently of best-effort cleanup.
+   * A unique marker identity prevents late completion from settling a resumed
+   * attempt even when that attempt reuses the same prompt sequence. The Runner identity must match too; alternatively admission can use
+   * its durable terminal/fence claim. */
+  async confirmTurnSettled(
+    sessionId: string,
+    promptSeq: number,
+    markerId: string,
+    turnId: string | null = null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('running_turns')
+      .set({ settled: true })
+      .where('session_id', '=', sessionId)
+      .where('prompt_seq', '=', promptSeq)
+      .where('marker_id', '=', markerId)
+      .where('turn_id', turnId === null ? 'is' : '=', turnId)
       .execute();
   }
 
@@ -5332,7 +5390,7 @@ export class EventStore implements EventSink {
   ): Promise<void> {
     await this.db
       .updateTable('running_turns')
-      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId })
+      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId, settled: false })
       .where('session_id', '=', sessionId)
       .execute();
   }
@@ -5341,13 +5399,23 @@ export class EventStore implements EventSink {
    * event. Idempotent — a no-op if no marker is present. When `promptSeq` is given,
    * the delete is SCOPED to that anchor (`prompt_seq = ?`), so a settling turn's
    * late clear can only remove ITS OWN marker, never a newer turn's marker that
-   * already replaced the row (the settle-vs-next-turn race). Omit `promptSeq` to
-   * drop the marker unconditionally (recovery). */
-  async clearRunningTurn(sessionId: string, promptSeq?: number): Promise<void> {
+   * already replaced the row (the settle-vs-next-turn race). `markerId` additionally
+   * distinguishes attempts reusing a prompt anchor; snapshots of legacy markers
+   * pass null. Omitting both scopes is reserved for deliberate unconditional cleanup. */
+  async clearRunningTurn(
+    sessionId: string,
+    promptSeq?: number,
+    markerId?: string | null,
+  ): Promise<void> {
     let query = this.db.deleteFrom('running_turns').where('session_id', '=', sessionId);
     if (promptSeq !== undefined) {
       query = query.where('prompt_seq', '=', promptSeq);
     }
+    if (markerId !== undefined)
+      query =
+        markerId === null
+          ? query.where('marker_id', 'is', null)
+          : query.where('marker_id', '=', markerId);
     await query.execute();
   }
 
@@ -5356,7 +5424,14 @@ export class EventStore implements EventSink {
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
     const rows = await this.db
       .selectFrom('running_turns')
-      .select(['session_id', 'prompt_seq', 'started_at', 'turn_id', 'start_command_id'])
+      .select([
+        'session_id',
+        'prompt_seq',
+        'started_at',
+        'turn_id',
+        'start_command_id',
+        'marker_id',
+      ])
       .execute();
     return rows.map((row) => ({
       sessionId: row.session_id,
@@ -5364,6 +5439,7 @@ export class EventStore implements EventSink {
       startedAt: new Date(row.started_at),
       turnId: row.turn_id,
       startCommandId: row.start_command_id,
+      markerId: row.marker_id,
     }));
   }
 
