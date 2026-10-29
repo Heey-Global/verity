@@ -17,7 +17,7 @@ import {
   sign,
   verify,
 } from 'node:crypto';
-import { mkdir, readFile, writeFile, stat, readdir } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, stat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -909,6 +909,22 @@ async function restore() {
     const state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
     assert.notEqual(state.installationId, input.installationId);
     const sourceDigest = await digestTree(join(root, 'backup'));
+    // Foreign generations share the destination, so an over-broad collector can damage them.
+    const foreign = new Map();
+    for (const directory of [join(root, 'backup/repositories'), join(root, 'peer-repositories')]) {
+      if (!(await exists(directory))) continue;
+      for (const name of await readdir(directory)) {
+        assert.ok(!name.startsWith(state.installationId + '-r'));
+        const target = join(backup, 'repositories', name);
+        await cp(join(directory, name), target, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        });
+        foreign.set(target, await digestTree(target));
+      }
+    }
+    assert.ok(foreign.size > 0);
     const destination = await BackupDestination.open(backup, state.targetId);
     try {
       const repository = new BackupRepository(
@@ -957,6 +973,7 @@ async function restore() {
         (await readdir(join(repository.root, 'objects'))).length < beforeObjects,
         'GC must actually collect unreferenced objects after grace',
       );
+      for (const [directory, digest] of foreign) assert.equal(await digestTree(directory), digest);
       assert.equal(await digestTree(join(root, 'backup')), sourceDigest);
       await assertRestoredFiles('/srv/verity', input.expectedContent);
       await writeFile(

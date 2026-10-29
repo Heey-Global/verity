@@ -239,7 +239,7 @@ run_driver verify-backup-gate
 run_driver assert-prerequisites
 build_test_image() {
 inside mkdir -p "$root/enabled-build"
-inside sh -c 'cat >"$1/Dockerfile"' sh "$root/enabled-build" <<'DOCKERFILE'
+host_docker exec -i "$fresh" sh -c 'cat >"$1/Dockerfile"' sh "$root/enabled-build" <<'DOCKERFILE'
 ARG BASE
 FROM ${BASE}
 USER 0
@@ -315,6 +315,7 @@ run_driver verify-api
 echo '--- recovery: two independently accepted hosts retain and collect only owned repositories'
 run_driver owned-maintenance
 host_docker cp "$first_fresh:$root/ownership-result" "$work/first-ownership.json"
+host_docker cp "$first_fresh:$root/new-backups/repositories" "$work/peer-repositories"
 first_daemon_id=$daemon_id
 # Park the first disposable installation while the second runs to bound CI memory use.
 mapfile -t parked_containers < <(inner ps -q)
@@ -324,6 +325,7 @@ new_identity=0
 start_host "$fresh"
 [[ $daemon_id != "$first_daemon_id" && $daemon_id != "$original_id" ]]
 host_docker cp "$work/copied/." "$fresh:$root"
+host_docker cp "$work/peer-repositories" "$fresh:$root/peer-repositories"
 run_driver seed-compose
 prepare_reviewed
 run_driver late-revoke
