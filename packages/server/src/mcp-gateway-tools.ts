@@ -203,6 +203,7 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_start_planning' ||
       toolName === 'verity_present_plan' ||
       toolName === 'verity_end_planning' ||
+      toolName === 'verity_repairs' ||
       toolName === 'verity_tasks' ||
       toolName === 'verity_app_help' ||
       toolName === 'verity_vulnerabilities'

@@ -2577,7 +2577,7 @@ describe('buildEmbeddedServer', () => {
     60_000,
   ); // A full embedded DB migration can exceed the shared CI timeout.
 
-  it('returns PR status for a project worktree when the global repoDir is disabled', async () => {
+  it('uses project-scoped PR status when the global repoDir is disabled', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-project-pr-'));
     const dataDir = join(root, 'db');
     const hostCloneRoot = join(root, 'clones');
@@ -2633,7 +2633,7 @@ describe('buildEmbeddedServer', () => {
             {
               number: 730,
               title: 'Project PR status',
-              html_url: 'https://github.com/Example-Org/Example-Repo/pull/730',
+              html_url: 'https://github.com/heey-global/verity/pull/730',
               state: 'open',
               updated_at: '2026-07-12T00:00:00Z',
             },
@@ -2664,8 +2664,16 @@ describe('buildEmbeddedServer', () => {
         },
       });
       expect(fetch).toHaveBeenCalledWith(
-        expect.stringContaining('head=Example-Org%3Afix%2Fproject-pr'),
+        expect.stringContaining(
+          '/repos/heey-global/verity/pulls?head=heey-global%3Afix%2Fproject-pr',
+        ),
         expect.objectContaining({ headers: expect.any(Object) }),
+      );
+
+      // A worktree remote cannot redirect project-scoped cached observations to another repo.
+      expect(fetch).not.toHaveBeenCalledWith(
+        expect.stringContaining('Example-Org'),
+        expect.anything(),
       );
 
       const scratchBranches = await server.app.inject({
