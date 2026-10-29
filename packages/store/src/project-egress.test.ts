@@ -129,3 +129,33 @@ it('recovers approval capacity after grant expiry', async () => {
   const grant = await store.setPermanent('b', admin, target, 0);
   expect((await store.read('b', admin)).grants).toEqual([grant]);
 });
+
+it('lets managers recover request capacity without deleting denials', async () => {
+  const requests = Object.fromEntries(
+    Array.from({ length: 1000 }, (_, i) => [
+      String(i),
+      {
+        id: String(i),
+        target: { ...target, host: `host${i}.example.com` },
+        revision: 0,
+        requestedBy: [admin],
+        createdAt: now,
+        expiresAt: now + 300000,
+        status: i === 0 ? 'denied' : 'pending',
+      },
+    ]),
+  );
+  await sql`update project_egress_policy set state = ${JSON.stringify({ revision: 0, grants: [], requests })}::jsonb where project_id = 'b'`.execute(
+    ctx.db,
+  );
+  await expect(store.request('b', admin, target)).rejects.toMatchObject({ code: 'capacity' });
+  await expect(store.removeRequest('b', admin, '0', 0)).rejects.toMatchObject({
+    code: 'forbidden',
+  });
+  await expect(store.removeRequest('b', 'member', '1', 0)).rejects.toMatchObject({
+    code: 'forbidden',
+  });
+  await store.removeRequest('b', admin, '1', 0);
+  expect(await store.request('b', admin, target)).toMatchObject({ status: 'pending' });
+  expect((await store.read('b', admin)).requests['0']?.status).toBe('denied');
+});

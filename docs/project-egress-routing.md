@@ -311,3 +311,8 @@ payload buffering or replay. Runtime identity/generation checks, final destinati
 classification (including mandatory-broker overlap), DNS answer validation and
 packet enforcement remain required before these rules can be activated. The
 trusted-adapter policy evaluator is not a sandbox-facing admission endpoint.
+
+Managers may explicitly remove non-denied request records with the current policy
+revision to recover request capacity. This permits a fresh request for that target;
+it does not revoke an existing grant. Denied records cannot be removed until a
+manager explicitly reopens them, preserving persistent denial suppression.

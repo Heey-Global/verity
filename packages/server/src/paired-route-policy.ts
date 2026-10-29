@@ -14,6 +14,10 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('POST', '/projects/:id/egress/remove-request'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/egress/permanent'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],

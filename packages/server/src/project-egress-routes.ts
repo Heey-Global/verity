@@ -102,6 +102,19 @@ export function registerProjectEgressRoutes(app: FastifyInstance, store: Project
         ),
       };
     });
+    app.post('/projects/:id/egress/remove-request', async (request) => {
+      const input = z
+        .object({ requestId: z.string().uuid(), revision: z.number().int().nonnegative() })
+        .strict()
+        .parse(request.body);
+      await store.removeRequest(
+        params.parse(request.params).id,
+        user(request),
+        input.requestId,
+        input.revision,
+      );
+      return { enforcement: 'unavailable' };
+    });
     done();
   });
 }

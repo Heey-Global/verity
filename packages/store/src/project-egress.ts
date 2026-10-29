@@ -246,6 +246,23 @@ export class ProjectEgressStore {
       return request;
     });
   }
+  /** Explicit manager cleanup; denial suppression cannot be silently discarded. */
+  removeRequest(
+    projectId: string,
+    userId: string,
+    requestId: string,
+    revision: number,
+  ): Promise<void> {
+    return this.access(projectId, userId, 'manage', (state) => {
+      if (state.revision !== revision) throw new ProjectEgressError('stale');
+      const entry = Object.entries(state.requests).find(([, request]) => request.id === requestId);
+      if (!entry) throw new ProjectEgressError('missing');
+      if (entry[1].status === 'denied') throw new ProjectEgressError('forbidden');
+      delete state.requests[entry[0]];
+      state.revision++;
+    });
+  }
+
   /** Explicit settings action, never the default approval-card lifetime. */
   setPermanent(
     projectId: string,
