@@ -73,9 +73,9 @@ export async function lintFiles(files, cwd = process.cwd()) {
   for (const file of files) {
     const absolute = resolve(cwd, file);
     if (await base.isPathIgnored(absolute)) continue;
-    const config = /** @type {import('eslint').Linter.Config | undefined} */ (
-      await base.calculateConfigForFile(absolute)
-    );
+    /** @type {unknown} */
+    const resolvedConfig = await base.calculateConfigForFile(absolute);
+    const config = /** @type {import('eslint').Linter.Config | undefined} */ (resolvedConfig);
     if (!config?.languageOptions?.parserOptions?.projectService) continue;
     const configPath = ts.findConfigFile(dirname(absolute), (path) => ts.sys.fileExists(path));
     if (!configPath) throw new Error(`No tsconfig.json for ${file}`);
