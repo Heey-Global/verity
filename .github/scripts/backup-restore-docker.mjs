@@ -1165,6 +1165,7 @@ async function restore() {
         repository,
         sequence,
         input.recoveryKey,
+        'scheduled',
       );
       assert.equal(manifest.kind, 'scheduled');
       const restored = await stageSnapshot(
