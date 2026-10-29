@@ -222,10 +222,68 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(await readFile(join(root, 'backup-state', 'probe-job'), 'utf8')).not.toContain(
       candidate.recoveryKey,
     );
+    await expect
+      .poll(
+        async () => {
+          try {
+            await service!.tick();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { timeout: 10000 },
+      )
+      .toBe(true);
+    const beforeReplacement = await readFile(join(root, 'backup-state/state'), 'utf8');
+    const abandoned = await service!.beginKeyReplacement('lost');
+    await service!.cancelKeyReplacement();
+    await expect(
+      service!.confirmKeyReplacement(abandoned.id, abandoned.recoveryKey),
+    ).rejects.toThrow('expired');
+    expect(await readFile(join(root, 'backup-state/state'), 'utf8')).toBe(beforeReplacement);
+    const replacement = await service!.beginKeyReplacement('lost');
+    helper.mockRejectedValueOnce(new Error('temporary publication failure'));
+    await expect(
+      service!.confirmKeyReplacement(replacement.id, replacement.recoveryKey),
+    ).rejects.toThrow('temporary publication failure');
+    expect(await readFile(join(root, 'backup-state/state'), 'utf8')).toBe(beforeReplacement);
+    expect(await readFile(join(root, 'backup-state/key-replacement'), 'utf8')).not.toContain(
+      replacement.recoveryKey,
+    );
+    await expect(service!.cancelKeyReplacement()).rejects.toThrow('cannot be cancelled');
     await service!.close();
     expect(unsubscribe).toHaveBeenCalledOnce();
     await expect(service!.beginSetup()).rejects.toThrow('closed');
     service = await BackupService.open(options);
+    expect(JSON.parse(await readFile(join(root, 'backup-state/state'), 'utf8'))).toMatchObject({
+      keyGeneration: 3,
+      repositoryNumber: 3,
+    });
+    const laterEvent = {
+      id: randomUUID(),
+      deviceId: 'revoked-after-replacement',
+      revokedAt: new Date().toISOString(),
+    };
+    store.listBackupRevocations.mockResolvedValueOnce([laterEvent]);
+    await notify!();
+    for (const key of [candidate.recoveryKey, replacement.recoveryKey])
+      expect((await readRevocations(destination, key)).revokedIds.has(laterEvent.deviceId)).toBe(
+        true,
+      );
+    const exposed = await service!.beginKeyReplacement('exposed');
+    const retire = vi.spyOn(identityRequest, 'retireBackupIdentity').mockResolvedValueOnce();
+    try {
+      await service!.confirmKeyReplacement(exposed.id, exposed.recoveryKey);
+      expect(retire).toHaveBeenCalledWith(
+        expect.objectContaining({ retiredGeneration: 3, keyGeneration: 4 }),
+      );
+      const replacementState = await readFile(join(root, 'backup-state/state'), 'utf8');
+      expect(JSON.parse(replacementState)).toMatchObject({ keyGeneration: 4, repositoryNumber: 4 });
+      expect(replacementState).not.toContain(exposed.recoveryKey);
+    } finally {
+      retire.mockRestore();
+    }
     expect(await service!.status()).toMatchObject({
       configured: true,
       paused: true,

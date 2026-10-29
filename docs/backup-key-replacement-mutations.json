@@ -1,0 +1,58 @@
+[
+  {
+    "id": "exposure-retirement",
+    "file": "packages/server/src/backup/key-replacement.ts",
+    "sourceSha256": "a89d16dc22421846cf61043382226c91b189d22efd89c7ad84306ac14874d12d",
+    "test": "packages/server/src/backup/key-replacement.test.ts",
+    "testSha256": "3109ed5757123a3e9d632e112143ea0295d0329333ae7a51bfb97ef3c783e716",
+    "mutation": {
+      "replace": "if (journal.reason === 'exposed') await actions.retire(journal);",
+      "with": "if (journal.reason === 'lost') await actions.retire(journal);"
+    },
+    "exitCode": 1,
+    "failureEvidence": [
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 2 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/key-replacement.test.ts > keeps cancelled replacement in memory and resumes confirmed exposure retirement before publication after restart",
+      "AssertionError: expected \"vi.fn()\" to be called once, but got 0 times",
+      "FAIL  packages/server/src/backup/key-replacement.test.ts > does not retire a lost-key generation and rejects concurrent state changes on restart",
+      "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times",
+      "Tests  2 failed (2)"
+    ]
+  },
+  {
+    "id": "retired-request-replay",
+    "file": "deploy/host/verity-backup-identity",
+    "sourceSha256": "f884a89de714fd6f94354d55b502cc38655cb9a3c0a804056db59108a305837e",
+    "test": "packages/server/src/backup/identity-retirement.test.ts",
+    "testSha256": "6df1c0305da3e2d0f333223cc5c59fb556834494f8beef283e189b2f162ef6b2",
+    "mutation": {
+      "replace": "[[ ! -e $retired_dir/$installation_id-k$generation ]] || die 'recipient generation is permanently retired'",
+      "with": "true # mutation skips retired request rejection"
+    },
+    "exitCode": 1,
+    "failureEvidence": [
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/identity-retirement.test.ts > durably removes only the exposed bundle, retries after publication failure and refuses retired request replay",
+      "AssertionError: expected Error: Command failed: bash /work/.verity\u2026 { \u2026(6) } to match object { stderr: StringContaining{\u2026} }",
+      "Tests  1 failed (1)"
+    ]
+  },
+  {
+    "id": "generation-revocation-fanout",
+    "file": "packages/server/src/backup/service.ts",
+    "sourceSha256": "5ba9c4836360e0ced5790ccb4c5bfef0cbe033c5a19484470e764bf317c59ffa",
+    "test": "packages/server/src/backup/service.test.ts",
+    "testSha256": "30598a161a825dcaaba97263c723a5840df7d3006b97f4829e3795d820e52d60",
+    "mutation": {
+      "replace": "if (seen.has(generation.keyGeneration)) continue;",
+      "with": "if (generation.keyGeneration !== current.keyGeneration || seen.has(generation.keyGeneration)) continue;"
+    },
+    "exitCode": 1,
+    "failureEvidence": [
+      "Tests  1 failed (1)",
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/service.test.ts > commits only after identity confirmation, skips abandoned repositories and syncs revocations while paused",
+      "AssertionError: expected false to be true // Object.is equality"
+    ]
+  }
+]

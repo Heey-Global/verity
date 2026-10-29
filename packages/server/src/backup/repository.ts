@@ -163,7 +163,7 @@ export class BackupRepository {
     await writeDurable(path, bytes, immutable);
   }
 
-  async initialize(): Promise<void> {
+  async initialize(resumeConfirmedReplacement = false): Promise<void> {
     await this.destination?.assertWritable();
     if (this.destination) {
       const path = this.destination.pinnedPath('repositories');
@@ -177,10 +177,36 @@ export class BackupRepository {
     } else await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
     await this.withLock(async () => {
-      await mkdir(join(this.root, 'objects'), { mode: 0o700 });
-      await mkdir(join(this.root, 'snapshots'), { mode: 0o700 });
-      await mkdir(join(this.stateRoot, 'references'), { mode: 0o700 });
-      await this.write(
+      const publish = async (
+        path: string,
+        bytes: Uint8Array,
+        immutable: boolean,
+      ): Promise<void> => {
+        try {
+          await this.write(path, bytes, immutable);
+        } catch (error) {
+          if (!resumeConfirmedReplacement || (error as NodeJS.ErrnoException).code !== 'EEXIST')
+            throw error;
+          const existing = await readBounded(path, 65536);
+          if (path.endsWith('/header') || path.endsWith('/keys'))
+            verifyMetadata(this.host.verificationKey, existing);
+          else if (!Buffer.from(bytes).equals(existing))
+            throw new Error('Replacement repository is not empty', { cause: error });
+        }
+      };
+      await mkdir(join(this.root, 'objects'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await mkdir(join(this.root, 'snapshots'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await mkdir(join(this.stateRoot, 'references'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await publish(
         join(this.root, 'header'),
         await sealMetadata(
           this.host,
@@ -195,9 +221,9 @@ export class BackupRepository {
         ),
         true,
       );
-      await this.write(join(this.root, 'keys'), await sealHostKeyBundle(this.host), true);
-      await this.write(join(this.root, 'sequence'), Buffer.from('0'), true);
-      await this.write(
+      await publish(join(this.root, 'keys'), await sealHostKeyBundle(this.host), true);
+      await publish(join(this.root, 'sequence'), Buffer.from('0'), true);
+      await publish(
         join(this.stateRoot, 'index'),
         encodeLocalIndex({}, this.host.fingerprintKey),
         true,
