@@ -10,3 +10,13 @@ await build({
   // Bundle the source under test, never an unrelated or stale workspace dist.
   alias: { '@verity/store': resolve('packages/store/src/project-egress.ts') },
 });
+
+await build({
+  entryPoints: ['scripts/probes/project-egress/host-smoke.ts'],
+  outfile: 'scripts/probes/project-egress/host-smoke.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22',
+  alias: { '@verity/store': resolve('packages/store/src/project-egress.ts') },
+});

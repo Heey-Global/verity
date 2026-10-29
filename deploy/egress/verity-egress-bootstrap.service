@@ -1,0 +1,19 @@
+# Experimental fixture unit; not installed by verity-install.
+[Unit]
+Description=Restore Verity project network denial before Docker
+Before=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=verity-egress-control
+StateDirectory=verity-egress
+StateDirectoryMode=0700
+ExecStart=/usr/bin/flock --exclusive --nonblock /var/lib/verity-egress/service.lock /usr/bin/node /opt/verity-egress/project-egress-host-main.mjs restore
+RemainAfterExit=yes
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/verity-egress
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6

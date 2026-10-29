@@ -7,6 +7,8 @@ on:
       - 'scripts/probes/project-egress/**'
       - 'deploy/gvisor-ci.Dockerfile'
       - 'deploy/gvisor/versions.env'
+      - 'deploy/egress/**'
+      - 'scripts/build-project-egress-host.mjs'
       - 'packages/server/src/provisioner.ts'
       - 'packages/server/src/project-egress-*.ts'
       - 'packages/store/src/project-egress.ts'
