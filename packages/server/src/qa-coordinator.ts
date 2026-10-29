@@ -198,7 +198,14 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
         state.revision,
         mandate.revision,
         mandate.health,
-        incidents.map((i) => [i.id, i.revision, i.state, i.owner_session_id, i.attempts]),
+        incidents.map((i) => [
+          i.id,
+          i.revision,
+          i.state,
+          i.owner_session_id,
+          i.attempts,
+          hasFreshRepairEvidence(i),
+        ]),
       ]);
       await store.qaObserve(mandate.project_id, fingerprint);
       snapshot.push({

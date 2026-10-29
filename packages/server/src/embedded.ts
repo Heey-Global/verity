@@ -4808,6 +4808,13 @@ export async function buildEmbeddedServer(
           statuses.some((row) => `pr:${row.status.number}` === incident.resource)
         )
           continue;
+        const tracked = await provider.repositoryOperations(project).findPullRequest({
+          number: Number(incident.resource.slice(3)),
+        });
+        if (tracked && tracked.state !== 'open') {
+          await eventStore.repairs.retireResource(project.id, incident.resource);
+          continue;
+        }
         const status = await readProjectStatus(project, evidence.branch);
         if (status && `pr:${status.number}` === incident.resource)
           statuses.push({ branch: evidence.branch, status });

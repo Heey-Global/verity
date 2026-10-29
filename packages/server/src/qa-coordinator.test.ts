@@ -252,3 +252,21 @@ it('retries a crashed review without losing its pending observation', async () =
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+
+it('wakes again when an acknowledged pending rerun fails on the same revision', async () => {
+  const incident = await enroll();
+  const evidence = incident.evidence;
+  await ctx.store.repairs.invalidateObservation('a', 'pr:42');
+  const { deps, coordinator } = harness();
+  await coordinator.tick();
+  await answer(
+    incident,
+    '```qa:decision\n' + JSON.stringify({ summary: 'Wait for checks', assignments: [] }) + '\n```',
+  );
+  await coordinator.tick();
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  await ctx.store.repairs.observe('a', 'pr:42', 'sha', evidence);
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+});

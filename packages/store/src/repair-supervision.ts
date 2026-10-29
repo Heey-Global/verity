@@ -229,7 +229,7 @@ export class RepairSupervisionStore {
     evidence: string,
   ): Promise<RepairIncident> {
     const result =
-      await sql<RepairIncident>`insert into repair_incidents (id, project_id, resource, revision, evidence) values (${randomUUID()}, ${projectId}, ${resource}, ${revision}, ${evidence}) on conflict (project_id, resource, revision) do update set evidence = excluded.evidence, state = case when repair_incidents.state = 'resolved' then 'open' else repair_incidents.state end returning *`.execute(
+      await sql<RepairIncident>`insert into repair_incidents (id, project_id, resource, revision, evidence) values (${randomUUID()}, ${projectId}, ${resource}, ${revision}, ${evidence}) on conflict (project_id, resource, revision) do update set evidence = excluded.evidence, state = case when repair_incidents.state in ('resolved', 'superseded') then 'open' else repair_incidents.state end returning *`.execute(
         this.db,
       );
     return result.rows[0]!;

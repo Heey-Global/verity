@@ -147,3 +147,11 @@ it('always returns an owned incident beyond the bounded history window', async (
     ),
   ).toBe(true);
 });
+
+it('reopens a superseded revision when the PR returns to its failed SHA', async () => {
+  const first = await ctx.store.repairs.observe('a', 'pr:1', 'old', '{}');
+  await ctx.store.repairs.supersede('a', 'pr:1', 'new');
+  const revived = await ctx.store.repairs.observe('a', 'pr:1', 'old', '{}');
+  expect(revived.id).toBe(first.id);
+  expect(revived.state).toBe('open');
+});
