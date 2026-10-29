@@ -1,3 +1,4 @@
+import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID } from 'node:crypto';
 import {
@@ -5289,7 +5290,11 @@ describe('ProvisionerImpl (#174)', () => {
       return { log, appended };
     }
 
-    async function devcontainerProvisioner(root: string, failing: boolean) {
+    async function devcontainerProvisioner(
+      root: string,
+      failing: boolean,
+      diagnostics = createBuildDiagnosticStore(join(root, 'diagnostics')),
+    ) {
       const devcontainerDir = join(root, 'example-org-example-repo', '.devcontainer');
       mkdirSync(devcontainerDir, { recursive: true });
       writeFileSync(join(devcontainerDir, 'devcontainer.json'), '{ "image": "node:24" }');
@@ -5321,6 +5326,7 @@ describe('ProvisionerImpl (#174)', () => {
           version: '1.0.0',
           identity: 'sha256:toolkit-v1',
         },
+        buildDiagnostics: diagnostics,
         audit: createAuditRecorder(audit.log, {
           server: () => Promise.resolve({ release: '1.2.3', generation: 7 }),
         }),
@@ -5393,6 +5399,26 @@ describe('ProvisionerImpl (#174)', () => {
       }
     });
 
+    it('preserves the original build error and audit outcome when diagnostic storage fails', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-diagnostic-fail-'));
+      try {
+        const diagnostics = createBuildDiagnosticStore(join(root, 'diagnostics'));
+        diagnostics.save = vi.fn().mockRejectedValue(new Error('diagnostic disk full'));
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(
+          root,
+          false,
+          diagnostics,
+        );
+        build.mockRejectedValueOnce(new Error('compiler process failed'));
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
+          'compiler process failed',
+        );
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.failed']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('records a failed build without its output', async () => {
       const root = mkdtempSync(join(tmpdir(), 'verity-audit-fail-'));
       try {
@@ -5402,6 +5428,11 @@ describe('ProvisionerImpl (#174)', () => {
         expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.failed']);
         expect(JSON.stringify(appended)).not.toContain('hunter2');
         expect(appended[0]!.initiator).toEqual({ kind: 'unknown' });
+        const diagnostic = await createBuildDiagnosticStore(join(root, 'diagnostics')).read(
+          appended[0]!.operationId,
+        );
+        expect(diagnostic?.text).toContain('RUN failed');
+        expect(diagnostic?.text).not.toContain('hunter2');
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

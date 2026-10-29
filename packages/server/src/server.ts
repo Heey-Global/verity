@@ -1,3 +1,4 @@
+import { registerLogRoutes, type LogRouteDeps } from './log-routes.js';
 import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
@@ -1420,7 +1421,12 @@ export interface ServerDeps {
   /** Best-effort image cleanup after a successful project soft-delete. */
   onProjectHidden?: (projectId: string) => Promise<void>;
   /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
-  audit?: { recorder: AuditRecorder; log: AuditLog } | undefined;
+  audit?:
+    | ({ recorder: AuditRecorder; log: AuditLog } & Pick<
+        LogRouteDeps,
+        'buildDiagnostics' | 'serverLogs'
+      >)
+    | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -4701,6 +4707,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerDiagnosticsMemoryRoute(app);
   if (deps.audit !== undefined) {
+    registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
     registerAuditRoutes(app, {
       ...deps.audit,
       sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,

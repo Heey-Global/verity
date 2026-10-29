@@ -125,7 +125,7 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     const { unmount } = render(<SettingsIndexScreen />);
     await act(async () => undefined);
-    expect(screen.queryByLabelText(rowLabel('Audit logs'))).toBeNull();
+    expect(screen.queryByLabelText(rowLabel('Logs'))).toBeNull();
     unmount();
 
     mockCreateVerityClient.mockReturnValue(
@@ -134,7 +134,7 @@ describe('settings index — destinations', () => {
       }),
     );
     render(<SettingsIndexScreen />);
-    const row = await screen.findByLabelText(rowLabel('Audit logs'));
+    const row = await screen.findByLabelText(rowLabel('Logs'));
     expect(screen.getByText('Needs review')).toBeOnTheScreen();
     fireEvent.press(row);
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');

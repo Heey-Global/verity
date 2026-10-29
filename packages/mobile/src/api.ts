@@ -1,3 +1,4 @@
+import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
   auditOperationListSchema,
@@ -3163,6 +3164,25 @@ export class VerityClient {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
     }
+  }
+
+  async buildDiagnostic(operationId: string) {
+    const res = await this.request(
+      `/audit/operations/${encodeURIComponent(operationId)}/diagnostics`,
+      { method: 'GET' },
+    );
+    return buildDiagnosticResponseSchema.parse(await res.json());
+  }
+
+  async systemLogs(query: {
+    source: 'server' | 'host';
+    since: string;
+    until: string;
+    level?: 'all' | 'error' | 'warning' | 'info';
+  }) {
+    const params = new URLSearchParams(query);
+    const res = await this.request(`/diagnostics/logs?${params.toString()}`, { method: 'GET' });
+    return systemLogResponseSchema.parse(await res.json());
   }
 
   async auditOperation(operationId: string): Promise<AuditOperationDetail> {

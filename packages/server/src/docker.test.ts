@@ -2440,6 +2440,18 @@ describe('createDockerClient runtime + response validation', () => {
     });
   });
 
+  it('containerLogs applies the requested time window and asks for timestamps', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/abc\/logs/, method: 'GET', resp: textRes('ready') },
+    ]);
+    const window = { since: '2026-10-28T12:00:00Z', until: '2026-10-28T13:00:00Z' };
+    await client(fetch).containerLogs?.('abc', 100, window);
+    const url = new URL(fetch.calls[0]!.url);
+    expect(url.searchParams.get('since')).toBe(window.since);
+    expect(url.searchParams.get('until')).toBe(window.until);
+    expect(url.searchParams.get('timestamps')).toBe('1');
+  });
+
   it('containerLogs maps a 404 to container_not_found', async () => {
     const fetch = fakeFetch([
       {
@@ -2461,12 +2473,8 @@ describe('createDockerClient runtime + response validation', () => {
     );
   });
 
-  // Deliberately asserted as it behaves, not as it ought to: the byte budget cuts
-  // NON-MULTIPLEXED output SILENTLY. `[truncated]` is appended by the frame decoder,
-  // and plain output returns before reaching it — so a capped read is indistinguishable
-  // from a complete one. Marking it is a production change and is not made here; pinning
-  // the current behaviour is what makes that change visible when someone makes it.
-  it('containerLogs bounds a streaming log body at the read budget, unmarked', async () => {
+  // A bounded plain-text read must never look like a complete diagnostic.
+  it('containerLogs bounds a streaming log body at the read budget and marks truncation', async () => {
     // The Engine streams logs; a runaway container must not be able to pull an
     // unbounded body into the Server's heap through a diagnostics read.
     const chunk = new Uint8Array(32 * 1024).fill(97);
@@ -2491,8 +2499,9 @@ describe('createDockerClient runtime + response validation', () => {
     ]);
     const logs = await client(fetch).containerLogs?.('abc', 25);
     // Plain (non-multiplexed) output comes back verbatim, capped at the budget.
-    expect(Buffer.byteLength(logs ?? '')).toBe(64 * 1024 - 32);
-    expect(logs).toMatch(/^a+$/);
+    expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
+    expect(logs).toContain('[truncated]');
+    expect(logs).toMatch(/^a+\n\[truncated\]\n$/);
   });
 
   it('containerLogs falls back to arrayBuffer when the response exposes no stream', async () => {
@@ -2509,9 +2518,9 @@ describe('createDockerClient runtime + response validation', () => {
       },
     ]);
     const logs = await client(fetch).containerLogs?.('abc', 25);
-    expect(Buffer.byteLength(logs ?? '')).toBe(64 * 1024 - 32);
-    // Same unmarked cut as the streaming path above, by the same route.
-    expect(logs).toMatch(/^b+$/);
+    expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
+    expect(logs).toContain('[truncated]');
+    expect(logs).toMatch(/^b+\n\[truncated\]\n$/);
   });
 
   it('containerLogs marks a trailing partial frame header as truncated', async () => {
