@@ -119,7 +119,7 @@ anonymous daemon volume and tagged images. The workflow has read-only repository
 permissions, no secrets and no production-daemon access. It runs on matching PR
 changes or a manual workflow dispatch; merely creating the local files runs no CI.
 
-## Production differences and limits
+## Reduced baseline differences and limits
 
 The reference launcher is
 [`packages/server/src/provisioner.ts`](../../../packages/server/src/provisioner.ts),
@@ -147,3 +147,27 @@ handoff and all real shared IPC paths remain integration gates.
 A successful CI run supports this specific reduced project-boundary prototype.
 It does not authorize enabling protected egress, declare the real Launcher secure,
 or implement the [routing contract](../../../docs/project-egress-routing.md).
+
+## Runner and relay topology probe
+
+The host startup probe builds the repository's actual Sandbox and distroless
+relay images. It starts the installed Runner stack with its production capability
+set, mounts a worktree and the 0170 runtime directory, and requests supervisor
+status and a persistent session home through the shared Unix socket. An independent
+receiver starts first. A project-UID process continuously sends on an inherited
+UDP descriptor and a descriptor transferred with SCM_RIGHTS. Both must become
+observable when the fence is deliberately removed.
+
+The actual relay is started through the production Docker lifecycle adapter under
+the separately inspected `runsc-relay` profile. Broker, Claude and Codex socket
+positive controls use generation-specific volume subpaths and production inode
+permissions. Profile, image, user and mount substitutions must fail before start. A failed positive control fails the job;
+absence of traffic alone is not acceptance. This probe does not execute an agent
+turn or certify all production shared IPC paths, transport admission, daemon boot
+ordering, or hard expiry under host suspension. Those remain explicit gates.
+
+If the normal relay start fails, disposable diagnostic clones retain the same
+image, mounts, CPU and memory limits on the already-denied generation network.
+They use a logging-only runtime variant and compare PID ceilings of 32 and 64
+sequentially. Their output is diagnostic only: the original error still fails the
+job, and the host controller never accepts the debug runtime as a protected role.

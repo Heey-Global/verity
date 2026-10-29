@@ -356,3 +356,17 @@ it('recovers current authority without inspecting labels, mutating rules or leak
     binding: null,
   });
 });
+
+it('revalidates restored roles before serving and stops incompatible containers', async () => {
+  const initial: ProjectEgressHostState = {
+    version: 1,
+    records: [{ binding, retired: false, containers: { sandbox: id, relay: 'c'.repeat(64) } }],
+  };
+  const { host, deps } = fixture(initial);
+  await host.restore();
+  deps.inspectContainer.mockRejectedValueOnce(new Error('profile changed'));
+  await expect(host.revalidate()).rejects.toThrow('containment attempted');
+  expect(deps.stopContainer).toHaveBeenCalledWith(id);
+  expect(deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay');
+  await expect(host.execute(start)).rejects.toThrow();
+});
