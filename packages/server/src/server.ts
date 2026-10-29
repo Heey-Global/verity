@@ -1,3 +1,4 @@
+import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import {
   brokeredDopplerBindingId,
@@ -7505,6 +7506,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);
