@@ -937,20 +937,26 @@ async function restore() {
         );
       }
       const before = await readdir(join(repository.root, 'snapshots'));
+      const beforeObjects = (await readdir(join(repository.root, 'objects'))).length;
+      const maintenanceNow = Date.now();
       await maintainBackupGenerations(
         '/srv/verity/backup-state',
         destination,
         state,
-        Date.UTC(2026, 9, 29),
+        maintenanceNow,
       );
       await maintainBackupGenerations(
         '/srv/verity/backup-state',
         destination,
         state,
-        Date.UTC(2026, 10, 1),
+        maintenanceNow + 2 * 24 * 3600_000,
       );
       const after = await readdir(join(repository.root, 'snapshots'));
       assert.ok(after.length > 0 && after.length < before.length, 'retention must actually prune');
+      assert.ok(
+        (await readdir(join(repository.root, 'objects'))).length < beforeObjects,
+        'GC must actually collect unreferenced objects after grace',
+      );
       assert.equal(await digestTree(join(root, 'backup')), sourceDigest);
       await assertRestoredFiles('/srv/verity', input.expectedContent);
       await writeFile(
@@ -1165,7 +1171,7 @@ async function restore() {
         withDatabase: (candidate, bytes, run) =>
           withDatabase(candidate, bytes, async (client) => {
             await run(client);
-            await assertRestoredDatabaseContent(client, restored, input.expectedContent);
+            await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
             const meta = (await client.query("SELECT salt FROM secret_key_meta WHERE id='global'"))
               .rows[0];
             const stored = (await client.query('SELECT transcribe_api_key FROM verity_settings'))

@@ -18,6 +18,9 @@ it.skipIf(!adminUrl)(
     const source = new pg.Pool({ connectionString: url.toString(), max: 1 });
     const readerUrl = new URL(url);
     readerUrl.username = role;
+    readerUrl.password = 'a'.repeat(64);
+    readerUrl.searchParams.delete('user');
+    readerUrl.searchParams.delete('password');
     const reader = new pg.Pool({ connectionString: readerUrl.toString(), max: 1 });
     try {
       await admin.query(`CREATE DATABASE "${name}"`);
@@ -44,6 +47,20 @@ it.skipIf(!adminUrl)(
         (await reader.query('SHOW default_transaction_read_only')).rows[0]
           .default_transaction_read_only,
       ).toBe('on');
+      // The login can override its session default; ACLs must still prevent writes.
+      await reader.query('SET default_transaction_read_only = off');
+      expect(
+        (await reader.query('SHOW default_transaction_read_only')).rows[0]
+          .default_transaction_read_only,
+      ).toBe('off');
+      expect(
+        (
+          await reader.query(
+            "SELECT has_table_privilege(current_user, 'records', 'INSERT') AS insertable, has_table_privilege(current_user, 'records', 'UPDATE') AS updatable, has_table_privilege(current_user, 'records', 'DELETE') AS deletable",
+          )
+        ).rows,
+      ).toEqual([{ insertable: false, updatable: false, deletable: false }]);
+
       for (const statement of [
         "INSERT INTO records(encrypted) VALUES ('\\x02')",
         "UPDATE records SET encrypted='\\x02'",

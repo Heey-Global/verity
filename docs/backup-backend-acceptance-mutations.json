@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "7a3c3ff07c42ba83d22c413880433ef5c1d77b21",
+  "baselineCommit": "85b98b6317392371aa747d1d35c3b90ce403c20c",
   "cases": [
     {
       "id": "recent-window",
@@ -146,6 +146,24 @@
       "testSha256": "52ca8b9da5dcdf36efdbdce03131b63c22ada9f419ad39d16c74ed3e23effb32"
     },
     {
+      "id": "readonly-grants",
+      "file": "deploy/host/verity-backup-prerequisites",
+      "before": "GRANT SELECT ON ALL TABLES",
+      "after": "GRANT ALL ON ALL TABLES",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/database-prerequisites.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "8a482eaf3f7247e6d53c10fd6ff8e4c8fa580b136df8a14ee99f867ff3b0763a",
+      "test": "database-prerequisites.test.ts",
+      "testSha256": "c0ff3e797a84767f072813dd225f693ff3199562fee219118586eba135e813c9"
+    },
+    {
       "id": "export-isolation",
       "file": "packages/server/src/backup/database.ts",
       "before": "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
@@ -161,7 +179,7 @@
       "observedExitCode": 1,
       "originalSourceSha256": "3debf8c4ac7cf589707c3a037522d9c20645126160068f04d7131ad00184b7cd",
       "test": "database-prerequisites.test.ts",
-      "testSha256": "9d454d47ca3c60672103c090a12a6c0e9d2b32457385367ec842bd86950a155e"
+      "testSha256": "c0ff3e797a84767f072813dd225f693ff3199562fee219118586eba135e813c9"
     },
     {
       "id": "export-readonly",
@@ -179,7 +197,7 @@
       "observedExitCode": 1,
       "originalSourceSha256": "3debf8c4ac7cf589707c3a037522d9c20645126160068f04d7131ad00184b7cd",
       "test": "database-prerequisites.test.ts",
-      "testSha256": "9d454d47ca3c60672103c090a12a6c0e9d2b32457385367ec842bd86950a155e"
+      "testSha256": "c0ff3e797a84767f072813dd225f693ff3199562fee219118586eba135e813c9"
     },
     {
       "id": "installer-relocation-before-writes",
@@ -197,5 +215,8 @@
       "test": "packages/server/src/backup/installer-destination.test.ts",
       "testSha256": "ade322a43aaec05d3ee3a069299d5236d8c8ff247f5aa65e9032e3446614b614"
     }
-  ]
+  ],
+  "environmentRequirements": {
+    "postgres": "Use VERITY_TEST_SHARED_POSTGRES_URL for an isolated PostgreSQL 15+ instance with database and role creation authority. PostgreSQL cases must execute, not skip."
+  }
 }

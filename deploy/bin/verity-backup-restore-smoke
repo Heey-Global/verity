@@ -237,6 +237,7 @@ run_driver verify-api
 # Keep the production image unchanged. The enabled derivative exists only on this disposable daemon.
 run_driver verify-backup-gate
 run_driver assert-prerequisites
+build_test_image() {
 inside mkdir -p "$root/enabled-build"
 inside sh -c 'cat >"$1/Dockerfile"' sh "$root/enabled-build" <<'DOCKERFILE'
 ARG BASE
@@ -249,11 +250,13 @@ inside docker build --quiet --build-arg "BASE=$digest" --tag "$repo:backup-enabl
 inner push --quiet "$repo:backup-enabled-acceptance" >/dev/null
 enabled_digest=$(inner image inspect --format '{{index .RepoDigests 0}}' "$repo:backup-enabled-acceptance")
 [[ $enabled_digest =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ && $enabled_digest != "$digest" ]]
+}
 install_test_image() {
   host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
     --env VERITY_API_HOST_PORT=0 --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
     sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" >"$2/test-image-install.log" 2>&1' sh "$1" "$root"
 }
+build_test_image
 install_test_image "$enabled_digest"
 run_driver verify-enabled-restart
 install_test_image "$digest"
@@ -329,6 +332,13 @@ run_driver assert-restored
 run_driver advance
 activate_installer
 run_driver verify-api
+run_driver verify-backup-gate
+run_driver assert-prerequisites
+build_test_image
+install_test_image "$enabled_digest"
+run_driver verify-enabled-restart
+install_test_image "$digest"
+run_driver assert-prerequisites
 run_driver owned-maintenance
 host_docker cp "$second:$root/ownership-result" "$work/second-ownership.json"
 node --input-type=module -e 'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; const [a,b]=process.argv.slice(1).map(p=>JSON.parse(readFileSync(p))); assert.notEqual(a.installationId,b.installationId); assert.notEqual(a.repository,b.repository);' "$work/first-ownership.json" "$work/second-ownership.json"
