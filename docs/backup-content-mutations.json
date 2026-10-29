@@ -56,9 +56,32 @@
         "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
         "AssertionError: expected [] to have a length of 1 but got +0"
       ]
+    },
+    {
+      "id": "rollback-updater-starts-last",
+      "file": "packages/server/src/backup/restore-previous-runtime.ts",
+      "replace": "for (const container of startOrder) {",
+      "with": "for (const container of previous.containers) {",
+      "command": [
+        "node",
+        "/work/backup-tools/node_modules/vitest/vitest.mjs",
+        "run",
+        "--config",
+        "/work/backup-tools/security-verification.config.ts",
+        "packages/server/src/backup/restore-previous-runtime.test.ts",
+        "--maxWorkers=1"
+      ],
+      "originalSourceSha256": "cca805cf660664c865d71cb95ee47ee71e885897ad0e06ef926e6c26fdb7bc23",
+      "exitCode": 1,
+      "evidence": [
+        "      Tests  1 failed | 1 passed (2)",
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        " FAIL  packages/server/src/backup/restore-previous-runtime.test.ts > starts the updater after the Server so immediate replacement cannot invalidate pending inspections",
+        "Error: container_not_found"
+      ]
     }
   ],
-  "description": "Scoped omission mutations for independent content recovery assertions and the immutable format v1 probe/import path. Public synthetic fixtures only; original sources restored after every run.",
+  "description": "Scoped omission mutations for independent content recovery assertions and the immutable format v1 probe/import path. Public synthetic fixtures only; original sources restored after every run. Includes rollback startup ordering when an updater immediately replaces the Server.",
   "environment": {
     "VERITY_TEST_SHARED_POSTGRES_URL": "Dedicated PostgreSQL15 superuser connection; disposable databases cleaned after each test."
   },
@@ -74,6 +97,10 @@
     {
       "path": "packages/server/src/backup/fixtures/v1-installation.json",
       "sha256": "bfc5243bc20d14bd82b86f48207c35aaf29ebdb794d924b7370b446543d405c3"
+    },
+    {
+      "path": "packages/server/src/backup/restore-previous-runtime.test.ts",
+      "sha256": "092f3c73540ae0e712f375d2d4135feb5d93e44ab06357b6e4a504d59f065f90"
     }
   ]
 }
