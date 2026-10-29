@@ -446,3 +446,38 @@ it('recovers an unstarted reservation while globally disabled without launching 
   expect(await ctx.store.repairs.budgetUsed('a', 'pr:42')).toBe(0);
   expect(deps.dispatch).not.toHaveBeenCalled();
 });
+
+it('does not recover a live reservation while delegated session provisioning is slow', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const incident = await ctx.store.repairs.observe('a', 'pr:42', 'sha1', '{}');
+  const { deps } = harness();
+  const spawn = deps.spawn;
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  deps.spawn = async (...args) => {
+    entered();
+    await gate;
+    await spawn(...args);
+  };
+  const supervisor = createRepairSupervisor({ ...deps, coordinate: true });
+  const admission = supervisor.delegate('a', incident.id, 'sha1');
+  await started;
+  try {
+    await supervisor.sweep();
+    const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+    expect(claim.owner_session_id).toBeTruthy();
+    expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('reserved');
+  } finally {
+    release();
+    await admission;
+  }
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+  expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('admitted');
+});

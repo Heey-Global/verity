@@ -10027,7 +10027,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.eventStore.isActiveAdministrator(state.sponsor))
       );
     };
+    const preparingDispatches = new Set<string>();
     const supervisor = createRepairSupervisor({
+      preparingDispatches,
       enabled: qaEnabled,
       coordinate: true,
       store: deps.eventStore,
@@ -10115,6 +10117,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
     });
     const qa = createQACoordinator({
+      preparingDispatches,
       store: deps.eventStore,
       authorized: canExecuteAs,
       administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),

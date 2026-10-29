@@ -20,6 +20,8 @@ export interface RepairDiscovery {
 }
 export interface RepairSupervisorDeps {
   store: EventStore;
+  /** Shared by QA and repair recovery while local admission is still being prepared. */
+  preparingDispatches?: Set<string>;
   discover(this: void, project: ProjectRecord, page: number): Promise<RepairDiscovery>;
   changed?(projectId: string): void;
   enabled?(): Promise<boolean>;
@@ -56,6 +58,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
   let stopped = false;
   let pending: Promise<void> | undefined;
   const store = deps.store.repairs;
+  const preparing = deps.preparingDispatches ?? new Set<string>();
   const fingerprints = new Map<string, string>();
   async function delegate(mandate: RepairMandate, incident: RepairIncident): Promise<void> {
     if (
@@ -82,6 +85,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     const sessionId = target.sessionId ?? randomUUID();
     const claim = await store.claim(incident.id, sessionId, mandate.revision, globalRevision);
     if (!claim?.dispatch_id) return;
+    preparing.add(claim.dispatch_id);
     let dispatchAttempted = false;
     try {
       if (!(await deps.store.getSession(sessionId)))
@@ -130,6 +134,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
       if (dispatchAttempted)
         await store.health(incident.project_id, 'dispatch-uncertain', mandate.cursor);
       else await store.cancelReservedDispatch(claim.dispatch_id);
+    } finally {
+      preparing.delete(claim.dispatch_id);
     }
   }
   async function sweep(): Promise<void> {
@@ -137,7 +143,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     running = true;
     try {
       for (const dispatch of await store.reservedDispatches())
-        if (!deps.busy(dispatch.session_id)) await store.cancelReservedDispatch(dispatch.id);
+        if (!preparing.has(dispatch.id) && !deps.busy(dispatch.session_id))
+          await store.cancelReservedDispatch(dispatch.id);
       if (deps.enabled && !(await deps.enabled())) return;
       if (deps.coordinate) {
         const qa = await store.qa();

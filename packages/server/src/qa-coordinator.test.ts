@@ -308,3 +308,60 @@ it.each(['off', 'unauthorized'] as const)(
     ]);
   },
 );
+
+it('shares live QA preparation with repair recovery during slow session creation', async () => {
+  await enroll();
+  const { deps } = harness();
+  const preparingDispatches = new Set<string>();
+  deps.preparingDispatches = preparingDispatches;
+  const ensure = deps.ensureSession;
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  deps.ensureSession = async (id) => {
+    entered();
+    await gate;
+    await ensure(id);
+  };
+  const coordinator = createQACoordinator(deps);
+  const admission = coordinator.tick();
+  await started;
+  try {
+    const { createRepairSupervisor } = await import('./repair-supervisor.js');
+    const supervisor = createRepairSupervisor({
+      store: ctx.store,
+      preparingDispatches,
+      enabled: async () => false,
+      discover: async () => {
+        throw new Error('disabled');
+      },
+      authorized: async () => false,
+      busy: () => false,
+      terminated: async () => false,
+      result: async () => null,
+      target: async () => ({ blocked: true }),
+      spawn: async () => {},
+      dispatch: async () => false,
+    });
+    await supervisor.sweep();
+    const state = await ctx.store.repairs.qa();
+    expect(state.active_dispatch).toBeTruthy();
+    expect((await ctx.store.repairs.dispatchReceipt(state.active_dispatch!))?.state).toBe(
+      'reserved',
+    );
+  } finally {
+    release();
+    await admission;
+  }
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  expect(preparingDispatches.size).toBe(0);
+  expect(
+    (await ctx.store.repairs.dispatchReceipt((await ctx.store.repairs.qa()).active_dispatch!))
+      ?.state,
+  ).toBe('admitted');
+});
