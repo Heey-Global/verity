@@ -8,6 +8,13 @@ export function createServerLogSource(
   configuredId?: string,
 ) {
   if (!docker?.containerLogs) return undefined;
-  const id = configuredId ?? hostname();
+  const explicitId = configuredId?.trim();
+  const currentHostname = hostname();
+  // Docker defaults to an ID prefix. Custom hostnames need an explicit identity;
+  // looking up arbitrary hostnames can select an unrelated container by name.
+  const id =
+    explicitId ||
+    (/^(?:[a-f0-9]{12}|[a-f0-9]{64})$/.test(currentHostname) ? currentHostname : undefined);
+  if (!id) return undefined;
   return (window: { since: string; until: string }) => docker.containerLogs!(id, 1000, window);
 }

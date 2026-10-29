@@ -1,5 +1,5 @@
 import type { AuditDomain, AuditEvent, VerityClient } from '@verity/mobile';
-import { useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   SettingsGroup,
@@ -79,6 +79,11 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   const [refresh, setRefresh] = useState(0);
   const latest = useRef(0);
   const pagePending = useRef(false);
+  // Returning to the screen re-reads the first page in place, unless older pages
+  // were loaded: replacing them would lose the reader's place.
+  const olderPages = useRef(0);
+  const focused = useRef(false);
+  const quietReload = useRef(false);
   const systemVisible = filter === 'all' || filter === 'system';
   const window = useMemo(() => {
     const until = new Date();
@@ -101,13 +106,17 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   );
   useEffect(() => {
     const request = ++latest.current;
+    const quiet = quietReload.current;
     setError(undefined);
-    setEvents(undefined);
-    setNextBefore(null);
-    setOldest(null);
+    if (!quiet) {
+      setEvents(undefined);
+      setNextBefore(null);
+      setOldest(null);
+    }
     setAuditUnavailable(false);
     setLoadingMore(false);
     pagePending.current = false;
+    olderPages.current = 0;
     if (filter !== 'system')
       void Promise.resolve()
         .then(() => client.auditEvents(auditQuery))
@@ -135,13 +144,17 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
   useEffect(() => {
     if (!systemVisible) return;
     let active = true;
-    setSources({});
-    setSourceErrors({});
+    if (!quietReload.current) {
+      setSources({});
+      setSourceErrors({});
+    }
     for (const selected of ['server', 'host'] as const) {
       void Promise.resolve()
         .then(() => client.systemLogs({ ...window, source: selected, level: 'all' }))
         .then((value) => {
-          if (active) setSources((current) => ({ ...current, [selected]: value }));
+          if (!active) return;
+          setSources((current) => ({ ...current, [selected]: value }));
+          setSourceErrors((current) => ({ ...current, [selected]: false }));
         })
         .catch(() => {
           if (active) setSourceErrors((current) => ({ ...current, [selected]: true }));
@@ -151,7 +164,21 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
       active = false;
     };
   }, [client, window, systemVisible]);
+  useEffect(() => {
+    quietReload.current = false;
+  }, [window]);
   const retry = useCallback(() => setRefresh((value) => value + 1), []);
+  useFocusEffect(
+    useCallback(() => {
+      if (!focused.current) {
+        focused.current = true;
+        return;
+      }
+      if (olderPages.current > 0) return;
+      quietReload.current = true;
+      setRefresh((value) => value + 1);
+    }, []),
+  );
   const loadMore = () => {
     if (nextBefore === null || pagePending.current) return;
     pagePending.current = true;
@@ -161,6 +188,7 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
       .auditEvents({ ...auditQuery, before: nextBefore })
       .then((list) => {
         if (latest.current !== request || !list) return;
+        olderPages.current += 1;
         setEvents((current) => [...(current ?? []), ...list.events]);
         setNextBefore(list.nextBefore);
       })
@@ -182,6 +210,12 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
           at: event.recordedAt,
           event,
         }));
+  // While older audit pages remain, system entries older than the last loaded
+  // audit event would sit beside a gap of unloaded audit events; they appear
+  // once those pages are loaded.
+  const lastAudit =
+    filter === 'all' && nextBefore !== null ? events?.at(-1)?.recordedAt : undefined;
+  const auditBoundary = lastAudit ? Date.parse(lastAudit) : undefined;
   if (systemVisible)
     for (const selected of ['server', 'host'] as const) {
       if (filter === 'system' && source !== 'all' && source !== selected) continue;
@@ -189,6 +223,8 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
         if (query.trim() && !entry.text.toLowerCase().includes(query.trim().toLowerCase()))
           continue;
         if (filter === 'system' && source === 'server' && level !== 'all' && entry.level !== level)
+          continue;
+        if (auditBoundary !== undefined && !(entry.at && Date.parse(entry.at) >= auditBoundary))
           continue;
         items.push({ key: `${selected}-${index}`, at: entry.at, entry, source: selected });
       }

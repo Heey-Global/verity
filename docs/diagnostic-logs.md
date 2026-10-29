@@ -61,7 +61,9 @@ storage failed, the record predates capture, or the total storage budget evicted
   offers no severity filter for this source.
 
 The automatic server identity comes from the running kernel hostname rather than
-an inherited `HOSTNAME` environment value. An explicit
+an inherited `HOSTNAME` environment value, and is used only when it matches
+Docker’s default 12- or 64-character hexadecimal container identity. Custom
+hostnames and non-container deployments require an explicit identity. An explicit
 `VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID` still overrides it. Server failures expose
 safe reason codes for missing configuration, missing containers, denied access,
 unreachable Docker and other read failures, without exposing daemon error text.

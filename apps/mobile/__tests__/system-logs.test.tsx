@@ -10,6 +10,7 @@ import {
   mockCreateVerityClient,
   mockReplace,
   resetSettingsHarness,
+  refocus,
   setSearchParams,
 } from './support/settingsHarness';
 afterEach(() => resetSettingsHarness());
@@ -203,4 +204,43 @@ it('shows no source status while every source is available and opens details fro
   expect(screen.queryByText(/unavailable/)).toBeNull();
   fireEvent.press(screen.getByRole('button', { name: 'Source details' }));
   expect(await screen.findByText(/Host entries are classified signals/)).toBeOnTheScreen();
+});
+
+it('re-reads the first page in place on return and hides system entries beyond unloaded audit pages', async () => {
+  const at = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+  const auditEvent = {
+    eventId: 'recent',
+    operationId: 'op',
+    kind: 'build.succeeded',
+    domain: 'builds',
+    recordedAt: at(10),
+    project: null,
+    imageId: null,
+    payload: {},
+  };
+  const auditEvents = jest
+    .fn()
+    .mockResolvedValue({ events: [auditEvent], nextBefore: 'cursor', oldestRecordedAt: null });
+  const systemLogs = jest.fn(({ source }) =>
+    Promise.resolve(
+      source === 'server'
+        ? {
+            ...logs('newer message'),
+            entries: [
+              { at: at(5), text: 'newer message', level: null },
+              { at: at(30), text: 'older message', level: null },
+            ],
+          }
+        : { ...logs('', 'host'), entries: [] },
+    ),
+  );
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { auditEvents, systemLogs }));
+  render(<LogsScreen />);
+  expect(await screen.findByText('newer message')).toBeOnTheScreen();
+  expect(screen.queryByText('older message')).toBeNull();
+  await act(async () => refocus());
+  expect(auditEvents).toHaveBeenCalledTimes(2);
+  expect(auditEvents.mock.calls[1]![0]).not.toHaveProperty('before');
+  expect(screen.getByText('Image build succeeded')).toBeOnTheScreen();
+  expect(screen.queryByText('Loading logs…')).toBeNull();
 });

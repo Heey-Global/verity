@@ -1,8 +1,11 @@
 import { hostname } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createServerLogSource } from './server-log-source.js';
-vi.mock('node:os', () => ({ hostname: () => 'current-generation' }));
-afterEach(() => vi.unstubAllEnvs());
+vi.mock('node:os', () => ({ hostname: vi.fn(() => '012345abcdef') }));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.mocked(hostname).mockReturnValue('012345abcdef');
+});
 it('reads the current container even when HOSTNAME was inherited from a retired generation', async () => {
   vi.stubEnv('HOSTNAME', 'retired-generation');
   const containerLogs = vi.fn().mockResolvedValue('ready');
@@ -16,4 +19,12 @@ it('honors an explicit container identity and reports an absent transport as unc
   await createServerLogSource({ containerLogs }, 'explicit-server')!(window);
   expect(containerLogs).toHaveBeenCalledWith('explicit-server', 1000, window);
   expect(createServerLogSource(undefined)).toBeUndefined();
+});
+
+it('leaves arbitrary hostnames unconfigured rather than selecting another container by name', () => {
+  vi.mocked(hostname).mockReturnValue('workstation');
+  const containerLogs = vi.fn();
+  expect(createServerLogSource({ containerLogs })).toBeUndefined();
+  expect(createServerLogSource({ containerLogs }, '  ')).toBeUndefined();
+  expect(containerLogs).not.toHaveBeenCalled();
 });
