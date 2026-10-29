@@ -454,8 +454,26 @@ try {
     assert.ok(!starts.includes(created), `${name} must fail before process start`);
   }
   results.push('profile, user, image and mount substitutions refused before actual process start');
+  // Loopback reaches the actual relay without adding any network admission rule.
+  const relayProbe = `const h=require('node:http');const r=h.request({host:'127.0.0.1',port:8080,method:'POST',path:'/internal/project/memory'},s=>{let b='';s.on('data',c=>b+=c);s.on('end',()=>{console.log(JSON.stringify({status:s.statusCode,body:b}));});});r.setTimeout(3000,()=>r.destroy());r.on('error',()=>process.exit(1));r.end();`;
+  const probeRelay = async (id: string) => {
+    let reply = '';
+    for (let i = 0; i < 40; i++) {
+      reply = await docker('exec', id, '/nodejs/bin/node', '-e', relayProbe).catch((error) =>
+        String(error),
+      );
+      if (reply.includes('project-bound-fixture')) return;
+      if ((await docker('inspect', '--format', '{{.State.Running}}', id)).trim() !== 'true') break;
+      await delay(250);
+    }
+    throw new Error(`actual relay UDS positive control failed: ${reply}`);
+  };
+  relayName = projectRelayContainerName(identity);
+  let relayId = '';
   try {
     await startRelay(context);
+    relayId = (await docker('inspect', '--format', '{{.Id}}', relayName)).trim();
+    await probeRelay(relayId);
   } catch (originalError) {
     // Diagnostic clones are never an acceptance fallback. They keep the already-denied
     // network and exact image/mounts; the normal host start failure still fails this job.
@@ -475,7 +493,7 @@ try {
           let error: string | undefined;
           try {
             await docker('start', diagnostic.id);
-            await delay(250);
+            await probeRelay(diagnostic.id);
           } catch (failure) {
             error = String(failure);
           }
@@ -499,22 +517,6 @@ try {
     });
     throw originalError;
   }
-  relayName = projectRelayContainerName(identity);
-  const relayId = (await docker('inspect', '--format', '{{.Id}}', relayName)).trim();
-  // Loopback reaches the actual relay without adding any network admission rule.
-  const relayProbe = `const h=require('node:http');const r=h.request({host:'127.0.0.1',port:8080,method:'POST',path:'/internal/project/memory'},s=>{let b='';s.on('data',c=>b+=c);s.on('end',()=>{console.log(JSON.stringify({status:s.statusCode,body:b}));});});r.setTimeout(3000,()=>r.destroy());r.on('error',()=>process.exit(1));r.end();`;
-  let relayReply = '';
-  for (let i = 0; i < 40; i++) {
-    relayReply = await docker('exec', relayId, '/nodejs/bin/node', '-e', relayProbe).catch(
-      () => '',
-    );
-    if (relayReply.includes('project-bound-fixture')) break;
-    await delay(250);
-  }
-  assert.ok(
-    relayReply.includes('project-bound-fixture'),
-    `actual relay UDS positive control failed: ${relayReply}`,
-  );
   assert.ok(brokerRequests > 0);
   for (const [port, name] of [
     [8443, 'claude.sock'],
@@ -609,6 +611,10 @@ try {
     await writeFile(
       `/evidence/${name}.jsonl`,
       await docker('logs', name).catch(() => 'unavailable'),
+    );
+    await writeFile(
+      `/evidence/state-${name}.json`,
+      await docker('inspect', name).catch(() => 'unavailable'),
     );
     await docker('rm', '-f', name).catch(() => undefined);
   }
