@@ -637,7 +637,6 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { openBackupRuntime } from './backup/runtime.js';
-import { BACKUP_RECOVERY_ACCEPTED } from './backup/routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -4571,7 +4570,6 @@ export async function buildEmbeddedServer(
   const backup =
     config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
       ? await openBackupRuntime({
-          recoveryAccepted: BACKUP_RECOVERY_ACCEPTED,
           probe: {
             docker: projectDocker,
             network: 'verity-net',

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { registerBackupRoutes, type BackupRouteDependencies } from './routes.js';
 
-it('checks current administrator authority and the recovery gate on every registered backup route', async () => {
+it('checks current administrator authority on every registered backup route', async () => {
   const app = Fastify();
   const routes: { method: 'GET' | 'POST' | 'PATCH'; url: string }[] = [];
   app.addHook('onRoute', (route) => {
@@ -11,7 +11,6 @@ it('checks current administrator authority and the recovery gate on every regist
     if (method === 'GET' || method === 'POST' || method === 'PATCH')
       routes.push({ method: method as 'GET' | 'POST' | 'PATCH', url: route.url });
   });
-  let accepted = false;
   let administrator = true;
   const service = {
     status: vi.fn(async () => ({ configured: false, alerts: [] })),
@@ -43,7 +42,6 @@ it('checks current administrator authority and the recovery gate on every regist
     userId: (request) =>
       typeof request.headers['x-user'] === 'string' ? request.headers['x-user'] : null,
     isAdministrator,
-    recoveryAccepted: () => accepted,
     service,
   });
   try {
@@ -61,20 +59,10 @@ it('checks current administrator authority and the recovery gate on every regist
           ...(user ? { headers: { 'x-user': user } } : {}),
         });
         expect(response.statusCode, `${route.method} ${route.url} ${user}`).toBe(expected);
+        expect(response.headers['cache-control']).toBe('no-store');
       }
-      const gated = await app.inject({ ...route, headers: { 'x-user': 'admin' } });
-      expect(gated.statusCode).toBe(route.url === '/api/backups/status' ? 200 : 503);
-      expect(gated.headers['cache-control']).toBe('no-store');
     }
-    for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
-    accepted = true;
-    // Availability must never grant project or agent actors administrator authority.
-    for (const route of routes)
-      for (const user of ['member', 'agent', 'project-container'])
-        expect(
-          (await app.inject({ ...route, headers: { 'x-user': user } })).statusCode,
-          `${user} ${route.url}`,
-        ).toBe(403);
+    // An available service must never grant project or agent actors administrator authority.
     for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
     const headers = { 'x-user': 'admin' };
     expect(
@@ -211,7 +199,6 @@ it('requires installer resources, validates input and never echoes recovery mate
   registerBackupRoutes(app, {
     userId: () => 'admin',
     isAdministrator: async () => true,
-    recoveryAccepted: () => true,
     service,
   });
   try {
@@ -236,7 +223,6 @@ it('requires installer resources, validates input and never echoes recovery mate
     unavailableReason: () => unavailableReason,
     userId: () => 'admin',
     isAdministrator: async () => true,
-    recoveryAccepted: () => true,
   });
   try {
     expect((await missing.inject({ method: 'GET', url: '/api/backups/status' })).json()).toEqual({
@@ -302,7 +288,6 @@ it('starts, polls and cancels probe jobs with current admin checks and safe fail
   registerBackupRoutes(app, {
     userId: () => 'admin',
     isAdministrator: async () => administrator,
-    recoveryAccepted: () => true,
     service,
   });
   try {

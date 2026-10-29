@@ -33,15 +33,17 @@ export function validateScheduleState(state: BackupScheduleState): void {
   )
     throw new Error('Invalid backup schedule state');
 }
-export function backupScheduleAlerts(state: BackupScheduleState, now: number): string[] {
+/** Before the first success, staleness counts from when backups were configured. */
+export function backupScheduleAlerts(
+  state: BackupScheduleState,
+  now: number,
+  configuredAt: number,
+): string[] {
   validateScheduleState(state);
   if (state.paused) return [];
   const alerts: string[] = [];
   if (state.failures >= 2) alerts.push('consecutive-failures');
-  if (
-    state.lastSuccess === null ||
-    now - state.lastSuccess >= Math.min(2 * state.intervalMs, 2 * DAY)
-  )
+  if (now - (state.lastSuccess ?? configuredAt) >= Math.min(2 * state.intervalMs, 2 * DAY))
     alerts.push('stale-backup');
   return alerts;
 }
@@ -49,9 +51,14 @@ export function backupScheduleAlerts(state: BackupScheduleState, now: number): s
 /** Tick from the Server timer. Persisted attempts survive restart; one overdue run catches up. */
 export class BackupScheduler {
   private active: Promise<void> | undefined;
+  private capturingNow = false;
   private readonly now: () => number;
   constructor(private readonly dependencies: BackupScheduleDependencies) {
     this.now = dependencies.now ?? Date.now;
+  }
+  /** True only while a capture runs, not during revocation sync or maintenance. */
+  get capturing(): boolean {
+    return this.capturingNow;
   }
   tick(): Promise<void> {
     if (this.active) return this.active;
@@ -96,6 +103,7 @@ export class BackupScheduler {
       };
     });
     if (!reserved || started.paused) return;
+    this.capturingNow = true;
     try {
       const signal = AbortSignal.timeout(BACKUP_RUN_TIMEOUT_MS);
       await this.dependencies.capture(signal);
@@ -103,6 +111,8 @@ export class BackupScheduler {
     } catch {
       // The attempt was durably recorded already. Never prune after a failed capture.
       return;
+    } finally {
+      this.capturingNow = false;
     }
     const finished = await this.dependencies.update((current) => {
       validateScheduleState(current);
