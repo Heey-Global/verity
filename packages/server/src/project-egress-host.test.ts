@@ -63,6 +63,7 @@ it('persists and acknowledges denial before starting, without endpoint informati
   calls.length = 0;
   expect(await host.execute(start)).toEqual({ state: 'started-denied', generation: 'gen1' });
   expect(calls).toEqual([
+    'deny',
     'container',
     'save',
     'deny',
@@ -285,7 +286,10 @@ it('still stops a mismatched started container when restoring the firewall also 
     .mockResolvedValueOnce(undefined)
     .mockResolvedValueOnce(undefined)
     .mockRejectedValueOnce(new Error('changed attachment'));
-  deps.apply.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('nft unavailable'));
+  deps.apply
+    .mockResolvedValueOnce(undefined)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('nft unavailable'));
   await expect(host.execute(start)).rejects.toThrow('containment attempted');
   expect(deps.stopContainer).toHaveBeenCalledWith(id);
 });
@@ -369,4 +373,100 @@ it('revalidates restored roles before serving and stops incompatible containers'
   expect(deps.stopContainer).toHaveBeenCalledWith(id);
   expect(deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay');
   await expect(host.execute(start)).rejects.toThrow();
+});
+
+const transport = {
+  sandbox: { address: '172.20.0.2', mac: '02:42:ac:14:00:02', device: 'vethsandbox', index: 10 },
+  relay: { address: '172.20.0.3', mac: '02:42:ac:14:00:03', device: 'vethrelay', index: 11 },
+  codex: false,
+};
+function transportFixture() {
+  const f = fixture({
+    version: 1,
+    records: [{ binding, retired: false, containers: { sandbox: id, relay: 'c'.repeat(64) } }],
+  });
+  const inspectTransport = vi.fn(async () => structuredClone(transport));
+  const host = new ProjectEgressHost(f.saved(), { ...f.deps, inspectTransport });
+  return { ...f, host, inspectTransport };
+}
+it('admits only the inspected pair after both role checks and confirms endpoints after apply', async () => {
+  const f = transportFixture();
+  expect(
+    await f.host.execute({
+      operation: 'connect',
+      projectId: binding.projectId,
+      generation: 'gen1',
+    }),
+  ).toEqual({ state: 'connected', generation: 'gen1', relayAddress: transport.relay.address });
+  expect(f.inspectTransport).toHaveBeenCalledTimes(2);
+  expect(f.deps.inspectContainer).toHaveBeenCalledWith(binding, id, 'sandbox');
+  expect(f.deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay');
+  const rules = f.deps.apply.mock.calls.at(-1)![0];
+  expect(rules).toContain('meta iif 10 meta oif 11');
+  expect(rules).toContain('tcp dport { 8080, 8443 }');
+  expect(rules).not.toContain('8444');
+  expect(rules).not.toContain('udp dport');
+  expect(rules).toContain('meta obrname "vep*" counter drop');
+  expect(rules).toContain('arp saddr ip 172.20.0.2 arp daddr ip 172.20.0.3');
+});
+it('revokes before prepare, restart validation and retirement including active connections', async () => {
+  for (const operation of ['prepare', 'start', 'retire'] as const) {
+    const f = transportFixture();
+    await f.host.execute({
+      operation: 'connect',
+      projectId: binding.projectId,
+      generation: 'gen1',
+    });
+    f.deps.apply.mockClear();
+    if (operation === 'start')
+      f.deps.inspectContainer.mockRejectedValueOnce(new Error('role changed'));
+    await f.host
+      .execute(
+        operation === 'start'
+          ? start
+          : { operation, projectId: binding.projectId, generation: 'gen1' },
+      )
+      .catch(() => undefined);
+    const rules = f.deps.apply.mock.calls[0]![0];
+    expect(rules).not.toContain('tcp dport');
+    expect(rules).not.toContain('ct state');
+  }
+});
+it('restoration never replays an admitted endpoint', async () => {
+  const f = transportFixture();
+  await f.host.execute({ operation: 'connect', projectId: binding.projectId, generation: 'gen1' });
+  f.deps.apply.mockClear();
+  await f.host.restore();
+  await f.host.revalidate();
+  expect(f.deps.apply.mock.calls.every(([rules]) => !rules.includes('tcp dport'))).toBe(true);
+});
+it('rolls back admission if the host endpoint changes during the kernel transaction', async () => {
+  const f = transportFixture();
+  f.inspectTransport
+    .mockResolvedValueOnce(transport)
+    .mockResolvedValueOnce({ ...transport, relay: { ...transport.relay, index: 12 } });
+  await expect(
+    f.host.execute({ operation: 'connect', projectId: binding.projectId, generation: 'gen1' }),
+  ).rejects.toThrow('changed during admission');
+  expect(f.deps.apply.mock.calls.at(-1)![0]).not.toContain('tcp dport');
+});
+it('failed revocation poisons the controller and attempts both container stops', async () => {
+  const f = transportFixture();
+  await f.host.execute({ operation: 'connect', projectId: binding.projectId, generation: 'gen1' });
+  f.deps.apply.mockRejectedValueOnce(new Error('nft unavailable'));
+  await expect(
+    f.host.execute({ operation: 'prepare', projectId: binding.projectId, generation: 'gen1' }),
+  ).rejects.toThrow('containment attempted');
+  expect(f.deps.stopContainer).toHaveBeenCalledWith(id);
+  expect(f.deps.stopContainer).toHaveBeenCalledWith('c'.repeat(64));
+  await expect(f.host.execute(start)).rejects.toThrow('requires restart');
+});
+
+it('failed restoration contains registered containers and prevents admission', async () => {
+  const f = transportFixture();
+  f.deps.apply.mockRejectedValueOnce(new Error('nft unavailable'));
+  await expect(f.host.restore()).rejects.toThrow('Host restoration failed');
+  expect(f.deps.stopContainer).toHaveBeenCalledWith(id);
+  expect(f.deps.stopContainer).toHaveBeenCalledWith('c'.repeat(64));
+  await expect(f.host.execute(start)).rejects.toThrow('requires restart');
 });

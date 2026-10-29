@@ -171,3 +171,13 @@ image, mounts, CPU and memory limits on the already-denied generation network.
 They use a logging-only runtime variant and compare PID ceilings of 32 and 64
 sequentially. Their output is diagnostic only: the original error still fails the
 job, and the host controller never accepts the debug runtime as a protected role.
+
+The transport increment additionally drives the three actual relay ports from a
+project-UID process inside the Runner Sandbox. Host-side model receivers and a
+Sandbox-side broker stream receiver record successful delivery before measuring
+revocation of each retained connection (two-second upper bound). Controller
+reconstruction restores denial before explicit revalidation. An independent
+dual-stack receiver observes direct TCP with caller-supplied test credentials and
+UDP/DNS attempts, and every external path must work after deliberate fence removal.
+Authorization suites separately drive the actual TCP-to-UDS relay and existing
+broker/model handlers, retaining project, account and action rejection checks.

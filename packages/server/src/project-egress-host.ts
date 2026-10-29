@@ -1,3 +1,4 @@
+import { transportRules, type EgressTransport } from './project-egress-transport.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
@@ -15,6 +16,7 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
+  z.strictObject({ operation: z.literal('connect'), ...reference }),
   z.strictObject({
     operation: z.literal('start'),
     ...reference,
@@ -30,6 +32,11 @@ export const projectEgressHostResponse = z.discriminatedUnion('state', [
     binding: networkBinding.nullable(),
   }),
   z.strictObject({ state: z.enum(['denied', 'started-denied', 'retired']), generation: identity }),
+  z.strictObject({
+    state: z.enum(['connected', 'started-connected']),
+    generation: identity,
+    relayAddress: z.ipv4(),
+  }),
 ]);
 export type ProjectEgressHostResponse = z.infer<typeof projectEgressHostResponse>;
 export type ProjectEgressHostRequest = z.infer<typeof projectEgressHostRequest>;
@@ -59,6 +66,10 @@ interface Dependencies {
     id: string,
     role: 'sandbox' | 'relay',
   ): Promise<void>;
+  inspectTransport?(
+    binding: ProjectEgressNetworkBinding,
+    ids: { sandbox: string; relay: string },
+  ): Promise<EgressTransport | undefined>;
   startContainer(id: string): Promise<void>;
   stopContainer(id: string): Promise<void>;
 }
@@ -66,17 +77,26 @@ const key = (binding: { projectId: string; generation: string }): string =>
   `${binding.projectId}:${binding.generation}`;
 
 /** Reserved bridge prefix is denied even before a generation is registered. */
-export function projectEgressBootstrapRules(): string {
+export function projectEgressBootstrapRules(
+  active: readonly { binding: ProjectEgressNetworkBinding; transport: EgressTransport }[] = [],
+): string {
+  const allowed = (family: 'inet' | 'bridge') =>
+    active
+      .map(({ binding, transport }) =>
+        transportRules(networkBinding.parse(binding), transport, family),
+      )
+      .join('\n');
   return `add table inet verity_egress_boot
   delete table inet verity_egress_boot
   table inet verity_egress_boot {
-    chain forward { type filter hook forward priority -220; policy accept; iifname "vep*" counter drop; }
+    chain forward { type filter hook forward priority -220; policy accept; ${allowed('inet')} iifname "vep*" counter drop; oifname "vep*" counter drop; }
     chain input { type filter hook input priority -220; policy accept; iifname "vep*" counter drop; }
   }
   add table bridge verity_egress_boot
   delete table bridge verity_egress_boot
   table bridge verity_egress_boot {
-    chain forward { type filter hook forward priority -220; policy accept; meta ibrname "vep*" counter drop; }
+    chain forward { type filter hook forward priority -220; policy accept; ${allowed('bridge')} meta ibrname "vep*" counter drop; meta obrname "vep*" counter drop; }
+    chain input { type filter hook input priority -220; policy accept; meta ibrname "vep*" counter drop; }
   }
 `;
 }
@@ -85,32 +105,39 @@ export function projectEgressBootstrapRules(): string {
  * Replacing both tables in one transaction also restores denial after a restart.
  * These tables remain until explicit, trusted host cleanup, including retirement.
  */
-export function projectEgressStartupRules(binding: ProjectEgressNetworkBinding): string {
+export function projectEgressStartupRules(
+  binding: ProjectEgressNetworkBinding,
+  transport?: EgressTransport,
+): string {
   networkBinding.parse(binding);
   const table =
     'verity_start_' + createHash('sha256').update(key(binding)).digest('hex').slice(0, 24);
   return `add table inet ${table}
 delete table inet ${table}
 table inet ${table} {
- chain forward { type filter hook forward priority -210; policy accept; iifname "${binding.bridge}" counter drop; }
+ chain forward { type filter hook forward priority -210; policy accept; ${transport ? transportRules(binding, transport, 'inet') : ''} iifname "${binding.bridge}" counter drop; oifname "${binding.bridge}" counter drop; }
  chain input { type filter hook input priority -210; policy accept; iifname "${binding.bridge}" counter drop; }
 }
 add table bridge ${table}
 delete table bridge ${table}
 table bridge ${table} {
- chain forward { type filter hook forward priority -210; policy accept; meta ibrname "${binding.bridge}" counter drop; }
+ chain forward { type filter hook forward priority -210; policy accept; ${transport ? transportRules(binding, transport, 'bridge') : ''} meta ibrname "${binding.bridge}" counter drop; meta obrname "${binding.bridge}" counter drop; }
 }
 `;
 }
 
 /** Trusted host process only. No supplied labels, commands, rules or destinations.
- * This first host increment is deny-only: no operation removes the startup fence.
- * Transport admission and production activation require separate verified gates.
+ * Only inspected Sandbox-to-relay service ports can cross the startup fence.
+ * General network admission and production activation remain separate gates.
  */
 export class ProjectEgressHost {
   private state: ProjectEgressHostState;
   private queue: Promise<unknown> = Promise.resolve();
   private healthy = true;
+  private readonly transports = new Map<
+    string,
+    { binding: ProjectEgressNetworkBinding; transport: EgressTransport }
+  >();
   constructor(
     state: unknown,
     private readonly deps: Dependencies,
@@ -158,9 +185,25 @@ export class ProjectEgressHost {
   /** Must finish before opening the control socket; does not require Docker. */
   restore(): Promise<void> {
     return this.serialize(async () => {
-      await this.deps.apply(projectEgressBootstrapRules());
-      for (const record of this.state.records)
-        await this.deps.apply(projectEgressStartupRules(record.binding));
+      this.transports.clear();
+      try {
+        await this.deps.apply(projectEgressBootstrapRules());
+        for (const record of this.state.records)
+          await this.deps.apply(projectEgressStartupRules(record.binding));
+      } catch (error) {
+        this.healthy = false;
+        const stopped = await Promise.allSettled(
+          this.state.records.flatMap(containerIds).map((id) => this.deps.stopContainer(id)),
+        );
+        throw new AggregateError(
+          [
+            error,
+            ...stopped.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : [])),
+          ],
+          'Host restoration failed; containment attempted',
+          { cause: error },
+        );
+      }
     });
   }
   /** Docker is available here; boot-time restore remains independent of the daemon. */
@@ -168,6 +211,7 @@ export class ProjectEgressHost {
     return this.serialize(async () => {
       const failures: unknown[] = [];
       for (const record of this.state.records) {
+        await this.deny(record);
         if (record.retired) continue;
         for (const role of ['sandbox', 'relay'] as const) {
           const id = record.containers[role];
@@ -242,7 +286,7 @@ export class ProjectEgressHost {
       const record = this.state.records.find((record) => key(record.binding) === key(request));
       if (!record) throw new Error('Unknown generation');
       if (request.operation === 'retire') {
-        await this.deps.apply(projectEgressStartupRules(record.binding));
+        await this.deny(record);
         record.retired = true;
         await this.save();
         // A failed stop leaves a permanent deny fence and cannot reactivate.
@@ -263,6 +307,18 @@ export class ProjectEgressHost {
         await this.prepare(record);
         return { state: 'denied', generation: record.binding.generation };
       }
+      if (request.operation === 'connect') {
+        await this.prepare(record);
+        const transport = await this.connect(record);
+        if (!transport) throw new Error('Both transport roles must be running');
+        return {
+          state: 'connected',
+          generation: record.binding.generation,
+          relayAddress: transport.relay.address,
+        };
+      }
+      // Revoke even when a changed role/image fails the first validation.
+      await this.deny(record);
       const prior = record.containers[request.role];
       if (
         (prior !== undefined && prior !== request.containerId) ||
@@ -280,13 +336,15 @@ export class ProjectEgressHost {
       await this.prepare(record);
       // This inspection and Docker start share the same serialized generation operation.
       await this.deps.inspectContainer(record.binding, request.containerId, request.role);
+      let transport: EgressTransport | undefined;
       try {
         await this.deps.startContainer(request.containerId);
         await this.deps.inspectContainer(record.binding, request.containerId, request.role);
         await this.deps.inspectNetwork(record.binding, containerIds(record));
+        transport = await this.connect(record);
       } catch (error) {
         const containment = await Promise.allSettled([
-          Promise.resolve().then(() => this.deps.apply(projectEgressStartupRules(record.binding))),
+          Promise.resolve().then(() => this.deny(record)),
           Promise.resolve().then(() => this.deps.stopContainer(request.containerId)),
         ]);
         throw new AggregateError(
@@ -300,12 +358,61 @@ export class ProjectEgressHost {
           { cause: error },
         );
       }
+      if (transport)
+        return {
+          state: 'started-connected',
+          generation: record.binding.generation,
+          relayAddress: transport.relay.address,
+        };
       return { state: 'started-denied', generation: record.binding.generation };
     });
   }
+  private async deny(record: RecordState): Promise<void> {
+    this.transports.delete(key(record.binding));
+    try {
+      await this.deps.apply(
+        projectEgressBootstrapRules([...this.transports.values()]) +
+          projectEgressStartupRules(record.binding),
+      );
+    } catch (error) {
+      this.healthy = false;
+      const stopped = await Promise.allSettled(
+        containerIds(record).map((id) => this.deps.stopContainer(id)),
+      );
+      throw new AggregateError(
+        [error, ...stopped.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []))],
+        'Transport revocation failed; containment attempted',
+        { cause: error },
+      );
+    }
+  }
+  private async connect(record: RecordState): Promise<EgressTransport | undefined> {
+    const { sandbox, relay } = record.containers;
+    if (!sandbox || !relay || !this.deps.inspectTransport) return undefined;
+    for (const role of ['sandbox', 'relay'] as const)
+      await this.deps.inspectContainer(record.binding, record.containers[role]!, role);
+    await this.deps.inspectNetwork(record.binding, containerIds(record));
+    const transport = await this.deps.inspectTransport(record.binding, { sandbox, relay });
+    if (!transport) return undefined;
+    const next = [...this.transports.values(), { binding: record.binding, transport }];
+    try {
+      await this.deps.apply(
+        projectEgressBootstrapRules(next) + projectEgressStartupRules(record.binding, transport),
+      );
+      // Fail closed if an endpoint changed while the kernel transaction was installed.
+      const confirmed = await this.deps.inspectTransport(record.binding, { sandbox, relay });
+      if (JSON.stringify(confirmed) !== JSON.stringify(transport))
+        throw new Error('Transport endpoint changed during admission');
+      this.transports.set(key(record.binding), { binding: record.binding, transport });
+      return transport;
+    } catch (error) {
+      await this.deny(record);
+      throw error;
+    }
+  }
   private async prepare(record: RecordState): Promise<void> {
     // Even an unexpected attachment is fenced before reporting a mismatch.
-    await this.deps.apply(projectEgressStartupRules(record.binding));
+    await this.deny(record);
     await this.deps.inspectNetwork(record.binding, containerIds(record));
   }
 }
