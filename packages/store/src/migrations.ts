@@ -4955,7 +4955,18 @@ migrations['0174_qa_recovery'] = {
   },
 };
 
-migrations['0175_assistant'] = {
+migrations['0175_running_turn_settlement'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns add column marker_id text, add column settled boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns drop column marker_id, drop column settled`.execute(db);
+  },
+};
+
+migrations['0176_assistant'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table assistant_settings (
       id integer primary key check (id = 1), enabled boolean not null default false,

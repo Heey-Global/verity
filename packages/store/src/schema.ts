@@ -816,6 +816,8 @@ export interface QueuedTurnsTable {
  * row still present at startup means the turn was abandoned by a crash/restart.
  */
 interface RunningTurnsTable {
+  marker_id: ColumnType<string | null, string | null | undefined, string | null | undefined>;
+  settled: Generated<boolean>;
   session_id: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   prompt_seq: number;
