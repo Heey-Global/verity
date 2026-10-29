@@ -1,4 +1,15 @@
 export {
+  ProjectEgressStore,
+  ProjectEgressError,
+  canonicalEgressTarget,
+  egressTargetKey,
+  egressGrantCovers,
+  type EgressTarget,
+  type EgressPolicy,
+  type EgressRequest,
+  type EgressGrant,
+} from './project-egress.js';
+export {
   ForgeConnectionStore,
   type ForgeConnection,
   type ForgeConnectionProvider,
