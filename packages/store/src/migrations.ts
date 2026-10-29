@@ -4838,3 +4838,119 @@ export async function executedSchemaGeneration(db: Kysely<Database>): Promise<st
   const executed = await getExecutedMigrations(db);
   return executed.sort().at(-1) ?? null;
 }
+
+migrations['0172_repair_supervision'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table repair_mandates (
+      project_id text primary key references projects(id) on delete cascade,
+      sponsor_user_id text not null,
+      mode text not null check (mode in ('off', 'monitor', 'automatic')),
+      revision integer not null default 1,
+      cursor text, health text not null default 'pending', checked_at timestamptz
+    )`.execute(db);
+    await sql`create table repair_incidents (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      resource text not null, revision text not null, evidence text not null,
+      state text not null default 'open' check (state in ('open', 'working', 'verifying', 'awaiting_merge', 'resolved', 'superseded', 'blocked')),
+      owner_session_id text, last_session_id text, attempts integer not null default 0,
+      dispatch_id text, updated_at timestamptz not null default now(),
+      unique (project_id, resource, revision)
+    )`.execute(db);
+    await sql`create table repair_workflow_heads (
+      project_id text not null references projects(id) on delete cascade,
+      workflow text not null, run_id bigint not null, primary key (project_id, workflow)
+    )`.execute(db);
+    await sql`create table repair_attempts (
+      dispatch_id text primary key, incident_id text not null references repair_incidents(id) on delete cascade,
+      session_id text not null, started_at timestamptz not null default now(),
+      ended_at timestamptz, outcome text, start_seq bigint
+    )`.execute(db);
+    await sql`create unique index repair_project_owner on repair_incidents(project_id) where owner_session_id is not null`.execute(
+      db,
+    );
+    await sql`create table repair_session_history (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (project_id, resource, session_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_history`.execute(db);
+    await sql`drop table repair_workflow_heads`.execute(db);
+    await sql`drop table repair_attempts`.execute(db);
+    await sql`drop table repair_incidents`.execute(db);
+    await sql`drop table repair_mandates`.execute(db);
+  },
+};
+
+migrations['0173_qa_coordinator'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_coordinator (
+      id integer primary key check (id = 1), enabled boolean not null default false,
+      revision integer not null default 0, sponsor text, session_id text,
+      health text not null default 'disabled', active_dispatch text,
+      active_seq bigint, active_revision integer, active_snapshot text,
+      wake_day text, wakes integer not null default 0
+    )`.execute(db);
+    await sql`insert into qa_coordinator(id) values (1)`.execute(db);
+    await sql`create table qa_inbox (
+      project_id text primary key references projects(id) on delete cascade,
+      fingerprint text not null, acknowledged text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table qa_proposals (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      incident_id text not null references repair_incidents(id) on delete cascade,
+      mandate_revision integer not null, qa_revision integer not null,
+      state text not null default 'pending', decided_by text, created_at timestamptz not null default now(),
+      unique(project_id, mandate_revision, qa_revision)
+    )`.execute(db);
+    await sql`create table qa_decisions (
+      dispatch_id text primary key, session_id text not null,
+      snapshot text not null, outcome text, created_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table qa_proposals`.execute(db);
+    await sql`drop table qa_decisions`.execute(db);
+    await sql`drop table qa_inbox`.execute(db);
+    await sql`drop table qa_coordinator`.execute(db);
+  },
+};
+
+migrations['0174_qa_recovery'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table qa_dispatches (
+      id text primary key, session_id text not null,
+      state text not null check(state in ('reserved','admitted','cancelled','legacy')),
+      prompt_seq bigint, created_at timestamptz not null default now()
+    )`.execute(db);
+    // Existing in-flight work has no atomic receipt; never infer that it did not run.
+    await sql`insert into qa_dispatches(id,session_id,state) select dispatch_id,owner_session_id,'legacy' from repair_incidents where dispatch_id is not null and owner_session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`insert into qa_dispatches(id,session_id,state) select active_dispatch,session_id,'legacy' from qa_coordinator where active_dispatch is not null and session_id is not null on conflict do nothing`.execute(
+      db,
+    );
+    await sql`create table repair_resource_budgets (
+      project_id text not null references projects(id) on delete cascade, resource text not null,
+      used integer not null default 0, cycle integer not null default 0,
+      primary key(project_id,resource)
+    )`.execute(db);
+    await sql`insert into repair_resource_budgets(project_id,resource,used) select project_id,resource,least(2,sum(attempts)) from repair_incidents where state <> 'resolved' group by project_id,resource`.execute(
+      db,
+    );
+    await sql`alter table repair_incidents add column repair_pr integer, add column verified_success boolean not null default false`.execute(
+      db,
+    );
+    await sql`update repair_incidents set verified_success=true where state='resolved'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table repair_incidents drop column repair_pr, drop column verified_success`.execute(
+      db,
+    );
+    await sql`drop table repair_resource_budgets`.execute(db);
+    await sql`drop table qa_dispatches`.execute(db);
+  },
+};

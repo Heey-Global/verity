@@ -1592,6 +1592,17 @@ export interface VulnDigestsTable {
   day: string;
 }
 export interface Database {
+  qa_dispatches: QADispatchesTable;
+  repair_resource_budgets: RepairResourceBudgetsTable;
+  repair_mandates: RepairMandatesTable;
+  repair_incidents: RepairIncidentsTable;
+  repair_workflow_heads: RepairWorkflowHeadsTable;
+  repair_attempts: RepairAttemptsTable;
+  repair_session_history: RepairSessionHistoryTable;
+  qa_coordinator: QACoordinatorTable;
+  qa_inbox: QAInboxTable;
+  qa_proposals: QAProposalsTable;
+  qa_decisions: QADecisionsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1778,4 +1789,100 @@ interface LiveMeetingResultsTable {
 interface ProjectEgressPolicyTable {
   project_id: string;
   state: import('./project-egress.js').EgressPolicy;
+}
+
+interface RepairMandatesTable {
+  project_id: string;
+  sponsor_user_id: string;
+  mode: import('./repair-supervision.js').RepairMode;
+  revision: Generated<number>;
+  cursor: string | null;
+  health: Generated<string>;
+  checked_at: Date | null;
+}
+interface RepairIncidentsTable {
+  verified_success: Generated<boolean>;
+  repair_pr: number | null;
+  id: string;
+  project_id: string;
+  resource: string;
+  revision: string;
+  evidence: string;
+  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
+  owner_session_id: string | null;
+  last_session_id: string | null;
+  attempts: Generated<number>;
+  dispatch_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface RepairWorkflowHeadsTable {
+  project_id: string;
+  workflow: string;
+  run_id: ColumnType<string, string | number, string | number>;
+}
+interface RepairAttemptsTable {
+  dispatch_id: string;
+  incident_id: string;
+  session_id: string;
+  started_at: Generated<Date>;
+  ended_at: Date | null;
+  outcome: string | null;
+  start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionHistoryTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
+  created_at: Generated<Date>;
+}
+interface QACoordinatorTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor: string | null;
+  session_id: string | null;
+  health: Generated<string>;
+  active_dispatch: string | null;
+  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  active_revision: number | null;
+  active_snapshot: string | null;
+  wake_day: string | null;
+  wakes: Generated<number>;
+}
+interface QAInboxTable {
+  project_id: string;
+  fingerprint: string;
+  acknowledged: string | null;
+  updated_at: Generated<Date>;
+}
+interface QAProposalsTable {
+  id: string;
+  project_id: string;
+  incident_id: string;
+  mandate_revision: number;
+  qa_revision: number;
+  state: Generated<string>;
+  decided_by: string | null;
+  created_at: Generated<Date>;
+}
+interface QADecisionsTable {
+  dispatch_id: string;
+  session_id: string;
+  snapshot: string;
+  outcome: string | null;
+  created_at: Generated<Date>;
+}
+
+interface QADispatchesTable {
+  id: string;
+  session_id: string;
+  state: 'reserved' | 'admitted' | 'cancelled' | 'legacy';
+  prompt_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  created_at: Generated<Date>;
+}
+interface RepairResourceBudgetsTable {
+  project_id: string;
+  resource: string;
+  used: Generated<number>;
+  cycle: Generated<number>;
 }

@@ -1,3 +1,4 @@
+import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
@@ -1418,6 +1419,7 @@ export class EventStore implements EventSink {
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
+    this.repairs = new RepairSupervisionStore(db);
   }
 
   readonly projectEgress: ProjectEgressStore;
@@ -1425,6 +1427,7 @@ export class EventStore implements EventSink {
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly repairs: RepairSupervisionStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
@@ -3768,6 +3771,58 @@ export class EventStore implements EventSink {
         .executeTakeFirst();
       return result.numDeletedRows > 0n;
     });
+  }
+
+  /** Accept a background dispatch, its prompt and recovery marker in one commit.
+   * Cancellation races on the same receipt row; only the winner can run the backend. */
+  async admitBackgroundDispatch(
+    id: string,
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing: boolean } | undefined> {
+    const eventRow = await this.prepareEventRow(event);
+    const result = await this.db.transaction().execute(async (trx) => {
+      const receipt = await trx
+        .selectFrom('qa_dispatches')
+        .selectAll()
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!receipt || receipt.state === 'cancelled' || receipt.state === 'legacy') return undefined;
+      if (receipt.state === 'admitted')
+        return {
+          seq: Number(receipt.prompt_seq),
+          ts: receipt.created_at.getTime(),
+          existing: true,
+        };
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
+        trx,
+      );
+      const row = await trx
+        .insertInto('events')
+        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
+        .returning(['id', 'created_at'])
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('running_turns')
+        .values({ session_id: sessionId, prompt_seq: row.id })
+        .execute();
+      await trx
+        .updateTable('qa_dispatches')
+        .set({ state: 'admitted', prompt_seq: row.id })
+        .where('id', '=', id)
+        .execute();
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false };
+    });
+    if (result && !result.existing)
+      this.enqueuePersistedMessageEvent(
+        sessionId,
+        result.seq,
+        new Date(result.ts),
+        JSON.parse(eventRow.payload) as AgentEvent,
+      );
+    return result;
   }
 
   /**

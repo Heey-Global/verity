@@ -1375,6 +1375,43 @@ export class Conductor {
       // nothing to tailor and skips the project read entirely.
       resumeSessionId === undefined ? await this.codeHostForSession(session) : 'github',
     );
+    // Role identity is durable and server-owned; request options cannot reopen tools.
+    const qa = await this.deps.store.repairs.qa();
+    if (qa.session_id === sessionId) {
+      if (
+        prompt.includes('[[verity:qa-review]]') &&
+        (!qa.enabled || qa.active_revision !== qa.revision)
+      )
+        throw new Error('QA background dispatch was disabled or superseded.');
+      builtRunOpts.toolless = true;
+      const observations: unknown[] = [];
+      if (qa.sponsor && (await this.deps.store.isActiveAdministrator(qa.sponsor))) {
+        for (const mandate of (await this.deps.store.repairs.mandates()).slice(0, 50)) {
+          if (mandate.mode === 'off') continue;
+          observations.push({
+            projectId: mandate.project_id,
+            mode: mandate.mode,
+            health: mandate.health,
+            checkedAt: mandate.checked_at,
+            incidents: (await this.deps.store.repairs.incidents(mandate.project_id))
+              .slice(0, 20)
+              .map((i) => ({
+                id: i.id,
+                resource: i.resource,
+                revision: i.revision,
+                state: i.state,
+                sessionId: i.last_session_id,
+                attempts: i.attempts,
+              })),
+          });
+        }
+      }
+      const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or execute assignments; only scheduled decision reviews can propose repairs. Current cached observations (not fresh forge evidence): ${JSON.stringify(observations)}\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.appendSystemPrompt =
+        'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.';
+      resumeSessionId = undefined;
+    }
     const runOpts = {
       ...builtRunOpts,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
@@ -3450,6 +3487,8 @@ export class Conductor {
     dispatchOpts: DispatchTurnOptions & {
       /** Validate background work while the session admission lock is held. */
       validateSession?: (session: SessionRecord) => Promise<boolean>;
+      /** Server-owned receipt; atomically persisted with the prompt and recovery marker. */
+      durableDispatchId?: string;
     } = {},
   ): Promise<{ accepted: boolean }> {
     let session: SessionRecord;
@@ -3470,6 +3509,32 @@ export class Conductor {
       this.drainNext(sessionId);
       throw error;
     }
+    let admittedSeq: number | undefined;
+    if (dispatchOpts.durableDispatchId) {
+      try {
+        const event: AgentEvent = {
+          t: 'prompt',
+          text: dispatchOpts.displayPrompt ?? prompt,
+          ...originFields(dispatchOpts),
+        };
+        const receipt = await this.deps.store.admitBackgroundDispatch(
+          dispatchOpts.durableDispatchId,
+          sessionId,
+          event,
+        );
+        if (!receipt || receipt.existing) {
+          this.releaseInFlight(sessionId);
+          this.drainNext(sessionId);
+          return { accepted: receipt?.existing ?? false };
+        }
+        admittedSeq = receipt.seq;
+        this.deps.bus?.publish(sessionId, { seq: receipt.seq, ts: receipt.ts, event });
+      } catch (error) {
+        this.releaseInFlight(sessionId);
+        this.drainNext(sessionId);
+        throw error;
+      }
+    }
     this.launchAcceptedTurn(
       sessionId,
       prompt,
@@ -3477,8 +3542,9 @@ export class Conductor {
       opts,
       dispatchOpts.displayPrompt ?? prompt,
       {
-        persistPrompt: true,
+        persistPrompt: admittedSeq === undefined,
         ...originFields(dispatchOpts),
+        ...(admittedSeq === undefined ? {} : { admittedSeq }),
       },
     );
     return { accepted: true };
@@ -3493,6 +3559,7 @@ export class Conductor {
     launchOpts: PromptOrigin & {
       persistPrompt: boolean;
       autoResumeCount?: number;
+      admittedSeq?: number;
     },
   ): void {
     // Register the in-flight handle synchronously so the operator can cancel/steer
@@ -3518,13 +3585,13 @@ export class Conductor {
         );
         this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       }
-      const sinceSeq = await this.deps.store.latestEventSeq(sessionId);
+      const sinceSeq = launchOpts.admittedSeq ?? (await this.deps.store.latestEventSeq(sessionId));
       markerSeq = sinceSeq;
       handle.markerSeq = sinceSeq; // scope for a potential force-settle marker clear
       // Durable in-flight marker (lifecycle Phase 1) — see {@link sendTurn}. Written
       // before the backend runs so a mid-turn crash is settled by recovery, not
       // re-inferred from the tail; cleared in the `finally` below.
-      await this.markTurnRunning(sessionId, sinceSeq);
+      if (launchOpts.admittedSeq === undefined) await this.markTurnRunning(sessionId, sinceSeq);
       const result = await this.runBackendTurnWithResumeRecovery(sessionId, prompt, session, opts);
       // Operator-cancelled (#79): append the terminal `interrupted` marker (best
       // effort — don't let a failed marker insert block the lock release in the

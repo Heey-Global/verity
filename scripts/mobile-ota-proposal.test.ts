@@ -16,6 +16,7 @@ import {
   otaPlanningBaseline,
   otaSourcePath,
   otaVersionPath,
+  releasePatchId,
 } from './mobile-ota-proposal.mjs';
 
 it('allocates patches from the latest staged release even before production catches up', () => {
@@ -174,6 +175,8 @@ function detectFixture(
     forged?: boolean;
     missingAssociation?: boolean;
     fallbackCommit?: string;
+    matchingPatch?: boolean;
+    untrustedAuthor?: boolean;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-proposal-'));
@@ -194,7 +197,7 @@ function detectFixture(
         : 'release-please--branches--main--components--mobile-ota',
       sha: 'a'.repeat(40),
     },
-    user: { login: 'github-actions[bot]' },
+    user: { login: options.untrustedAuthor ? 'unknown[bot]' : 'github-actions[bot]' },
     labels: options.complete
       ? [{ name: 'autorelease: tagged-mobile-ota' }]
       : [{ name: 'autorelease: pending-mobile-ota' }],
@@ -204,6 +207,7 @@ function detectFixture(
 const args=process.argv.slice(2);
 const endpoint=args.at(-1);
 let response;
+if (args.includes('Accept: application/vnd.github.diff')) { process.stdout.write('reviewed-patch'); process.exit(0); }
 if (args[0] === 'label' || args[0] === 'pr') response={};
 else if (endpoint.includes('/releases?')) response=[[${options.released ? JSON.stringify({ tag_name: 'mobile-v1.52.4', draft: false, prerelease: !options.production }) : ''}]];
 else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[]' : JSON.stringify([pr])};
@@ -213,7 +217,12 @@ else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
 `;
   const git = `#!${process.execPath}
-process.stdout.write(process.argv[2] === 'log' ? '${commit}' : '${options.tagCommit ?? commit}');
+const command = process.argv[2];
+if (command === 'patch-id') {
+ const fs = require('node:fs');
+ const input = fs.readFileSync(0, 'utf8');
+ process.stdout.write((input === 'actual-patch' || ${Boolean(options.matchingPatch)} ? 'e' : 'f').repeat(40) + ' 0000000000000000000000000000000000000000');
+} else process.stdout.write(command === 'log' ? '${commit}' : command === 'show' ? 'actual-patch' : '${options.tagCommit ?? commit}');
 `;
   writeFileSync(join(cwd, 'bin/gh'), gh);
   chmodSync(join(cwd, 'bin/gh'), 0o755);
@@ -417,4 +426,43 @@ it('recovers missing commit associations only for the exact merged release sourc
   ).not.toBe(0);
   expect(detectFixture({ missingAssociation: true, forged: true }).status).not.toBe(0);
   expect(detectFixture({ missingAssociation: true, reviewedVersion: '1.52.3' }).status).not.toBe(0);
+});
+
+it('recovers a rewritten release commit only when the full reviewed patch matches', () => {
+  const result = detectFixture({
+    missingAssociation: true,
+    fallbackCommit: 'd'.repeat(40),
+    matchingPatch: true,
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.output).toContain(`commit=${result.commit}`);
+});
+
+it.each([
+  { matchingPatch: false },
+  { forged: true },
+  { untrustedAuthor: true },
+  { reviewedVersion: '1.52.3' },
+])('rejects rewritten release association with invalid evidence %j', (invalid) => {
+  const result = detectFixture({
+    missingAssociation: true,
+    fallbackCommit: 'd'.repeat(40),
+    matchingPatch: true,
+    ...invalid,
+  });
+  expect(result.status).not.toBe(0);
+});
+
+it('compares real Git patch identities across changed commit metadata and rejects changed contents', () => {
+  const patch =
+    'diff --git a/version.txt b/version.txt\n--- a/version.txt\n+++ b/version.txt\n@@ -1 +1 @@\n-1.80.2\n+1.80.3\n';
+  const id = releasePatchId(patch);
+  expect(id).toMatch(/^[a-f0-9]{40}$/u);
+  expect(releasePatchId(`commit ${'a'.repeat(40)}\n${patch}`)).toBe(id);
+  expect(releasePatchId(patch.replace('+1.80.3', '+1.80.4'))).not.toBe(id);
+  expect(releasePatchId('')).toBeNull();
+  const spaced = patch.replace('+1.80.3', '+hello world');
+  expect(releasePatchId(spaced)).not.toBe(
+    releasePatchId(spaced.replace('+hello world', '+helloworld')),
+  );
 });

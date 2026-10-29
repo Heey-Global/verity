@@ -14,6 +14,22 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('POST', '/projects/:id/repairs/approval'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repairs/retry'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/egress/remove-request'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
