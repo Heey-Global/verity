@@ -1,7 +1,7 @@
 // Exact-bundle map manifest and local CPU capture conversion. No uploads.
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, statSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -124,7 +124,7 @@ export function extractProfile(capturePath, artifacts, output) {
   return symbolicated.samples.length;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [mode, ...args] = process.argv.slice(2);
   if (mode === 'manifest' && args.length === 2) stampProfileMap(args[0], args[1]);
   else if (mode === 'extract' && args.length === 3) {

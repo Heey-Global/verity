@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -110,6 +119,43 @@ describe('optimized CPU capture', () => {
     expect(build.profiling.ios.buildConfiguration).toBe('Release');
     expect(build.profiling.developmentClient).not.toBe(true);
     expect(build.profiling.env.VERITY_CPU_PROFILING).toBe('1');
+  });
+  it('runs the generated map phase and refreshes its identity on repeated prebuilds', () => {
+    const plugin = createRequire(import.meta.url)(
+      resolve('apps/mobile/plugins/withCPUProfiling.js'),
+    ) as { profileBundleScript: (script: string, commit: string) => string };
+    const f = fixture();
+    const projectDir = join(f.root, 'apps/mobile/ios');
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(join(f.root, 'App.app'));
+    symlinkSync(resolve('scripts'), join(f.root, 'scripts'));
+    const original = `printf '%s' '{"version":3,"sources":[],"names":[],"mappings":""}' > "$SOURCEMAP_FILE"\n`;
+    const first = plugin.profileBundleScript(original, 'b'.repeat(40));
+    const next = plugin.profileBundleScript(first, commit);
+    expect(next).not.toContain('b'.repeat(40));
+    expect(plugin.profileBundleScript(next, commit)).toBe(next);
+    execFileSync('bash', ['-c', next], {
+      env: {
+        ...process.env,
+        PROJECT_DIR: projectDir,
+        TARGET_BUILD_DIR: f.root,
+        UNLOCALIZED_RESOURCES_FOLDER_PATH: 'App.app',
+        NODE_BINARY: process.execPath,
+      },
+    });
+    const nativeIdentity = JSON.parse(
+      readFileSync(join(f.root, 'App.app/verity-profile-map.json'), 'utf8'),
+    );
+    expect(nativeIdentity.commit).toBe(commit);
+    expect(
+      readFileSync(join(f.root, 'apps/mobile/profiling-artifacts/manifest.json'), 'utf8'),
+    ).toBe(JSON.stringify(nativeIdentity, null, 2));
+    // A failed bundle must not leave a usable identity from an earlier build.
+    const failed = plugin.profileBundleScript('exit 9\n', commit);
+    expect(() =>
+      execFileSync('bash', ['-c', failed], { env: { ...process.env, PROJECT_DIR: projectDir } }),
+    ).toThrow();
+    expect(existsSync(join(f.root, 'apps/mobile/profiling-artifacts/manifest.json'))).toBe(false);
   });
   it('symbolicates a populated Hermes profile into a sampled Speedscope artifact', () => {
     const f = fixture();
