@@ -147,7 +147,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               incident.owner_session_id &&
               incident.dispatch_id &&
               !deps.busy(incident.owner_session_id) &&
-              (await deps.terminated(incident.owner_session_id, incident.dispatch_id!))
+              (await deps.terminated(incident.owner_session_id, incident.dispatch_id))
             )
               await store.finishAttempt(
                 incident.id,
@@ -284,9 +284,9 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               await store.retry(incident.id);
             if (
               incident.owner_session_id &&
+              incident.dispatch_id &&
               !deps.busy(incident.owner_session_id) &&
-              (await deps.terminated(incident.owner_session_id, incident.dispatch_id!)) &&
-              incident.dispatch_id
+              (await deps.terminated(incident.owner_session_id, incident.dispatch_id))
             )
               await store.finishAttempt(
                 incident.id,
@@ -306,7 +306,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               incident.owner_session_id &&
               incident.dispatch_id &&
               !deps.busy(incident.owner_session_id) &&
-              (await deps.terminated(incident.owner_session_id, incident.dispatch_id!))
+              (await deps.terminated(incident.owner_session_id, incident.dispatch_id))
             )
               await store.finishAttempt(
                 incident.id,
