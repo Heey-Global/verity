@@ -5529,6 +5529,7 @@ describe('ProvisionerImpl (#174)', () => {
           appended.push(input);
           return Promise.resolve({} as AuditEvent);
         },
+        listEvents: () => Promise.resolve({ events: [], nextBefore: null }),
         listOperations: () => Promise.resolve({ operations: [], nextBefore: null }),
         operation: () => Promise.resolve([]),
         oldestRecordedAt: () => Promise.resolve(null),

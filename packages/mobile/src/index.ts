@@ -667,6 +667,7 @@ export {
 
 export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
 export type {
+  AuditEvent,
   AuditDomain,
   AuditHealth,
   AuditInitiator,
