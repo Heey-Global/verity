@@ -174,3 +174,9 @@ and Updater, prepares its disposable deployment authority for the exact test dig
 and runs the ordinary installer; it does not exercise a supported paired-image
 upgrade or bypass production upgrade checks. These test results do not
 authorize enabling the production gate or establish native-device trust reset.
+
+
+Private Git reconstruction covers both repositories with linked worktrees and
+ordinary repositories such as the built-in Control Plane checkout. Repair runs
+inside the validated staging checkout before user configuration is restored;
+live project repositories are not used as the repair working directory.
