@@ -268,9 +268,9 @@
       ],
       "expected": "Git verification fails without reconstruction",
       "observedExitCode": 1,
-      "originalSourceSha256": "284abf57a1a03d17e0b83850838e745010040bbfbe4c6e240775cd05a8a93dde",
+      "originalSourceSha256": "d6bc707053a961233dc98837165d2b058136db3f7b55c39180d44fb06726d5ec",
       "test": "scripts/backup-readonly-capture.test.ts",
-      "testSha256": "284abf57a1a03d17e0b83850838e745010040bbfbe4c6e240775cd05a8a93dde"
+      "testSha256": "d6bc707053a961233dc98837165d2b058136db3f7b55c39180d44fb06726d5ec"
     }
   ],
   "environmentRequirements": {

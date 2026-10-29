@@ -1251,7 +1251,34 @@ async function restore() {
         manifest,
         input.recoveryKey,
       );
-      assert.deepEqual(await prepareRestoredGit(restored, manifest.capture, restored, signal), []);
+      const gitWarnings = await prepareRestoredGit(restored, manifest.capture, restored, signal);
+      if (gitWarnings.length) {
+        console.log(
+          'BACKUP_ACCEPTANCE_GIT ' +
+            JSON.stringify({
+              warnings: gitWarnings.length,
+              repositories: manifest.capture.git.map((entry) => ({
+                fixtureProject: input.expectedContent.projects.findIndex(
+                  (project) => project.id === entry.projectId,
+                ),
+                status: ['validated', 'not-validated', 'unstable', 'alternates-dropped'].includes(
+                  entry.status,
+                )
+                  ? entry.status
+                  : 'other',
+                connectivity: entry.findings.includes('connectivity'),
+                changed: entry.findings.includes('changed-during-freeze'),
+                unsafePointer: entry.findings.some((finding) =>
+                  finding.startsWith('unsafe-pointer:'),
+                ),
+              })),
+            }),
+        );
+        const logs = await exec('docker', ['logs', server.id]);
+        for (const line of (logs.stdout + logs.stderr).split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_')) console.log(line);
+      }
+      assert.deepEqual(gitWarnings, []);
       await assertRestoredFiles(restored, input.expectedContent);
       assert.ok(manifest.files.some((file) => file.path.startsWith('database/tables/')));
       console.log('BACKUP_ACCEPTANCE_RESTART authenticated filesystem restored');

@@ -14,6 +14,7 @@ import { BackupLifecycleCoordinator } from '../packages/server/src/backup/lifecy
 import { BackupRepository } from '../packages/server/src/backup/repository.js';
 import { sanitizeRestoredDatabase } from '../packages/server/src/backup/restore-database.js';
 import { stageSnapshot } from '../packages/server/src/backup/staging.js';
+import { withBackupWork } from '../packages/server/src/backup/priority.js';
 import { prepareRestoredGit } from '../packages/server/src/backup/restore-git.js';
 import { writeBackupIdentityFixture } from '../packages/server/src/backup/testing.js';
 
@@ -94,29 +95,31 @@ it.skipIf(!adminUrl)(
         )
       ).rows[0].name;
       const keys = new Map<string, string>();
-      const manifest = await captureInstallation({
-        root,
-        identityRoot: join(identity, 'identity'),
-        caCiphertext: join(identity, 'ca.age'),
-        installationId,
-        keyGeneration: 1,
-        image: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
-        release: 'test',
-        schema,
-        architecture: 'amd64',
-        kind: 'scheduled',
-        connect: () => reader.connect(),
-        inventory: (c) => readCaptureInventory(c, root, schema),
-        repository,
-        destination,
-        lifecycle: new BackupLifecycleCoordinator(),
-        signal: new AbortController().signal,
-        repoKey: async (id, path) => {
-          const key = id + '\0' + path;
-          if (!keys.has(key)) keys.set(key, randomUUID());
-          return keys.get(key)!;
-        },
-      });
+      const capture = (captureRoot: string) =>
+        captureInstallation({
+          root: captureRoot,
+          identityRoot: join(identity, 'identity'),
+          caCiphertext: join(identity, 'ca.age'),
+          installationId,
+          keyGeneration: 1,
+          image: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+          release: 'test',
+          schema,
+          architecture: 'amd64',
+          kind: 'scheduled',
+          connect: () => reader.connect(),
+          inventory: (c) => readCaptureInventory(c, captureRoot, schema),
+          repository,
+          destination,
+          lifecycle: new BackupLifecycleCoordinator(),
+          signal: new AbortController().signal,
+          repoKey: async (id, path) => {
+            const key = id + '\0' + path;
+            if (!keys.has(key)) keys.set(key, randomUUID());
+            return keys.get(key)!;
+          },
+        });
+      const manifest = await capture(root);
       const restored = await stageSnapshot(
         root,
         join(backup, 'repositories'),
@@ -127,6 +130,28 @@ it.skipIf(!adminUrl)(
       await expect(assertRestoredFiles(restored, expected)).rejects.toThrow();
       expect(await prepareRestoredGit(restored, manifest.capture!)).toEqual([]);
       await assertRestoredFiles(restored, expected);
+      const rebase = await pool.connect();
+      try {
+        await sanitizeRestoredDatabase(rebase, {
+          sourceRoot: root,
+          liveRoot: restored,
+          activeTurns: [],
+          revokedIds: [],
+          newIdentity: false,
+        });
+      } finally {
+        rebase.release();
+      }
+      const recaptured = await withBackupWork(() => capture(restored));
+      const second = await stageSnapshot(
+        root,
+        join(backup, 'repositories'),
+        recaptured,
+        recoveryKey,
+      );
+      expect(await prepareRestoredGit(second, recaptured.capture!)).toEqual([]);
+      await assertRestoredFiles(second, expected);
+
       expect(manifest.kind).toBe('scheduled');
       expect(
         manifest.files.filter((f) => f.path.startsWith('database/tables/')).length,
