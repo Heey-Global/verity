@@ -480,7 +480,7 @@ it('uses a fresh SYN-bound flow label after prepare and controller restoration',
     if (operation === 'restore') await f.host.restore();
     await f.host.execute(command);
     const rules = f.deps.apply.mock.calls.at(-1)![0];
-    const label = /ct label set (0x[a-f0-9]{32})/u.exec(rules)?.[1];
+    const label = /ct label set (\([0-9 |]+\))/u.exec(rules)?.[1];
     expect(label).toBeDefined();
     expect(labels.has(label!)).toBe(false);
     labels.add(label!);

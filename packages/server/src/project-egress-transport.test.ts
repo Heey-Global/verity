@@ -144,3 +144,21 @@ it('refuses injected rule syntax and permits Codex only when host policy selects
     ),
   ).toThrow();
 });
+
+it.each([
+  '00000000000000000000000000000000',
+  '80000000000000000000000000000001',
+  'ffffffffffffffffffffffffffffffff',
+])('encodes all label bits as nft bit indices: %s', async (label) => {
+  const f = fixture();
+  const transport = (await inspectEgressTransport(binding, ids, true, f.io))!;
+  const rules = transportRules(binding, transport, 'bridge', label);
+  const encoded = /ct label set \(([^)]+)\)/u.exec(rules)![1]!;
+  const indices = encoded.split(' | ').map(Number);
+  const decoded =
+    encoded === '0 & 1' ? 0n : indices.reduce((value, bit) => value | (1n << BigInt(bit)), 0n);
+  expect(decoded).toBe(BigInt(`0x${label}`));
+  if (decoded !== 0n) expect(indices.every((bit) => bit >= 0 && bit < 128)).toBe(true);
+  expect(rules).toContain(`ct state established ct label == (${encoded})`);
+  expect(rules).not.toContain(`ct label set 0x${label}`);
+});

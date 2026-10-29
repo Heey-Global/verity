@@ -157,7 +157,13 @@ export function transportRules(
   z.string()
     .regex(/^[a-f0-9]{32}$/u)
     .parse(flowLabel);
-  const label = `0x${flowLabel}`;
+  // nft's ct_label parser treats each numeric token as a bit index, not a
+  // bitmap value. Compose the bitmap from those indices explicitly.
+  const bitmap = BigInt(`0x${flowLabel}`);
+  const bits = Array.from({ length: 128 }, (_, bit) => bit).filter(
+    (bit) => (bitmap & (1n << BigInt(bit))) !== 0n,
+  );
+  const label = bits.length > 0 ? `(${bits.join(' | ')})` : '(0 & 1)';
   const t = egressTransportSchema.parse(input);
   const ports = t.codex ? '{ 8080, 8443, 8444 }' : '{ 8080, 8443 }';
   const pair = (reverse: boolean) => {
