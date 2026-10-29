@@ -9994,9 +9994,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         return match ? { sessionId: match, blocked: false } : { blocked: false };
       },
-      terminated: async (id) => {
+      terminated: async (id, dispatchId) => {
+        const boundary = await deps.eventStore.repairs.attemptBoundary(dispatchId);
+        if (boundary === undefined) return false;
         const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
-        return repairTurnTerminated(events);
+        return repairTurnTerminated(events.filter((row) => row.seq > boundary));
       },
       spawn: async (projectId, sessionId) => {
         if (await deps.eventStore.getSession(sessionId)) return;
@@ -10006,7 +10008,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
         if (result.statusCode >= 300) throw new Error('Repair session could not be created');
       },
-      dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId) => {
+      dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
         if (await deps.eventStore.hasSessionAutomationMarker(sessionId, dispatchId)) return true;
         const result = await conductor.dispatchTurnWhenIdle(
           sessionId,
@@ -10016,7 +10018,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             displayPrompt: 'QA: investigate assigned CI failure',
             initiatedBy: { userId: sponsorUserId },
             validateSession: async (session) => {
-              if (!session.projectId || !(await validate())) return false;
+              if (session.projectId !== projectId || !(await validate())) return false;
               const mandate = await deps.eventStore.repairs.mandate(session.projectId);
               return (
                 mandate?.mode === 'automatic' &&

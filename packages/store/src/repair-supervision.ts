@@ -234,6 +234,19 @@ export class RepairSupervisionStore {
       );
     return result.rows[0]!;
   }
+  async setAttemptBoundary(dispatchId: string, seq: number): Promise<void> {
+    await sql`update repair_attempts set start_seq=${seq} where dispatch_id=${dispatchId} and start_seq is null`.execute(
+      this.db,
+    );
+  }
+  async attemptBoundary(dispatchId: string): Promise<number | undefined> {
+    const row = (
+      await sql<{
+        start_seq: string | null;
+      }>`select start_seq from repair_attempts where dispatch_id=${dispatchId}`.execute(this.db)
+    ).rows[0];
+    return row?.start_seq == null ? undefined : Number(row.start_seq);
+  }
   async associate(projectId: string, resource: string, sessionId: string): Promise<void> {
     await sql`insert into repair_session_history (project_id, resource, session_id) values (${projectId}, ${resource}, ${sessionId}) on conflict do nothing`.execute(
       this.db,

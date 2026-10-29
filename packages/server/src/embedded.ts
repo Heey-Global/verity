@@ -4795,6 +4795,7 @@ export async function buildEmbeddedServer(
         const status = await readProjectStatus(project, pull.branch);
         if (status && status.number === pull.number && status.headSha === pull.sha)
           statuses.push({ branch: pull.branch, status });
+        else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
       }
       for (const incident of await eventStore.repairs.incidents(project.id)) {
         if (
@@ -4816,7 +4817,12 @@ export async function buildEmbeddedServer(
           continue;
         }
         const status = await readProjectStatus(project, evidence.branch);
-        if (status && `pr:${status.number}` === incident.resource)
+        const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
+        if (
+          status &&
+          `pr:${status.number}` === incident.resource &&
+          (!discovered || (!discovered.fork && status.headSha === discovered.sha))
+        )
           statuses.push({ branch: evidence.branch, status });
       }
       return { page, statuses };

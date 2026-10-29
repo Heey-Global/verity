@@ -317,3 +317,23 @@ it('releases a confirmed terminated worker even when forge discovery fails', asy
   await supervisor.sweep();
   expect((await ctx.store.repairs.incidents('a'))[0]!.owner_session_id).toBeNull();
 });
+
+it('persists the event boundary before dispatch into a reused session', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  await ctx.store.createSession({
+    sessionId: 'reused',
+    projectId: 'a',
+    worktree: '/wt/reused',
+    model: 'm',
+  });
+  await ctx.store.appendEvent('reused', { t: 'status', state: 'completed' });
+  const { deps, supervisor } = harness();
+  vi.mocked(deps.target).mockResolvedValue({ sessionId: 'reused', blocked: false });
+  await supervisor.sweep();
+  const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+  const boundary = await ctx.store.repairs.attemptBoundary(claim.dispatch_id!);
+  expect(boundary).toBeGreaterThan(0);
+  const events = await ctx.store.listRecentSessionProjectionEvents('reused', 20);
+  expect(repairTurnTerminated(events.filter((row) => row.seq > boundary!))).toBe(false);
+  expect(vi.mocked(deps.dispatch).mock.calls[0]?.[5]).toBe('a');
+});

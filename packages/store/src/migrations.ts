@@ -4694,7 +4694,7 @@ migrations['0170_repair_supervision'] = {
     await sql`create table repair_attempts (
       dispatch_id text primary key, incident_id text not null references repair_incidents(id) on delete cascade,
       session_id text not null, started_at timestamptz not null default now(),
-      ended_at timestamptz, outcome text
+      ended_at timestamptz, outcome text, start_seq bigint
     )`.execute(db);
     await sql`create unique index repair_project_owner on repair_incidents(project_id) where owner_session_id is not null`.execute(
       db,
