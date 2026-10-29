@@ -85,7 +85,7 @@ it('binds daemon-assigned IPs to kernel-proven peers even after runsc removes NI
     device: 'vethsandbox',
     index: 10,
   });
-  const rules = transportRules(binding, t!, 'bridge');
+  const rules = transportRules(binding, t!, 'bridge', 'a'.repeat(32));
   expect(rules).toContain('meta iif 10 meta oif 11');
   expect(rules).toContain('tcp dport { 8080, 8443 }');
   expect(rules).not.toContain('8444');
@@ -132,8 +132,15 @@ it('does not admit a stopped role', async () => {
 it('refuses injected rule syntax and permits Codex only when host policy selects it', async () => {
   const f = fixture();
   const t = (await inspectEgressTransport(binding, ids, true, f.io))!;
-  expect(transportRules(binding, t, 'bridge')).toContain('tcp dport { 8080, 8443, 8444 }');
+  expect(transportRules(binding, t, 'bridge', 'a'.repeat(32))).toContain(
+    'tcp dport { 8080, 8443, 8444 }',
+  );
   expect(() =>
-    transportRules(binding, { ...t, relay: { ...t.relay, device: 'x" accept' } }, 'bridge'),
+    transportRules(
+      binding,
+      { ...t, relay: { ...t.relay, device: 'x" accept' } },
+      'bridge',
+      'a'.repeat(32),
+    ),
   ).toThrow();
 });

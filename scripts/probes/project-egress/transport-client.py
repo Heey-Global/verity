@@ -54,7 +54,7 @@ elif mode == 'stream':
         if port == 8080:
             channel.sendall(b'GET /internal/mcp-proxy HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n')
         channels.append(channel)
-    for _ in range(300):
+    for _ in range(1200):
         if select.select([channels[0]], [], [], 0)[0]:
             data = channels[0].recv(8192)
             if b'transport-stream-marker' in data:
@@ -65,6 +65,8 @@ elif mode == 'stream':
                 channel.sendall(b'transport-stream-marker\n')
             except OSError:
                 pass
+        with open('/work/stream-alive-' + sys.argv[3], 'w') as heartbeat:
+            heartbeat.write(str(time.time() * 1000))
         time.sleep(0.05)
 else:
     raise ValueError(mode)

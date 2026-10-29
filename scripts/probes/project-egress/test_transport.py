@@ -61,3 +61,18 @@ class TransportClientTests(unittest.TestCase):
 
     def test_negative_control_fails_when_connection_succeeds(self):
         self.assertNotEqual(self.run_client('negative', '8080').returncode, 0)
+
+
+class TransportReceiverTests(unittest.TestCase):
+    def test_received_bytes_survive_reply_failure(self):
+        import importlib.util
+        from unittest.mock import Mock
+        path = Path(__file__).with_name('transport-receiver.py')
+        spec = importlib.util.spec_from_file_location('transport_receiver', path)
+        receiver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(receiver)
+        channel = Mock()
+        channel.recv.return_value = b'external-delivered'
+        channel.sendall.side_effect = BrokenPipeError('peer closed')
+        self.assertEqual(receiver.receive_tcp(channel), b'external-delivered')
+        channel.close.assert_called_once()

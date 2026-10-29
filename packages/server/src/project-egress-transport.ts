@@ -152,7 +152,12 @@ export function transportRules(
   binding: ProjectEgressNetworkBinding,
   input: EgressTransport,
   family: 'inet' | 'bridge',
+  flowLabel: string,
 ): string {
+  z.string()
+    .regex(/^[a-f0-9]{32}$/u)
+    .parse(flowLabel);
+  const label = `0x${flowLabel}`;
   const t = egressTransportSchema.parse(input);
   const ports = t.codex ? '{ 8080, 8443, 8444 }' : '{ 8080, 8443 }';
   const pair = (reverse: boolean) => {
@@ -161,8 +166,11 @@ export function transportRules(
       ? `meta ibrname "${binding.bridge}" meta obrname "${binding.bridge}" meta iif ${a.index} meta oif ${b.index} iifname "${a.device}" oifname "${b.device}" ether saddr ${a.mac} ether daddr ${b.mac}`
       : `iifname "${binding.bridge}" oifname "${binding.bridge}"`;
   };
-  let rules = `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} tcp dport ${ports} ct state { new, established } counter return;\n`;
-  rules += `${pair(true)} ip saddr ${t.relay.address} ip daddr ${t.sandbox.address} tcp sport ${ports} ct state established counter return;\n`;
+  // Only a new initial SYN may acquire this admission's label. An old flow or
+  // a loosely re-tracked mid-stream packet cannot revive after re-admission.
+  let rules = `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} tcp dport ${ports} ct state new tcp flags & (syn | ack | rst | fin) == syn ct label set ${label};\n`;
+  rules += `${pair(false)} ip saddr ${t.sandbox.address} ip daddr ${t.relay.address} tcp dport ${ports} ct state { new, established } ct label == ${label} counter return;\n`;
+  rules += `${pair(true)} ip saddr ${t.relay.address} ip daddr ${t.sandbox.address} tcp sport ${ports} ct state established ct label == ${label} counter return;\n`;
   if (family === 'bridge') {
     for (const [a, b] of [
       [t.sandbox, t.relay],

@@ -1,5 +1,5 @@
 import { transportRules, type EgressTransport } from './project-egress-transport.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
 const identity = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/u);
@@ -78,12 +78,16 @@ const key = (binding: { projectId: string; generation: string }): string =>
 
 /** Reserved bridge prefix is denied even before a generation is registered. */
 export function projectEgressBootstrapRules(
-  active: readonly { binding: ProjectEgressNetworkBinding; transport: EgressTransport }[] = [],
+  active: readonly {
+    binding: ProjectEgressNetworkBinding;
+    transport: EgressTransport;
+    flowLabel: string;
+  }[] = [],
 ): string {
   const allowed = (family: 'inet' | 'bridge') =>
     active
-      .map(({ binding, transport }) =>
-        transportRules(networkBinding.parse(binding), transport, family),
+      .map(({ binding, transport, flowLabel }) =>
+        transportRules(networkBinding.parse(binding), transport, family, flowLabel),
       )
       .join('\n');
   return `add table inet verity_egress_boot
@@ -107,7 +111,7 @@ export function projectEgressBootstrapRules(
  */
 export function projectEgressStartupRules(
   binding: ProjectEgressNetworkBinding,
-  transport?: EgressTransport,
+  admission?: { transport: EgressTransport; flowLabel: string },
 ): string {
   networkBinding.parse(binding);
   const table =
@@ -115,13 +119,13 @@ export function projectEgressStartupRules(
   return `add table inet ${table}
 delete table inet ${table}
 table inet ${table} {
- chain forward { type filter hook forward priority -210; policy accept; ${transport ? transportRules(binding, transport, 'inet') : ''} iifname "${binding.bridge}" counter drop; oifname "${binding.bridge}" counter drop; }
+ chain forward { type filter hook forward priority -210; policy accept; ${admission ? transportRules(binding, admission.transport, 'inet', admission.flowLabel) : ''} iifname "${binding.bridge}" counter drop; oifname "${binding.bridge}" counter drop; }
  chain input { type filter hook input priority -210; policy accept; iifname "${binding.bridge}" counter drop; }
 }
 add table bridge ${table}
 delete table bridge ${table}
 table bridge ${table} {
- chain forward { type filter hook forward priority -210; policy accept; ${transport ? transportRules(binding, transport, 'bridge') : ''} meta ibrname "${binding.bridge}" counter drop; meta obrname "${binding.bridge}" counter drop; }
+ chain forward { type filter hook forward priority -210; policy accept; ${admission ? transportRules(binding, admission.transport, 'bridge', admission.flowLabel) : ''} meta ibrname "${binding.bridge}" counter drop; meta obrname "${binding.bridge}" counter drop; }
 }
 `;
 }
@@ -136,7 +140,7 @@ export class ProjectEgressHost {
   private healthy = true;
   private readonly transports = new Map<
     string,
-    { binding: ProjectEgressNetworkBinding; transport: EgressTransport }
+    { binding: ProjectEgressNetworkBinding; transport: EgressTransport; flowLabel: string }
   >();
   constructor(
     state: unknown,
@@ -394,16 +398,21 @@ export class ProjectEgressHost {
     await this.deps.inspectNetwork(record.binding, containerIds(record));
     const transport = await this.deps.inspectTransport(record.binding, { sandbox, relay });
     if (!transport) return undefined;
-    const next = [...this.transports.values(), { binding: record.binding, transport }];
+    const admission = {
+      binding: record.binding,
+      transport,
+      flowLabel: randomBytes(16).toString('hex'),
+    };
+    const next = [...this.transports.values(), admission];
     try {
       await this.deps.apply(
-        projectEgressBootstrapRules(next) + projectEgressStartupRules(record.binding, transport),
+        projectEgressBootstrapRules(next) + projectEgressStartupRules(record.binding, admission),
       );
       // Fail closed if an endpoint changed while the kernel transaction was installed.
       const confirmed = await this.deps.inspectTransport(record.binding, { sandbox, relay });
       if (JSON.stringify(confirmed) !== JSON.stringify(transport))
         throw new Error('Transport endpoint changed during admission');
-      this.transports.set(key(record.binding), { binding: record.binding, transport });
+      this.transports.set(key(record.binding), admission);
       return transport;
     } catch (error) {
       await this.deny(record);

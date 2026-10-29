@@ -132,6 +132,8 @@ try {
       '--opt',
       'com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected',
       '--opt',
+      'com.docker.network.bridge.gateway_mode_ipv6=nat-unprotected',
+      '--opt',
       'com.docker.network.bridge.enable_ip_masquerade=false',
       name!,
     );
@@ -667,7 +669,7 @@ try {
     const raw = await readFile(`${worktree}/broker-receipts`, 'utf8').catch(() => '');
     receipts['broker.sock'] = raw.trim().split('\n').filter(Boolean).map(Number);
   };
-  const stream = async () => {
+  const stream = async (phase: string) => {
     await writeFile(`${worktree}/broker-receipts`, '');
     await chown(`${worktree}/broker-receipts`, 1000, 1000);
     for (const values of Object.values(receipts)) values.length = 0;
@@ -681,6 +683,7 @@ try {
       '/probe/transport-client.py',
       relayAddress,
       'stream',
+      phase,
     );
     for (let i = 0; i < 80 && !Object.values(receipts).every((values) => values.length >= 2); i++) {
       await delay(100);
@@ -692,7 +695,7 @@ try {
     );
   };
   const revokeAndMeasure = async (revoke: () => Promise<unknown>, phase: string) => {
-    await stream();
+    await stream(phase);
     const begin = Date.now();
     await revoke();
     await delay(2100);
@@ -709,9 +712,36 @@ try {
     );
     await writeFile(`/evidence/transport-closure-${phase}.json`, JSON.stringify(closure));
   };
+  const verifyNoRevival = async (phase: string) => {
+    await refreshBrokerReceipts();
+    const before = Object.fromEntries(
+      Object.entries(receipts).map(([name, values]) => [name, values.length]),
+    );
+    await lifecycle.connect(identity);
+    assert.ok((await client('positive')).includes('transport-positive'));
+    await delay(2500);
+    await refreshBrokerReceipts();
+    const after = Object.fromEntries(
+      Object.entries(receipts).map(([name, values]) => [name, values.length]),
+    );
+    assert.deepEqual(
+      after,
+      before,
+      'revoked streams must not revive when fresh connections are admitted',
+    );
+    const heartbeat = Number(await readFile(`${worktree}/stream-alive-${phase}`, 'utf8'));
+    assert.ok(
+      Date.now() - heartbeat < 1000,
+      'original stream client must still be attempting traffic',
+    );
+    await writeFile(
+      `/evidence/transport-no-revival-${phase}.json`,
+      JSON.stringify({ before, after, heartbeat }),
+    );
+  };
   await revokeAndMeasure(() => lifecycle.prepare(identity), 'prepare');
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
-  await lifecycle.connect(identity);
+  await verifyNoRevival('prepare');
   await docker('stop', '--time', '1', relayId);
   await startRelay({ ...context, resumeExisting: true });
   assert.ok((await client('positive')).includes('transport-positive'));
@@ -736,8 +766,7 @@ try {
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   assert.deepEqual(await lifecycle.current(binding.projectId), binding);
   assert.ok((await client('negative', relayAddress, 8080)).includes('transport-denied'));
-  await lifecycle.connect(identity);
-  assert.ok((await client('positive')).includes('transport-positive'));
+  await verifyNoRevival('controller-restore');
   results.push('registry recovery denies old transports and requires explicit revalidation');
   await revokeAndMeasure(() => lifecycle.retire(identity), 'retire');
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));

@@ -173,6 +173,10 @@ rules. The only IPv4/TCP paths are Sandbox to its relay on 8080, 8443 and, when 
 host policy includes a Codex socket, 8444. Return traffic must match the same pair,
 service source port and established conntrack state. Bridge rules additionally
 bind both interface indices/names and MACs; ARP is limited to the same pair.
+Each admission uses a fresh 128-bit conntrack label, assigned only to an initial
+SYN. Both directions require that exact label, so old streams remain denied after
+re-admission, including loosely re-tracked mid-stream packets. Protected transport
+labels are host-owned and are not restored from cached controller state.
 Host input, other endpoints, IPv6, UDP and DNS remain denied. The relay has no
 Internet exception. Existing gateway TLS, project identity, credential/account
 and action authorization remain authoritative.

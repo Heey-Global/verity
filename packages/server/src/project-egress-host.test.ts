@@ -470,3 +470,22 @@ it('failed restoration contains registered containers and prevents admission', a
   expect(f.deps.stopContainer).toHaveBeenCalledWith('c'.repeat(64));
   await expect(f.host.execute(start)).rejects.toThrow('requires restart');
 });
+
+it('uses a fresh SYN-bound flow label after prepare and controller restoration', async () => {
+  const f = transportFixture();
+  const command = { operation: 'connect', projectId: binding.projectId, generation: 'gen1' };
+  const labels = new Set<string>();
+  for (const operation of ['initial', 'prepare', 'restore']) {
+    if (operation === 'prepare') await f.host.execute({ ...command, operation: 'prepare' });
+    if (operation === 'restore') await f.host.restore();
+    await f.host.execute(command);
+    const rules = f.deps.apply.mock.calls.at(-1)![0];
+    const label = /ct label set (0x[a-f0-9]{32})/u.exec(rules)?.[1];
+    expect(label).toBeDefined();
+    expect(labels.has(label!)).toBe(false);
+    labels.add(label!);
+    expect(rules).toContain('ct state new tcp flags & (syn | ack | rst | fin) == syn ct label set');
+    expect(rules).toContain(`ct state established ct label == ${label}`);
+    expect(rules).toContain(`ct state { new, established } ct label == ${label}`);
+  }
+});
