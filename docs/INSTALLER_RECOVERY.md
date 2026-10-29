@@ -169,5 +169,8 @@ Keep the original destination and repositories intact when repairing a host.
 
 Backend acceptance uses disposable Docker daemons and a locally built test image
 to exercise scheduled capture while the production recovery gate remains closed.
-That image is never published to an external registry. These test results do not
+That image is never published to an external registry. The fixture stops its Server
+and Updater, prepares its disposable deployment authority for the exact test digest,
+and runs the ordinary installer; it does not exercise a supported paired-image
+upgrade or bypass production upgrade checks. These test results do not
 authorize enabling the production gate or establish native-device trust reset.
