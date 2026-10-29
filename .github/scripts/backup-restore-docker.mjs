@@ -751,9 +751,7 @@ async function restore() {
     await withCanonicalRestoreClient(
       { docker, root: stateRoot, job, network: restoreDatabaseResources(job).prefix, signal },
       async (client) => {
-        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent, {
-          runtimeProjectId: CONTROL_PLANE_PROJECT_ID,
-        });
+        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
         assert.deepEqual(
           (await client.query('SELECT id FROM auth_tokens ORDER BY id')).rows.map((row) => row.id),
           job.selection.newIdentity ? [] : ['keep-device'],
