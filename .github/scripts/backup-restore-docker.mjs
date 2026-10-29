@@ -36,6 +36,7 @@ import { readCaptureInventory } from '/app/packages/server/dist/backup/inventory
 import { writeBackupIdentityFixture } from '/app/packages/server/dist/backup/testing.js';
 import { generateBackupKeys, recoverHostKeys } from '/app/packages/server/dist/backup/crypto.js';
 import { BackupDestination } from '/app/packages/server/dist/backup/destination.js';
+import { openCaIdentityReceipt } from '/app/packages/server/dist/backup/identity-receipt.js';
 import { BackupRepository } from '/app/packages/server/dist/backup/repository.js';
 import { BackupLifecycleCoordinator } from '/app/packages/server/dist/backup/lifecycle.js';
 import { BackupRevocationJournal } from '/app/packages/server/dist/backup/revocations.js';
@@ -642,6 +643,82 @@ async function restore() {
     }
     for (const container of previous.containers)
       assert.equal((await docker.inspectContainer(container.id)).running, container.running);
+  } else if (action === 'prepare-exposure-original' || action === 'prepare-exposure') {
+    const current = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+    if (action === 'prepare-exposure-original') {
+      await mkdir(join(root, 'identity-requests'), { recursive: true, mode: 0o700 });
+      await writeFile(
+        join(root, 'identity-requests/recipient.json'),
+        JSON.stringify({
+          recipient: current.host.recipient,
+          keyGeneration: current.keyGeneration,
+        }),
+        { mode: 0o600 },
+      );
+      return;
+    }
+    openCaIdentityReceipt(
+      await readFile(
+        join(
+          root,
+          'new-backups/identity',
+          `${current.installationId}-ca-key-k${current.keyGeneration}`,
+        ),
+      ),
+      await readFile(join(hostRoot, 'tls-ca-cert.pem')),
+      current.installationId,
+      current.keyGeneration,
+      current.host.recipient,
+    );
+    const replacement = await generateBackupKeys();
+    await mkdir(join(root, 'identity-requests'), { recursive: true, mode: 0o700 });
+    const request = {
+      recipient: replacement.host.recipient,
+      keyGeneration: current.keyGeneration + 1,
+      retireGeneration: current.keyGeneration,
+    };
+    await writeFile(join(root, 'identity-requests/recipient.json'), JSON.stringify(request), {
+      mode: 0o600,
+    });
+    await writeFile(
+      join(root, 'exposure-public-state'),
+      JSON.stringify({ installationId: current.installationId, request }),
+      { mode: 0o600 },
+    );
+    await writeFile(join(root, 'new-backups/identity/unrelated-sentinel'), 'preserve-unrelated');
+  } else if (action === 'assert-exposure') {
+    const exposure = JSON.parse(await readFile(join(root, 'exposure-public-state'), 'utf8'));
+    const directory = join(root, 'new-backups/identity');
+    assert.equal(
+      await exists(
+        join(directory, `${exposure.installationId}-ca-key-k${exposure.request.retireGeneration}`),
+      ),
+      false,
+    );
+    assert.equal(
+      await readFile(join(directory, 'unrelated-sentinel'), 'utf8'),
+      'preserve-unrelated',
+    );
+    assert.ok(
+      (
+        await readFile(
+          join(
+            directory,
+            `${exposure.installationId}-ca-retired-k${exposure.request.retireGeneration}`,
+          ),
+        )
+      ).length > 0,
+    );
+    const receipt = await readFile(
+      join(directory, `${exposure.installationId}-ca-key-k${exposure.request.keyGeneration}`),
+    );
+    openCaIdentityReceipt(
+      receipt,
+      await readFile(join(hostRoot, 'tls-ca-cert.pem')),
+      exposure.installationId,
+      exposure.request.keyGeneration,
+      exposure.request.recipient,
+    );
   } else if (action === 'verify-api' || action === 'verify-rotated-api') {
     const previous = JSON.parse(
       await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),

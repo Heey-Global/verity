@@ -1,16 +1,15 @@
 {
   "format": 1,
   "scope": "Root installer identity-rotation shell guards. Real OpenSSL material; Docker, systemd, ownership and sync effects are mocked. These checks do not establish actual Docker reboot behavior or native-device pin reset.",
-  "sourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+  "sourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
   "testFileSha256": {
     "path": "deploy/bin/verity-rotate-identity.test.mjs",
-    "sha256": "af945bd1fe5296a03046ee6aab3d823f698159018146020b62071dd822101621"
+    "sha256": "aca05981cdb42a4e4af5cad3753a36250afc3b24996f9b59eba852f4a78c1139"
   },
   "cases": [
     {
       "id": "rotation-device-revocation",
       "file": "deploy/bin/verity-rotate-identity",
-      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
       "replace": "DELETE FROM auth_tokens;",
       "with": "SELECT 1;",
       "command": [
@@ -19,19 +18,19 @@
         "--test-name-pattern=resumes after publish failure",
         "deploy/bin/verity-rotate-identity.test.mjs"
       ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
       "exitCode": 1,
       "failureEvidence": [
-        "\u2716 rotation resumes after publish failure without restoring old credentials (9926.644468ms)",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (3320.54526ms)",
         "\u2139 fail 1",
         "\u2716 failing tests:",
-        "\u2716 rotation resumes after publish failure without restoring old credentials (9926.644468ms)",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (3320.54526ms)",
         "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
       ]
     },
     {
       "id": "rotation-reboot-fence",
       "file": "deploy/bin/verity-rotate-identity",
-      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
       "replace": "docker update --restart=no \"$name\" >/dev/null || die 'cannot disable managed updater restart'\n",
       "with": "true\n",
       "command": [
@@ -40,19 +39,19 @@
         "--test-name-pattern=resumes after publish failure",
         "deploy/bin/verity-rotate-identity.test.mjs"
       ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
       "exitCode": 1,
       "failureEvidence": [
-        "\u2716 rotation resumes after publish failure without restoring old credentials (10735.20065ms)",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (2792.534944ms)",
         "\u2139 fail 1",
         "\u2716 failing tests:",
-        "\u2716 rotation resumes after publish failure without restoring old credentials (10735.20065ms)",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (2792.534944ms)",
         "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:"
       ]
     },
     {
       "id": "rotation-publication-symlink",
       "file": "deploy/bin/verity-rotate-identity",
-      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
       "replace": "[[ ! -L $STATE_DIR/$name && ( ! -e $STATE_DIR/$name || -f $STATE_DIR/$name ) ]]",
       "with": "true",
       "command": [
@@ -61,19 +60,19 @@
         "--test-name-pattern=substituted publication target",
         "deploy/bin/verity-rotate-identity.test.mjs"
       ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
       "exitCode": 1,
       "failureEvidence": [
-        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (11870.138134ms)",
+        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (3254.8343ms)",
         "\u2139 fail 1",
         "\u2716 failing tests:",
-        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (11870.138134ms)",
+        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (3254.8343ms)",
         "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
       ]
     },
     {
       "id": "rotation-candidate-validation",
       "file": "deploy/bin/verity-rotate-identity",
-      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
       "replace": "  _verity_rotation_validate\n  if [[ $phase = prepared ]]; then",
       "with": "  true\n  if [[ $phase = prepared ]]; then",
       "command": [
@@ -82,19 +81,19 @@
         "--test-name-pattern=corrupt replacement material",
         "deploy/bin/verity-rotate-identity.test.mjs"
       ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
       "exitCode": 1,
       "failureEvidence": [
-        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (16351.694113ms)",
+        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (3327.170286ms)",
         "\u2139 fail 1",
         "\u2716 failing tests:",
-        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (16351.694113ms)",
+        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (3327.170286ms)",
         "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
       ]
     },
     {
       "id": "rotation-helper-serialization",
       "file": "deploy/bin/verity-rotate-identity",
-      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
       "replace": "flock --exclusive \"$rotation_helper_lock\"",
       "with": ":",
       "command": [
@@ -103,18 +102,185 @@
         "--test-name-pattern=concurrent CA helper",
         "deploy/bin/verity-rotate-identity.test.mjs"
       ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
       "exitCode": 1,
       "failureEvidence": [
-        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (17435.730511ms)",
+        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (15469.885543ms)",
         "\u2139 fail 1",
         "\u2716 failing tests:",
-        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (17435.730511ms)",
+        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (15469.885543ms)",
         "[Error: ENOENT: no such file or directory, open '<tmp>/helper-lock-attempt'] { errno: -2, code: 'ENOENT', syscall: 'open', path: '<tmp>/helper-lock-attempt' }"
+      ]
+    },
+    {
+      "id": "rotation-prunes-removed-runtime",
+      "file": "deploy/bin/verity-rotate-identity",
+      "replace": "|map(select(. as $id | $existing | index($id) != null))",
+      "with": "",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=reconciles an updater-removed",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 rotation reconciles an updater-removed Server and replacement (1194.200516ms)",
+        "\u2716 rotation reconciles an updater-removed Server and replacement after interrupted inventory persistence (1898.422031ms)",
+        "\u2139 fail 2",
+        "\u2716 failing tests:",
+        "\u2716 rotation reconciles an updater-removed Server and replacement (1194.200516ms)",
+        "AssertionError [ERR_ASSERTION]: cannot disable installed runtime restart",
+        "\u2716 rotation reconciles an updater-removed Server and replacement after interrupted inventory persistence (1898.422031ms)",
+        "AssertionError [ERR_ASSERTION]: cannot disable installed runtime restart"
+      ]
+    },
+    {
+      "id": "rotation-rejects-unproven-inventory",
+      "file": "deploy/bin/verity-rotate-identity",
+      "replace": "existing=$(docker ps -aq) || die 'cannot reconcile runtime inventory; Docker did not confirm container existence'",
+      "with": "existing=$(docker ps -aq) || existing=$(jq -r '.containers[]' \"$checkpoint\")",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=Docker inventory failure",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 Docker inventory failure cannot be mistaken for proof that recorded runtime disappeared (2388.915138ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 Docker inventory failure cannot be mistaken for proof that recorded runtime disappeared (2388.915138ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
+      ]
+    },
+    {
+      "id": "rotation-completed-invitation-refresh",
+      "file": "deploy/bin/verity-rotate-identity",
+      "replace": "  if [[ $phase = complete ]]; then\n    _verity_rotation_refresh_invitation",
+      "with": "  if [[ $phase = complete ]]; then\n    true",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=expired pairing invitation refresh preserves keys and new pairings$",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 expired pairing invitation refresh preserves keys and new pairings (3057.714042ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 expired pairing invitation refresh preserves keys and new pairings (3057.714042ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to:"
+      ]
+    },
+    {
+      "id": "rotation-resumed-invitation-refresh",
+      "file": "deploy/bin/verity-rotate-identity",
+      "replace": "  _verity_rotation_refresh_invitation\n  # A published generation",
+      "with": "  true\n  # A published generation",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=expired pairing.*interrupted publication",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 expired pairing invitation refresh preserves keys and new pairings after interrupted publication (3120.569854ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 expired pairing invitation refresh preserves keys and new pairings after interrupted publication (3120.569854ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to:"
+      ]
+    },
+    {
+      "id": "invitation-refresh-keeps-published-certificate",
+      "file": "deploy/bin/verity-pairing-material",
+      "replace": "if [[ ${VERITY_PAIRING_INVITATION_ONLY:-0} != 1 ]]; then\ntemporary=",
+      "with": "if true; then\ntemporary=",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=invitation-only refresh keeps published",
+        "deploy/bin/verity-pairing-material.test.mjs"
+      ],
+      "originalSourceSha256": "942ee65521cbb5a750a87c54ce239a2d55b47e53604896a3ca208cc653d674bd",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 invitation-only refresh keeps published identity and certificate bytes unchanged (1456.058672ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 invitation-only refresh keeps published identity and certificate bytes unchanged (1456.058672ms)",
+        "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:"
+      ]
+    },
+    {
+      "id": "invitation-refresh-requires-existing-identity",
+      "file": "deploy/bin/verity-pairing-material",
+      "replace": "if [[ ${VERITY_PAIRING_INVITATION_ONLY:-0} = 1 ]]; then",
+      "with": "if false; then",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=invitation-only refresh refuses",
+        "deploy/bin/verity-pairing-material.test.mjs"
+      ],
+      "originalSourceSha256": "942ee65521cbb5a750a87c54ce239a2d55b47e53604896a3ca208cc653d674bd",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 invitation-only refresh refuses to invent a missing deployment identity (269.340428ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 invitation-only refresh refuses to invent a missing deployment identity (269.340428ms)",
+        "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /requires existing identity material/. Input:"
+      ]
+    },
+    {
+      "id": "rotation-rejects-unconfirmed-updater-fence",
+      "file": "deploy/bin/verity-rotate-identity",
+      "replace": "|| die 'cannot list managed updater; runtime fencing is unconfirmed'",
+      "with": "|| updater_ids=''",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=failed updater inventory",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "originalSourceSha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2",
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 failed updater inventory cannot silently skip fencing before identity publication (2622.820014ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 failed updater inventory cannot silently skip fencing before identity publication (2622.820014ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
       ]
     }
   ],
   "restoration": {
     "sourceRestored": true,
-    "targetedRestoredTests": "node --test deploy/bin/verity-rotate-identity.test.mjs: 10 passed, 0 failed after all mutations were restored."
-  }
+    "targetedRestoredTests": "node --test deploy/bin/verity-pairing-material.test.mjs deploy/bin/verity-rotate-identity.test.mjs: 28 passed, 0 failed after all 12 mutations were restored."
+  },
+  "sourceFileSha256": [
+    {
+      "path": "deploy/bin/verity-rotate-identity",
+      "sha256": "5697b72757f1f6e5beb01066b0ad0995f8b1a280d381d11ce55e02353f262dc2"
+    },
+    {
+      "path": "deploy/bin/verity-pairing-material",
+      "sha256": "942ee65521cbb5a750a87c54ce239a2d55b47e53604896a3ca208cc653d674bd"
+    }
+  ],
+  "additionalTestFileSha256": [
+    {
+      "path": "deploy/bin/verity-pairing-material.test.mjs",
+      "sha256": "6bc7e43bbcacb7561071a8d808d0003aed36d17ff7e91adfcab5fc3ce8148916"
+    }
+  ]
 }

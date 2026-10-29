@@ -122,6 +122,9 @@ export class BackupStateStore {
         JSON.stringify(current.host) !== JSON.stringify(previous.host)
       )
         throw new Error('Backup replacement state changed');
+      // Pause and interval remain editable while capture/publication holds operation.lock.
+      checked.schedule.paused = current.schedule.paused;
+      checked.schedule.intervalMs = current.schedule.intervalMs;
       await writeDurable(join(this.root, 'state'), Buffer.from(JSON.stringify(checked)), false);
     });
   }

@@ -127,7 +127,12 @@ it('does not retire a lost-key generation and rejects concurrent state changes o
       complete: false,
     });
     const retire = vi.fn(async () => undefined);
+    await state.update((current) => ({
+      ...current,
+      schedule: { ...current.schedule, paused: true, intervalMs: 7200000 },
+    }));
     await journal.resume({ retire, publish: async () => undefined });
+    expect((await state.load())!.schedule).toMatchObject({ paused: true, intervalMs: 7200000 });
     expect(retire).not.toHaveBeenCalled();
     expect((await state.load())!.host).toEqual(next.host);
     await expect(state.replace(previous, { ...next, targetId: randomUUID() })).rejects.toThrow(

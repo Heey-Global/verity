@@ -175,15 +175,15 @@ and CodeQL before being merged. The following additions extend the assertions;
 their new separate-daemon and live rotation scenarios require a new CI result.
 They must not inherit the earlier run's demonstrated status.
 
-Local verification used real PostgreSQL 15 and one test worker. The combined
-backup/authentication/trust run passed 261 assertions; its one unconfigured-host
-startup regression was corrected and the runtime/service/workflow follow-up
-passed all 205 assertions. The restored service test passed again after its
-fanout mutation. The root rotation suite passed all ten tests. Server build,
-changed-file ESLint, formatting and script syntax checks passed. As with the
-preceding local run, PostgreSQL cleanup used the documented teardown-only
-formatting workaround. Docker and native execution are not provided by this
-local sandbox; dedicated Docker CI remains required.
+Local verification on the integrated main base used real PostgreSQL 15 and one
+test worker: all 454 assertions in 82 affected backup/authentication/pairing,
+TLS/content and workflow test files passed. The separate root rotation suite
+passed all 28 tests after twelve detected and restored mutations, including
+replaced container inventory and stale invitations. Server build, changed-file ESLint, formatting, script
+syntax and restored mutation-source/test digests passed. PostgreSQL cleanup
+used the documented teardown-only formatting workaround. Docker and native
+execution are not provided by this local sandbox; dedicated Docker CI remains
+required.
 
 - **A05/A12/A19/A20:** [content fixtures](../scripts/backup-restore-content.mjs)
   cover active, sleeping, paused (visible/absent), and retained deprovisioned
@@ -208,6 +208,9 @@ local sandbox; dedicated Docker CI remains required.
   publication retry, exposed-generation CA retirement and replay refusal.
   Revocations fan out to every catalogued key generation before acknowledgement.
   Route tests repeat administrator/member/agent denial for the new routes.
+  Docker acceptance also creates a real helper-signed original receipt, retires
+  that exact generation through the privileged helper, preserves an unrelated
+  file and verifies the replacement receipt against the current CA.
 - **A07/A24:** the root-only installer now implements `--rotate-identity` with
   exclusive installer/helper locks, durable checkpoints, disabled container
   restart policies during publication, certificate/key validation, transactional

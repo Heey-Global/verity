@@ -5,12 +5,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
+import { createDevicePairingManager } from '../../packages/server/src/device-pairing.ts';
 
 const installer = resolve('deploy/bin/verity-rotate-identity');
 const helper = resolve('deploy/bin/verity-pairing-material');
 const server = 'a'.repeat(64),
   updater = 'b'.repeat(64),
-  postgres = 'c'.repeat(64);
+  postgres = 'c'.repeat(64),
+  replacement = 'd'.repeat(64);
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'identity-rotation-'));
   const state = join(root, 'state');
@@ -27,6 +29,7 @@ async function fixture() {
     ROTATION_SCRIPT: installer,
     PAIRING_SCRIPT: helper,
     ROTATION_LOG: join(root, 'log'),
+    ROTATION_RACE_FILE: join(root, 'replacement-created'),
     VERITY_SYSTEMD_RUN_DIR: join(root, 'no-systemd'),
     VERITY_BACKUP_IDENTITY_DIR: join(root, 'no-recipient'),
   };
@@ -60,9 +63,19 @@ read_state() { cat "$1"; }
 docker() {
  printf '%s\\n' "$*" >>"$ROTATION_LOG"
  if [[ $1 = ps ]]; then
+   if [[ $2 = -q && $* = *service=verity-updater* && \${FAIL_PHASE:-} = updater-inventory ]]; then return 8; fi
+   if [[ $2 = -aq && $* != *--filter* && \${FAIL_PHASE:-} = inventory ]]; then return 9; fi
+   if [[ \${RACE_REPLACE:-0} = 1 && -f $ROTATION_RACE_FILE ]]; then
+     if [[ $2 = -aq && $* != *--filter* ]]; then printf '${updater}\\n${replacement}\\n';
+     elif [[ $* = *service=verity-updater* ]]; then :;
+     else printf '${replacement}\\n'; fi
+     return
+   fi
    if [[ $* = *label=com.docker.compose.service=postgres* ]]; then printf '${postgres}\\n';
    elif [[ $* = *service=verity-updater* ]]; then printf '${updater}\\n';
    else printf '${server}\\n${updater}\\n'; fi
+ elif [[ \${RACE_REPLACE:-0} = 1 && -f $ROTATION_RACE_FILE && $* = *${server}* ]]; then return 44
+ elif [[ $1 = stop && $* = *${updater}* && \${RACE_REPLACE:-0} = 1 ]]; then touch "$ROTATION_RACE_FILE"
  elif [[ $1 = inspect ]]; then printf '%s\\n' '{"Name":"unless-stopped","MaximumRetryCount":0}'
  elif [[ $1 = exec ]]; then
    cat >>"$ROTATION_LOG"
@@ -78,7 +91,7 @@ flock() {
  if [[ $1 = --exclusive && -n \${ROTATION_HELPER_ATTEMPT:-} ]]; then printf attempt >"$ROTATION_HELPER_ATTEMPT"; fi
  command flock "$@"
 }
-mv() { if [[ \${FAIL_PHASE:-} = publish && $* = *tls-key.pem* ]]; then return 9; fi; command mv "$@"; }
+mv() { if [[ \${FAIL_PHASE:-} = inventory-save && -f $ROTATION_RACE_FILE && $* = *identity-rotation/checkpoint ]]; then return 45; fi; if [[ \${FAIL_PHASE:-} = publish && $* = *tls-key.pem* ]]; then return 9; fi; command mv "$@"; }
 opt_restart_rotation=\${RESTART_ROTATION:-0}
 STATE_DIR=$VERITY_STATE_DIR
 PROJECT_PATH="$STATE_DIR/compose-project"
@@ -308,6 +321,134 @@ test('failed CA backup publication is retried after irreversible rotation withou
     const log = await readFile(join(f.root, 'log'), 'utf8');
     assert.equal(log.split('DELETE FROM auth_tokens;').length - 1, 1);
     assert.equal(log.split('systemctl start verity-backup-identity.service').length - 1, 2);
+  } finally {
+    await f.clean();
+  }
+});
+
+for (const interrupted of [false, true]) {
+  test(`rotation reconciles an updater-removed Server and replacement${interrupted ? ' after interrupted inventory persistence' : ''}`, async () => {
+    const f = await fixture();
+    try {
+      if (interrupted) {
+        const failed = await f.run({ RACE_REPLACE: '1', FAIL_PHASE: 'inventory-save' });
+        assert.notEqual(failed.code, 0);
+        const pending = JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint')));
+        assert.equal(pending.phase, 'fencing');
+        assert.ok(pending.containers.includes(server));
+      }
+      const result = await f.run({ RACE_REPLACE: '1' });
+      assert.equal(result.code, 0, result.output);
+      const checkpoint = JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint')));
+      assert.equal(checkpoint.phase, 'complete');
+      assert.deepEqual(checkpoint.containers, [updater, replacement]);
+      assert.deepEqual(Object.keys(checkpoint.policies).sort(), [updater, replacement]);
+      const log = await readFile(join(f.root, 'log'), 'utf8');
+      assert.ok(log.includes(`update --restart=no ${replacement}`));
+      assert.ok(log.includes(`start ${replacement}`));
+      assert.ok(log.includes(`start ${updater}`));
+      assert.ok(!log.includes(`update --restart=no ${server}`));
+      assert.ok(!log.includes(`stop --time 60 ${server}`));
+      assert.ok(!log.includes(`start ${server}`));
+    } finally {
+      await f.clean();
+    }
+  });
+}
+
+test('Docker inventory failure cannot be mistaken for proof that recorded runtime disappeared', async () => {
+  const f = await fixture();
+  try {
+    const failed = await f.run({ FAIL_PHASE: 'inventory' });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.output, /Docker did not confirm container existence/);
+    const checkpoint = JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint')));
+    assert.equal(checkpoint.phase, 'fencing');
+    assert.deepEqual(checkpoint.containers, [server, updater]);
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    assert.ok(!log.includes('DELETE FROM auth_tokens;'));
+    assert.ok(!log.includes('start '));
+    const retried = await f.run();
+    assert.equal(retried.code, 0, retried.output);
+  } finally {
+    await f.clean();
+  }
+});
+
+for (const interrupted of [false, true]) {
+  test(`expired pairing invitation refresh preserves keys and new pairings${interrupted ? ' after interrupted publication' : ''}`, async () => {
+    const f = await fixture();
+    try {
+      const initial = await f.run(interrupted ? { FAIL_PHASE: 'start' } : {});
+      assert.equal(initial.code, interrupted ? 1 : 0, initial.output);
+      const names = [
+        'pairing-identity.pem',
+        'tls-key.pem',
+        'tls-cert.pem',
+        'tls-ca-key.pem',
+        'tls-ca-cert.pem',
+      ];
+      const before = await Promise.all(names.map((name) => readFile(join(f.state, name))));
+      const previousCode = await readFile(join(f.state, 'pairing-code'), 'utf8');
+      await writeFile(join(f.state, 'pairing-expires-at'), '2000-01-01T00:00:00.000Z');
+      const resumed = await f.run();
+      assert.equal(resumed.code, 0, resumed.output);
+      const after = await Promise.all(names.map((name) => readFile(join(f.state, name))));
+      assert.deepEqual(after, before);
+      const invitation = JSON.parse(
+        Buffer.from(
+          (await readFile(join(f.state, 'pairing-uri'), 'utf8')).split('payload=')[1],
+          'base64url',
+        ).toString(),
+      );
+      assert.ok(Date.parse(invitation.expiresAt) > Date.now() + 5 * 60_000);
+      assert.notEqual(invitation.code, previousCode.trim());
+      const consumed = new Set();
+      const pairing = createDevicePairingManager({
+        privateKeyPem: after[0].toString(),
+        pairingCode: invitation.code,
+        expiresAt: invitation.expiresAt,
+        loadConsumedCodeHash: () => [...consumed],
+        storeConsumedCodeHash: (hash) => {
+          if (consumed.has(hash)) return false;
+          consumed.add(hash);
+          return true;
+        },
+      });
+      assert.deepEqual(pairing.identity(), {
+        serverId: invitation.serverId,
+        identityKey: invitation.identityKey,
+      });
+      assert.throws(() => pairing.redeem(previousCode.trim()));
+      assert.ok(pairing.redeem(invitation.code).bootstrapToken);
+
+      assert.equal(invitation.code, (await readFile(join(f.state, 'pairing-code'), 'utf8')).trim());
+      const log = await readFile(join(f.root, 'log'), 'utf8');
+      assert.equal(log.split('DELETE FROM auth_tokens;').length - 1, 1);
+      assert.equal(
+        JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint'))).phase,
+        'complete',
+      );
+    } finally {
+      await f.clean();
+    }
+  });
+}
+
+test('failed updater inventory cannot silently skip fencing before identity publication', async () => {
+  const f = await fixture();
+  try {
+    const failed = await f.run({ FAIL_PHASE: 'updater-inventory' });
+    assert.notEqual(failed.code, 0);
+    assert.match(failed.output, /runtime fencing is unconfirmed/);
+    const pending = JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint')));
+    assert.equal(pending.phase, 'fencing');
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    assert.ok(!log.includes('DELETE FROM auth_tokens;'));
+    assert.ok(!log.includes('start '));
+    assert.ok(!log.includes('stop --time 60'));
+    const retry = await f.run();
+    assert.equal(retry.code, 0, retry.output);
   } finally {
     await f.clean();
   }

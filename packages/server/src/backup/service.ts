@@ -1,7 +1,11 @@
-import { maintainBackupGenerations, registerBackupGeneration } from './generation-maintenance.js';
+import {
+  maintainBackupGenerations,
+  registerBackupGeneration,
+  readBackupGenerations,
+} from './generation-maintenance.js';
 import { BackupOperationalAlerts, type BackupAlertNotifier } from './operational-alerts.js';
 import { validateReadableIdentity } from './restore-identity.js';
-import { lstat, mkdir, opendir } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PoolClient } from 'pg';
 import { captureInstallation } from './capture.js';
@@ -26,7 +30,7 @@ import {
 import { BackupSetup } from './setup.js';
 import { BackupKeyReplacement, type ReplacementReason } from './key-replacement.js';
 import { retireBackupIdentity } from './identity-request.js';
-import { BackupStateStore, validateBackupState, type BackupState } from './state.js';
+import { BackupStateStore, type BackupState } from './state.js';
 import { BackupProbeJobs, probeVerificationAlerts, type ProbeJob } from './probe-jobs.js';
 import { createProbeExecution, type ProbeRuntimeOptions } from './probe-runtime.js';
 
@@ -124,20 +128,11 @@ export class BackupService {
         await registerBackupGeneration(this.state.root, current);
         const journals: BackupRevocationJournal[] = [];
         const seen = new Set<number>();
-        for await (const entry of await opendir(join(this.state.root, 'generations'))) {
-          if (!/^[1-9][0-9]{0,8}$/.test(entry.name)) throw new Error('Invalid backup generation');
-          const generation = validateBackupState(
-            JSON.parse(
-              (
-                await readBounded(join(this.state.root, 'generations', entry.name), 65536)
-              ).toString(),
-            ),
-            current.installationId,
-          );
-          if (
-            generation.targetId !== current.targetId ||
-            generation.repositoryNumber !== Number(entry.name)
-          )
+        for (const generation of await readBackupGenerations(
+          this.state.root,
+          current.installationId,
+        )) {
+          if (generation.targetId !== current.targetId)
             throw new Error('Invalid backup generation');
           if (seen.has(generation.keyGeneration)) continue;
           seen.add(generation.keyGeneration);
@@ -565,15 +560,13 @@ export class BackupService {
   }
   async setPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
     if (this.closed) throw new Error('Backup service is closed');
-    await this.run(async () => {
-      await this.resumeReplacement();
-      await this.state.update((current) => {
-        const schedule = { ...current.schedule, ...policy };
-        validateScheduleState(schedule);
-        return { ...current, schedule };
-      });
+    await this.state.update((current) => {
+      const schedule = { ...current.schedule, ...policy };
+      validateScheduleState(schedule);
+      return { ...current, schedule };
     });
   }
+
   async close(): Promise<void> {
     this.closed = true;
     this.unsubscribeRevocations();

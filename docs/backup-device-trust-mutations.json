@@ -105,12 +105,33 @@
         "AssertionError: promise resolved \"undefined\" instead of rejecting",
         "Tests  1 failed (1)"
       ]
+    },
+    {
+      "id": "pairing-signature-verification",
+      "file": ".github/scripts/backup-restore-device-trust.mjs",
+      "replace": "    verify(\n",
+      "with": "    true || verify(\n",
+      "originalSourceSha256": "6ae56655a680397078e7be5b494da653363f3d80cd2d2b8225995efcc175cc60",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "scripts/backup-restore-device-trust.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  scripts/backup-restore-device-trust.test.ts > checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatched trust before the HTTP handler",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
     }
   ],
   "testFileSha256": [
     {
       "path": "scripts/backup-restore-device-trust.test.ts",
-      "sha256": "08565e427cc641101a09e38c66004ba4c3631d9feb6422334ce06a7bbb0fbdeb"
+      "sha256": "068a96dc24e36395b6dcb84d113fd8402b608bdfbe053228cc7feb9abc4337c4"
     },
     {
       "path": "packages/server/src/backup/restore-host.test.ts",
@@ -129,5 +150,5 @@
       "sha256": "b50a7819e7b83f3fd87e48b361a8a5e961de7fbdcb2123490578686a5bc048a7"
     }
   ],
-  "restoration": "All five deliberate changes rejected by the named tests and restored byte-for-byte; final positive local checks passed. Actual installer SQL also passed against the migrated PostgreSQL schema."
+  "restoration": "All six deliberate changes rejected by the named tests and restored byte-for-byte; positive TLS baseline and final restored checks passed. Actual installer SQL also passed against the migrated PostgreSQL schema."
 }

@@ -50,6 +50,7 @@ it('checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatc
     });
     let requests = 0;
     let advertisedIdentity = pairing.identity();
+    let corruptProof = false;
     const server = createServer(
       {
         key: await readFile(join(staged, 'tls-key.pem')),
@@ -59,7 +60,13 @@ it('checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatc
         requests++;
         const challenge = new URL(req.url!, 'https://localhost').searchParams.get('challenge')!;
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ...advertisedIdentity, ...pairing.signChallenge(challenge) }));
+        res.end(
+          JSON.stringify({
+            ...advertisedIdentity,
+            ...pairing.signChallenge(challenge),
+            ...(corruptProof ? { signature: Buffer.alloc(64).toString('base64url') } : {}),
+          }),
+        );
       },
     );
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -91,6 +98,9 @@ it('checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatc
       verifyPairingProof(pinnedApi(options), { ...pairing.identity(), identityKey: wrongKey }),
     ).rejects.toThrow();
     advertisedIdentity = { ...pairing.identity(), identityKey: wrongKey };
+    await expect(verifyPairingProof(pinnedApi(options), pairing.identity())).rejects.toThrow();
+    advertisedIdentity = pairing.identity();
+    corruptProof = true;
     await expect(verifyPairingProof(pinnedApi(options), pairing.identity())).rejects.toThrow();
   } finally {
     await close?.();

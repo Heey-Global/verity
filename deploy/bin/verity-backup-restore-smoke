@@ -222,9 +222,20 @@ activate_installer() {
 activate_installer
 run_driver verify-api
 
+echo '--- recovery: real root helper exposed-generation retirement'
+run_driver prepare-exposure-original
+host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+  --env "VERITY_BACKUP_IDENTITY_DIR=$root/identity-requests" "$fresh" \
+  sh -c 'umask 077; exec /opt/verity-install/deploy/host/verity-backup-identity >"$1/exposure.log" 2>&1' sh "$root"
+run_driver prepare-exposure
+host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+  --env "VERITY_BACKUP_IDENTITY_DIR=$root/identity-requests" "$fresh" \
+  sh -c 'umask 077; exec /opt/verity-install/deploy/host/verity-backup-identity >"$1/exposure.log" 2>&1' sh "$root"
+run_driver assert-exposure
+
 echo '--- recovery: live root identity rotation and old snapshot fencing'
 host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
-  --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
+  --env VERITY_PAIRING_HOST=127.0.0.1 --env "VERITY_BACKUP_IDENTITY_DIR=$root/identity-requests" "$fresh" \
   sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --rotate-identity >"$1/rotation.log" 2>&1' sh "$root"
 run_driver verify-rotated-api
 run_driver retired-identity

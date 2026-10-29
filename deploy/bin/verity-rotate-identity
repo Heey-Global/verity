@@ -19,6 +19,17 @@ verity_rotate_identity() {
   [[ ! -e $STATE_DIR/.backup-identity.lock || -f $STATE_DIR/.backup-identity.lock ]] || die 'unsafe backup identity lock'
   exec {rotation_helper_lock}>"$STATE_DIR/.backup-identity.lock"
   flock --exclusive "$rotation_helper_lock"
+  _verity_rotation_refresh_invitation() {
+    local expiry now_seconds
+    [[ -f $STATE_DIR/pairing-expires-at && ! -L $STATE_DIR/pairing-expires-at ]] || die 'invalid published pairing expiry'
+    expiry=$(date -u -d "$(cat "$STATE_DIR/pairing-expires-at")" +%s) || die 'invalid published pairing expiry'
+    now_seconds=$(date -u +%s)
+    if (( expiry <= now_seconds + 60 )); then
+      VERITY_STATE_DIR="$STATE_DIR" VERITY_PAIRING_INVITATION_ONLY=1 "$script_dir/verity-pairing-material" >/dev/null || die 'identity rotated; cannot refresh expired pairing invitation; retry --rotate-identity'
+      for name in pairing-code pairing-expires-at pairing-uri; do sync -f "$STATE_DIR/$name"; done
+      sync -f "$STATE_DIR"
+    fi
+  }
   _verity_rotation_resume_helper() {
     # The oneshot takes this lock too. Release it before synchronous publication.
     flock --unlock "$rotation_helper_lock"
@@ -79,25 +90,36 @@ verity_rotate_identity() {
   jq -e '.format==1 and (.phase|IN("fencing","prepared","revoked","published","complete")) and (.containers|length>0 and all(.[];test("^[a-f0-9]{12,64}$"))) and (.postgres|test("^[a-f0-9]{12,64}$")) and (.oldCa|test("^[a-f0-9]{64}$")) and (.helperActive|type=="boolean") and (. as $c | all(.containers[]; . as $id | $c.policies[$id]|type=="string" and test("^(no|always|unless-stopped|on-failure:[0-9]+)$")))' "$checkpoint" >/dev/null || die 'invalid identity rotation checkpoint'
   phase=$(jq -r .phase "$checkpoint")
   if [[ $phase = complete ]]; then
+    _verity_rotation_refresh_invitation
     _verity_rotation_resume_helper
     note 'Identity rotation already completed; all devices must pair again.'
     return
   fi
   # Stop the updater first: it must not replace a recorded Server while we fence it.
+  local updater_ids
+  updater_ids=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater') || die 'cannot list managed updater; runtime fencing is unconfirmed'
   while IFS= read -r name; do
     [[ -n $name ]] || continue
     docker update --restart=no "$name" >/dev/null || die 'cannot disable managed updater restart'
     docker stop --time 60 "$name" >/dev/null || die 'cannot fence managed updater'
-  done < <(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater')
+  done <<<"$updater_ids"
+  # The updater may remove the saved Server and create a replacement before stopping.
+  # Retain stopped checkpoint members on retries, but never act on IDs proven removed.
+  local fresh_compose='' fresh_managed='' existing
   if [[ $phase = fencing ]]; then
-    # Include a replacement that the updater created immediately before it stopped.
-    temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
-    containers=$({ jq -r '.containers[]' "$checkpoint"; docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres'; docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")"; } | sort -u | jq -Rsc 'split("\n")|map(select(length>0))')
-    jq -e 'all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'invalid runtime inventory'
-    _verity_rotation_policies "$containers" "$(jq -c .policies "$checkpoint")"
-    jq --argjson containers "$containers" --argjson policies "$policies" '.containers=$containers | .policies=$policies' "$checkpoint" >"$temporary"
-    chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"
+    fresh_compose=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres') || die 'cannot refresh Compose runtime inventory'
+    fresh_managed=$(docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")") || die 'cannot refresh managed runtime inventory'
   fi
+  existing=$(docker ps -aq) || die 'cannot reconcile runtime inventory; Docker did not confirm container existence'
+  existing=$(printf '%s\n' "$existing" | jq -Rsc 'split("\n")|map(select(length>0))')
+  jq -e 'all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$existing" >/dev/null || die 'invalid existing container inventory'
+  containers=$({ jq -r '.containers[]' "$checkpoint"; printf '%s\n%s\n' "$fresh_compose" "$fresh_managed"; } | sort -u | jq -Rsc --argjson existing "$existing" 'split("\n")|map(select(length>0))|map(select(. as $id | $existing | index($id) != null))')
+  jq -e 'length>0 and all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'no checkpointed runtime remains for identity rotation'
+  _verity_rotation_policies "$containers" "$(jq -c .policies "$checkpoint")"
+  policies=$(jq --argjson containers "$containers" 'with_entries(select(.key as $id | $containers | index($id) != null))' <<<"$policies")
+  temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
+  jq --argjson containers "$containers" --argjson policies "$policies" '.containers=$containers | .policies=$policies' "$checkpoint" >"$temporary"
+  chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"
   # Repeat fencing even after reboot or an interrupted Docker call. Never resume on failure.
   if [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null; then
     if systemctl cat verity-backup-identity.path >/dev/null 2>&1; then
@@ -153,8 +175,8 @@ SQL
     sync -f "$STATE_DIR"
     _verity_rotation_save published; phase=published
   fi
+  _verity_rotation_refresh_invitation
   # A published generation is irreversible. Resuming never executes credential deletion again.
-  local updater_ids
   updater_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater' | jq -Rsc 'split("\n")|map(select(length>0))')
   while IFS= read -r name; do docker start "$name" >/dev/null || die 'replacement identity published; retry rotation to restart runtime'; done < <(jq -r --argjson updaters "$updater_ids" '.containers | sort_by(. as $id | $updaters | index($id) != null)[]' "$checkpoint")
   while IFS= read -r name; do

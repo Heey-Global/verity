@@ -150,8 +150,9 @@ start another rotation with:
 verity-install --rotate-identity --restart-rotation
 ```
 
-All devices must remove their saved server and pair again using the replacement
-invitation. After rotation, restore a pre-rotation snapshot only with
+Read the short-lived replacement invitation with `sudo cat /etc/verity/pairing-uri`
+(use the configured installer state directory if different). Keep that invitation
+private. All devices must remove their saved server and pair again using it. After rotation, restore a pre-rotation snapshot only with
 `--new-identity`; its old device credentials must not be activated on this host.
 Offline devices still retain their old pin and identity until you reset them.
 Rotation does not invalidate external copies for those offline devices. Native

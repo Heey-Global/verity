@@ -4,19 +4,19 @@
     "file": "packages/server/src/backup/key-replacement.ts",
     "sourceSha256": "a89d16dc22421846cf61043382226c91b189d22efd89c7ad84306ac14874d12d",
     "test": "packages/server/src/backup/key-replacement.test.ts",
-    "testSha256": "3109ed5757123a3e9d632e112143ea0295d0329333ae7a51bfb97ef3c783e716",
+    "testSha256": "b5ca0b7344d1dd3574a775507c61586ab3776c2d0999e3842e483aa36880eeaa",
     "mutation": {
       "replace": "if (journal.reason === 'exposed') await actions.retire(journal);",
       "with": "if (journal.reason === 'lost') await actions.retire(journal);"
     },
     "exitCode": 1,
     "failureEvidence": [
+      "Tests  2 failed (2)",
       "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 2 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
       "FAIL  packages/server/src/backup/key-replacement.test.ts > keeps cancelled replacement in memory and resumes confirmed exposure retirement before publication after restart",
       "AssertionError: expected \"vi.fn()\" to be called once, but got 0 times",
       "FAIL  packages/server/src/backup/key-replacement.test.ts > does not retire a lost-key generation and rejects concurrent state changes on restart",
-      "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times",
-      "Tests  2 failed (2)"
+      "AssertionError: expected \"vi.fn()\" to not be called at all, but actually been called 1 times"
     ]
   },
   {
@@ -31,18 +31,18 @@
     },
     "exitCode": 1,
     "failureEvidence": [
+      "Tests  1 failed (1)",
       "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
       "FAIL  packages/server/src/backup/identity-retirement.test.ts > durably removes only the exposed bundle, retries after publication failure and refuses retired request replay",
-      "AssertionError: expected Error: Command failed: bash /work/.verity\u2026 { \u2026(6) } to match object { stderr: StringContaining{\u2026} }",
-      "Tests  1 failed (1)"
+      "AssertionError: expected Error: Command failed: bash <helper> { \u2026(6) } to match object { stderr: StringContaining{\u2026} }"
     ]
   },
   {
     "id": "generation-revocation-fanout",
     "file": "packages/server/src/backup/service.ts",
-    "sourceSha256": "5ba9c4836360e0ced5790ccb4c5bfef0cbe033c5a19484470e764bf317c59ffa",
+    "sourceSha256": "ba98fa1b160dfc55a0add0e84413cb0b5d5399d5b7128e580d2d64edf3f64d00",
     "test": "packages/server/src/backup/service.test.ts",
-    "testSha256": "30598a161a825dcaaba97263c723a5840df7d3006b97f4829e3795d820e52d60",
+    "testSha256": "d64ad0411b775ad56ab094a3fd3dc7cdb07107acb91dee5953e08723ef2f9ce2",
     "mutation": {
       "replace": "if (seen.has(generation.keyGeneration)) continue;",
       "with": "if (generation.keyGeneration !== current.keyGeneration || seen.has(generation.keyGeneration)) continue;"
@@ -53,6 +53,60 @@
       "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
       "FAIL  packages/server/src/backup/service.test.ts > commits only after identity confirmation, skips abandoned repositories and syncs revocations while paused",
       "AssertionError: expected false to be true // Object.is equality"
+    ]
+  },
+  {
+    "id": "generation-crash-remnant",
+    "file": "packages/server/src/backup/generation-maintenance.ts",
+    "test": "packages/server/src/backup/generation-maintenance.test.ts",
+    "mutation": {
+      "replace": "if (/^\\.pending-[a-f0-9]{32}$/.test(entry.name) && entry.isFile()) continue;",
+      "with": "if (false) continue;"
+    },
+    "sourceSha256": "ef03c6fb6e59700f21034710e4631e9dbc98a41796fd1b0e3d43a05db636ecde",
+    "testSha256": "179139cda6751f6b3e00ab214caf5b7a24f0d405c157bcb696e9de7d90f9a6d4",
+    "exitCode": 1,
+    "failureEvidence": [
+      "Tests  1 failed (1)",
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/generation-maintenance.test.ts > keeps live generations, expires only globally unretained history and retries journal retirement without gaps",
+      "Error: Unexpected backup generation entry"
+    ]
+  },
+  {
+    "id": "pause-during-active-operation",
+    "file": "packages/server/src/backup/service.ts",
+    "test": "packages/server/src/backup/service.test.ts",
+    "mutation": {
+      "replace": "  async setPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {",
+      "with": "  async setPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {\n    if (this.active) throw new Error('Backup operation is already in progress');"
+    },
+    "sourceSha256": "ba98fa1b160dfc55a0add0e84413cb0b5d5399d5b7128e580d2d64edf3f64d00",
+    "testSha256": "d64ad0411b775ad56ab094a3fd3dc7cdb07107acb91dee5953e08723ef2f9ce2",
+    "exitCode": 1,
+    "failureEvidence": [
+      "Tests  1 failed (1)",
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/service.test.ts > commits only after identity confirmation, skips abandoned repositories and syncs revocations while paused",
+      "Error: Backup operation is already in progress"
+    ]
+  },
+  {
+    "id": "replacement-policy-preservation",
+    "file": "packages/server/src/backup/state.ts",
+    "test": "packages/server/src/backup/key-replacement.test.ts",
+    "mutation": {
+      "replace": "      checked.schedule.paused = current.schedule.paused;\n      checked.schedule.intervalMs = current.schedule.intervalMs;",
+      "with": ""
+    },
+    "sourceSha256": "71bc327cc6b0074f640646ef10f9cbb9602052277119f56f0297d2ad926e78fb",
+    "testSha256": "b5ca0b7344d1dd3574a775507c61586ab3776c2d0999e3842e483aa36880eeaa",
+    "exitCode": 1,
+    "failureEvidence": [
+      "Tests  1 failed | 1 passed (2)",
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      "FAIL  packages/server/src/backup/key-replacement.test.ts > does not retire a lost-key generation and rejects concurrent state changes on restart",
+      "AssertionError: expected { intervalMs: 21600000, \u2026(4) } to match object { paused: true, intervalMs: 7200000 }"
     ]
   }
 ]

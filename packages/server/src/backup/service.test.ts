@@ -126,6 +126,10 @@ it('commits only after identity confirmation, skips abandoned repositories and s
       revokedAt: new Date().toISOString(),
     };
     store.listBackupRevocations.mockResolvedValueOnce([event]);
+    await writeFile(
+      join(root, 'backup-state/generations', '.pending-' + 'f'.repeat(32)),
+      'partial crash write',
+    );
     await notify!();
     expect(store.acknowledgeBackupRevocation).toHaveBeenCalledWith(event.id);
     expect(
@@ -163,7 +167,12 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     await started;
     await expect(service!.startProbe(candidate.recoveryKey)).rejects.toThrow();
     await expect(service!.tick()).rejects.toThrow('already in progress');
-    finish();
+    try {
+      await service!.setPolicy({ paused: true });
+      expect((await service!.status()).paused).toBe(true);
+    } finally {
+      finish();
+    }
     await expect
       .poll(() => service!.probeStatus(job.id)?.status, { timeout: 10000 })
       .toBe('succeeded');
@@ -252,6 +261,7 @@ it('commits only after identity confirmation, skips abandoned repositories and s
       replacement.recoveryKey,
     );
     await expect(service!.cancelKeyReplacement()).rejects.toThrow('cannot be cancelled');
+    await service!.setPolicy({ paused: true, intervalMs: 7200000 });
     await service!.close();
     expect(unsubscribe).toHaveBeenCalledOnce();
     await expect(service!.beginSetup()).rejects.toThrow('closed');
@@ -287,7 +297,7 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     expect(await service!.status()).toMatchObject({
       configured: true,
       paused: true,
-      intervalMs: 3600000,
+      intervalMs: 7200000,
       alerts: [],
     });
   } finally {
