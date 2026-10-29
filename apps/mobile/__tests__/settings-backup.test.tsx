@@ -49,6 +49,7 @@ import {
   backupStatusRows,
   formatBackupTime,
   formatInterval,
+  probePhaseText,
 } from '../components/settings/backup/backupText';
 import {
   mockBack,
@@ -153,6 +154,36 @@ describe('backup setup', () => {
     expect(client.cancelBackupSetup).toHaveBeenCalledTimes(1);
   });
 
+  it('discards a key that arrives after the operator left', async () => {
+    let resolve!: (offer: typeof OFFER) => void;
+    const client = backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+      beginBackupSetup: jest.fn(() => new Promise((done) => (resolve = done))),
+    });
+    const { unmount } = render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    unmount();
+    await act(async () => resolve(OFFER));
+    expect(client.cancelBackupSetup).toHaveBeenCalledTimes(1);
+  });
+
+  it('never cancels a key whose confirmation is already on its way', async () => {
+    const client = backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+      confirmBackupSetup: jest.fn(() => new Promise(() => undefined)),
+    });
+    const { unmount } = render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    fireEvent.press(await screen.findByText('I saved it, turn on backup'));
+    unmount();
+    expect(client.confirmBackupSetup).toHaveBeenCalledWith(OFFER);
+    expect(client.cancelBackupSetup).not.toHaveBeenCalled();
+  });
+
   it('saves the key through the share sheet and removes the temporary file', async () => {
     backupClient({
       getBackupStatus: jest
@@ -211,6 +242,15 @@ describe('backup status', () => {
     expect(backupRowSummary(configured({ paused: true }), now).status.label).toBe('Paused');
     expect(formatBackupTime(now - HOUR, now)).toMatch(/^Today /);
     expect(formatBackupTime(now - 24 * HOUR, now)).toMatch(/^Yesterday /);
+    expect(
+      backupStatusRows(configured({ lastSuccess: now - HOUR, intervalMs: 24 * HOUR }), now)[1]
+        ?.value,
+    ).toMatch(/^About tomorrow /);
+    expect(probePhaseText('database')).toEqual({
+      title: 'Checking the database',
+      step: 'Step 6 of 8',
+    });
+    expect(probePhaseText('future-phase').title).toBe('Checking the backup');
     expect(formatInterval(6 * HOUR)).toBe('Every 6 h');
     expect(formatInterval(24 * HOUR, 'long')).toBe('once a day');
   });

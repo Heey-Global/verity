@@ -1166,20 +1166,13 @@ export const secretStatusSchema = z.object({
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
 
-/** A restore probe as the server reports it. The server keeps no key in it. */
+/** A restore probe as the server reports it. The server keeps no key in it.
+ *  `status` and `phase` stay plain strings so a newer server's values do not
+ *  make the whole backup status unreadable. */
 export const backupProbeJobSchema = z.object({
   id: z.string().uuid(),
-  status: z.enum(['running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'interrupted']),
-  phase: z.enum([
-    'selecting',
-    'release',
-    'staging',
-    'identity',
-    'git',
-    'database',
-    'revocations',
-    'cleanup',
-  ]),
+  status: z.string(),
+  phase: z.string(),
   startedAt: z.number(),
   finishedAt: z.number().nullable(),
   snapshot: z.object({ repository: z.string(), sequence: z.number() }).nullable(),

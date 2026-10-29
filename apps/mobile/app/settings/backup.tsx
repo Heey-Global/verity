@@ -64,12 +64,14 @@ function BackupView({ client }: { client: VerityClient }) {
   // An offered key that was never confirmed is discarded on the server when the
   // operator leaves, so the next attempt starts over with a new key.
   const pending = useRef<BackupKeyOffer | null>(null);
-  useEffect(
-    () => () => {
+  const left = useRef(false);
+  useEffect(() => {
+    left.current = false;
+    return () => {
+      left.current = true;
       if (pending.current !== null) void client.cancelBackupSetup().catch(() => undefined);
-    },
-    [client],
-  );
+    };
+  }, [client]);
 
   const begin = (): void => {
     setBusy(true);
@@ -77,6 +79,11 @@ function BackupView({ client }: { client: VerityClient }) {
     void client
       .beginBackupSetup()
       .then((offer) => {
+        // The operator left while the key was being generated.
+        if (left.current) {
+          void client.cancelBackupSetup().catch(() => undefined);
+          return;
+        }
         pending.current = offer;
         setStep({ kind: 'key', offer });
       })
@@ -86,14 +93,18 @@ function BackupView({ client }: { client: VerityClient }) {
   const confirm = (offer: BackupKeyOffer): void => {
     setBusy(true);
     setError(undefined);
+    // Leaving during confirmation must not cancel a key the server may already use.
+    pending.current = null;
     void client
       .confirmBackupSetup(offer)
       .then(() => {
-        pending.current = null;
         setStep({ kind: 'success' });
         void reload();
       })
-      .catch(() => setError('Could not turn on backup. Try again.'))
+      .catch(() => {
+        pending.current = offer;
+        setError('Could not turn on backup. Try again.');
+      })
       .finally(() => setBusy(false));
   };
 

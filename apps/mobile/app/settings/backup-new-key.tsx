@@ -32,12 +32,18 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const pending = useRef<BackupKeyOffer | null>(null);
+  const left = useRef(false);
 
   const begin = (): void => {
     setError(undefined);
     void client
       .beginBackupKeyReplacement()
       .then((next) => {
+        // The operator left while the key was being generated.
+        if (left.current) {
+          void client.cancelBackupKeyReplacement().catch(() => undefined);
+          return;
+        }
         pending.current = next;
         setOffer(next);
       })
@@ -47,11 +53,13 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
   // server refuses overlapping requests.
   const started = useRef(false);
   useEffect(() => {
+    left.current = false;
     if (!started.current) {
       started.current = true;
       begin();
     }
     return () => {
+      left.current = true;
       if (pending.current !== null) void client.cancelBackupKeyReplacement().catch(() => undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,13 +68,15 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
   const confirm = (current: BackupKeyOffer): void => {
     setBusy(true);
     setError(undefined);
+    // Leaving during confirmation must not cancel a key the server may already use.
+    pending.current = null;
     void client
       .confirmBackupKeyReplacement(current)
-      .then(() => {
-        pending.current = null;
-        setDone(true);
+      .then(() => setDone(true))
+      .catch(() => {
+        pending.current = current;
+        setError('Could not switch to the new key. Try again.');
       })
-      .catch(() => setError('Could not switch to the new key. Try again.'))
       .finally(() => setBusy(false));
   };
 

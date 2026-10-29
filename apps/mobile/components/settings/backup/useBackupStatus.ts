@@ -35,13 +35,18 @@ export function useBackupStatus(
       if (mounted.current) setState({ kind: 'ready', status });
     } catch (error) {
       if (!mounted.current) return;
-      setState({
-        kind: 'error',
-        message:
-          error instanceof VerityApiError && error.status === 403
-            ? 'Only administrators can manage backups.'
-            : 'Could not load the backup status.',
-      });
+      // One failed poll keeps the last good status (and the polling) in place.
+      setState((previous) =>
+        previous.kind === 'ready'
+          ? previous
+          : {
+              kind: 'error',
+              message:
+                error instanceof VerityApiError && error.status === 403
+                  ? 'Only administrators can manage backups.'
+                  : 'Could not load the backup status.',
+            },
+      );
     }
   }, [client]);
   useFocusEffect(

@@ -7,18 +7,22 @@ import type { StatusIntent } from '../../ui/Status';
 
 type Available = Extract<BackupStatus, { available: true }>;
 
-const DAY = 24 * 60 * 60 * 1000;
-
-/** "Today 14:00", "Yesterday 08:00" or "21 Oct, 14:00" in the device's locale. */
+/** "Today 14:00", "Yesterday 08:00", "Tomorrow 02:00" or "21 Oct, 14:00" in the
+ *  device's locale. Days are calendar days, so a DST change does not shift them. */
 export function formatBackupTime(timestamp: number, now: number = Date.now()): string {
   const date = new Date(timestamp);
   const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  if (timestamp >= startOfToday.getTime()) return `Today ${time}`;
-  if (timestamp >= startOfToday.getTime() - DAY) return `Yesterday ${time}`;
-  const day = date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-  return `${day}, ${time}`;
+  const day = (offset: number): number => {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() + offset);
+    return start.getTime();
+  };
+  if (timestamp >= day(1) && timestamp < day(2)) return `Tomorrow ${time}`;
+  if (timestamp >= day(0) && timestamp < day(1)) return `Today ${time}`;
+  if (timestamp >= day(-1) && timestamp < day(0)) return `Yesterday ${time}`;
+  const label = date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  return `${label}, ${time}`;
 }
 
 /** "Every 6 h" for a row value; "every 6 hours" inside a sentence. */
@@ -122,10 +126,7 @@ export function backupStatusRows(
         ? 'Running now'
         : status.lastSuccess == null || status.lastSuccess + interval <= now
           ? 'Shortly'
-          : `About ${new Date(status.lastSuccess + interval).toLocaleTimeString(undefined, {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}`;
+          : `About ${lowerFirst(formatBackupTime(status.lastSuccess + interval, now))}`;
   const test: { value: string; intent: StatusIntent } = probeRunning(status.probe)
     ? { value: 'Running', intent: 'transient' }
     : status.lastProbe != null
@@ -138,7 +139,7 @@ export function backupStatusRows(
   ];
 }
 
-const PROBE_PHASES: Record<BackupProbeJob['phase'], string> = {
+const PROBE_PHASES: Record<string, string> = {
   selecting: 'Finding the newest backup',
   release: 'Checking the server version',
   staging: 'Unpacking the backup',
@@ -150,11 +151,13 @@ const PROBE_PHASES: Record<BackupProbeJob['phase'], string> = {
 };
 
 /** "Checking the database" and "Step 6 of 8" for a running restore test. */
-export function probePhaseText(phase: BackupProbeJob['phase']): { title: string; step: string } {
+export function probePhaseText(phase: string): { title: string; step: string } {
   const phases = Object.keys(PROBE_PHASES);
+  const index = phases.indexOf(phase);
+  if (index < 0) return { title: 'Checking the backup', step: 'In progress' };
   return {
-    title: PROBE_PHASES[phase],
-    step: `Step ${String(phases.indexOf(phase) + 1)} of ${String(phases.length)}`,
+    title: PROBE_PHASES[phase]!,
+    step: `Step ${String(index + 1)} of ${String(phases.length)}`,
   };
 }
 

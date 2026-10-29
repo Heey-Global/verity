@@ -135,5 +135,6 @@ the exact native build and source; rerun affected cases after a native fix.
 This procedure does not itself record a physical-device execution. No case
 above is marked physically passed. Any implementation fixes require
 scoped tests and deliberate guard mutation, followed by physical retesting.
-Global release, backup management UI, update backup coordination and same-host
-snapshot rollback remain separate acceptance work.
+The first backup app release (Settings → Backup) still needs a run on a physical
+device. Snapshot management, update backup coordination and same-host snapshot
+rollback remain separate acceptance work.
