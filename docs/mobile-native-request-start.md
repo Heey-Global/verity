@@ -102,3 +102,25 @@ not hardware touch receipt; wall-clock adjustments can invalidate the difference
 Native React touch timestamps in switch phases use a separate clock and must
 not be subtracted from these wall timestamps. Existing event limits, dropped
 counts, recording reset and export size limits apply to these probes.
+
+### Diagnostic retention (schema 8)
+
+The 300-event gesture buffer admits at most 60 raw scheduling events. A new
+scheduling probe cannot evict a touch, swipe or reorder event; when the buffer
+is full, interaction events evict scheduling entries first. A bounded summary
+for each of the ten fixed scheduling probe names retains its count, first/last
+wall timestamp, maximum wait and its wall timestamp, and maximum React actual
+render duration when available. Summaries cover the current recording even
+when raw events are omitted, and reset with the recording. They do not replace
+a chronological profile or identify a blocking function. `dropped` counts raw
+events omitted, including entries whose measurements remain in a summary.
+
+The shared report still has a 256 KiB UTF-8 ceiling, reserving half for update
+and recovery logs. Under pressure it removes raw scheduling events first,
+then older runtime samples (keeping the separate baseline and latest sample),
+then native records unrelated to retained switch requests, then remaining
+native records, then older switch traces, and finally interaction events.
+The latest switch and scheduling summaries remain. Every removed record updates
+its stream's omission count. Export pruning operates on snapshots and does not
+drain the live recording. This prioritizes selection evidence without promising
+that an arbitrarily crowded capture can retain every switch or native metric.
