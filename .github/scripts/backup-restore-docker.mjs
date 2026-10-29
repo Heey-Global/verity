@@ -17,7 +17,7 @@ import {
   sign,
   verify,
 } from 'node:crypto';
-import { cp, mkdir, readFile, writeFile, stat, readdir } from 'node:fs/promises';
+import { appendFile, cp, mkdir, readFile, writeFile, stat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -1174,7 +1174,32 @@ async function restore() {
       assert.ok(manifest.files.some((file) => file.path.startsWith('database/tables/')));
       const network = 'verity-sealed-scheduled-probe';
       await docker.ensureNetwork(network);
-      const withDatabase = createProbeDatabase({ docker, network, architecture: 'amd64', signal });
+      // The fixture caller uses the daemon host network; migration workers use private Docker DNS.
+      const probeNames = new Map();
+      const probeDocker = {
+        ...docker,
+        createContainer: async (options) => {
+          const container = await docker.createContainer(options);
+          if (options.name?.startsWith('verity-probe-postgres-'))
+            probeNames.set(container.id, options.name);
+          return container;
+        },
+        startContainer: async (id) => {
+          await docker.startContainer(id);
+          const name = probeNames.get(id);
+          if (name) {
+            const address = (await docker.inspectContainer(id)).networks[network]?.ipAddress;
+            assert.ok(address);
+            await appendFile('/etc/hosts', `\n${address} ${name}\n`);
+          }
+        },
+      };
+      const withDatabase = createProbeDatabase({
+        docker: probeDocker,
+        network,
+        architecture: 'amd64',
+        signal,
+      });
       await probeSnapshot({
         backupRoot: join(root, 'new-backups'),
         repository,
