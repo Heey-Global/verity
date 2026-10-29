@@ -220,7 +220,7 @@ export async function createOtaManifest(github, baselineSha, version) {
 
 /** @param {string} patch @returns {string | null} */
 export function releasePatchId(patch) {
-  const result = execFileSync('git', ['patch-id', '--stable'], {
+  const result = execFileSync('git', ['patch-id', '--verbatim'], {
     input: patch,
     encoding: 'utf8',
   })

@@ -461,4 +461,8 @@ it('compares real Git patch identities across changed commit metadata and reject
   expect(releasePatchId(`commit ${'a'.repeat(40)}\n${patch}`)).toBe(id);
   expect(releasePatchId(patch.replace('+1.80.3', '+1.80.4'))).not.toBe(id);
   expect(releasePatchId('')).toBeNull();
+  const spaced = patch.replace('+1.80.3', '+hello world');
+  expect(releasePatchId(spaced)).not.toBe(
+    releasePatchId(spaced.replace('+hello world', '+helloworld')),
+  );
 });
