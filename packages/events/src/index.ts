@@ -128,6 +128,13 @@ export {
   type AppHelpTopic,
 } from './app-help.js';
 export {
+  ASSISTANT_SYSTEM_PROMPT,
+  ASSISTANT_TOOL,
+  ASSISTANT_TOOL_DESCRIPTION,
+  assistantRequestSchema,
+  type AssistantRequest,
+} from './assistant-tool.js';
+export {
   ASSIGNED_TASKS_PROMPT_MAX,
   TASKS_ADD_MAX,
   TASKS_RESUME_SYSTEM_PROMPT,

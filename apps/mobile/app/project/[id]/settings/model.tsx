@@ -247,18 +247,26 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
           </SettingsPanel>
         </SettingsGroup>
       ) : null}
-      {['github', 'forgejo'].includes(detail.project.kind ?? 'github') ? (
+      {detail.project.kind !== 'control_plane' ? (
         <SettingsGroup
           title="Functions"
           description="Choose which Verity functions may access this project."
         >
           <SettingsListPanel>
             <SettingsNavRow
-              icon="check"
-              title="QA"
-              subtitle="Off, monitor only or automatic repairs"
-              onPress={() => router.push(`/project/${projectId}/settings/repairs`)}
+              icon="user"
+              title="Assistant"
+              subtitle="Off, tasks only or tasks and sessions"
+              onPress={() => router.push(`/project/${projectId}/settings/assistant`)}
             />
+            {['github', 'forgejo'].includes(detail.project.kind ?? 'github') ? (
+              <SettingsNavRow
+                icon="check"
+                title="QA"
+                subtitle="Off, monitor only or automatic repairs"
+                onPress={() => router.push(`/project/${projectId}/settings/repairs`)}
+              />
+            ) : null}
           </SettingsListPanel>
         </SettingsGroup>
       ) : null}
