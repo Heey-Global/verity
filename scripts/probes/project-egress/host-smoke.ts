@@ -744,7 +744,27 @@ try {
   await verifyNoRevival('prepare');
   await docker('stop', '--time', '1', relayId);
   await startRelay({ ...context, resumeExisting: true });
-  assert.ok((await client('positive')).includes('transport-positive'));
+  await probeRelay(relayId);
+  await writeFile(
+    '/evidence/transport-restart-endpoints.json',
+    JSON.stringify(
+      await inspectEgressTransport(binding, { sandbox: containerId, relay: relayId }, true),
+    ),
+  );
+  // Docker assigns a new MAC on restart. Keep the exact host binding while
+  // netstack expires its cached neighbour; a stale-MAC packet must stay denied.
+  const restartBegin = Date.now();
+  let restartReply = '';
+  for (let attempt = 0; attempt < 20; attempt++) {
+    restartReply = await client('positive').catch(String);
+    if (restartReply.includes('transport-positive')) break;
+    await delay(250);
+  }
+  assert.ok(restartReply.includes('transport-positive'), restartReply);
+  await writeFile(
+    '/evidence/transport-restart-ready.json',
+    JSON.stringify({ elapsedMs: Date.now() - restartBegin }),
+  );
   results.push('actual relay forwards broker and model sockets and survives mediated restart');
 
   await delay(2000);
@@ -863,6 +883,18 @@ try {
     JSON.stringify({ complete: true, results }, null, 2),
   );
 } catch (error) {
+  await writeFile(
+    '/evidence/host-failure-rules.txt',
+    await exec('/usr/sbin/nft', ['list', 'ruleset'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
+  await writeFile(
+    '/evidence/host-failure-links.json',
+    await exec('/sbin/ip', ['-j', 'link', 'show'])
+      .then((r) => r.stdout)
+      .catch(String),
+  );
   await writeFile(
     '/evidence/host-result.json',
     JSON.stringify({ complete: false, results, error: String(error) }, null, 2),
