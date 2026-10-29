@@ -32,7 +32,7 @@ export class AssistantStore {
   }
 
   async configure(enabled: boolean, sponsor: string): Promise<void> {
-    await sql`insert into assistant_settings(id, enabled, sponsor_user_id, revision) values (1, ${enabled}, ${sponsor}, 1) on conflict (id) do update set enabled = excluded.enabled, sponsor_user_id = excluded.sponsor_user_id, revision = assistant_settings.revision + 1, updated_at = now()`.execute(
+    await sql`insert into assistant_settings(id, enabled, sponsor_user_id, revision) values (1, ${enabled}, ${sponsor}, 1) on conflict (id) do update set enabled = excluded.enabled, sponsor_user_id = case when excluded.enabled then excluded.sponsor_user_id else assistant_settings.sponsor_user_id end, revision = assistant_settings.revision + 1, updated_at = now()`.execute(
       this.db,
     );
   }

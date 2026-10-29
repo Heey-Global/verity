@@ -3822,13 +3822,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
   };
   // The assistant acts for the user behind its running turn, and only in granted projects.
+  // Reading and filing tasks follow the project routes, where administrators count as
+  // readers. Handing off starts a turn, so it needs the same execute permission as
+  // `canExecuteAs`, which every later tool call of that turn is checked against.
   const assistantToolDeps: AssistantToolDeps = {
     eventStore: deps.eventStore,
     initiator: runningTurnInitiator,
-    permitted: async (userId, projectId, permission) =>
-      userId === undefined
-        ? deps.authRegistry?.isEnabled() !== true
-        : deps.eventStore.hasProjectPermission(userId, projectId, permission),
+    permitted: async (userId, projectId, permission) => {
+      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
+      if (permission === 'execute') return canExecuteAs(userId, projectId);
+      return (
+        (await deps.eventStore.isActiveAdministrator(userId)) ||
+        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
+      );
+    },
   };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
@@ -6804,9 +6811,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             (await deps.eventStore.getSession(sessionId))?.projectId === projectId
           );
         }
-        // The tasks tool writes only to the calling session's own list and cannot
-        // delete, so it runs without a card like the planning tools do. App help
-        // reads a static catalog and touches no data at all.
         // The project grant is the user's consent; the executor re-checks it on every call.
         if (toolName === 'verity_assistant') {
           const session = await deps.eventStore.getSession(sessionId);
@@ -6815,6 +6819,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             (await deps.eventStore.assistant.settings()).session_id === sessionId
           );
         }
+        // The tasks tool writes only to the calling session's own list and cannot
+        // delete, so it runs without a card like the planning tools do. App help
+        // reads a static catalog and touches no data at all.
         if (
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
@@ -10054,19 +10061,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  // One Verity Control session, recreated under the same id if it was deleted. Concurrent
+  // callers share one attempt, so two requests never spawn the same session id twice.
+  let ensuringAssistant: Promise<string> | undefined;
+  const ensureAssistantSession = async (): Promise<string> => {
+    const id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    const project = await ensureVerityControlProject();
+    const result = await sessionCreate.spawn(
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant' },
+      app.log,
+    );
+    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+    return id;
+  };
   registerAssistantRoutes(app, deps.eventStore, {
-    // One Verity Control session, recreated under the same id if it was deleted.
-    ensureSession: async () => {
-      const id = await deps.eventStore.assistant.session(randomUUID());
-      if (await deps.eventStore.getSession(id)) return id;
-      const project = await ensureVerityControlProject();
-      const result = await sessionCreate.spawn(
-        { projectId: project.id, sessionId: id, name: 'Verity · Assistant' },
-        app.log,
-      );
-      if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
-      return id;
-    },
+    ensureSession: () =>
+      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
+        ensuringAssistant = undefined;
+      })),
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
   });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {

@@ -10,8 +10,9 @@ is a second, specialised function next to it.
 
 Settings → Assistant holds the installation-wide switch. It is off by default and
 only administrators can change it. Turning it on creates the session in Verity
-Control; turning it off keeps the session and its history, and every assistant
-tool call is refused until it is on again.
+Control (turning it on again recreates a deleted session); turning it off keeps
+the session and its history, and every assistant tool call is refused until it
+is on again.
 
 Mail, calendar and contacts use the Google accounts assigned to the Verity
 Control project (Settings → Assistant → Mail and calendar). Sending mail and
@@ -29,7 +30,8 @@ Project settings → Agents → Functions → Assistant:
 | Tasks and sessions | also hand work to the project's sessions with `verity_session_handoff` |
 
 Granting needs execute permission on the project and an enabled assistant.
-Revoking is always possible. Verity Control itself can never be granted.
+Revoking needs execute permission too, but works while the assistant is off.
+Verity Control itself can never be granted.
 
 ## Enforcement
 
@@ -37,10 +39,12 @@ Revoking is always possible. Verity Control itself can never be granted.
   name, the same way QA is.
 - `verity_assistant` is advertised to Verity Control sessions but runs only for
   the enabled assistant session. `projects` lists granted projects the turn's
-  user can still read; `add_task` files a task owned by that user, after checking
-  the grant and the user's read permission on the project.
+  user can still read (administrators count as readers, as in the project
+  routes); `add_task` files a task owned by that user after checking the grant
+  and that read access.
 - A handoff from the assistant session needs a "Tasks and sessions" grant and
-  the turn user's execute permission on the target project. It is checked before
+  the turn user's execute permission on the target project, the same membership
+  every later tool call of that turn is checked against. It is checked before
   a new session is created and again right before delivery. Handoffs from other
   Verity Control sessions are unchanged.
 - The grant is the consent for `verity_assistant`; its calls run without a

@@ -22,13 +22,22 @@ beforeEach(async () => {
   });
 });
 
-function server(userId: string, ensureSession = vi.fn(async () => 'assistant-session')) {
+function server(userId: string) {
   const app = Fastify();
   app.addHook('preHandler', async (request) => {
     request.localUserId = userId;
   });
-  registerAssistantRoutes(app, ctx.store, { ensureSession });
-  return { app, ensureSession };
+  const sessions = new Set<string>();
+  const ensureSession = vi.fn(async () => {
+    const id = await ctx.store.assistant.session('assistant-session');
+    sessions.add(id);
+    return id;
+  });
+  registerAssistantRoutes(app, ctx.store, {
+    ensureSession,
+    sessionExists: async (id) => sessions.has(id),
+  });
+  return { app, ensureSession, sessions };
 }
 
 describe('assistant settings routes', () => {
@@ -54,9 +63,9 @@ describe('assistant settings routes', () => {
     }
   });
 
-  it('creates the session only while enabled and reports granted projects', async () => {
+  it('creates the session only when switched on and reports granted projects', async () => {
     vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(true);
-    const { app, ensureSession } = server('admin');
+    const { app, ensureSession, sessions } = server('admin');
     try {
       expect((await app.inject({ method: 'GET', url: '/settings/assistant' })).json()).toEqual({
         enabled: false,
@@ -76,6 +85,13 @@ describe('assistant settings routes', () => {
         sessionId: 'assistant-session',
         grants: [{ projectId: 'a', mode: 'tasks' }],
       });
+      // Capture reads this on every sheet; a read must never spawn a session, so a deleted
+      // session is reported as missing until the switch is turned on again.
+      sessions.clear();
+      expect(
+        (await app.inject({ method: 'GET', url: '/settings/assistant' })).json(),
+      ).toMatchObject({ enabled: true, sessionId: null });
+      expect(ensureSession).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }

@@ -5,6 +5,8 @@ import { z } from 'zod';
 export interface AssistantRouteDeps {
   /** Returns the assistant session id, creating the session in Verity Control if it is gone. */
   ensureSession(): Promise<string>;
+  /** Whether the stored session still exists; reads never create it. */
+  sessionExists(sessionId: string): Promise<boolean>;
 }
 
 /** System and per-project settings of the Verity assistant (docs/assistant.md). */
@@ -15,11 +17,19 @@ export function registerAssistantRoutes(
 ): void {
   const administrator = async (request: FastifyRequest) =>
     request.localUserId != null && (await store.isActiveAdministrator(request.localUserId));
+  // A read only reports the session: capture opens this on every sheet, and a failed or
+  // racing spawn there would hide the assistant. Turning it on (again) recreates it.
   const status = async () => {
     const settings = await store.assistant.settings();
+    const sessionId =
+      settings.enabled &&
+      settings.session_id !== null &&
+      (await deps.sessionExists(settings.session_id))
+        ? settings.session_id
+        : null;
     return {
       enabled: settings.enabled,
-      sessionId: settings.enabled ? await deps.ensureSession() : null,
+      sessionId,
       grants: (await store.assistant.grants())
         .filter((grant) => grant.mode !== 'off')
         .map((grant) => ({ projectId: grant.project_id, mode: grant.mode })),
@@ -35,6 +45,7 @@ export function registerAssistantRoutes(
       return reply.code(403).send({ error: 'Administrator access required' });
     const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(request.body);
     await store.assistant.configure(enabled, request.localUserId!);
+    if (enabled) await deps.ensureSession();
     return status();
   });
 
