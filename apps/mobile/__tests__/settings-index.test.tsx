@@ -62,7 +62,7 @@ describe('settings index — destinations', () => {
       }),
     );
     const { UNSAFE_getAllByType } = render(<SettingsIndexScreen />);
-    await screen.findByText('Audit logs');
+    await screen.findByText('Logs');
 
     const groups = UNSAFE_getAllByType(SettingsGroup);
     expect(groups.map((group) => group.props.title)).toEqual([
@@ -79,7 +79,7 @@ describe('settings index — destinations', () => {
         'Verity Premium',
         'Verity Control',
       ],
-      ['Updates', 'Server address', 'Devices & Web Browsers', 'Audit logs'],
+      ['Updates', 'Server address', 'Devices & Web Browsers', 'Logs'],
       ['Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
@@ -162,11 +162,11 @@ describe('settings index — destinations', () => {
 
   // Members' devices and Servers without the trail must not see a dead entry; a
   // trail that is losing writes must be visible without opening it.
-  it('shows Audit logs only to administrators and flags lost writes', async () => {
+  it('shows Logs only to administrators and flags lost writes', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     const { unmount } = render(<SettingsIndexScreen />);
     await act(async () => undefined);
-    expect(screen.queryByLabelText(rowLabel('Audit logs'))).toBeNull();
+    expect(screen.queryByLabelText(rowLabel('Logs'))).toBeNull();
     unmount();
 
     mockCreateVerityClient.mockReturnValue(
@@ -175,7 +175,7 @@ describe('settings index — destinations', () => {
       }),
     );
     render(<SettingsIndexScreen />);
-    const row = await screen.findByLabelText(rowLabel('Audit logs'));
+    const row = await screen.findByLabelText(rowLabel('Logs'));
     expect(screen.getByText('Needs review')).toBeOnTheScreen();
     fireEvent.press(row);
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');

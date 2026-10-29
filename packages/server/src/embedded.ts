@@ -1,3 +1,4 @@
+import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
@@ -3458,6 +3459,12 @@ export async function buildEmbeddedServer(
   // Durable audit trail for project image builds (ADR 0028). The Server generation is
   // read from this container's own label once; outside a managed deployment it is null.
   let auditServer: AuditServerIdentity | undefined;
+  const buildDiagnostics = createBuildDiagnosticStore(
+    join(
+      config.dataDir ?? config.dataVolumeRoot ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+      'build-diagnostics',
+    ),
+  );
   const auditLog = createPostgresAuditLog(db);
   const auditRecorder = createAuditRecorder(auditLog, {
     server: async () => {
@@ -3769,6 +3776,7 @@ export async function buildEmbeddedServer(
       ),
       imageReferences,
       audit: auditRecorder,
+      buildDiagnostics,
       store: eventStore,
       db,
       docker,
@@ -4944,7 +4952,20 @@ export async function buildEmbeddedServer(
             : {}),
         }
       : {}),
-    audit: { recorder: auditRecorder, log: auditLog },
+    audit: {
+      recorder: auditRecorder,
+      log: auditLog,
+      buildDiagnostics,
+      serverLogs:
+        runtimeDocker?.containerLogs === undefined
+          ? undefined
+          : (window) =>
+              runtimeDocker.containerLogs!(
+                config.diagnosticServerContainerId ?? hostname(),
+                1000,
+                window,
+              ),
+    },
     ...(projectDocker === undefined
       ? {}
       : {
