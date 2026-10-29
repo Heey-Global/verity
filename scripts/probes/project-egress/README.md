@@ -147,3 +147,19 @@ handoff and all real shared IPC paths remain integration gates.
 A successful CI run supports this specific reduced project-boundary prototype.
 It does not authorize enabling protected egress, declare the real Launcher secure,
 or implement the [routing contract](../../../docs/project-egress-routing.md).
+
+## Runner and relay topology probe
+
+The host startup probe builds the repository's actual Sandbox and distroless
+relay images. It starts the installed Runner stack with its production capability
+set, mounts a worktree and the 0170 runtime directory, and requests supervisor
+status and a persistent session home through the shared Unix socket. An independent
+receiver starts first. A project-UID process continuously sends on an inherited
+UDP descriptor and a descriptor transferred with SCM_RIGHTS. Both must become
+observable when the fence is deliberately removed.
+
+The actual relay must also complete a loopback-to-mounted-broker-socket positive
+control under the same inspected runtime. A failed positive control fails the job;
+absence of traffic alone is not acceptance. This probe does not execute an agent
+turn or certify all production shared IPC paths, transport admission, daemon boot
+ordering, or hard expiry under host suspension. Those remain explicit gates.
