@@ -275,7 +275,7 @@ it('shares bounded runtime history and preserves the first sample for comparison
     await shareUpdateDiagnostics();
     const message = (share.mock.calls[0]![0] as { message: string }).message;
     const report = JSON.parse(message);
-    expect(report.schema).toBe(7);
+    expect(report.schema).toBe(8);
     expect(report.runtimeDiagnostics.baseline).toMatchObject({
       recordingAgeMs: 0,
       screen: 'settings',
@@ -295,7 +295,7 @@ it('shares bounded runtime history and preserves the first sample for comparison
   }
 });
 
-it('exports scheduling probes and both touch delivery clocks without session contents', async () => {
+it('exports scheduling peaks and both touch delivery clocks under budget pressure', async () => {
   readLogs.mockResolvedValue([]);
   setGestureDiagnosticsEnabled(true);
   recordGesture({ source: 'scheduling', event: 'session-timer', detail: { waitMs: 874 } });
@@ -307,17 +307,68 @@ it('exports scheduling probes and both touch delivery clocks without session con
   });
   await shareUpdateDiagnostics();
   const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics.schedulingSummaries).toContainEqual(
+    expect.objectContaining({ event: 'session-timer', count: 1, maxWaitMs: 874 }),
+  );
   expect(report.gestureDiagnostics.events).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({
-        source: 'scheduling',
-        event: 'session-timer',
-        detail: { waitMs: 874 },
-      }),
       expect.objectContaining({
         source: 'row',
         detail: { uiReceivedWallMs: 1000, jsReceivedWallMs: 1874 },
       }),
     ]),
   );
+});
+
+it('preserves eight switches and touches when runtime history crowds the report', async () => {
+  jest.useFakeTimers();
+  const previous = AppState.currentState;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const stop = startRuntimeDiagnostics();
+  try {
+    readLogs.mockResolvedValue([log('Retained launch failure', 1, 'error')]);
+    setGestureDiagnosticsEnabled(true);
+    jest.advanceTimersByTime(5_000 * 120);
+    recordGesture({ source: 'row', event: 'touch-down', row: 1 });
+    for (let i = 0; i < 1000; i++)
+      recordGesture({ source: 'scheduling', event: 'session-timer', detail: { waitMs: 900 } });
+    const ids = [];
+    for (let i = 0; i < 8; i++) {
+      const trace = beginSessionSwitch(`private-retention-${i}`);
+      ids.push(trace.id);
+      for (let phase = 0; phase < 32; phase++)
+        markSessionSwitch(trace, 'retained-lifecycle-marker', phase);
+      for (let request = 0; request < 2; request++) {
+        const id = beginSwitchTransportRequest(trace, 'events');
+        for (let phase = 0; phase < 12; phase++)
+          markSwitchTransportRequest(id, 'native-return', 1793305897559);
+      }
+    }
+    await shareUpdateDiagnostics();
+    const report = sharedReport();
+    expect(
+      report.sessionSwitchTimings.map((trace: { switchId: string }) => trace.switchId),
+    ).toEqual(ids);
+    expect(report.captureSummary.omittedSwitches).toBe(0);
+    expect(report.gestureDiagnostics.events).toContainEqual(
+      expect.objectContaining({ source: 'row', event: 'touch-down' }),
+    );
+    expect(report.gestureDiagnostics.schedulingSummaries[0]).toMatchObject({
+      count: 1000,
+      maxWaitMs: 900,
+    });
+    expect(report.runtimeDiagnostics.dropped).toBeGreaterThan(0);
+    expect(report.runtimeDiagnostics.baseline.recordingAgeMs).toBe(0);
+    expect(report.runtimeDiagnostics.samples.at(-1).recordingAgeMs).toBe(600_000);
+    expect(report.logs[0].message).toBe('Retained launch failure');
+    expect(JSON.stringify(report)).not.toContain('private-retention');
+    // Export pruning must not drain the live recording.
+    const { exportGestureDiagnostics } = require('./gestureDiagnostics');
+    expect(exportGestureDiagnostics().events).toHaveLength(61);
+  } finally {
+    setGestureDiagnosticsEnabled(false);
+    stop();
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: previous });
+    jest.useRealTimers();
+  }
 });
