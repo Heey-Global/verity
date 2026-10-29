@@ -52,6 +52,7 @@ function fixture(root = '/var/lib/docker/volumes/data/_data') {
           SecurityOpt: ['no-new-privileges=true'],
           NetworkMode: binding.networkName,
           ReadonlyRootfs: true,
+          PublishAllPorts: false,
           PidMode: '',
           UTSMode: '',
           IpcMode: 'private',
@@ -103,6 +104,9 @@ it('accepts exact host-owned relay configuration and rejects unsafe substitution
   });
   expect(() => check(healthcheck)).toThrow();
   const mutations: ((f: ReturnType<typeof fixture>) => void)[] = [
+    (f) => {
+      f.reply[0]!.HostConfig.PublishAllPorts = true;
+    },
     (f) => {
       f.reply[0]!.HostConfig.SecurityOpt.push('seccomp=unconfined');
     },

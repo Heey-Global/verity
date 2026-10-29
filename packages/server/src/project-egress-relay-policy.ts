@@ -37,6 +37,7 @@ const relay = z
       }),
       HostConfig: z.object({
         ReadonlyRootfs: z.literal(true),
+        PublishAllPorts: z.literal(false),
         PidMode: z.literal(''),
         UTSMode: z.literal(''),
         IpcMode: z.literal('private'),
