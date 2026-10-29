@@ -102,13 +102,36 @@ export function createBuildDiagnosticStore(
       serialize(async () => {
         const file = path(operationId);
         await prune();
-        const error = cause as { stdout?: unknown; stderr?: unknown; code?: unknown } | null;
-        const output = [error?.stdout, error?.stderr]
-          .filter((value): value is string => typeof value === 'string')
-          .join('\n');
-        const raw =
-          output ||
-          (cause instanceof Error ? cause.message : 'Build failed without captured output');
+        // The production builder wraps command failures with phase context.
+        // Follow bounded, cycle-safe causes without losing the original streams.
+        let current: unknown = cause;
+        let output = '';
+        let truncated = false;
+        const seen = new Set<unknown>();
+        for (
+          let depth = 0;
+          depth < 16 && current !== null && typeof current === 'object' && !seen.has(current);
+          depth += 1
+        ) {
+          seen.add(current);
+          const error = current as {
+            stdout?: unknown;
+            stderr?: unknown;
+            code?: unknown;
+            cause?: unknown;
+          };
+          if (!output.trim())
+            output = [error.stdout, error.stderr]
+              .filter((value): value is string => typeof value === 'string' && value.length > 0)
+              .join('\n');
+          truncated ||= error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          current = error.cause;
+        }
+        const raw = output.trim()
+          ? output
+          : cause instanceof Error
+            ? cause.message
+            : 'Build failed without captured output';
         const safe = sanitizeDiagnostic(raw, secrets, true);
         const diagnostic: BuildDiagnostic = {
           operationId,
@@ -116,7 +139,7 @@ export function createBuildDiagnosticStore(
           phase: 'image_build',
           code: 'build_failed',
           text: safe,
-          truncated: error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+          truncated,
         };
         // The cap covers the encoded record, including JSON escaping and metadata.
         while (

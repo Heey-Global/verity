@@ -101,4 +101,23 @@ describe('build diagnostic files', () => {
       }
     },
   );
+  it('captures command output and truncation through production build error wrappers', async () => {
+    const root = await directory();
+    const store = createBuildDiagnosticStore(root);
+    const id = randomUUID();
+    const command = Object.assign(new Error('command failed'), {
+      stdout: 'compiler started',
+      stderr: 'detailed failure with password=opaque',
+      code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    });
+    const wrapped = new Error('Devcontainer image build failed: shortened status', {
+      cause: command,
+    });
+    await store.save(id, new Error('provision failed', { cause: wrapped }));
+    const result = await store.read(id);
+    expect(result?.text).toContain('compiler started');
+    expect(result?.text).toContain('detailed failure');
+    expect(result?.text).not.toContain('opaque');
+    expect(result?.truncated).toBe(true);
+  });
 });
