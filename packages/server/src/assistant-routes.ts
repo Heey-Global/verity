@@ -45,7 +45,17 @@ export function registerAssistantRoutes(
       return reply.code(403).send({ error: 'Administrator access required' });
     const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(request.body);
     await store.assistant.configure(enabled, request.localUserId!);
-    if (enabled) await deps.ensureSession();
+    if (enabled) {
+      try {
+        await deps.ensureSession();
+      } catch {
+        // Leave the switch off rather than on without a session to talk to.
+        await store.assistant.configure(false, request.localUserId!);
+        return reply
+          .code(503)
+          .send({ error: 'The assistant session could not be created. Try again.' });
+      }
+    }
     return status();
   });
 

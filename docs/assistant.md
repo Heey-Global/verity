@@ -47,6 +47,10 @@ Verity Control itself can never be granted.
   every later tool call of that turn is checked against. It is checked before
   a new session is created and again right before delivery. Handoffs from other
   Verity Control sessions are unchanged.
+- Control's fleet-wide reads (`verity_diagnostics`, `verity_list_sessions`,
+  `verity_session_progress`, `verity_recent_session_messages`) are refused for
+  the assistant session, because it processes mail and voice notes. To hand off,
+  it targets a project or a new session.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
@@ -61,5 +65,5 @@ the previous behaviour.
 ## Not yet included
 
 - Capture from a widget, Control Center or the Dynamic Island.
-- Reading other projects' knowledge.
+- Reading other projects' knowledge or listing sessions of granted projects.
 - A shared registry for functions; QA and the assistant keep separate storage.

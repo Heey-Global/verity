@@ -123,7 +123,8 @@ export function QuickCaptureCard({
       voice.toggle();
     }
   }, [voice]);
-  const save = async (target = projectId) => {
+  const save = async () => {
+    const target = projectId;
     const assistant = toAssistant && assistantSessionId !== null;
     if (!text.trim() || savingRef.current || (target === null && !assistant)) return;
     if (uploads.reduce((total, upload) => total + upload.data.length, 0) > 45_000_000) {

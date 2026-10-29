@@ -44,6 +44,17 @@ describe('assistant settings', () => {
     await ctx.store.assistant.configure(false, 'admin');
     expect((await ctx.store.assistant.settings()).session_id).toBe(ids[0]);
   });
+
+  it('replaces a stale session id only once', async () => {
+    await ctx.store.assistant.configure(true, 'admin');
+    await ctx.store.assistant.session('old');
+    const ids = await Promise.all([
+      ctx.store.assistant.replaceSession('old', 'n1'),
+      ctx.store.assistant.replaceSession('old', 'n2'),
+    ]);
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).not.toBe('old');
+  });
 });
 
 describe('assistant project grants', () => {

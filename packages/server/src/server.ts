@@ -6732,6 +6732,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           await requireAssistantSession(deps.eventStore, sessionId);
           return;
         }
+        // The assistant reads mail and voice notes, so it must not observe projects nobody
+        // granted. Control's fleet-wide reads stay with plain Control sessions; the
+        // assistant reaches projects through verity_assistant and granted handoffs only.
+        if (
+          (toolName === 'verity_diagnostics' ||
+            toolName === 'verity_list_sessions' ||
+            toolName === 'verity_session_progress' ||
+            toolName === 'verity_recent_session_messages') &&
+          (await deps.eventStore.assistant.settings()).session_id === sessionId
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The assistant reaches projects only through verity_assistant and handoffs to granted projects.',
+          );
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -10065,7 +10078,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // callers share one attempt, so two requests never spawn the same session id twice.
   let ensuringAssistant: Promise<string> | undefined;
   const ensureAssistantSession = async (): Promise<string> => {
-    const id = await deps.eventStore.assistant.session(randomUUID());
+    let id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
+    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
     if (await deps.eventStore.getSession(id)) return id;
     const project = await ensureVerityControlProject();
     const result = await sessionCreate.spawn(

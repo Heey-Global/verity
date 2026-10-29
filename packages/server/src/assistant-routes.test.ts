@@ -96,6 +96,31 @@ describe('assistant settings routes', () => {
       await app.close();
     }
   });
+
+  it('leaves the switch off when the session cannot be created', async () => {
+    vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(true);
+    const app = Fastify();
+    app.addHook('preHandler', async (request) => {
+      request.localUserId = 'admin';
+    });
+    registerAssistantRoutes(app, ctx.store, {
+      ensureSession: async () => {
+        throw new Error('Verity Control unavailable');
+      },
+      sessionExists: async () => false,
+    });
+    try {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/settings/assistant',
+        payload: { enabled: true },
+      });
+      expect(response.statusCode).toBe(503);
+      expect((await ctx.store.assistant.settings()).enabled).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe('assistant project routes', () => {

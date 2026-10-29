@@ -50,6 +50,18 @@ export class AssistantStore {
     return row.session_id;
   }
 
+  /** Swaps a stale session id for a fresh one; returns whichever id is stored afterwards. */
+  async replaceSession(stale: string, candidate: string): Promise<string> {
+    const row = (
+      await sql<{
+        session_id: string;
+      }>`update assistant_settings set session_id = ${candidate} where id = 1 and session_id = ${stale} returning session_id`.execute(
+        this.db,
+      )
+    ).rows[0];
+    return row?.session_id ?? (await this.session(candidate));
+  }
+
   async grants(): Promise<AssistantGrant[]> {
     return (
       await sql<AssistantGrant>`select project_id, mode, sponsor_user_id, revision from assistant_project_grants order by project_id`.execute(
