@@ -148,7 +148,8 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
       if (!service) {
         service = createGitHubPrService({
           repoDir: '',
-          ...(opts.prStatusTtlMs === undefined ? {} : { ttlMs: opts.prStatusTtlMs }),
+          // Repository reads are cached by the shared, mutation-invalidated status layer.
+          ttlMs: 0,
           identity: () => Promise.resolve(ref),
           asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
           failureCooldownFor: prFailureCooldownFor,

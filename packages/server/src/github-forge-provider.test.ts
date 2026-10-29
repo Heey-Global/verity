@@ -1,3 +1,4 @@
+import { createForgeStatusCache } from './forge-status-cache.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
 import type { GitOutput } from './branches.js';
@@ -159,4 +160,21 @@ describe('repository supervision discovery', () => {
     await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+});
+
+it('refetches repository status after the shared cache is invalidated', async () => {
+  const fetch = vi.fn<HttpFetch>(async () => json([]));
+  const forge = provider(fetch);
+  const service = forge.repositoryPrService!(project);
+  const cache = createForgeStatusCache();
+  const identity = { authority: 'test', owner: 'acme', repo: 'app' };
+  const read = () => cache.read(identity, 'feature', () => service.prStatusForBranch('feature'));
+  await read();
+  const first = fetch.mock.calls.length;
+  expect(first).toBeGreaterThan(0);
+  await read();
+  expect(fetch).toHaveBeenCalledTimes(first);
+  cache.invalidate(identity);
+  await read();
+  expect(fetch.mock.calls.length).toBeGreaterThan(first);
 });
