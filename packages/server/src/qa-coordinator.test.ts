@@ -39,7 +39,15 @@ async function enroll(mode: 'monitor' | 'automatic' = 'automatic') {
   await ctx.store.repairs.configureQA(true, 'admin');
   await ctx.store.repairs.configure('a', 'admin', mode);
   await ctx.store.repairs.health('a', 'healthy', null);
-  return ctx.store.repairs.observe('a', 'pr:42', 'sha', '{}');
+  return ctx.store.repairs.observe(
+    'a',
+    'pr:42',
+    'sha',
+    JSON.stringify({
+      observedAt: new Date().toISOString(),
+      status: { pipeline: 'failure', headSha: 'sha' },
+    }),
+  );
 }
 async function answer(incident: { id: string }, text?: string) {
   const state = await ctx.store.repairs.qa();
@@ -205,4 +213,31 @@ it('releases a review claim when session creation fails before dispatch', async 
   expect(deps.dispatch).not.toHaveBeenCalled();
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('admits a fresh same-repository failure despite unrelated partial discovery', async () => {
+  const incident = await enroll();
+  const { deps, coordinator } = harness();
+  await ctx.store.repairs.health('a', 'partial', null);
+  await coordinator.tick();
+  await answer(incident);
+  await coordinator.tick();
+  expect(deps.delegate).toHaveBeenCalledWith('a', incident.id, 'sha');
+});
+it('does not use old incident evidence just because the repository was checked recently', async () => {
+  const incident = await enroll();
+  const { deps, coordinator } = harness();
+  await ctx.store.repairs.observe(
+    'a',
+    'pr:42',
+    'sha',
+    JSON.stringify({
+      observedAt: new Date(Date.now() - 600000).toISOString(),
+      status: { pipeline: 'failure', headSha: 'sha' },
+    }),
+  );
+  await coordinator.tick();
+  await answer(incident);
+  await coordinator.tick();
+  expect(deps.delegate).not.toHaveBeenCalled();
 });

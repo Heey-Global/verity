@@ -27,6 +27,32 @@ export function parseQADecision(text: string) {
     return undefined;
   }
 }
+export function hasFreshRepairEvidence(incident: RepairIncident): boolean {
+  try {
+    const evidence = JSON.parse(incident.evidence) as {
+      observedAt?: string;
+      fork?: boolean;
+      status?: { pipeline?: string; headSha?: string };
+      sha?: string;
+      conclusion?: string;
+    };
+    const observedAt = Date.parse(evidence.observedAt ?? '');
+    if (
+      !Number.isFinite(observedAt) ||
+      observedAt > Date.now() ||
+      Date.now() - observedAt > 180_000 ||
+      evidence.fork
+    )
+      return false;
+    return incident.resource.startsWith('pr:')
+      ? evidence.status?.pipeline === 'failure' && evidence.status.headSha === incident.revision
+      : evidence.sha === incident.revision &&
+          ['failure', 'timed_out', 'action_required'].includes(evidence.conclusion ?? '');
+  } catch {
+    return false;
+  }
+}
+
 type Snapshot = {
   projectId: string;
   fingerprint: string;
@@ -132,7 +158,7 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
           !item ||
           mandate?.revision !== item.mandateRevision ||
           mandate.mode !== 'automatic' ||
-          !['healthy', 'workflow-monitoring-unsupported'].includes(mandate.health) ||
+          !['healthy', 'partial', 'workflow-monitoring-unsupported'].includes(mandate.health) ||
           !mandate.checked_at ||
           Date.now() - Date.parse(mandate.checked_at) > 180_000 ||
           !item.incidents.some(
@@ -145,6 +171,10 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
           !(await active(state.revision))
         )
           continue;
+        const observed = (await store.incidents(assignment.projectId)).find(
+          (i) => i.id === assignment.incidentId && i.revision === assignment.revision,
+        );
+        if (!observed || !hasFreshRepairEvidence(observed)) continue;
         await deps.delegate(assignment.projectId, assignment.incidentId, assignment.revision);
         const current = (await store.incidents(assignment.projectId)).find(
           (i) => i.id === assignment.incidentId,

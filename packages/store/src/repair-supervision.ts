@@ -204,7 +204,7 @@ export class RepairSupervisionStore {
   }
   async incidents(projectId: string): Promise<RepairIncident[]> {
     return (
-      await sql<RepairIncident>`select * from repair_incidents where project_id = ${projectId} order by updated_at desc limit 200`.execute(
+      await sql<RepairIncident>`select * from repair_incidents where project_id = ${projectId} and (owner_session_id is not null or id in (select id from repair_incidents where project_id = ${projectId} order by updated_at desc limit 200)) order by updated_at desc`.execute(
         this.db,
       )
     ).rows;
@@ -216,6 +216,11 @@ export class RepairSupervisionStore {
         this.db,
       );
     return result.rows.length > 0;
+  }
+  async invalidateObservation(projectId: string, resource: string): Promise<void> {
+    await sql`update repair_incidents set evidence = jsonb_set(evidence::jsonb, '{observedAt}', 'null'::jsonb, true)::text where project_id=${projectId} and resource=${resource} and state not in ('resolved','superseded')`.execute(
+      this.db,
+    );
   }
   async observe(
     projectId: string,

@@ -231,3 +231,28 @@ it('releases the worker claim on a persisted interruption', async () => {
   expect(finished.owner_session_id).toBeNull();
   expect(finished.state).toBe('verifying');
 });
+
+it('releases a repair claim if session creation fails before dispatch', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { deps, supervisor } = harness();
+  vi.mocked(deps.spawn).mockRejectedValue(new Error('provisioning failed'));
+  await supervisor.sweep();
+  expect(deps.dispatch).not.toHaveBeenCalled();
+  expect((await ctx.store.repairs.incidents('a'))[0]?.owner_session_id).toBeNull();
+});
+
+it('invalidates prior actionable evidence immediately when that PR status becomes unknown', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'monitor');
+  const { observation, supervisor } = harness();
+  await supervisor.sweep();
+  expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
+    'observedAt',
+    expect.any(String),
+  );
+  observation.statuses[0]!.status.pipeline = 'unknown';
+  await supervisor.sweep();
+  expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
+    'observedAt',
+    null,
+  );
+});
