@@ -41,6 +41,8 @@ opt_check=0
 opt_advance_unpaired_from=''
 opt_update=0
 opt_reinstall=0
+opt_rotate_identity=0
+opt_restart_rotation=0
 opt_yes=0
 opt_restore=''
 opt_restore_action='trial'
@@ -114,6 +116,8 @@ Options:
   --restore-repository ID  Select the exact repository (required for a new restore).
   --restore-snapshot N Select the exact snapshot sequence (required for a new restore).
   --restore-kind KIND  Select manual, scheduled or pre-update (required for a new restore).
+  --restart-rotation  Begin another rotation after a completed one; requires --rotate-identity.
+  --rotate-identity   Revoke all devices and replace CA, TLS and pairing identity; resume safely after interruption.
   --new-identity      Generate new pairing identity and retain no previous devices.
   --restore-action ACTION  trial, status, devices, review, accept or abort.
   --keep-device ID    Explicitly retain a reviewed device; repeat for each device.
@@ -147,6 +151,8 @@ while [ "$#" -gt 0 ]; do
     --project=*) opt_project="${1#--project=}"; shift ;;
     --backup-dir) [ "$#" -ge 2 ] || die 'option --backup-dir needs a value'; opt_backup_dir="$2"; shift 2 ;;
     --backup-dir=*) opt_backup_dir="${1#--backup-dir=}"; shift ;;
+    --rotate-identity) opt_rotate_identity=1; shift ;;
+    --restart-rotation) opt_restart_rotation=1; shift ;;
     --restore) [ "$#" -ge 2 ] || die 'option --restore needs a value'; opt_restore="$2"; shift 2 ;;
     --restore-repository) [ "$#" -ge 2 ] || die 'option --restore-repository needs a value'; opt_restore_repository="$2"; shift 2 ;;
     --restore-snapshot) [ "$#" -ge 2 ] || die 'option --restore-snapshot needs a value'; opt_restore_snapshot="$2"; shift 2 ;;
@@ -165,6 +171,13 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+[ "$opt_restart_rotation" = 0 ] || [ "$opt_rotate_identity" = 1 ] \
+  || die '--restart-rotation requires --rotate-identity'
+if [ "$opt_rotate_identity" = 1 ]; then
+  [ "$opt_update$opt_reinstall$opt_check" = 000 ] && [ -z "$opt_restore$opt_deployment_id$opt_advance_unpaired_from$opt_backup_dir$opt_project" ] \
+    || die '--rotate-identity cannot be combined with install, update or restore options'
+fi
 
 if [ -n "$opt_restore" ]; then
   [ "$opt_update$opt_reinstall$opt_check" = 000 ] || die '--restore cannot be combined with --update, --reinstall or --check'
@@ -408,6 +421,15 @@ if [ -z "$opt_restore" ] && [ -f "$STATE_DIR/restore/job" ]; then
         || die 'recovery activation is incomplete; resume --restore-action accept' ;;
     *) die 'recovery is in progress; use --restore-action status, accept or abort' ;;
   esac
+fi
+if [ "$opt_rotate_identity" = 1 ]; then
+  source "$script_dir/verity-rotate-identity"
+  verity_rotate_identity
+  exit 0
+fi
+if [ -e "$STATE_DIR/identity-rotation/checkpoint" ]; then
+  [ "$(jq -er '.phase' "$STATE_DIR/identity-rotation/checkpoint")" = complete ] \
+    || die 'identity rotation is incomplete; resume --rotate-identity before other operations'
 fi
 if [ -n "$opt_restore" ]; then
   source "$script_dir/verity-restore-install"

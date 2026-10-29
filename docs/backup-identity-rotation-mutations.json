@@ -1,0 +1,120 @@
+{
+  "format": 1,
+  "scope": "Root installer identity-rotation shell guards. Real OpenSSL material; Docker, systemd, ownership and sync effects are mocked. These checks do not establish actual Docker reboot behavior or native-device pin reset.",
+  "sourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+  "testFileSha256": {
+    "path": "deploy/bin/verity-rotate-identity.test.mjs",
+    "sha256": "af945bd1fe5296a03046ee6aab3d823f698159018146020b62071dd822101621"
+  },
+  "cases": [
+    {
+      "id": "rotation-device-revocation",
+      "file": "deploy/bin/verity-rotate-identity",
+      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+      "replace": "DELETE FROM auth_tokens;",
+      "with": "SELECT 1;",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=resumes after publish failure",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 rotation resumes after publish failure without restoring old credentials (9926.644468ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (9926.644468ms)",
+        "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+      ]
+    },
+    {
+      "id": "rotation-reboot-fence",
+      "file": "deploy/bin/verity-rotate-identity",
+      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+      "replace": "docker update --restart=no \"$name\" >/dev/null || die 'cannot disable managed updater restart'\n",
+      "with": "true\n",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=resumes after publish failure",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 rotation resumes after publish failure without restoring old credentials (10735.20065ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 rotation resumes after publish failure without restoring old credentials (10735.20065ms)",
+        "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:"
+      ]
+    },
+    {
+      "id": "rotation-publication-symlink",
+      "file": "deploy/bin/verity-rotate-identity",
+      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+      "replace": "[[ ! -L $STATE_DIR/$name && ( ! -e $STATE_DIR/$name || -f $STATE_DIR/$name ) ]]",
+      "with": "true",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=substituted publication target",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (11870.138134ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 rotation refuses a substituted publication target and leaves runtime stopped (11870.138134ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
+      ]
+    },
+    {
+      "id": "rotation-candidate-validation",
+      "file": "deploy/bin/verity-rotate-identity",
+      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+      "replace": "  _verity_rotation_validate\n  if [[ $phase = prepared ]]; then",
+      "with": "  true\n  if [[ $phase = prepared ]]; then",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=corrupt replacement material",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (16351.694113ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 corrupt replacement material cannot publish or restart after credential revocation (16351.694113ms)",
+        "AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: 0"
+      ]
+    },
+    {
+      "id": "rotation-helper-serialization",
+      "file": "deploy/bin/verity-rotate-identity",
+      "originalSourceSha256": "1b23bab00977b07cfb44a4a2903390986668ff7956aa414e63d90c564fcfc41f",
+      "replace": "flock --exclusive \"$rotation_helper_lock\"",
+      "with": ":",
+      "command": [
+        "node",
+        "--test",
+        "--test-name-pattern=concurrent CA helper",
+        "deploy/bin/verity-rotate-identity.test.mjs"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (17435.730511ms)",
+        "\u2139 fail 1",
+        "\u2716 failing tests:",
+        "\u2716 a concurrent CA helper must release its lock before rotation writes any runtime state (17435.730511ms)",
+        "[Error: ENOENT: no such file or directory, open '<tmp>/helper-lock-attempt'] { errno: -2, code: 'ENOENT', syscall: 'open', path: '<tmp>/helper-lock-attempt' }"
+      ]
+    }
+  ],
+  "restoration": {
+    "sourceRestored": true,
+    "targetedRestoredTests": "node --test deploy/bin/verity-rotate-identity.test.mjs: 10 passed, 0 failed after all mutations were restored."
+  }
+}

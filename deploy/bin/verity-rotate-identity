@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Sourced by verity-install with the installer lock held. Failures deliberately leave runtime stopped.
+verity_rotate_identity() {
+  local root="$STATE_DIR/identity-rotation" checkpoint phase project deployment postgres old_ca temporary name
+  local containers policies policy helper_active=false
+  [[ $(id -u) = 0 ]] || die 'identity rotation requires root'
+  for name in openssl jq flock sync; do command -v "$name" >/dev/null || die "identity rotation requires $name"; done
+  [[ ! -L $root ]] || die 'unsafe identity rotation directory'
+  if [[ -e $root ]]; then
+    [[ -d $root && $(stat -c %u "$root") = 0 && $(stat -c %a "$root") = 700 ]] || die 'unsafe identity rotation directory'
+  else
+    install -d -o root -g root -m 0700 "$root"
+  fi
+  checkpoint="$root/checkpoint"
+  [[ ! -L $STATE_DIR/.verity-managed-up.lock && ( ! -e $STATE_DIR/.verity-managed-up.lock || -f $STATE_DIR/.verity-managed-up.lock ) ]] || die 'unsafe managed install lock'
+  exec {rotation_managed_lock}>"$STATE_DIR/.verity-managed-up.lock"
+  flock --nonblock --exclusive "$rotation_managed_lock" || die 'managed deployment migration is already running; retry rotation after it finishes'
+  [[ ! -L $STATE_DIR/.backup-identity.lock ]] || die 'unsafe backup identity lock'
+  [[ ! -e $STATE_DIR/.backup-identity.lock || -f $STATE_DIR/.backup-identity.lock ]] || die 'unsafe backup identity lock'
+  exec {rotation_helper_lock}>"$STATE_DIR/.backup-identity.lock"
+  flock --exclusive "$rotation_helper_lock"
+  _verity_rotation_resume_helper() {
+    # The oneshot takes this lock too. Release it before synchronous publication.
+    flock --unlock "$rotation_helper_lock"
+    exec {rotation_helper_lock}>&-
+    local request_dir="${VERITY_BACKUP_IDENTITY_DIR:-/var/lib/verity/backup-identity}"
+    if [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null; then
+      if [[ $(jq -r .helperActive "$checkpoint") = true ]]; then systemctl start verity-backup-identity.path || die 'identity rotated; cannot resume backup identity helper'; fi
+      if [[ -e $request_dir/recipient.json || -L $request_dir/recipient.json ]]; then
+        systemctl start verity-backup-identity.service || die 'identity rotated; CA backup publication failed; retry --rotate-identity'
+      fi
+    elif [[ -e $request_dir/recipient.json || -L $request_dir/recipient.json ]]; then
+      VERITY_STATE_DIR="$STATE_DIR" "$repo_root/deploy/host/verity-backup-identity" || die 'identity rotated; CA backup publication failed; retry --rotate-identity'
+    fi
+  }
+  _verity_rotation_save() {
+    temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
+    jq --arg phase "$1" '.phase=$phase' "$checkpoint" >"$temporary"
+    chmod 0600 "$temporary"; sync -f "$temporary"
+    mv -T -- "$temporary" "$checkpoint"; sync -f "$root"
+  }
+  _verity_rotation_policies() {
+    local inventory=$1 saved=$2 container restart
+    policies=$saved
+    while IFS= read -r container; do
+      if ! jq -e --arg id "$container" 'has($id)' <<<"$policies" >/dev/null; then
+        restart=$(docker inspect --format '{{json .HostConfig.RestartPolicy}}' "$container" | jq -er 'if .Name=="on-failure" then "on-failure:"+(.MaximumRetryCount|tostring) else .Name end') || die 'cannot inspect runtime restart policy'
+        [[ $restart =~ ^(no|always|unless-stopped|on-failure:[0-9]+)$ ]] || die 'unsupported runtime restart policy'
+        policies=$(jq --arg id "$container" --arg restart "$restart" '.+{($id):$restart}' <<<"$policies")
+      fi
+    done < <(jq -r '.[]' <<<"$inventory")
+  }
+  if [[ ${opt_restart_rotation:-0} = 1 && ( -e $checkpoint || -L $checkpoint ) ]]; then
+    [[ -f $checkpoint && ! -L $checkpoint && $(stat -c %u "$checkpoint") = 0 ]] || die 'invalid identity rotation checkpoint'
+    jq -e '.format==1 and .phase=="complete"' "$checkpoint" >/dev/null || die 'resume the unfinished rotation without --restart-rotation'
+    temporary=$(mktemp "$root/completed.XXXXXXXX")
+    mv -T -- "$checkpoint" "$temporary"; sync -f "$root"
+  fi
+  if [[ ! -e $checkpoint && ! -L $checkpoint ]]; then
+    project=$(read_state "$PROJECT_PATH")
+    deployment=$(read_state "$ID_PATH")
+    [[ $project =~ ^[a-z0-9][a-z0-9_-]{0,127}$ && $deployment =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || die 'rotation requires an existing installed deployment'
+    # Save immutable container IDs, never names that another install could reuse.
+    containers=$({ docker ps -q --filter "label=com.docker.compose.project=$project" --filter 'label!=com.docker.compose.service=postgres'; docker ps -q --filter "label=verity.managed-deployment-id=$deployment"; } | sort -u | jq -Rsc 'split("\n")|map(select(length>0))')
+    jq -e 'length>0 and all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'no installed runtime found for identity rotation'
+    postgres=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=postgres')
+    [[ $postgres =~ ^[a-f0-9]{12,64}$ ]] || die 'rotation requires exactly one running PostgreSQL container'
+    [[ -f $STATE_DIR/tls-ca-cert.pem && ! -L $STATE_DIR/tls-ca-cert.pem ]] || die 'rotation requires the existing CA'
+    old_ca=$(openssl x509 -in "$STATE_DIR/tls-ca-cert.pem" -outform DER | sha256sum | cut -d ' ' -f1)
+    if [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null; then
+      if systemctl is-active --quiet verity-backup-identity.path; then helper_active=true; fi
+    fi
+    _verity_rotation_policies "$containers" '{}'
+    temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
+    jq -cn --argjson policies "$policies" --arg project "$project" --arg deployment "$deployment" --arg postgres "$postgres" --arg oldCa "$old_ca" --argjson containers "$containers" --argjson helperActive "$helper_active" '{format:1,phase:"fencing",project:$project,deployment:$deployment,postgres:$postgres,oldCa:$oldCa,containers:$containers,policies:$policies,helperActive:$helperActive}' >"$temporary"
+    chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"; sync -f "$STATE_DIR"
+  fi
+  [[ -f $checkpoint && ! -L $checkpoint && $(stat -c %u "$checkpoint") = 0 ]] || die 'invalid identity rotation checkpoint'
+  jq -e '.format==1 and (.phase|IN("fencing","prepared","revoked","published","complete")) and (.containers|length>0 and all(.[];test("^[a-f0-9]{12,64}$"))) and (.postgres|test("^[a-f0-9]{12,64}$")) and (.oldCa|test("^[a-f0-9]{64}$")) and (.helperActive|type=="boolean") and (. as $c | all(.containers[]; . as $id | $c.policies[$id]|type=="string" and test("^(no|always|unless-stopped|on-failure:[0-9]+)$")))' "$checkpoint" >/dev/null || die 'invalid identity rotation checkpoint'
+  phase=$(jq -r .phase "$checkpoint")
+  if [[ $phase = complete ]]; then
+    _verity_rotation_resume_helper
+    note 'Identity rotation already completed; all devices must pair again.'
+    return
+  fi
+  # Stop the updater first: it must not replace a recorded Server while we fence it.
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    docker update --restart=no "$name" >/dev/null || die 'cannot disable managed updater restart'
+    docker stop --time 60 "$name" >/dev/null || die 'cannot fence managed updater'
+  done < <(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater')
+  if [[ $phase = fencing ]]; then
+    # Include a replacement that the updater created immediately before it stopped.
+    temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
+    containers=$({ jq -r '.containers[]' "$checkpoint"; docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres'; docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")"; } | sort -u | jq -Rsc 'split("\n")|map(select(length>0))')
+    jq -e 'all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'invalid runtime inventory'
+    _verity_rotation_policies "$containers" "$(jq -c .policies "$checkpoint")"
+    jq --argjson containers "$containers" --argjson policies "$policies" '.containers=$containers | .policies=$policies' "$checkpoint" >"$temporary"
+    chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"
+  fi
+  # Repeat fencing even after reboot or an interrupted Docker call. Never resume on failure.
+  if [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null; then
+    if systemctl cat verity-backup-identity.path >/dev/null 2>&1; then
+      systemctl stop verity-backup-identity.path verity-backup-identity.service || die 'cannot stop backup identity helper'
+    fi
+  fi
+  while IFS= read -r name; do
+    docker update --restart=no "$name" >/dev/null || die 'cannot disable installed runtime restart'
+    docker stop --time 60 "$name" >/dev/null || die 'cannot fence installed runtime'
+  done < <(jq -r '.containers[]' "$checkpoint")
+  if [[ $phase = fencing ]]; then
+    # Only the pre-revocation phase may replace incomplete candidate material.
+    [[ ! -L $root/material ]] || die 'unsafe rotation material'
+    rm -rf -- "$root/material"
+    install -d -o root -g root -m 0700 "$root/material"
+    VERITY_STATE_DIR="$root/material" "$script_dir/verity-pairing-material" >/dev/null || die 'cannot prepare replacement identity'
+    chmod 0700 "$root/material"
+    _verity_rotation_validate
+    for name in pairing-identity.pem tls-key.pem tls-cert.pem tls-ca-key.pem tls-ca-cert.pem pairing-code pairing-expires-at pairing-uri; do sync -f "$root/material/$name"; done
+    sync -f "$root/material"; sync -f "$root"
+    _verity_rotation_save prepared; phase=prepared
+  fi
+  _verity_rotation_validate
+  if [[ $phase = prepared ]]; then
+    # Persist the retirement before revoking credentials. Failure cannot restore old trust.
+    [[ ! -L $STATE_DIR/retired-identity-ca-sha256 && ( ! -e $STATE_DIR/retired-identity-ca-sha256 || -f $STATE_DIR/retired-identity-ca-sha256 ) ]] || die 'unsafe retired identity ledger'
+    temporary=$(mktemp "$STATE_DIR/.retired-identity.XXXXXXXX")
+    if [[ -e $STATE_DIR/retired-identity-ca-sha256 ]]; then cat "$STATE_DIR/retired-identity-ca-sha256" >"$temporary"; fi
+    old_ca=$(jq -r .oldCa "$checkpoint")
+    if ! grep -Fxq "$old_ca" "$temporary"; then printf '%s\n' "$old_ca" >>"$temporary"; fi
+    chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$STATE_DIR/retired-identity-ca-sha256"; sync -f "$STATE_DIR"
+    postgres=$(jq -r .postgres "$checkpoint")
+    docker exec -i "$postgres" psql -v ON_ERROR_STOP=1 -U verity -d verity >/dev/null <<'SQL' || die 'cannot revoke previous device credentials; runtime remains stopped'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+LOCK TABLE auth_tokens IN SHARE ROW EXCLUSIVE MODE;
+INSERT INTO backup_revocation_outbox(id, device_id)
+SELECT gen_random_uuid()::text, id FROM auth_tokens
+WHERE EXISTS (SELECT 1 FROM backup_policy WHERE id=1 AND journal_enabled);
+DELETE FROM auth_tokens;
+COMMIT;
+SQL
+    _verity_rotation_save revoked; phase=revoked
+  fi
+  if [[ $phase = revoked ]]; then
+    for name in pairing-identity.pem tls-key.pem tls-cert.pem tls-ca-key.pem tls-ca-cert.pem pairing-code pairing-expires-at pairing-uri; do
+      [[ ! -L $STATE_DIR/$name && ( ! -e $STATE_DIR/$name || -f $STATE_DIR/$name ) ]] || die 'unsafe identity publication target'
+      # Rename one file at a time while every reader is fenced; retry republishes the same generation.
+      temporary=$(mktemp "$STATE_DIR/.rotation-material.XXXXXXXX")
+      cp --preserve=mode,ownership -- "$root/material/$name" "$temporary"
+      sync -f "$temporary"; mv -T -- "$temporary" "$STATE_DIR/$name"
+    done
+    sync -f "$STATE_DIR"
+    _verity_rotation_save published; phase=published
+  fi
+  # A published generation is irreversible. Resuming never executes credential deletion again.
+  local updater_ids
+  updater_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater' | jq -Rsc 'split("\n")|map(select(length>0))')
+  while IFS= read -r name; do docker start "$name" >/dev/null || die 'replacement identity published; retry rotation to restart runtime'; done < <(jq -r --argjson updaters "$updater_ids" '.containers | sort_by(. as $id | $updaters | index($id) != null)[]' "$checkpoint")
+  while IFS= read -r name; do
+    policy=$(jq -r --arg id "$name" '.policies[$id]' "$checkpoint")
+    docker update --restart="$policy" "$name" >/dev/null || die 'replacement identity published; retry to restore runtime restart policy'
+  done < <(jq -r '.containers[]' "$checkpoint")
+  _verity_rotation_save complete
+  _verity_rotation_resume_helper
+  note 'Identity rotated. Remove the saved server from each device and pair again; offline devices retain their old trust until you do so.'
+  unset -f _verity_rotation_save
+}
+
+_verity_rotation_validate() {
+  local material="$STATE_DIR/identity-rotation/material" name key_public cert_public
+  for name in pairing-identity.pem tls-key.pem tls-cert.pem tls-ca-key.pem tls-ca-cert.pem pairing-code pairing-expires-at pairing-uri; do
+    [[ -f $material/$name && ! -L $material/$name ]] || die 'incomplete replacement identity'
+  done
+  openssl pkey -in "$material/pairing-identity.pem" -text -noout 2>/dev/null | grep -q ED25519 || die 'invalid replacement pairing identity'
+  openssl verify -CAfile "$material/tls-ca-cert.pem" "$material/tls-cert.pem" >/dev/null || die 'replacement TLS certificate does not match CA'
+  for name in tls tls-ca; do
+    key_public=$(openssl pkey -in "$material/$name-key.pem" -pubout -outform DER | sha256sum)
+    cert_public=$(openssl x509 -in "$material/$name-cert.pem" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum)
+    [[ $key_public = "$cert_public" ]] || die 'replacement certificate and key mismatch'
+  done
+}

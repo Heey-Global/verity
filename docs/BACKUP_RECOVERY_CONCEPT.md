@@ -311,8 +311,9 @@ is:
 1. "Replace recovery key" with the reason "the old key was exposed". This
    deletes the old generation's CA key file at once instead of at expiry.
 2. `sudo verity-install --rotate-identity` on the live host: a new CA, TLS and
-   pairing identity, all device tokens revoked, every device pairs again. The
-   identity in old snapshots and in off-host copies is then worthless.
+   pairing identity, all device tokens revoked, every device pairs again. Old snapshot credentials cannot authenticate to the rotated host. Offline
+   devices retain their old trust until their saved server is removed and paired
+   again; external copies are not erased or automatically distrusted.
 3. Use `--new-identity` for any later restore from a snapshot taken before the
    rotation.
 
