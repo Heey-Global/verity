@@ -588,3 +588,59 @@ it('retains a meeting title through revisioned sync and restart reads', async ()
     'Pricing decisions',
   );
 });
+
+describe('derived meeting results', () => {
+  it('isolates results by session and hides and rejects results from older transcript revisions', async () => {
+    await ctx.store.liveMeetings.putMeeting({ ...meeting, state: 'ended' });
+    const result = {
+      meetingId: meeting.id,
+      revision: 1,
+      status: 'ready' as const,
+      title: 'Delivery',
+      summary: 'The team agreed to ship.',
+      decisions: [
+        { id: 'decision-1', text: 'Ship', quote: 'First words', speaker: null, atSeconds: null },
+      ],
+      tasks: [],
+      openQuestions: [],
+      model: 'm',
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    expect(await ctx.store.liveMeetings.saveResult('session-2', result)).toBe(false);
+    expect(await ctx.store.liveMeetings.saveResult('session-1', result)).toBe(true);
+    expect(await ctx.store.liveMeetings.result('session-1', meeting.id)).toEqual(result);
+    expect(await ctx.store.liveMeetings.result('session-2', meeting.id)).toBeNull();
+    await ctx.store.liveMeetings.putMeeting({
+      ...meeting,
+      state: 'ended',
+      revision: 2,
+      transcript: 'Corrected words',
+    });
+    expect(await ctx.store.liveMeetings.result('session-1', meeting.id)).toMatchObject({
+      revision: 2,
+      status: 'working',
+      summary: null,
+    });
+    expect(await ctx.store.liveMeetings.saveResult('session-1', result)).toBe(false);
+  });
+
+  it('deletes derived results with the meeting', async () => {
+    await ctx.store.liveMeetings.putMeeting(meeting);
+    await ctx.store.liveMeetings.saveResult('session-1', {
+      meetingId: meeting.id,
+      revision: 1,
+      status: 'working',
+      title: null,
+      summary: null,
+      decisions: [],
+      tasks: [],
+      openQuestions: [],
+      model: null,
+      createdAt: 100,
+      updatedAt: 100,
+    });
+    await ctx.db.deleteFrom('live_meetings').where('id', '=', meeting.id).execute();
+    expect(await ctx.db.selectFrom('live_meeting_results').selectAll().execute()).toEqual([]);
+  });
+});

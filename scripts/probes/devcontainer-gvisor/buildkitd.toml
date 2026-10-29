@@ -1,0 +1,13 @@
+# Candidate configuration for an isolated test host, not a deployment template.
+# Verify this executable's release and checksum before starting the worker.
+insecure-entitlements = []
+
+[worker.oci]
+  enabled = true
+  binary = "/usr/local/bin/runsc"
+  snapshotter = "native"
+  max-parallelism = 1
+  noProcessSandbox = false
+
+[worker.containerd]
+  enabled = false

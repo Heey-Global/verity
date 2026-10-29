@@ -1,3 +1,4 @@
+import { hasNoNewPrivileges } from './docker-security-options.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -53,6 +54,13 @@ const CONNECTOR_READY_MARKER = 'preview connector established';
 const removedUnreadyConnectorFailures = new WeakSet<object>();
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
 
+export interface PreviewCreateDiagnostic {
+  phase: 'ensure_sharing' | 'capability_check' | 'share_create' | 'share_ready';
+  code: string;
+  shareCreateSent: boolean;
+}
+export type PreviewCreateObserver = (diagnostic: PreviewCreateDiagnostic) => void;
+
 export interface PreviewEdgeCreate {
   webhook?: { path: string };
   pinHash: string;
@@ -78,7 +86,7 @@ export interface PreviewEdgeBinding {
  * something this interface can express today — see the contract gaps in
  * `docs/handoffs/PUBLIC_PREVIEW_UPLINK_HANDOFF.md`. */
 export interface PreviewEdgeControl {
-  create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding>;
+  create(input: PreviewEdgeCreate, observe?: PreviewCreateObserver): Promise<PreviewEdgeBinding>;
   remove(shareId: string): Promise<void>;
   isAvailable?(): boolean;
   canStartSharing?(): boolean;
@@ -1338,7 +1346,7 @@ export class PreviewShareManager {
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 64,
       memoryBytes: 128 * 1024 * 1024,
       nanoCpus: 500_000_000,
@@ -1666,7 +1674,7 @@ async function assertEligibleSandbox(
     containerUser === '0' ||
     containerUser === 'root' ||
     sandbox.capDrop?.includes('ALL') !== true ||
-    sandbox.securityOpt?.includes('no-new-privileges:true') !== true
+    !hasNoNewPrivileges(sandbox.securityOpt)
   ) {
     throw new PreviewShareConflictError('sandbox does not satisfy public preview hardening');
   }

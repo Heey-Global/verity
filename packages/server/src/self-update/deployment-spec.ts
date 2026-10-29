@@ -10,6 +10,23 @@ const MAX_MEMORY_BYTES = 1024 ** 4;
 const MAX_NANO_CPUS = 1024 * 1_000_000_000;
 const MAX_PIDS_LIMIT = 4_194_304;
 
+/**
+ * Host directory of the dedicated devcontainer builder's Unix socket
+ * (`deploy/buildkit`), mounted read-only at the same path in the Server.
+ *
+ * Fixed rather than configurable: the systemd unit owns this runtime directory,
+ * and a sealed spec naming any other host path would be a bind the installer
+ * never verified.
+ */
+export const DEVCONTAINER_BUILDER_SOCKET_DIRECTORY = '/run/verity-buildkit';
+
+/** Targets whose bind is read-only by construction. Every other mount is writable. */
+const READ_ONLY_TARGETS = [
+  '/run/verity-pairing',
+  '/run/verity-host-diagnostics',
+  DEVCONTAINER_BUILDER_SOCKET_DIRECTORY,
+];
+
 /** Host resource ceilings for the managed Server container. */
 export interface ServerDeploymentSpecResources {
   /** `HostConfig.Memory`. */
@@ -284,10 +301,19 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
         mount.target === '/var/run/docker.sock' &&
         !mount.readOnly) ||
         (mount.target === '/run/verity-pairing' && mount.readOnly) ||
+        ((mount.target === '/run/verity-backups' ||
+          mount.target === '/run/verity-backup-identity') &&
+          source.path !== '/' &&
+          !source.path.includes(':') &&
+          !mount.readOnly) ||
         (mount.target === '/run/verity-host-diagnostics' &&
           source.path !== '/' &&
           !source.path.includes(':') &&
-          mount.readOnly))
+          mount.readOnly) ||
+        // OPTIONAL, like the diagnostic bind: specs sealed before the builder
+        // existed stay parseable, and only a verified installation adds it.
+        (source.path === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
+          mount.target === DEVCONTAINER_BUILDER_SOCKET_DIRECTORY))
     ) {
       mounts.push({
         source: { kind: 'bind', path: source.path },
@@ -317,11 +343,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 8 ||
+    mounts.length > 11 ||
     mounts.some(
       (mount) =>
-        mount.readOnly !==
-        (mount.target === '/run/verity-pairing' || mount.target === '/run/verity-host-diagnostics'),
+        mount.target !== DEVCONTAINER_BUILDER_SOCKET_DIRECTORY &&
+        mount.readOnly !== READ_ONLY_TARGETS.includes(mount.target),
     ) ||
     new Set(mountKeys).size !== mountKeys.length ||
     // Distinct targets, not just distinct keys: two binds from different host
@@ -330,6 +356,8 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
     // vetted.
     new Set(mounts.map((mount) => mount.target)).size !== mounts.length ||
     !requiredVolumeKeys.every((key) => mountKeys.includes(key)) ||
+    mounts.some((mount) => mount.target === '/run/verity-backups') !==
+      mounts.some((mount) => mount.target === '/run/verity-backup-identity') ||
     // The two control-plane volumes form one boundary: the Server must rotate the
     // identity generation it asks the Runner to acknowledge over the matching
     // runtime socket. Accept old specs with neither, but never a half-upgraded pair.

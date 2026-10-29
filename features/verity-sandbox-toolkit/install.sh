@@ -36,23 +36,23 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.307}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.310}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.94.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.95.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
-DOPPLER_VERSION="${DOPPLERVERSION:-3.77.0}"
+DOPPLER_VERSION="${DOPPLERVERSION:-3.77.1}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.163.0}"
+CODEX_VERSION="${CODEXVERSION:-0.164.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.2.2}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.1.2}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.1.4}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -147,14 +147,14 @@ case "$ARCH" in
     GH_ARCH=amd64; DOPPLER_ARCH=amd64; GITLEAKS_ARCH=x64
     OSV_SCANNER_SHA256=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
     GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
-    DOPPLER_SHA256=92587cb89c2ff82fc2ddec2b2a9f275ff320994a44e16cd9310b55a429a82084
+    DOPPLER_SHA256=001f89a42629f9cb827cd86683c4c2dbf87c6299a8d6130643b98044bf5ed80a
     GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     ;;
   arm64)
     GH_ARCH=arm64; DOPPLER_ARCH=arm64; GITLEAKS_ARCH=arm64
     OSV_SCANNER_SHA256=2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4
     GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
-    DOPPLER_SHA256=3aa603d60bc8502ec67d9a57e917925f357ac2822eead484acda3875fe6a4d95
+    DOPPLER_SHA256=a7f4be5b30295921dfe1cdc34f905cd017210ec3264a47d46e315ab09cb03e1c
     GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
     ;;
 esac
@@ -486,7 +486,7 @@ WRITTEN_PATHS+=("$GITCONFIG")
 # .gitignore. Git auto-loads ~/.config/git/ignore (no core.excludesFile).
 GIT_IGNORE_DIR="$REMOTE_HOME/.config/git"
 mkdir -p "$GIT_IGNORE_DIR"
-printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' > "$GIT_IGNORE_DIR/ignore"
+printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
 # Chown only the git subdir we own — NOT the `.config` parent, which on an
 # arbitrary base (python:3.12 etc.) may already hold other tooling whose
 # ownership a recursive chown would silently clobber.
@@ -673,6 +673,10 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/
 # with the container capability; inert without VERITY_PROJECT_REPO_URL.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-repo" /opt/agent-seed/bin/verity-repo
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
+# Records the operator's "skip lint/format while dependencies are missing" answer
+# for the pre-push hook; the hook resolves it as a sibling, the symlink below
+# lets the agent run the command the hook prints.
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
@@ -695,6 +699,7 @@ ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-repo /usr/local/bin/verity-repo
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
+ln -sf /opt/agent-seed/bin/verity-local-checks /usr/local/bin/verity-local-checks
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
 ln -sf /opt/agent-seed/bin/verity-secret-scan /usr/local/bin/verity-secret-scan

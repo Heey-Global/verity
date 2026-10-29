@@ -3,15 +3,29 @@ import { parse as parseYaml } from 'yaml';
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   readManagedDeployment,
   MANAGED_DEPLOYMENT_SPEC_FILE,
+  MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE,
   MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
 import { sealDeploymentSpec } from './deployment-spec.js';
 import { managedServerContainerSpec } from './managed-server-owner.js';
 import { runManagedBootstrap, type ManagedBootstrapEnvironment } from './managed-bootstrap.js';
+
+// Fixtures supply explicit uid/gid; a container without a passwd entry must
+// still exercise the sealed mount transitions rather than fail in userInfo().
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
+  userInfo: () => ({
+    uid: 1000,
+    gid: 1000,
+    username: 'verity-test',
+    homedir: '/tmp',
+    shell: '/bin/sh',
+  }),
+}));
 
 const digest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
@@ -38,6 +52,43 @@ const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
 });
 
 describe('runManagedBootstrap', () => {
+  it('adds backup capability as an atomic mount pair without sealing bootstrap paths as runtime env sources', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const backupEnv = {
+      ...env,
+      VERITY_BACKUP_DIR: '/var/lib/verity/backups',
+      VERITY_BACKUP_IDENTITY_DIR: '/var/lib/verity/backup-identity',
+    };
+    await runManagedBootstrap(backupEnv, 'x64', env.VERITY_MANAGED_ROOT);
+    await runManagedBootstrap(backupEnv, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    expect(
+      state.spec.mounts.filter((mount) => mount.target.startsWith('/run/verity-backup')),
+    ).toHaveLength(2);
+    expect(
+      state.spec.environment.some(
+        (entry) =>
+          entry.name === 'VERITY_BACKUP_DIR' || entry.name === 'VERITY_BACKUP_IDENTITY_DIR',
+      ),
+    ).toBe(false);
+    await expect(
+      runManagedBootstrap(
+        { ...backupEnv, VERITY_BACKUP_DIR: '/other' },
+        'x64',
+        env.VERITY_MANAGED_ROOT,
+      ),
+    ).rejects.toThrow('differs');
+    await expect(
+      runManagedBootstrap(
+        { ...env, VERITY_BACKUP_DIR: '/only-one' },
+        'x64',
+        env.VERITY_MANAGED_ROOT,
+      ),
+    ).rejects.toThrow('two normalized');
+  });
+
   it('delivers the read-only Compose diagnostic bind to the managed Server', async () => {
     const compose = parseYaml(readFileSync('deploy/docker-compose.yml', 'utf8'), {
       merge: true,
@@ -107,6 +158,114 @@ describe('runManagedBootstrap', () => {
       ),
     ).rejects.toThrow('sealed authority');
     expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+  });
+
+  it('preserves backup and builder authority when both capabilities are added on repair', async () => {
+    const env = { ...(await environment()), VERITY_RUNNER_SUPERVISOR: '1' };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const repaired = {
+      ...env,
+      VERITY_RUNNER_SUPERVISOR: '1',
+      DEVCONTAINER_BUILDER_GID: '1102',
+      VERITY_BACKUP_DIR: '/var/lib/verity/backups',
+      VERITY_BACKUP_IDENTITY_DIR: '/var/lib/verity/backup-identity',
+    };
+    await runManagedBootstrap(repaired, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    expect(desired.binds).toEqual(
+      expect.arrayContaining([
+        '/var/lib/verity/backups:/run/verity-backups',
+        '/var/lib/verity/backup-identity:/run/verity-backup-identity',
+        '/run/verity-buildkit:/run/verity-buildkit',
+      ]),
+    );
+    expect(desired.groupAdd).toContain('1102');
+    await runManagedBootstrap(repaired, 'x64', env.VERITY_MANAGED_ROOT);
+    expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(state);
+  });
+
+  // The installer passes the builder group only after verifying the service. An
+  // input that leaked into the sealed environment would become a source every
+  // later Updater must resolve, so it is consumed here and never forwarded.
+  it('seals the builder socket only for an installer-verified builder', async () => {
+    const compose = parseYaml(readFileSync('deploy/docker-compose.yml', 'utf8'), {
+      merge: true,
+    }) as { services: Record<string, { environment: Record<string, string> }> };
+    const bootstrapEnvironment = compose.services['managed-bootstrap']!.environment;
+    expect(bootstrapEnvironment.DEVCONTAINER_BUILDER_GID).toBe(
+      '${VERITY_DEVCONTAINER_BUILDER_GID:-}',
+    );
+    // Older Server images forward every VERITY_* bootstrap input into the sealed
+    // environment; the builder input must never reach them under such a name.
+    expect(
+      Object.keys(bootstrapEnvironment).filter(
+        (name) => name.startsWith('VERITY_') && name.includes('BUILDER'),
+      ),
+    ).toEqual([]);
+
+    const plain = await environment();
+    await runManagedBootstrap(
+      { ...plain, DEVCONTAINER_BUILDER_GID: '' },
+      'x64',
+      plain.VERITY_MANAGED_ROOT,
+    );
+    const without = await readManagedDeployment(plain.VERITY_MANAGED_ROOT!);
+    if (!without.managed) throw new Error(without.reason);
+    expect(without.spec.mounts.some((mount) => mount.target === '/run/verity-buildkit')).toBe(
+      false,
+    );
+
+    const env = { ...(await environment()), DEVCONTAINER_BUILDER_GID: '1102' };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    expect(desired.binds).toContain('/run/verity-buildkit:/run/verity-buildkit');
+    expect(desired.groupAdd).toContain('1102');
+    expect(
+      state.spec.environment.some((entry) => entry.name.includes('DEVCONTAINER_BUILDER_GID')),
+    ).toBe(false);
+  });
+
+  it('migrates a deployment sealed before the builder on an installer repair', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const before = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!before.managed) throw new Error(before.reason);
+    const repair = { ...env, DEVCONTAINER_BUILDER_GID: '1102' };
+    await runManagedBootstrap(repair, 'x64', env.VERITY_MANAGED_ROOT);
+    const migrated = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(
+      JSON.parse(
+        await readFile(
+          join(env.VERITY_MANAGED_ROOT!, MANAGED_DEVCONTAINER_BUILDER_BACKUP_FILE),
+          'utf8',
+        ),
+      ),
+    ).toEqual(before.spec);
+    expect(migrated.spec.environment).toEqual(before.spec.environment);
+    expect(migrated.spec.resources).toEqual(before.spec.resources);
+    expect(migrated.spec.mounts).toEqual([
+      ...before.spec.mounts,
+      {
+        source: { kind: 'bind', path: '/run/verity-buildkit' },
+        target: '/run/verity-buildkit',
+        readOnly: false,
+      },
+    ]);
+    // A later repair that could not verify the builder leaves the sealed spec alone.
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+  });
+
+  it.each(['0', '-1', '65535', 'abc'])('rejects builder group %s', async (gid) => {
+    const env = { ...(await environment()), DEVCONTAINER_BUILDER_GID: gid };
+    await expect(runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT)).rejects.toThrow(
+      'DEVCONTAINER_BUILDER_GID',
+    );
   });
 
   it('forwards explicit Staging OAuth overrides without pinning the baked image default', async () => {

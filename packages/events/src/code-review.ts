@@ -2,8 +2,8 @@
  * The pre-push code review contract, stated where every session sees it.
  *
  * Verity sandboxes install the agent-seed hooks globally (`core.hooksPath`), so
- * the gate itself is repo-agnostic: `agent-seed/hooks/pre-push` blocks a
- * feature-branch push until `.agents/.last-code-review-sha` covers HEAD. The
+ * the gate itself is repo-agnostic: `agent-seed/hooks/pre-push` blocks a push
+ * on any branch until `.agents/.last-code-review-sha` covers HEAD. The
  * prompt says "Verity sandboxes install" rather than "every sandbox has",
  * because a repository is free to point `core.hooksPath` somewhere of its own
  * and displace the seed hooks; the fragment is then inert rather than wrong.
@@ -29,7 +29,7 @@
  */
 export const CODE_REVIEW_SYSTEM_PROMPT = `# Pre-push code review gate (Verity)
 
-Verity sandboxes install a git \`pre-push\` hook that blocks a feature-branch push until each pending commit is covered by the review marker \`.agents/.last-code-review-sha\`. When a push is blocked that way, satisfy the gate with two commands, in this order:
+Verity sandboxes install a git \`pre-push\` hook that blocks a push, on every branch, until each pending commit is covered by the review marker \`.agents/.last-code-review-sha\`. When a push is blocked that way, satisfy the gate with two commands, in this order:
 
     verity-code-review run     # reviews the branch diff, prints concise findings
     verity-code-review mark    # records HEAD, after the findings are triaged
@@ -38,4 +38,6 @@ Verity sandboxes install a git \`pre-push\` hook that blocks a feature-branch pu
 
 \`mark\` only writes the marker — it verifies nothing, and marking without running and triaging the review turns the gate green on a diff nobody assessed. Never do that to get past a blocked push.
 
-Do not review the diff inline in this chat instead, and do not improvise a backend-specific sub-agent, live agent, or slash command for it: no backend registers a \`code_review\` agent, so improvising resolves to a missing agent path and the turn dies on a tool call that never returns. If a push is blocked by this gate and \`verity-code-review run\` is missing or fails to start, report it as a container-provisioning bug rather than skipping the gate or bypassing the hook with \`--no-verify\`. If your push is not blocked by such a hook, none of this applies — push as usual.`;
+Do not review the diff inline in this chat instead, and do not improvise a backend-specific sub-agent, live agent, or slash command for it: no backend registers a \`code_review\` agent, so improvising resolves to a missing agent path and the turn dies on a tool call that never returns. If a push is blocked by this gate and \`verity-code-review run\` is missing or fails to start, report it as a container-provisioning bug rather than skipping the gate or bypassing the hook with \`--no-verify\`.
+
+The same hook runs the repository's lint and format scripts first, on every branch. When it stops with "lint and format checks can't run: dependencies are not installed" (or "dependencies or check config changed"), the decision is the operator's, not yours: present two Verity Quick Actions, "Install and run checks" and "Skip lint/format this session", run the command the banner printed for the chosen option, then push again. Never bypass the hook with \`--no-verify\`; the sandbox git wrapper refuses that push. If your push is not blocked by such a hook, none of this applies — push as usual.`;

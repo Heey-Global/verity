@@ -25228,6 +25228,15 @@ var boundedHistoryResultSchema = import_zod11.z.discriminatedUnion("kind", [
   boundedHistoryPageSchema,
   import_zod11.z.object({
     contract: import_zod11.z.literal("bounded-history-v1"),
+    kind: import_zod11.z.literal("event-chunk"),
+    seq: import_zod11.z.number().int().positive(),
+    snapshotSeq: import_zod11.z.number().int().nonnegative(),
+    offset: import_zod11.z.number().int().nonnegative(),
+    totalChars: import_zod11.z.number().int().positive(),
+    data: import_zod11.z.string().min(1)
+  }),
+  import_zod11.z.object({
+    contract: import_zod11.z.literal("bounded-history-v1"),
     kind: import_zod11.z.literal("oversized-event"),
     seq: import_zod11.z.number().int().positive(),
     requiredBytes: import_zod11.z.number().int().positive(),
@@ -27889,25 +27898,48 @@ var MessageBuffer = class {
 
 // node_modules/@agentclientprotocol/sdk/dist/core/line-buffer.js
 var newline = 10;
+var carriageReturn = 13;
 var LineBuffer = class {
   /** Bytes of the current (incomplete) line, carried across chunks. */
   #pending;
   #maxMessageBytes;
-  constructor(maxMessageBytes) {
+  #splitOnCarriageReturn;
+  /** Whether the last line ended at a CR whose LF may start the next chunk. */
+  #afterCarriageReturn = false;
+  constructor(maxMessageBytes, { splitOnCarriageReturn = false } = {}) {
     this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
     this.#pending = new MessageBuffer(Math.min(Number.MAX_SAFE_INTEGER, this.#maxMessageBytes + 1));
+    this.#splitOnCarriageReturn = splitOnCarriageReturn;
   }
   /**
-   * Consumes a chunk, yielding each complete line without its trailing
-   * LF or CRLF.
+   * Consumes a chunk, yielding each complete line without its line ending.
    */
   *push(chunk) {
     let start = 0;
+    if (this.#afterCarriageReturn && chunk.byteLength > 0) {
+      this.#afterCarriageReturn = false;
+      if (chunk[0] === newline) {
+        start = 1;
+      }
+    }
     let newlineIndex = chunk.indexOf(newline, start);
-    while (newlineIndex !== -1) {
-      yield this.#takeLine(chunk.subarray(start, newlineIndex));
-      start = newlineIndex + 1;
-      newlineIndex = chunk.indexOf(newline, start);
+    let carriageReturnIndex = this.#splitOnCarriageReturn ? chunk.indexOf(carriageReturn, start) : -1;
+    while (newlineIndex !== -1 || carriageReturnIndex !== -1) {
+      if (carriageReturnIndex === -1 || newlineIndex !== -1 && newlineIndex < carriageReturnIndex) {
+        yield this.#takeLine(chunk.subarray(start, newlineIndex));
+        start = newlineIndex + 1;
+        newlineIndex = chunk.indexOf(newline, start);
+      } else {
+        yield this.#takeLine(chunk.subarray(start, carriageReturnIndex));
+        start = carriageReturnIndex + 1;
+        if (start === chunk.byteLength) {
+          this.#afterCarriageReturn = true;
+        } else if (chunk[start] === newline) {
+          start++;
+          newlineIndex = chunk.indexOf(newline, start);
+        }
+        carriageReturnIndex = chunk.indexOf(carriageReturn, start);
+      }
     }
     if (start < chunk.byteLength) {
       const tail = chunk.subarray(start);
@@ -27920,12 +27952,14 @@ var LineBuffer = class {
    * undefined if no bytes are buffered.
    */
   flush() {
+    this.#afterCarriageReturn = false;
     if (this.#pending.byteLength === 0) {
       return void 0;
     }
     return stripCarriageReturn(this.#pending.take());
   }
   clear() {
+    this.#afterCarriageReturn = false;
     this.#pending.clear();
   }
   #takeLine(tail) {
@@ -27938,7 +27972,7 @@ var LineBuffer = class {
   }
   #checkLine(tail) {
     const lastByte = tail.byteLength > 0 ? tail[tail.byteLength - 1] : this.#pending.lastByte;
-    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === 13 ? 1 : 0);
+    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === carriageReturn ? 1 : 0);
     if (byteLength > this.#maxMessageBytes) {
       this.clear();
       throw new MessageTooLargeError(this.#maxMessageBytes);
@@ -27946,7 +27980,7 @@ var LineBuffer = class {
   }
 };
 function stripCarriageReturn(line) {
-  return line[line.byteLength - 1] === 13 ? line.subarray(0, -1) : line;
+  return line[line.byteLength - 1] === carriageReturn ? line.subarray(0, -1) : line;
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/core/stream.js
@@ -29617,9 +29651,10 @@ function redactSecrets(text) {
   }
   return out;
 }
-function redactProcessStderr(text, env = {}) {
-  let out = Buffer.byteLength(text) >= 65533 ? text.slice(text.indexOf("\n") + 1) : text;
-  if (Buffer.byteLength(text) >= 65533 && !text.includes("\n"))
+function redactProcessStderr(text, env = {}, options = {}) {
+  const partialTail = options.startsAtLineBoundary !== true && Buffer.byteLength(text) >= 65533;
+  let out = partialTail ? text.slice(text.indexOf("\n") + 1) : text;
+  if (partialTail && !text.includes("\n"))
     return "[truncated stderr line omitted]";
   out = redactSecrets(out).replace(/(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)[a-z0-9_]*|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu, "[REDACTED CREDENTIAL FIELD]").replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, "[REDACTED JWT]").replace(/\b[A-Z][A-Z0-9_]*\s*=[^\r\n]*/gu, "[REDACTED ENVIRONMENT]").replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret|[a-z0-9_]*(?:secret|password|token|api[_-]?key)[a-z0-9_]*)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@");
   if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY/u.test(out) || /-----END [A-Z0-9 ]*PRIVATE KEY/u.test(out)) {

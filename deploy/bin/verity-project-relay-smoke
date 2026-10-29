@@ -8,7 +8,7 @@ fixture_container="verity-project-relay-fixture-${suffix}"
 network="verity-project-relay-smoke-${suffix}"
 socket_volume="verity-project-relay-sockets-${suffix}"
 artifacts_root="$(mktemp -d)"
-fixture_image='node:26.12.1-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe'
+fixture_image='node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70'
 fixture_source=''
 read -r -d '' fixture_source <<'NODE' || true
 const http = require('node:http');
@@ -134,7 +134,7 @@ docker run -d --name "$container" \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
   --cap-drop ALL \
-  --security-opt no-new-privileges \
+  --security-opt no-new-privileges=true \
   --pids-limit 32 \
   --memory 64m \
   --cpus 0.25 \
@@ -168,7 +168,7 @@ const host = info.HostConfig;
 if (!host.ReadonlyRootfs) throw new Error('root filesystem is writable');
 if (host.Privileged) throw new Error('relay is privileged');
 if (host.CapDrop?.join(',') !== 'ALL') throw new Error('CapDrop is not ALL');
-if (!host.SecurityOpt?.includes('no-new-privileges')) throw new Error('NNP missing');
+if (!host.SecurityOpt?.some((option) => ['no-new-privileges', 'no-new-privileges:true', 'no-new-privileges=true'].includes(option))) throw new Error('NNP missing');
 if (host.PidsLimit !== 32) throw new Error('PID limit mismatch');
 if (host.Memory !== 67108864) throw new Error('memory limit mismatch');
 if (host.NanoCpus !== 250000000) throw new Error('CPU limit mismatch');

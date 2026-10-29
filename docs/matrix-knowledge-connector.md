@@ -56,7 +56,7 @@ clear previously reported evidence.
 
 ## Knowledge projection
 
-Write one Markdown source per room and day under `sources/documents/matrix/`, using a hash of the account, stable room ID, and binding activation time in the path and a date in the filename. A later reconnection therefore cannot overwrite an earlier project's source. Each entry carries a timestamp, sender, event ID, and quoted body. Messages over 8,000 characters carry a visible truncation marker. The header says that participants' messages are untrusted external content.
+Write one Markdown source per room and day under `sources/matrix/`, using a hash of the account, stable room ID, and binding activation time in the path and a date in the filename. A later reconnection therefore cannot overwrite an earlier project's source. Each entry carries a timestamp, sender, event ID, and quoted body. Messages over 8,000 characters carry a visible truncation marker. The header says that participants' messages are untrusted external content.
 
 An edit replaces the affected entry in the current projection. A redaction removes its body from the current projection and records that it was redacted. Previous Knowledge versions and backups follow Verity's normal retention rules; changing the current projection does not erase them.
 

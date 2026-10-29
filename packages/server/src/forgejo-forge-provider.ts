@@ -1,3 +1,4 @@
+import { ForgeMergePermissionError } from './forge-provider.js';
 import type { ProjectRecord } from '@verity/store';
 import type {
   ForgeProvider,
@@ -127,7 +128,17 @@ export function createForgejoForgeProvider(options: {
       if (!unavailable(error)) incomplete = true;
     }
     checks.completed = checks.successful + checks.failed;
+    let viewerCanMerge: boolean | undefined;
+    try {
+      const branch = await transport.json<{ user_can_merge?: boolean }>(
+        `${coordinate(ref)}/branches/${encodeURIComponent(pull.base.ref)}`,
+      );
+      viewerCanMerge = branch.user_can_merge;
+    } catch {
+      /* Permission discovery is best effort, never a denial by itself. */
+    }
     return {
+      ...(typeof viewerCanMerge === 'boolean' ? { viewerCanMerge } : {}),
       number: pull.number,
       title: pull.title,
       url: pull.html_url,
@@ -173,10 +184,10 @@ export function createForgejoForgeProvider(options: {
     );
     return entry.value;
   };
-  const service = (repoDir: string): ForgePrService => {
+  const service = (repoDir: string, boundRef?: ForgeRepoRef): ForgePrService => {
     const lookup = async (branch: string) => {
       try {
-        const ref = await options.identityFor(repoDir)();
+        const ref = boundRef ?? (await options.identityFor(repoDir)());
         if (!ref) return null;
         const pulls = await cached(`pulls:${coordinate(ref)}`, () =>
           pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
@@ -221,8 +232,17 @@ export function createForgejoForgeProvider(options: {
       },
       mergePr: async (number, expectedHeadSha) => {
         try {
-          const ref = await options.identityFor(repoDir)();
+          const ref = boundRef ?? (await options.identityFor(repoDir)());
           if (!ref) return false;
+          const pull = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls/${number}`);
+          if (pull?.base?.ref) {
+            const branch = await transport
+              .json<{ user_can_merge?: boolean }>(
+                `${coordinate(ref)}/branches/${encodeURIComponent(pull.base.ref)}`,
+              )
+              .catch(() => undefined);
+            if (branch?.user_can_merge === false) throw new ForgeMergePermissionError();
+          }
           const repository = await transport.json<Record<string, unknown>>(coordinate(ref));
           const methods: Record<string, string> = {
             merge: 'allow_merge_commits',
@@ -248,6 +268,9 @@ export function createForgejoForgeProvider(options: {
           cache.clear();
           return true;
         } catch (error) {
+          if (error instanceof ForgeMergePermissionError) throw error;
+          if (error instanceof ForgejoRequestError && error.mergePermissionDenied)
+            throw new ForgeMergePermissionError();
           if (unavailable(error)) capabilities.pullRequestMerge = false;
           return false;
         }
@@ -263,6 +286,24 @@ export function createForgejoForgeProvider(options: {
     identityFor: options.identityFor,
     mintProjectToken: options.token,
     prServiceFor: service,
+    repositoryPrService: (ref) => service('', ref),
+    async discover(ref, page) {
+      const pulls = await transport.json<ForgejoPull[]>(
+        `${coordinate(ref)}/pulls?state=open&limit=30&page=${page}`,
+      );
+      if (!Array.isArray(pulls)) throw new Error('Invalid Forgejo discovery response');
+      return {
+        pulls: pulls.map((p) => ({
+          number: p.number,
+          branch: p.head.ref,
+          sha: p.head.sha,
+          fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+        })),
+        runs: [],
+        nextPage: pulls.length === 30 ? page + 1 : null,
+        workflowsSupported: false,
+      };
+    },
     openPullRequest: async (ref, _token, pull) => {
       const row = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls`, 'POST', pull);
       return { number: row.number, url: row.html_url };

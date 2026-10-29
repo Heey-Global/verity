@@ -410,6 +410,7 @@ export {
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
+  type SessionGoogleStatus,
   type GmailSessionConnection,
   type CalendarSessionConnection,
   type ContactsSessionConnection,
@@ -652,11 +653,25 @@ export type {
 } from './api.js';
 
 export {
+  groupFindingsByPackage,
   groupVulnerabilityFindings,
   findingCategory,
   vulnerabilityCounts,
   type FindingGroup,
+  type PackageFindingGroup,
+  packageFixPrompt,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,
 } from './vulnerability.js';
+
+export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
+export type {
+  AuditDomain,
+  AuditHealth,
+  AuditInitiator,
+  AuditOperationDetail,
+  AuditOperationList,
+  AuditOperationQuery,
+  AuditOperationSummary,
+} from './audit.js';

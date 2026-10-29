@@ -4,6 +4,7 @@ import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, request } from 'node:http';
@@ -13,6 +14,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
+import { isDocumentWorkspace } from './document-workspace.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
   markInternalConnections,
@@ -33,11 +35,14 @@ const TEST_UID = process.getuid?.() ?? 1000;
 const TEST_GID = process.getgid?.() ?? 1000;
 
 let ctx: TestDb;
+let projectRoot: string;
 beforeAll(async () => {
   ctx = await createTestDb();
+  projectRoot = mkdtempSync(join(tmpdir(), 'verity-mcp-projects-'));
 });
 afterAll(async () => {
   await ctx.close();
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 beforeEach(async () => {
   await truncateAll(ctx.db);
@@ -106,6 +111,10 @@ function build(
   const approvals: Harness['approvals'] = [];
   const dispatches: Harness['dispatches'] = [];
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    authorizationSnapshot: async ({ toolName }) =>
+      toolName === 'verity_http_request' || toolName === 'verity_secret_run'
+        ? JSON.stringify({ dopplerProject: 'test-project', dopplerConfig: 'test' })
+        : undefined,
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
       options.vulnerabilityTools === true
@@ -120,6 +129,7 @@ function build(
                   'verity_present_plan',
                   'verity_end_planning',
                   'verity_tasks',
+                  'verity_repairs',
                   'verity_app_help',
                   'verity_http_request',
                 ]
@@ -272,7 +282,8 @@ function build(
     secretCipher: cipher,
     ...(options.projectSpawns
       ? {
-          projectCloneRoot: '/data/dev',
+          dataRoot: join(projectRoot, 'data'),
+          projectCloneRoot: join(projectRoot, 'projects'),
           projectBackend: (_project: unknown, selected: Backend) => selected,
           projectWorktrees: () => ({
             add: async () => `/wt/new-handoff-${crypto.randomUUID()}`,
@@ -395,6 +406,10 @@ it('implements a submitted plan on the user instruction without another approval
     worktree: '/tmp/verity-planning-s1',
     model: 'claude-opus-5',
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'Passt, leg los',
@@ -456,6 +471,83 @@ it('implements a submitted plan on the user instruction without another approval
   ]);
 });
 
+it('runs an approved plan for the approving user and still refuses them once revoked', async () => {
+  const harness = build({ planningTools: true, unlocked: true, enforceAuth: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-planning-s1',
+    model: 'claude-opus-5',
+  });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
+  const planning = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Plan it first',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: planning.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  await withListener(harness, async (socketPath) => {
+    let id = 0;
+    const call = async (turnId: string, name: string, args: object) => {
+      const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId });
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: (id += 1),
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      return {
+        body: response.body,
+        result: (JSON.parse(response.body) as { result: { isError?: boolean } }).result,
+      };
+    };
+    expect((await call('t1', 'verity_start_planning', {})).result.isError).toBeUndefined();
+    expect(
+      (await call('t1', 'verity_present_plan', { plan: '1. Do it' })).result.isError,
+    ).toBeUndefined();
+    const ended = await call('t1', 'verity_end_planning', {});
+    expect(ended.result.isError, ended.body).toBeUndefined();
+    expect(harness.dispatches).toHaveLength(1);
+
+    // The implementation turn opens with the prompt the conductor writes from these options.
+    // Without an initiator on it, every tool call of the approved plan was refused as if the
+    // user had lost access.
+    await harness.store.clearRunningTurn('s1', planning.seq);
+    const { initiatedBy } = harness.dispatches[0]!.dispatchOpts as {
+      initiatedBy?: { userId: string };
+    };
+    const implementation = await harness.store.appendEvent('s1', {
+      t: 'prompt',
+      text: harness.dispatches[0]!.prompt,
+      ...(initiatedBy ? { initiatedBy } : {}),
+    });
+    await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: implementation.seq });
+    await harness.store.bindTurnIdentity('s1', { turnId: 't2', startCommandId: 'c2' });
+    const allowed = await call('t2', 'verity_tasks', { action: 'list' });
+    expect(allowed.result.isError, allowed.body).toBeUndefined();
+
+    await sql`update project_memberships set can_execute = false where user_id = 'u1'`.execute(
+      ctx.db,
+    );
+    const revoked = await call('t2', 'verity_tasks', { action: 'list' });
+    expect(revoked.result.isError).toBe(true);
+    expect(revoked.body).toContain('no longer has project execution permission');
+  });
+});
+
 it('keeps the session task list available while planning, unlike external tools', async () => {
   const harness = build({ planningTools: true });
   await harness.store.createProject({
@@ -494,6 +586,9 @@ it('keeps the session task list available while planning, unlike external tools'
     const tasks = await call('verity_tasks', { action: 'list' });
     expect(tasks.result.isError).toBeUndefined();
     expect(tasks.body).not.toContain('planning mode');
+    const repairs = await call('verity_repairs', { action: 'status' });
+    expect(repairs.result.isError).toBeUndefined();
+    expect(repairs.body).toContain('incidents');
     // Explaining the app is read-only and belongs to planning as much as to any turn;
     // refusing it would leave the agent answering setup questions from memory.
     const help = await call('verity_app_help', { topic: 'github' });
@@ -652,6 +747,10 @@ it('does not open an extra approval even when another card would have revised th
       ],
     },
   });
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
   const prompt = await harness.store.appendEvent('s1', {
     t: 'prompt',
     text: 'So umsetzen',
@@ -839,6 +938,70 @@ it('hands a linked message for a sleeping project to the turn that wakes it', as
   });
   expect(harness.dispatches).toEqual([
     expect.objectContaining({ sessionId: 's2', prompt: expect.stringContaining('Are you there?') }),
+  ]);
+});
+
+it('delivers a linked message as a turn of the user behind the sending turn', async () => {
+  const harness = build({ linkedTools: true });
+  for (const [id, repo] of [
+    ['p1', 'alpha'],
+    ['p2', 'beta'],
+  ] as const) {
+    await harness.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo,
+      cloneDir: `__local__-${repo}`,
+      containerName: `verity-${repo}`,
+      state: 'active',
+    });
+  }
+  for (const [sessionId, projectId] of [
+    ['s1', 'p1'],
+    ['s2', 'p2'],
+  ] as const)
+    await harness.store.createSession({
+      sessionId,
+      projectId,
+      worktree: `/tmp/verity-linked-${sessionId}`,
+      model: 'claude-opus-5',
+    });
+  await harness.store.createSessionLink('s1', 's2');
+  await sql`insert into users (id, role, status) values ('u1', 'member', 'active')`.execute(ctx.db);
+  await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage) values ('p1', 'u1', true, true, false)`.execute(
+    ctx.db,
+  );
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Ask the other session',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    const response = await postUnix(socketPath, `Bearer ${token}`, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'verity_send_session_message',
+        arguments: { targetSessionId: 's2', message: 'Are you there?' },
+      },
+    });
+    expect(
+      (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+      response.body,
+    ).toBeUndefined();
+  });
+  // Without an initiator the peer's turn belongs to nobody, and an authenticated server
+  // refuses every gateway call in it.
+  expect(harness.dispatches).toEqual([
+    expect.objectContaining({
+      sessionId: 's2',
+      dispatchOpts: expect.objectContaining({ initiatedBy: { userId: 'u1' } }),
+    }),
   ]);
 });
 
@@ -1454,7 +1617,9 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       };
       expect(body.result.isError, body.result.content[0]?.text).toBeUndefined();
       const result = JSON.parse(body.result.content[0]!.text) as { sessionId: string };
-      expect((await harness.store.getSession(result.sessionId))?.model).toBe('codex/default');
+      const session = await harness.store.getSession(result.sessionId);
+      expect(session?.model).toBe('codex/default');
+      expect(isDocumentWorkspace(session!.worktree)).toBe(true);
       expect(harness.dispatches).toHaveLength(1);
       await harness.store.updateProjectSettings('website', {
         allowedAgents: ['opencode'],
@@ -1843,6 +2008,96 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       // target session's memo.
       expect(keys[0]).toMatch(/^handoff:control-t1:/u);
     });
+  });
+
+  it('hands a briefing to the target as a turn of the Control user who sent it', async () => {
+    const harness = build({ sessionTools: true, enforceAuth: true });
+    await harness.store.createProject({
+      id: VERITY_CONTROL_PROJECT_ID,
+      kind: 'control_plane',
+      owner: 'verity',
+      repo: 'control',
+      containerName: 'verity-control',
+      state: 'active',
+    });
+    await harness.store.createSession({
+      sessionId: 'control-s1',
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      worktree: join(process.cwd(), 'packages'),
+      model: 'claude-opus-5',
+    });
+    await harness.store.createProject({
+      id: 'website',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'website',
+      cloneDir: '__local__-website',
+      containerName: 'verity-__local__--website',
+      state: 'active',
+    });
+    await ctx.db
+      .deleteFrom('project_knowledge_spaces')
+      .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
+      .execute();
+    await harness.store.createSession({
+      sessionId: 'sess-web',
+      projectId: 'website',
+      worktree: process.cwd(),
+      model: 'claude-opus-5',
+    });
+    await sql`insert into users (id, role, status) values ('admin', 'administrator', 'active')`.execute(
+      ctx.db,
+    );
+    await sql`update projects set created_by_user_id = 'admin' where id = ${VERITY_CONTROL_PROJECT_ID}`.execute(
+      ctx.db,
+    );
+    await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
+      values (${VERITY_CONTROL_PROJECT_ID}, 'admin', true, true, true), ('website', 'admin', true, true, false)`.execute(
+      ctx.db,
+    );
+    const prompt = await harness.store.appendEvent('control-s1', {
+      t: 'prompt',
+      text: 'Hand this to the website session',
+      initiatedBy: { userId: 'admin' },
+    });
+    await harness.store.markTurnRunning({ sessionId: 'control-s1', promptSeq: prompt.seq });
+    await harness.store.bindTurnIdentity('control-s1', {
+      turnId: 'control-t1',
+      startCommandId: 'start',
+    });
+    const token = harness.tokens.issue({
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      sessionId: 'control-s1',
+      turnId: 'control-t1',
+    });
+    await withInternalTcpListener(harness, async (port) => {
+      const handed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_session_handoff',
+          arguments: {
+            target: { sessionId: 'sess-web' },
+            title: 'Overlay for the new site',
+            briefing: 'Digest sha256:abc, port 8080.',
+          },
+        },
+      });
+      expect(
+        (JSON.parse(handed.body) as { result: { isError?: boolean } }).result.isError,
+        handed.body,
+      ).toBeUndefined();
+    });
+    // Without an initiator the delivered turn belongs to nobody, and an authenticated server
+    // refuses every tool call in it as if the sender had lost access to the target project.
+    // The target's own execution check then judges this user against that project.
+    expect(harness.dispatches).toEqual([
+      expect.objectContaining({
+        sessionId: 'sess-web',
+        dispatchOpts: expect.objectContaining({ initiatedBy: { userId: 'admin' } }),
+      }),
+    ]);
   });
 
   // The audit split `ControlPlaneSessionAuthorityError` exists for, asserted where it is

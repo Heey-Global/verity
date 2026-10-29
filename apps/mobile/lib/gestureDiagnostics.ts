@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 
 /** Where a recorded gesture event came from. */
-type GestureSource = 'row' | 'swipe' | 'reorder';
+type GestureSource = 'row' | 'swipe' | 'reorder' | 'scheduling';
 
 export type GestureEvent = {
   /** Wall clock for rough correlation with a screen recording. */
@@ -23,6 +23,7 @@ export type GestureEvent = {
 // explicit switch-on in Settings → Diagnostics and the next restart or switch-off.
 const MAX_EVENTS = 300;
 let enabled = false;
+let recordingGeneration = 0;
 let startedAt = 0;
 let dropped = 0;
 let events: GestureEvent[] = [];
@@ -35,9 +36,15 @@ export function gestureDiagnosticsEnabled(): boolean {
   return enabled;
 }
 
+/** Changes on every toggle so queued probes cannot leak into another recording. */
+export function gestureRecordingGeneration(): number {
+  return recordingGeneration;
+}
+
 export function setGestureDiagnosticsEnabled(next: boolean): void {
   if (next === enabled) return;
   enabled = next;
+  recordingGeneration++;
   // Switching off discards what was collected, so nothing lingers in memory.
   events = [];
   dropped = 0;

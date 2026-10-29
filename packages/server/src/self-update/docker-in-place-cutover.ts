@@ -381,7 +381,7 @@ export async function dockerStandbyPromotion(
       network: deployment.spec.network,
       platform: `linux/${deployment.spec.platform.architecture}`,
       readOnlyRootfs: true,
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       capAdd: [],
     });
     const deadlineMs = timeoutMs + probeGraceMs;

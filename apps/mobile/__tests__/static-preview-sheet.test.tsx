@@ -1103,12 +1103,13 @@ describe('managed dev servers', () => {
   // Local publishes the agent's command on the network, so the operator sees
   // exactly what runs and approves only that.
   it('shows the command and secret mapping and approves exactly them before Local turns on', async () => {
+    const providerSnapshot = { provider: 'doppler' as const, project: 'demo', config: 'staging' };
     const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
     const approveManagedDevServer = jest.fn(async () => []);
     const setManagedDevServerLocal = jest.fn(async () => demo());
     const alert = answer('Allow');
     renderSheet(
-      managedClient([demo({ approved: false, instance: null, secretBindings })], {
+      managedClient([demo({ approved: false, instance: null, secretBindings, providerSnapshot })], {
         approveManagedDevServer,
         setManagedDevServerLocal,
       }),
@@ -1120,12 +1121,103 @@ describe('managed dev servers', () => {
     expect(alert.mock.calls[0]?.[1]).toContain('node server.mjs --port {port}');
     expect(alert.mock.calls[0]?.[1]).toContain('curtis-voice');
     expect(alert.mock.calls[0]?.[1]).toContain('ATTENDEE_API_KEY → API_KEY');
+    expect(alert.mock.calls[0]?.[1]).toContain('Doppler · demo / staging');
     expect(alert.mock.calls[0]?.[1]).toContain('without a PIN');
     expect(approveManagedDevServer).toHaveBeenCalledWith(
       'session-one',
       'srv-1',
-      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice', secretBindings },
+      {
+        command: 'node server.mjs --port {port}',
+        workdir: 'curtis-voice',
+        secretBindings,
+        providerSnapshot,
+      },
       {},
+    );
+  });
+
+  it('refuses secret approval when an older Core supplies no provider snapshot', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    const setManagedDevServerLocal = jest.fn(async () => demo());
+    const alert = answer('Allow');
+    renderSheet(
+      managedClient(
+        [
+          demo({
+            approved: false,
+            instance: null,
+            secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+          }),
+        ],
+        { approveManagedDevServer, setManagedDevServerLocal },
+      ),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    expect(
+      await screen.findByText(
+        'The secret provider cannot be verified. Refresh or update Verity before approving.',
+      ),
+    ).toBeTruthy();
+    expect(alert).not.toHaveBeenCalled();
+    expect(approveManagedDevServer).not.toHaveBeenCalled();
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+  });
+
+  it('keeps the displayed provider fixed and requires a new confirmation after a conflict', async () => {
+    const providerSnapshot = { provider: 'doppler' as const, project: 'demo', config: 'staging' };
+    const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
+    let server = demo({ approved: false, instance: null, secretBindings, providerSnapshot });
+    const listManagedDevServers = jest.fn(async () => [server]);
+    const approveManagedDevServer = jest
+      .fn<
+        ReturnType<VerityClient['approveManagedDevServer']>,
+        Parameters<VerityClient['approveManagedDevServer']>
+      >(async () => [])
+      .mockRejectedValueOnce(
+        new Error('The secret provider changed. Refresh and review it again.'),
+      );
+    const setManagedDevServerLocal = jest.fn(async () => demo());
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    renderSheet(
+      managedClient([server], {
+        listManagedDevServers,
+        approveManagedDevServer,
+        setManagedDevServerLocal,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
+    expect(alert.mock.calls[0]?.[1]).toContain('demo / staging');
+    server = demo({
+      approved: false,
+      instance: null,
+      secretBindings,
+      providerSnapshot: { ...providerSnapshot, config: 'production' },
+    });
+    await act(async () =>
+      alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Allow')?.onPress?.(),
+    );
+    expect(
+      await screen.findByText('The secret provider changed. Refresh and review it again.'),
+    ).toBeTruthy();
+    expect(approveManagedDevServer.mock.calls[0]).toEqual([
+      'session-one',
+      'srv-1',
+      { command: server.command, workdir: server.workdir, secretBindings, providerSnapshot },
+      {},
+    ]);
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+    await waitFor(() => expect(listManagedDevServers.mock.calls.length).toBeGreaterThan(1));
+    expect(approveManagedDevServer).toHaveBeenCalledTimes(1);
+    fireEvent.press(screen.getByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() => expect(alert).toHaveBeenCalledTimes(2));
+    expect(alert.mock.calls[1]?.[1]).toContain('demo / production');
+    await act(async () =>
+      alert.mock.calls[1]?.[2]?.find((button) => button.text === 'Allow')?.onPress?.(),
+    );
+    await waitFor(() => expect(setManagedDevServerLocal).toHaveBeenCalledTimes(1));
+    expect(approveManagedDevServer.mock.calls[1]?.[2]).toEqual(
+      expect.objectContaining({ providerSnapshot: server.providerSnapshot }),
     );
   });
 

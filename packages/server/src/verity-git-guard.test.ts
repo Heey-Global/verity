@@ -175,3 +175,126 @@ describe('agent-seed/bin/git guard (self-remove of session worktree)', () => {
     expect(existsSync(join(main, '.verity-sessions/agent-test'))).toBe(false);
   });
 });
+
+/**
+ * The pre-push gate offers a way through every block it raises, so for an
+ * agent `--no-verify` is never the next step — and a `core.hooksPath` given on
+ * the command line is the same bypass by another spelling. Only `push` is
+ * guarded: `git commit --no-verify` is a local act the push scan catches again.
+ */
+describe('agent-seed/bin/git guard (push bypass)', () => {
+  let remote: string;
+
+  beforeEach(async () => {
+    remote = join(base, 'remote.git');
+    mkdirSync(remote);
+    await realGit(remote, 'init', '-q', '--bare');
+    await realGit(main, 'remote', 'add', 'origin', remote);
+  });
+
+  it('refuses git push --no-verify and names the gate commands instead', async () => {
+    const { code, stderr } = await runWrapper(
+      ['push', '--no-verify', 'origin', 'HEAD:refs/heads/x'],
+      main,
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain("refusing 'git push --no-verify'");
+    expect(stderr).toContain('verity-code-review run');
+    expect(stderr).toContain('verity-local-checks skip');
+    // Nothing reached the remote.
+    const { stdout } = await execFileAsync(REAL_GIT, ['-C', remote, 'branch', '--list'], {
+      env: { ...process.env, ...GIT_ENV },
+    });
+    expect(stdout.trim()).toBe('');
+  });
+
+  it.each(['--no-veri', '--no-verif'])(
+    'refuses the abbreviation %s, which git accepts for --no-verify',
+    async (flag) => {
+      const { code, stderr } = await runWrapper(
+        ['push', flag, 'origin', 'HEAD:refs/heads/x'],
+        main,
+      );
+      expect(code).toBe(1);
+      expect(stderr).toContain('verity git guard');
+    },
+  );
+
+  it('does not mistake --no-verbose for --no-verify', async () => {
+    const { code, stderr } = await runWrapper(
+      ['push', '--no-verbose', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
+  it.each([
+    [['-c', 'core.hooksPath=/dev/null', 'push', 'origin', 'HEAD:refs/heads/x']],
+    [['--config-env=core.hookspath=HOOKS', 'push', 'origin', 'HEAD:refs/heads/x']],
+  ])('refuses a push with a hooksPath override: %j', async (args) => {
+    const { code, stderr } = await runWrapper(args, main, { HOOKS: '/dev/null' });
+    expect(code).toBe(1);
+    expect(stderr).toContain('core.hooksPath override');
+  });
+
+  it.each([
+    [{ GIT_CONFIG_PARAMETERS: "'core.hooksPath=/dev/null'" }],
+    [
+      {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.HooksPath',
+        GIT_CONFIG_VALUE_0: '/dev/null',
+      },
+    ],
+  ])('refuses a push whose hooksPath override arrives via the environment: %j', async (env) => {
+    const { code, stderr } = await runWrapper(['push', 'origin', 'HEAD:refs/heads/x'], main, env);
+    expect(code).toBe(1);
+    expect(stderr).toContain('core.hooksPath override');
+  });
+
+  it('leaves a push alone when the environment carries only other keys', async () => {
+    // The signing broker hands git its gpg.* settings this way; a guard that
+    // fired on any GIT_CONFIG_* would refuse every signed push.
+    const { code, stderr } = await runWrapper(
+      ['push', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+      { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'gpg.format', GIT_CONFIG_VALUE_0: 'ssh' },
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
+  it('lets a dry run and an unrelated -c through', async () => {
+    const { code, stderr } = await runWrapper(
+      ['-c', 'user.name=t', 'push', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
+  it('treats --no-verify after -- as a refspec, not a flag', async () => {
+    // Real git rejects the refspec; the point is that the guard did not fire.
+    const { stderr } = await runWrapper(['push', '--dry-run', 'origin', '--', '--no-verify'], main);
+    expect(stderr).not.toContain('verity git guard');
+  });
+
+  it('leaves --no-verify on other subcommands alone', async () => {
+    const { code } = await runWrapper(
+      ['-c', 'commit.gpgsign=false', 'commit', '--no-verify', '--allow-empty', '-q', '-m', 'x'],
+      main,
+    );
+    expect(code).toBe(0);
+  });
+
+  it('is transparent with VERITY_GIT_GUARD_DISABLE=1 (operator escape hatch)', async () => {
+    const { code, stderr } = await runWrapper(
+      ['push', '--no-verify', '--dry-run', 'origin', 'HEAD:refs/heads/x'],
+      main,
+      { VERITY_GIT_GUARD_DISABLE: '1' },
+    );
+    expect(code).toBe(0);
+    expect(stderr).not.toContain('verity git guard');
+  });
+});

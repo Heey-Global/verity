@@ -96,6 +96,7 @@ function host(options: { daemon?: object; live?: object; reloadWorks?: boolean }
     VERITY_DOCKER_DAEMON_JSON: daemonJson,
     VERITY_RUNSC_ROOT: join(root, 'runsc'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'state'),
+    VERITY_HOST_RUNTIME_PRIVATE_DIR: join(root, 'private'),
     VERITY_SYSTEMD_RUN_DIR: systemd,
     VERITY_HOST_RUNTIME_RELOAD_TIMEOUT: '2',
   };
@@ -192,6 +193,11 @@ describeHost('deploy/host/verity-host-runtime', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('the previous');
     expect(readFileSync(h.daemonJson, 'utf8')).toBe(previous);
+    // The Updater can write the request directory; the lock and the copy a restore reads from
+    // must not be there for it to replace.
+    expect(existsSync(join(h.state, 'daemon.json.previous'))).toBe(false);
+    expect(existsSync(join(h.state, '.lock'))).toBe(false);
+    expect(existsSync(join(h.root, 'private', 'daemon.json.previous'))).toBe(true);
   });
 
   it('leaves daemon.json untouched when dockerd rejects the merged configuration', () => {

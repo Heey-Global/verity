@@ -1,6 +1,16 @@
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { backupLifecycle } from './backup/lifecycle.js';
+import type { BuildStorage, BuildStorageLease } from './build-storage.js';
+import type { BuildDiagnosticStore } from './build-diagnostics.js';
+import type { DerivedImageReferences } from './derived-image-references.js';
+import { connectDocumentCode } from './document-code.js';
+import { migrateLocalDocuments } from './document-migration.js';
+import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
+import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 import {
   createDevcontainerBuildSnapshot,
+  type DevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
   declaresDevcontainerBaseImageArg,
   pinDevcontainerBaseImage,
@@ -73,7 +83,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
@@ -84,7 +94,6 @@ import {
   SIGNING_BROKER_TOKEN_HASH_LABEL,
   signingBrokerTokenHash,
 } from './git-signer.js';
-import { signHistoryForPush } from './sign-history.js';
 import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
@@ -106,6 +115,10 @@ import {
 export { RUNNER_RUNTIME_GID, RUNNER_RUNTIME_UID };
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import {
+  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
+  recordAgentGatewayProjection,
+} from './agent-gateway-projection.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '@verity/store';
 import {
@@ -142,6 +155,8 @@ import {
 } from './gvisor-project-network.js';
 import type { ProjectSandboxLifecycleEvent } from './project-lifecycle-telemetry.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
+import { UNKNOWN_INITIATOR, type AuditInitiator } from './audit-log.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import {
   CONTAINER_GENERATION_LABEL,
   PROJECT_ID_LABEL,
@@ -251,7 +266,9 @@ export const RUNNER_AGENT_UID = 1000;
 export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
 
-const DEVCONTAINER_NODE_FEATURE_REF = 'ghcr.io/devcontainers/features/node:1';
+// Digest verified against the public OCI manifest; mutable aliases never enter builds.
+export const DEVCONTAINER_NODE_FEATURE_REF =
+  'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6';
 const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.12.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
@@ -368,6 +385,8 @@ const defaultGitRunner: GitRunner = async (args, opts) => {
  *  message carries the build stderr so the provisioner can surface a truncated
  *  `provision_error`. Kept injectable so tests never spawn a real build. */
 export type DevcontainerBuildSpawner = (args: {
+  storageLease?: BuildStorageLease;
+  signal?: AbortSignal;
   workspaceFolder: string;
   imageName: string;
   dockerHost: string;
@@ -402,6 +421,21 @@ export interface RecreateContainerOptions {
    *  depends on whether its clone carries a `.devcontainer/`, which the caller
    *  is not required to know. */
   forceRebuild?: boolean;
+  /** Who asked for this; recorded with any project image build it causes (ADR 0028). */
+  initiator?: AuditInitiator;
+}
+
+export type ProvisionOptions = Pick<RecreateContainerOptions, 'confirmWarnings' | 'initiator'>;
+
+/** The agent session a turn-driven repair runs for. Pseudo-ids such as
+ *  `secret-unlock:<project>` name a system path, not a session. */
+function sessionInitiator(
+  sessionIds: ReadonlySet<string> | undefined,
+  fallback: AuditInitiator,
+): AuditInitiator {
+  const sessionId =
+    sessionIds === undefined ? undefined : [...sessionIds].find((id) => !id.includes(':'));
+  return sessionId === undefined ? fallback : { kind: 'session', sessionId };
 }
 
 /** Build the `devcontainer build` argv (pure, exported for behaviour-driven
@@ -415,6 +449,8 @@ export function devcontainerBuildArgs(args: {
   imageName: string;
   additionalFeatures?: string | undefined;
   noCache?: boolean | undefined;
+  /** A buildx `--output` spec replacing the CLI's default `--load`. */
+  output?: string | undefined;
 }): string[] {
   const argv = [
     'build',
@@ -426,6 +462,7 @@ export function devcontainerBuildArgs(args: {
     args.imageName,
   ];
   if (args.noCache === true) argv.push('--no-cache');
+  if (args.output !== undefined) argv.push('--output', args.output);
   if (args.additionalFeatures !== undefined && args.additionalFeatures.length > 0) {
     argv.push(
       '--additional-features',
@@ -436,6 +473,125 @@ export function devcontainerBuildArgs(args: {
     );
   }
   return argv;
+}
+
+/**
+ * The dedicated builder's socket endpoint, or a reason repository builds are
+ * unavailable.
+ *
+ * An explicit `VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT` always wins and is held to
+ * a private Unix socket. Without it, the socket the managed deployment mounts
+ * from its sealed spec is used, but only while that socket actually exists: a
+ * spec sealed before the builder, or a host whose builder is down, reports
+ * builds as unavailable instead of naming an endpoint nothing serves.
+ */
+export function devcontainerBuilderEndpoint(
+  environment: NodeJS.ProcessEnv = process.env,
+  isSocket: (path: string) => boolean = (path) => {
+    try {
+      return statSync(path).isSocket();
+    } catch {
+      return false;
+    }
+  },
+): string {
+  const explicit = environment.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+  if (explicit !== undefined) {
+    if (!/^unix:\/\/\/[^\s\0]+$/.test(explicit))
+      throw new Error(
+        'Devcontainer builds require VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT pointing to the private runsc worker Unix socket',
+      );
+    return explicit;
+  }
+  const mounted = `${DEVCONTAINER_BUILDER_SOCKET_DIRECTORY}/buildkitd.sock`;
+  if (isSocket(mounted)) return `unix://${mounted}`;
+  throw new Error(
+    'Devcontainer builds are unavailable: this Server has no gVisor builder socket. ' +
+      'Run the Verity installer again to repair the host, then update the Server.',
+  );
+}
+
+/**
+ * Whether one `docker buildx history ls --format json` entry is a build that is
+ * still running. buildx reports a `status` (`Running`, `Completed`, `Error`,
+ * `Canceled`) and a completion time. Only a recognised terminal status, or a
+ * completion time without any status, reads as finished: an unknown status or
+ * shape must never read as idle.
+ */
+const TERMINAL_HISTORY_STATUS = /^(?:completed?|error|failed|cancell?ed)$/i;
+
+function historyEntryRunning(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null) return true;
+  const record = entry as Record<string, unknown>;
+  const status = record['status'] ?? record['Status'];
+  if (status !== undefined && status !== null)
+    return typeof status !== 'string' || !TERMINAL_HISTORY_STATUS.test(status.trim());
+  const completed =
+    record['completed_at'] ?? record['completedAt'] ?? record['CompletedAt'] ?? record['completed'];
+  return completed === undefined || completed === null || completed === '';
+}
+
+/**
+ * Ask the private BuildKit worker whether any build is still running, through a
+ * throwaway remote-driver record like a build uses. `true` only when the worker
+ * answered and listed no running build; `undefined` whenever it could not be asked
+ * or its answer could not be read, which keeps every reservation in place.
+ */
+export async function devcontainerBuilderIdle(
+  dockerHost: string,
+  run: typeof execFileAsync = execFileAsync,
+): Promise<boolean | undefined> {
+  let endpoint: string;
+  try {
+    endpoint = devcontainerBuilderEndpoint();
+  } catch {
+    return undefined;
+  }
+  const builderName = `verity-probe-${randomUUID()}`;
+  const configDir = mkdtempSync(join(tmpdir(), 'verity-buildx-probe-'));
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: configDir,
+    DOCKER_HOST: dockerHost,
+    DOCKER_CONFIG: configDir,
+    BUILDX_BUILDER: builderName,
+  };
+  const options = { env, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' as const };
+  try {
+    await run(
+      'docker',
+      ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
+      options,
+    );
+    const { stdout } = await run(
+      'docker',
+      ['buildx', 'history', 'ls', '--builder', builderName, '--format', 'json'],
+      options,
+    );
+    const text = stdout.trim();
+    // No history is not evidence of idleness: a worker with history pruned or disabled
+    // lists nothing while a solve still runs.
+    if (text === '') return undefined;
+    let entries: unknown[];
+    try {
+      entries = text.startsWith('[')
+        ? (JSON.parse(text) as unknown[])
+        : text
+            .split('\n')
+            .filter((line) => line.trim() !== '')
+            .map((line) => JSON.parse(line) as unknown);
+    } catch {
+      return undefined;
+    }
+    // `[]` is no more evidence of idleness than empty output.
+    if (!Array.isArray(entries) || entries.length === 0) return undefined;
+    return !entries.some(historyEntryRunning);
+  } catch {
+    return undefined;
+  } finally {
+    await run('docker', ['buildx', 'rm', builderName], options).catch(() => undefined);
+    rmSync(configDir, { recursive: true, force: true });
+  }
 }
 
 /** Real devcontainer-build spawner: runs `devcontainer build` with `DOCKER_HOST`
@@ -453,15 +609,25 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   additionalFeatures,
   registryToken,
   noCache,
+  storageLease,
+  signal,
 }) => {
+  const endpoint = devcontainerBuilderEndpoint();
+  const run = storageLease?.run ?? execFileAsync;
+  let phase = 'builder setup';
+  const builderName = `verity-build-${randomUUID()}`;
   // Image/feature metadata can also perform localEnv substitution. Validating
   // the repository config alone must not expose the server's environment.
-  const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
+  const dockerConfigDir = mkdtempSync(
+    join(storageLease?.directory ?? tmpdir(), 'verity-dockercfg-'),
+  );
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
     HOME: dockerConfigDir,
     DOCKER_HOST: dockerHost,
     DOCKER_CONFIG: dockerConfigDir,
+    DOCKER_BUILDKIT: '1',
+    BUILDX_BUILDER: builderName,
   };
   // When we have a token, point the devcontainer CLI at a throwaway docker config
   // that authenticates to ghcr.io as the GitHub App (`x-access-token:<token>`).
@@ -476,13 +642,69 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
         { mode: 0o600 },
       );
     }
-    return await execFileAsync(
+    // A private buildx record per attempt prevents global selection or concurrent-build races.
+    // Creating a remote driver cannot start a Docker/runc worker on failure.
+    await run(
+      'docker',
+      ['buildx', 'create', '--name', builderName, '--driver', 'remote', endpoint],
+      { env, ...(signal === undefined ? {} : { signal }), timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+    await run('docker', ['buildx', 'inspect', builderName, '--bootstrap'], {
+      env,
+      ...(signal === undefined ? {} : { signal }),
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    // The image goes to a file, then into the Engine as a second step, rather than
+    // `--load`. With `--load` BuildKit streams the archive through buildx into
+    // `docker load` and records the build as finished only once buildx closes that
+    // stream; on Docker Engine 29 the image was tagged while buildx and BuildKit both
+    // kept waiting until the build timeout. A complete file has no such hand-over.
+    const archive = join(dockerConfigDir, 'image.tar');
+    phase = 'build/export';
+    const built = await run(
       'devcontainer',
-      devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
-      { env, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
+      devcontainerBuildArgs({
+        workspaceFolder,
+        imageName,
+        additionalFeatures,
+        noCache,
+        output: `type=docker,dest=${archive}`,
+      }),
+      {
+        env,
+        ...(signal === undefined ? {} : { signal }),
+        remoteOperation: 'build-export',
+        timeout: 30 * 60_000,
+        maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES,
+      },
+    );
+    phase = 'image import';
+    await run('docker', ['load', '--input', archive], {
+      env,
+      ...(signal === undefined ? {} : { signal }),
+      remoteOperation: 'image-import',
+      timeout: 15 * 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return built;
+  } catch (cause) {
+    throw new Error(
+      `Devcontainer ${phase} failed: ${buildFailureMessage(cause)}` +
+        (storageLease?.retainArtifacts
+          ? '. The builder has not confirmed that this attempt ended, so it keeps its files and its estimated space until it does; other builds continue and the reservation is released automatically.'
+          : ''),
+      { cause },
     );
   } finally {
-    rmSync(dockerConfigDir, { recursive: true, force: true });
+    // Removing a remote driver only removes this private client record, never worker state.
+    await run('docker', ['buildx', 'rm', builderName], {
+      env,
+      ...(signal === undefined ? {} : { signal }),
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }).catch(() => undefined);
+    if (!storageLease?.retainArtifacts) rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
 
@@ -542,6 +764,8 @@ export interface LinkCloneToGitHubResult {
 }
 
 export interface ProvisionerOptions {
+  /** Experimental deny-only fixture injection; no production activation. */
+  projectEgress?: ProjectEgressLifecycle;
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
@@ -629,6 +853,8 @@ export interface ProvisionerOptions {
   imageEvidenceCollector?: ImageEvidenceCollector | undefined;
   /** Bundled toolkit directory whose binaries are the attestation trust root. */
   runnerBoundaryFeatureDir?: string | undefined;
+  /** Plain local workspace allocation; injected by filesystem-free tests. */
+  prepareLocalWorkspace?: ((path: string) => Promise<void>) | undefined;
   /** Test/deployment seam for ownership preparation. Defaults to mkdir/chmod/chown. */
   prepareRunnerRuntime?:
     ((path: string, ownership: { uid: number; gid: number }) => void) | undefined;
@@ -758,6 +984,16 @@ export interface ProvisionerOptions {
    *  every project runs the base image. Injectable so tests
    *  don't spawn a real build. */
   devcontainerBuild?: DevcontainerBuildSpawner | undefined;
+  /** Instance-wide context/build/export/import admission and owned artifact recovery. */
+  buildStorage?: BuildStorage | undefined;
+  /** Where the last failed devcontainer build of each project keeps its output tail. */
+  buildFailureLogDirectory?: string | undefined;
+  /** Shared with GC: protect derived images from cache lookup until provisioning settles. */
+  imageReferences?: DerivedImageReferences | undefined;
+  /** Durable audit trail for project image builds (ADR 0028). When wired, a build
+   *  whose intent cannot be recorded is refused. */
+  audit?: AuditRecorder | undefined;
+  buildDiagnostics?: BuildDiagnosticStore | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -782,8 +1018,7 @@ export interface ProvisionerOptions {
 }
 
 export const CLAUDE_EGRESS_GATEWAY_URL_LABEL = 'verity.claude-egress.gateway-url';
-/** Fingerprint of the client certificate mounted into this exact Sandbox. */
-export const AGENT_GATEWAY_PEER_FINGERPRINT_LABEL = 'verity.agent-gateway.peer-fingerprint-sha256';
+export { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL };
 
 /** Read the canonical directory descriptors off a project row (post-canonical
  *  per §19.0/§19.1 — assumes the row was upserted through the slice-2 sync).
@@ -1504,6 +1739,10 @@ function failureMessage(error: unknown): string {
 
 const COMMAND_OUTPUT_TAIL_LINES = 12;
 const COMMAND_OUTPUT_MAX_CHARS = 1000;
+const COMMAND_OUTPUT_CAUSE_LINES = 3;
+const COMMAND_OUTPUT_CAUSE_CHARS = 500;
+const STACK_FRAME = /^\s+at\s.+(?:\(.*\)|:\d+:\d+)$/;
+const BUILD_FAILURE_LINE = /^(?:#\d+ )?ERROR\b|failed to solve|did not complete successfully/;
 
 /** Actionable hint for common devcontainer failures under Verity's sandbox
  *  hardening. The raw command output often BURIES the real cause (e.g. a long
@@ -1553,6 +1792,23 @@ async function serverCanReachSupervisor(runtimePath: string): Promise<void> {
   );
 }
 
+// Callers redact credentials by exact value after formatting. A cut inside a
+// token would leave a fragment that redaction no longer matches, so output is
+// cut only at whitespace and the token the limit falls in is dropped whole.
+function keepLast(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const window = text.slice(-max);
+  const boundary = window.search(/\s/);
+  return boundary === -1 ? '' : window.slice(boundary + 1);
+}
+
+function keepFirst(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const window = text.slice(0, max + 1);
+  const boundary = window.search(/\s\S*$/);
+  return boundary === -1 ? '' : `${window.slice(0, boundary)} …`;
+}
+
 function commandFailureMessage(error: unknown): string {
   const stdout = (error as { stdout?: unknown } | null)?.stdout;
   const stderr = (error as { stderr?: unknown } | null)?.stderr;
@@ -1563,15 +1819,57 @@ function commandFailureMessage(error: unknown): string {
   const raw = output.length > 0 ? output : error instanceof Error ? error.message : String(error);
   // Surface the TAIL lines — where the real failure is — not an arbitrary
   // char-slice that leads with earlier success noise (e.g. a long install log).
-  const tail = raw
+  // A failing devcontainer CLI ends with its own Node stack trace, which alone
+  // fills the tail; its frames name the CLI, never the cause, so they are dropped.
+  const lines = raw
     .split('\n')
     .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(-COMMAND_OUTPUT_TAIL_LINES)
-    .join('\n')
-    .slice(-COMMAND_OUTPUT_MAX_CHARS);
+    .filter((line) => line.trim().length > 0 && !STACK_FRAME.test(line));
+  const tail = keepLast(
+    lines.slice(-COMMAND_OUTPUT_TAIL_LINES).join('\n'),
+    COMMAND_OUTPUT_MAX_CHARS,
+  );
+  // BuildKit names the failed step and its exit status once, mid-output; keep it
+  // even when later output pushes it out of the tail.
+  const causes = [...new Set(lines.filter((line) => BUILD_FAILURE_LINE.test(line)))]
+    .slice(-COMMAND_OUTPUT_CAUSE_LINES)
+    .map((line) => keepFirst(line, COMMAND_OUTPUT_CAUSE_CHARS))
+    .filter((line) => !tail.includes(line));
+  const body = causes.length > 0 ? `${causes.join('\n')}\n…\n${tail}` : tail;
   const hint = devcontainerFailureHint(raw);
-  return hint !== undefined ? `${hint}\n\n${tail}` : tail;
+  return hint !== undefined ? `${hint}\n\n${body}` : body;
+}
+
+/** Lines a failed build keeps for diagnostics; the surfaced message keeps far fewer. */
+const BUILD_LOG_TAIL_LINES = 100;
+const BUILD_LOG_TAIL_CHARS = 16_000;
+
+/**
+ * The end of a failed build's own output, for diagnostics rather than the one-line
+ * project status. The provisioning error keeps a dozen lines, which a long pip or
+ * ansible-galaxy failure overflows with its own traceback before the cause is
+ * reached; this keeps the last {@link BUILD_LOG_TAIL_LINES}. Spawner wrappers hold
+ * the command output on their `cause`, so the chain is followed to it.
+ */
+export function buildOutputTail(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth++) {
+    const output = [
+      (current as { stdout?: unknown }).stdout,
+      (current as { stderr?: unknown }).stderr,
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join('\n');
+    if (output.length > 0) {
+      const lines = output
+        .split('\n')
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0 && !STACK_FRAME.test(line));
+      return keepLast(lines.slice(-BUILD_LOG_TAIL_LINES).join('\n'), BUILD_LOG_TAIL_CHARS);
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
 }
 
 /** Failure message for a devcontainer build (ADR 0003 R3.1). Prefers the
@@ -1592,15 +1890,14 @@ function buildFailureMessage(error: unknown): string {
  *  Caller invariant: `projectId` exists in the store. The worker re-checks
  *  inside the lock tx (race-correct against a concurrent deprovision). */
 export interface Provisioner {
-  provision(projectId: string, opts?: { confirmWarnings?: boolean }): Promise<ProjectRecord>;
+  /** Migrate an idle legacy local project before allocating or dispatching work. */
+  prepareLocalDocuments?(projectId: string): Promise<void>;
+  provision(projectId: string, opts?: ProvisionOptions): Promise<ProjectRecord>;
   /** Fetch and reset the managed project checkout to its configured default branch. */
   syncProjectCheckout?(projectId: string): Promise<void>;
   provisionWarnings?(projectId: string): Promise<string[]>;
-  /** Give a `local` project's clone an `origin` and publish its current branch there,
-   * so the repository Verity created with `git init` becomes a GitHub repository.
-   * An empty target takes the branch directly; a target that already has history gets
-   * an import branch plus a pull request (see {@link LinkCloneToGitHubResult}).
-   * Leaves the clone DIRECTORY where it is — session worktrees live under it. */
+  /** Connect remote Code without publishing Documents or legacy local history.
+   * The existing workspace root is retained for durable document sessions. */
   linkCloneToGitHub?(
     project: ProjectRecord,
     target: { owner: string; repo: string; forgeConnectionId?: string | null },
@@ -2465,6 +2762,16 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   constructor(private readonly opts: ProvisionerOptions) {
+    if (
+      opts.projectEgress !== undefined &&
+      (opts.sandboxRuntime !== PROJECT_RUNSC_RUNTIME ||
+        opts.sandboxCapAdd?.length ||
+        opts.sandboxAllowPrivilegeEscalation === true)
+    ) {
+      throw new Error(
+        'Experimental egress requires the isolated gVisor runtime without added privileges',
+      );
+    }
     if (opts.docker.ensureNetwork === undefined) {
       throw new ProvisioningError('project relay provisioning requires Docker network creation');
     }
@@ -3058,6 +3365,35 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
+  private async localDocumentsNeedMigration(project: ProjectRecord): Promise<boolean> {
+    if (!isLocalProject(project) || !this.opts.dataVolumeRoot) return false;
+    const workspace = projectClonePath(this.opts.hostCloneRoot, project);
+    if (existsSync(join(workspace, '.git', 'verity-document-code'))) return false;
+    const manifest = join(
+      this.opts.dataVolumeRoot,
+      'document-migrations',
+      project.id,
+      'manifest.json',
+    );
+    if (existsSync(manifest)) {
+      const { readFile } = await import('node:fs/promises');
+      const state = JSON.parse(await readFile(manifest, 'utf8')) as { stage: string };
+      return state.stage !== 'complete';
+    }
+    return existsSync(join(workspace, '.git'));
+  }
+
+  async prepareLocalDocuments(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (!project || !(await this.localDocumentsNeedMigration(project))) return;
+    await this.withProjectExclusiveMutation(projectId, async () => {
+      await this.recreateContainer(projectId, {
+        confirmWarnings: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      });
+    });
+  }
+
   async ensureProjectSandboxAwake(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -3169,7 +3505,10 @@ export class ProvisionerImpl implements Provisioner {
           ): Promise<ProjectRecord> => {
             this.observeSandboxWakeFallback(project.id, reason);
             try {
-              return await this.recreateContainer(project.id, { confirmWarnings: true });
+              return await this.recreateContainer(project.id, {
+                confirmWarnings: true,
+                initiator: { kind: 'system', trigger: 'sandbox_wake' },
+              });
             } catch (cause) {
               // Image preparation can fail before replacement advances the row.
               // Leaving it waking makes later admissions require reconciliation
@@ -3254,9 +3593,27 @@ export class ProvisionerImpl implements Provisioner {
                   uid: this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID,
                   gid: this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID,
                 });
+                // Sleep revoked the certificate this container was created with, so
+                // the one just written in place has a new fingerprint while the
+                // container's immutable label still names the revoked one. Record
+                // which fingerprint this exact container and generation now holds;
+                // without it the woken Sandbox fails Agent Gateway readiness on
+                // every turn and is pushed into a full recreate it does not need.
+                recordAgentGatewayProjection(this.opts.gitSecretRoot, {
+                  projectId: project.id,
+                  containerId: inspect.id,
+                  containerGeneration: generation,
+                  fingerprint256: material.fingerprint256,
+                });
               }
             }
-            await this.opts.docker.startContainer(inspect.id);
+            if (this.opts.projectEgress !== undefined) {
+              await this.opts.projectEgress.start(
+                { projectId: project.id, containerGeneration: generation },
+                'sandbox',
+                inspect.id,
+              );
+            } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
             await this.opts.onContainerStarted?.(project);
@@ -3402,7 +3759,13 @@ export class ProvisionerImpl implements Provisioner {
       // the result below rather than starting a competing stop/remove.
       await inFlight.catch(() => undefined);
     } else {
-      await this.recreateContainer(projectId, { confirmWarnings: true });
+      await this.recreateContainer(projectId, {
+        confirmWarnings: true,
+        initiator: sessionInitiator(requestingSessionIds, {
+          kind: 'system',
+          trigger: 'sandbox_reconcile',
+        }),
+      });
       // Charged only for a recreate this path actually performed and completed —
       // not for one it waited on, and not for one that threw.
       if (envDriftOnly) this.noteEnvDriftRecreate(projectId);
@@ -3450,7 +3813,11 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: projectNetworkName(project.id),
+      projectNetwork:
+        this.opts.projectEgress === undefined
+          ? projectNetworkName(project.id)
+          : ((await this.opts.projectEgress.current(project.id))?.networkName ??
+            'unregistered-egress-generation'),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -3566,6 +3933,15 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  private async retireEgressGeneration(projectId: string): Promise<void> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return;
+    const binding = await egress.current(projectId);
+    if (binding !== undefined)
+      await egress.retire({ projectId, containerGeneration: binding.generation });
+    await this.opts.projectRelay.stop(projectId);
+  }
+
   private relayBinding(project: ProjectRecord, containerGeneration: string): ProjectRelayBinding {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
@@ -3575,6 +3951,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      ...(this.opts.projectEgress === undefined ? {} : { egress: this.opts.projectEgress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
@@ -3812,7 +4189,10 @@ export class ProvisionerImpl implements Provisioner {
             driftRecreatesThisPass++;
           }
           attemptedRecreate = true;
-          await this.recreateContainer(project.id, { confirmWarnings: true });
+          await this.recreateContainer(project.id, {
+            confirmWarnings: true,
+            initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+          });
           // Counted only once the recreate actually happened. A recreate that THREW
           // — daemon down, image pull failed — proves nothing about the drift, and
           // charging it would let three unrelated outages disqualify a project from
@@ -3938,7 +4318,7 @@ export class ProvisionerImpl implements Provisioner {
    */
   private async reuseOrMigrateActive(
     project: ProjectRecord,
-    opts: { confirmWarnings?: boolean },
+    opts: ProvisionOptions,
   ): Promise<ProjectRecord> {
     const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
     const busy = await this.isProjectBusy(project.id);
@@ -3988,10 +4368,7 @@ export class ProvisionerImpl implements Provisioner {
    * state-write; the clone/docker calls are unguarded because ON CONFLICT +
    * docker-name-uniqueness are the daemon-level collision backstops.
    */
-  async provision(
-    projectId: string,
-    opts: { confirmWarnings?: boolean } = {},
-  ): Promise<ProjectRecord> {
+  async provision(projectId: string, opts: ProvisionOptions = {}): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
     // Coalesce onto an already-running attempt (see inFlightProvisions). The
     // joining caller's own `opts` are intentionally ignored — it observes the
@@ -4004,14 +4381,12 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
 
-  private async provisionOnce(
-    projectId: string,
-    opts: { confirmWarnings?: boolean },
-  ): Promise<ProjectRecord> {
+  private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
     const project = await this.claimForCloning(projectId);
@@ -4049,6 +4424,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       return await attempt;
     } finally {
+      await this.opts.imageReferences?.releaseProject(projectId);
       this.inFlightProvisions.delete(projectId);
     }
   }
@@ -4075,7 +4451,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
 
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
       throw new ProvisioningWarning([warning]);
     }
@@ -4095,7 +4471,7 @@ export class ProvisionerImpl implements Provisioner {
         PROJECT_IMAGE_REBUILDING_WARNING,
       );
       try {
-        rebuiltImage = await this.resolveOrBuildImage(project, dirs, true);
+        rebuiltImage = await this.resolveOrBuildImage(project, dirs, true, opts.initiator);
       } catch (cause) {
         const detail = redactSensitive(buildFailureMessage(cause), [
           process.env.GITHUB_TOKEN,
@@ -4124,7 +4500,8 @@ export class ProvisionerImpl implements Provisioner {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     let replacementImage: ProjectImage;
     try {
-      replacementImage = rebuiltImage ?? (await this.resolveOrBuildImage(project, dirs, false));
+      replacementImage =
+        rebuiltImage ?? (await this.resolveOrBuildImage(project, dirs, false, opts.initiator));
       if (!replacementImage.usesDevcontainerImage && this.opts.docker.pullImage !== undefined) {
         await this.opts.docker.pullImage(replacementImage.imageRef);
       }
@@ -4149,6 +4526,7 @@ export class ProvisionerImpl implements Provisioner {
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
+      await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
       this.sandboxReplacementGenerations.set(
@@ -4156,6 +4534,13 @@ export class ProvisionerImpl implements Provisioner {
         (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
       );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project)))
+        await migrateLocalDocuments({
+          dataRoot: this.opts.dataVolumeRoot,
+          projectId: project.id,
+          workspace: dirs.clonePath,
+          store: this.opts.store,
+        });
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
       // non-destructive preflight above. Keep forcePull true here to retain the
@@ -4192,7 +4577,7 @@ export class ProvisionerImpl implements Provisioner {
   async provisionWarnings(projectId: string): Promise<string[]> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return [];
-    const warning = this.devcontainerWarningForProject(project);
+    const warning = await this.devcontainerWarningForProject(project);
     return warning === null ? [] : [warning];
   }
 
@@ -4226,16 +4611,26 @@ export class ProvisionerImpl implements Provisioner {
    *  `projects.state` — the caller is responsible for the `failed` transition
    *  on error. On success, the caller transitions to `container_starting`.
    *
-   *  A `local` project has no remote to clone from, so it gets an empty git repo
-   *  instead — see {@link initLocalRepo}. Once such a project is LINKED to a
-   *  GitHub repo its `kind` flips to `github` and it re-enters the fetch branch
-   *  below, which is why the link path must have set `origin` first. */
+   * Local projects allocate a plain document workspace. Connected projects clone
+   * or fetch their Code repository; document storage never enters that clone. */
   private async doClone(project: ProjectRecord): Promise<void> {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const settings = await this.opts.store.getProjectSettingsRaw(project.id);
     const configuredDefaultBranch = settings?.defaultBranch?.trim() || undefined;
     if (isLocalProject(project)) {
-      await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
+      if (this.opts.dataVolumeRoot && (await this.localDocumentsNeedMigration(project))) {
+        if (await this.isProjectBusy(project.id))
+          throw new ProvisioningError('Finish project activity before migrating local documents');
+        await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+        await migrateLocalDocuments({
+          dataRoot: this.opts.dataVolumeRoot,
+          projectId: project.id,
+          workspace: dirs.clonePath,
+          store: this.opts.store,
+        });
+      }
+      if (this.opts.prepareLocalWorkspace) await this.opts.prepareLocalWorkspace(dirs.clonePath);
+      else await mkdirDocumentRoot(dirs.clonePath, { recursive: true });
       return;
     }
     const access = await this.opts.forgeRepositoryAccess?.(project);
@@ -4405,51 +4800,6 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   /**
-   * Create the empty git repository a project without a GitHub repo starts from.
-   * Idempotent: a re-provision — or a repair after a failed container start —
-   * finds the repo already there and leaves it alone, along with everything
-   * committed into it since.
-   *
-   * The initial commit is not cosmetic. `git worktree add` refuses to branch off
-   * an unborn HEAD, so without it the FIRST session spawned into the project
-   * would fail. It is deliberately EMPTY rather than seeded with a README: the
-   * repository is the operator's, and Verity should not author its first file.
-   *
-   * Identity and signing are pinned per-invocation rather than inherited from
-   * the server's git config — the server container carries no `user.email`, and
-   * an inherited `commit.gpgsign=true` would route this bootstrap commit to a
-   * signing path that holds no key for it.
-   */
-  private async initLocalRepo(clonePath: string, defaultBranch: string): Promise<void> {
-    const repoExists = this.isDir(clonePath) && this.isRepoDir(clonePath);
-    if (repoExists) {
-      try {
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD']);
-        return;
-      } catch {
-        // An interrupted first attempt can leave `.git` behind with an unborn
-        // HEAD. Finish the bootstrap commit instead of treating it as complete.
-      }
-    } else {
-      await this.git(['init', '-b', defaultBranch, clonePath]);
-    }
-    await this.git([
-      '-C',
-      clonePath,
-      '-c',
-      'user.name=Verity',
-      '-c',
-      'user.email=verity@localhost',
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '--allow-empty',
-      '-m',
-      'chore: initialize project',
-    ]);
-  }
-
-  /**
    * Reduce a `local` clone's `.git/config` to {@link FROZEN_LOCAL_CONFIG_KEYS} before
    * the container that gets it read-only is created.
    *
@@ -4508,14 +4858,10 @@ export class ProvisionerImpl implements Provisioner {
 
   /**
    * Point a project's clone at a GitHub repository and publish its history there
-   * (the "connect this local project to GitHub later" path). Runs BEFORE the
-   * project row is rewritten, so a rejected push leaves a still-local project
-   * with no half-applied GitHub identity.
-   *
-   * The push is plain and non-forced. If the target already has history, its
-   * default branch is merged into the local branch first. Unrelated histories
-   * are allowed and local files win conflicting hunks, while conflict-free
-   * remote content and the remote ancestry are retained.
+   * (the "connect this local project to GitHub later" path). Local Documents are
+   * migrated first; the connected Code repository is fetched without importing
+   * project knowledge. Document storage is required so legacy files can be retained
+   * before any Code repository is connected.
    */
   async linkCloneToGitHub(
     project: ProjectRecord,
@@ -4523,373 +4869,41 @@ export class ProvisionerImpl implements Provisioner {
     token: string | undefined,
   ): Promise<LinkCloneToGitHubResult> {
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
-    if (!this.isDir(clonePath) || !this.isRepoDir(clonePath)) {
-      throw new ProvisioningError('project clone is missing; repair the project first');
-    }
-    const access = await this.opts.forgeRepositoryAccess?.(target);
-    token = access?.token ?? token;
-    const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
-    const authHeader = access?.authorization ?? gitAuthHeader(token);
-    const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
-    const branch = (await git(['-C', clonePath, 'symbolic-ref', '--short', 'HEAD'])).stdout.trim();
-    const localHead = (await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])).stdout.trim();
-    let originMatchesTarget = false;
-    let originExists = false;
-    try {
-      const existingOrigin = (
-        await git(['-C', clonePath, 'remote', 'get-url', 'origin'])
-      ).stdout.trim();
-      originExists = true;
-      originMatchesTarget = existingOrigin === url || existingOrigin === `${url}.git`;
-      if (!originMatchesTarget) {
-        throw new ProvisioningError(
-          'origin already points to another repository; remove or rename it before linking',
-        );
-      }
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-    }
-    let remoteRefs: Awaited<ReturnType<GitRunner>>;
-    try {
-      remoteRefs = await git([
-        '-c',
-        `http.extraheader=${authHeader}`,
-        'ls-remote',
-        '--heads',
-        '--tags',
-        url,
-      ]);
-    } catch (cause) {
-      const safeCause = new Error(
-        redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-      );
-      throw new ProvisioningError('inspecting the existing GitHub repository failed', safeCause);
-    }
-    const refs = remoteRefs.stdout
-      .trim()
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '');
-    const remoteHeads = refs.filter((line) => /\srefs\/heads\//.test(line));
-    let destinationBranch = branch;
-    let mergedExistingHistory = false;
-    if (remoteHeads.length > 0) {
-      const [sha, ref, extra] = refs.length === 1 ? refs[0]!.split(/\s+/) : [];
-      // Crash recovery: the prior attempt may have completed the push but died
-      // before persisting the GitHub identity. Only the exact single branch at
-      // our current HEAD is accepted as that idempotent continuation.
-      if (
-        originMatchesTarget &&
-        extra === undefined &&
-        sha === localHead &&
-        ref === `refs/heads/${branch}`
-      ) {
-        return {};
-      }
-    }
-    if (!originExists) {
-      await git(['-C', clonePath, 'remote', 'add', 'origin', url]);
-    }
-    if (remoteHeads.length > 0) {
-      let localStatus: string;
+    if (this.opts.dataVolumeRoot) {
+      if (isLocalProject(project)) await this.doClone(project);
+      const access = await this.opts.forgeRepositoryAccess?.(target);
+      const repositoryToken = access?.token ?? token;
+      const authorization = access?.authorization ?? gitAuthHeader(repositoryToken);
+      const url = access?.url ?? `https://github.com/${target.owner}/${target.repo}`;
+      const git = this.forgeGitRunner(access, target.forgeConnectionId ?? project.id);
       try {
-        // Tracked changes only, mirroring `hasTrackedChanges` in branches.ts: the
-        // project clone permanently carries the untracked `.verity-sessions/`
-        // directory its session worktrees live in, so counting untracked files
-        // would block every project that has ever run a session. They are also the
-        // ones not at risk below — `git merge` refuses on its own rather than
-        // clobbering an untracked file, and the `reset --merge` rollback ignores them.
-        localStatus = (
-          await git(['-C', clonePath, 'status', '--porcelain', '--untracked-files=no'])
-        ).stdout.trim();
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError('checking the local project status failed', safeCause);
-      }
-      if (localStatus !== '') {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        throw new ProvisioningError(
-          'the local project has uncommitted changes; commit, stash, or discard them before linking GitHub',
-        );
-      }
-      let remoteBranch: string | undefined;
-      try {
-        const remoteHead = await git([
-          '-c',
-          `http.extraheader=${authHeader}`,
-          'ls-remote',
-          '--symref',
+        const { empty } = await connectDocumentCode({
+          workspace: clonePath,
           url,
-          'HEAD',
-        ]);
-        remoteBranch = remoteHead.stdout
-          .split('\n')
-          .map((line) => line.match(/^ref:\s+refs\/heads\/(.+)\s+HEAD$/)?.[1])
-          .find((candidate) => candidate !== undefined);
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError(
-          'determining the GitHub repository default branch failed',
-          safeCause,
-        );
-      }
-      remoteBranch ??= refs
-        .map((line) => line.split(/\s+/))
-        .find(([, ref]) => ref === `refs/heads/${branch}`)?.[1]
-        ?.replace(/^refs\/heads\//, '');
-      if (remoteBranch === undefined) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        throw new ProvisioningError('the GitHub repository default branch could not be determined');
-      }
-      destinationBranch = remoteBranch;
-      try {
-        await git([
-          '-C',
-          clonePath,
-          '-c',
-          `http.extraheader=${authHeader}`,
-          'fetch',
-          'origin',
-          `+refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`,
-        ]);
-      } catch (cause) {
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
-        throw new ProvisioningError(
-          'fetching the existing GitHub repository history failed',
-          safeCause,
-        );
-      }
-      try {
-        // Identity and signing are pinned per-invocation exactly as `initLocalRepo`
-        // and the session merge in branches.ts pin them: the server container carries
-        // no `user.email`, and an unset one aborts this merge commit outright, while
-        // an inherited `commit.gpgsign=true` would route Verity's own merge through a
-        // signing path that holds no key for it.
-        await git([
-          '-C',
-          clonePath,
-          '-c',
-          'user.name=Verity',
-          '-c',
-          'user.email=verity@localhost',
-          '-c',
-          'commit.gpgsign=false',
-          'merge',
-          '--allow-unrelated-histories',
-          '--no-edit',
-          '-X',
-          'ours',
-          `refs/remotes/origin/${remoteBranch}`,
-        ]);
-        mergedExistingHistory = true;
-      } catch (cause) {
-        // A merge that never started leaves no MERGE_HEAD, and `git merge --abort`
-        // then fails with "there is no merge to abort". Only abort a merge that
-        // actually touched the tree: reporting the abort failure as damage would
-        // send the operator to repair a clone that was never modified.
-        let midMerge = true;
-        try {
-          await git(['-C', clonePath, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
-        } catch {
-          midMerge = false;
-        }
-        let abortCause: unknown;
-        if (midMerge) {
-          try {
-            await git(['-C', clonePath, 'merge', '--abort']);
-          } catch (error) {
-            abortCause = error;
-          }
-        }
-        if (abortCause !== undefined) {
-          const failure = `${commandFailureMessage(cause)}; aborting the merge also failed: ${commandFailureMessage(abortCause)}`;
-          const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
-          throw new AmbiguousGitPushError(
-            'merging GitHub history failed and the local project needs repair before retrying',
-            safeCause,
+          authorization,
+          git,
+        });
+        if (empty)
+          await this.bootstrapEmptyGitHubRepo(
+            clonePath,
+            'main',
+            repositoryToken,
+            authorization,
+            git,
           );
-        }
-        if (!originExists) {
-          await git(['-C', clonePath, 'remote', 'remove', 'origin']);
-        }
-        const safeCause = new Error(
-          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
-        );
+        return {};
+      } catch (cause) {
         throw new ProvisioningError(
-          'merging the existing GitHub repository into the local project failed',
-          safeCause,
-        );
-      }
-    }
-    // Everything about to be pushed has to be verifiable, and until this moment
-    // none of it needed to be: a local project is never pushed, so the commits
-    // Verity writes for it — the bootstrap commit, the session merges, the merge
-    // just above — carry no signature and commit as `verity@localhost`. Against a
-    // repository whose ruleset requires verified signatures that push is rejected
-    // outright, and "retry to recover" cannot help, because every attempt rebuilds
-    // the same unsigned merge. Repair it here, where the history has never been
-    // published and a rewrite still costs nothing.
-    //
-    // Best-effort by design: a fleet without a signing key configured, or with no
-    // git identity to commit under, is a fleet whose repositories do not demand
-    // signatures either. Failing the link over it would block the operators this
-    // does not apply to. When it IS configured and the rewrite fails, the push
-    // below fails on its own and reports what GitHub actually objected to.
-    try {
-      const linkSettings = await this.opts.veritySettings?.();
-      const signingKey = resolveSigningPrivateKey(linkSettings);
-      const committerName = linkSettings?.gitUserName?.trim();
-      const committerEmail = linkSettings?.gitUserEmail?.trim();
-      if (
-        signingKey !== null &&
-        committerName !== undefined &&
-        committerName.length > 0 &&
-        committerEmail !== undefined &&
-        committerEmail.length > 0
-      ) {
-        await signHistoryForPush(
-          this.git,
-          clonePath,
-          { privateKey: signingKey, committerName, committerEmail },
-          // The merge above put the repository's own published history under
-          // HEAD. It has to keep its object ids: rewriting it would leave the
-          // import branch sharing no ancestry with the branch the pull request
-          // targets, and the whole repository would read as republished.
-          mergedExistingHistory
-            ? { publishedRef: `refs/remotes/origin/${destinationBranch}` }
-            : undefined,
-        );
-      }
-    } catch {
-      // ignore — see above; the push is the authority on whether this mattered
-    }
-    // A repository that already has history keeps its default branch under whatever
-    // protection the operator put on it: publish onto an import branch and let a
-    // pull request carry the history in. A straight push onto the default branch is
-    // reserved for the empty repository this flow was written for — there is nothing
-    // to review there, and nothing a ruleset would reject. Where a rule does exist,
-    // the direct push fails with "retry to recover", which no retry ever satisfies.
-    let importBranch: string | undefined;
-    if (mergedExistingHistory) {
-      const mergedHead = (
-        await git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-      ).stdout.trim();
-      const remoteShaByBranch = new Map(
-        remoteHeads
-          .map((line) => line.split(/\s+/))
-          .flatMap(([sha, ref]) =>
-            sha !== undefined && ref !== undefined && ref.startsWith('refs/heads/')
-              ? [[ref.slice('refs/heads/'.length), sha] as const]
-              : [],
+          'Connecting Code failed; Documents were retained',
+          new Error(
+            redactSensitive(commandFailureMessage(cause), [repositoryToken, authorization]),
           ),
-      );
-      // Reuse the branch when it already carries this exact merge — a retry after a
-      // pull request that failed to open must not litter the repository with
-      // `-2`, `-3`, … copies of the same import.
-      const base = `verity/import-${branch}`;
-      importBranch = base;
-      for (
-        let attempt = 2;
-        remoteShaByBranch.has(importBranch) && remoteShaByBranch.get(importBranch) !== mergedHead;
-        attempt++
-      ) {
-        importBranch = `${base}-${String(attempt)}`;
+        );
       }
     }
-    const pushTarget =
-      importBranch === undefined
-        ? destinationBranch === branch
-          ? branch
-          : `${branch}:${destinationBranch}`
-        : `HEAD:refs/heads/${importBranch}`;
-    try {
-      await git([
-        '-C',
-        clonePath,
-        '-c',
-        `http.extraheader=${authHeader}`,
-        'push',
-        // `-u` only where the pushed branch IS the project's lasting upstream. The
-        // import branch is transport for one pull request; pointing the local branch
-        // at it would outlive the merge that retires it.
-        ...(importBranch === undefined ? ['-u'] : []),
-        'origin',
-        pushTarget,
-      ]);
-    } catch (cause) {
-      // The push result is ambiguous: GitHub may have accepted it before the
-      // connection failed. Restore the local branch while preserving dirty
-      // working-tree changes, but retain origin + the identity reservation so
-      // a retry can fetch an accepted merge or recreate a rejected one.
-      let rollbackCause: unknown;
-      if (mergedExistingHistory) {
-        try {
-          await git(['-C', clonePath, 'reset', '--merge', localHead]);
-        } catch (error) {
-          rollbackCause = error;
-        }
-      }
-      // Keep a matching origin even when this command reports failure. The
-      // server cannot know whether GitHub accepted the update before the network
-      // broke; the next attempt uses origin + exact remote HEAD to recover.
-      const failure =
-        rollbackCause === undefined
-          ? commandFailureMessage(cause)
-          : `${commandFailureMessage(cause)}; restoring the local branch also failed: ${commandFailureMessage(rollbackCause)}`;
-      const safeCause = new Error(redactSensitive(failure, [token, authHeader]));
-      throw new AmbiguousGitPushError(
-        `pushing ${importBranch ?? branch} to ${target.owner}/${target.repo} failed; retry to recover`,
-        safeCause,
-      );
-    }
-    if (importBranch === undefined) return {};
-    // The branch is published. A pull request that cannot be opened is REPORTED,
-    // never rolled back: the operator can open it by hand from a branch that is
-    // already on GitHub, whereas failing the link here would strand that branch
-    // behind a project that still believes it is local.
-    if (this.opts.openPullRequest === undefined || token === undefined) {
-      return { importBranch, pullRequestError: 'opening pull requests is not configured' };
-    }
-    try {
-      const pullRequest = await this.opts.openPullRequest(target, token, {
-        head: importBranch,
-        base: destinationBranch,
-        title: `Import the ${project.repo} project history`,
-        body:
-          `Verity linked the local project \`${project.repo}\` to this repository.\n\n` +
-          `\`${importBranch}\` carries the project's history, merged with the existing ` +
-          `\`${destinationBranch}\` (unrelated histories; the project's own files win any ` +
-          `conflict). Merging this pull request publishes it.`,
-      });
-      return { importBranch, pullRequest };
-    } catch (cause) {
-      return {
-        importBranch,
-        pullRequestError: redactSensitive(
-          cause instanceof Error ? cause.message : 'opening the pull request failed',
-          [token, authHeader],
-        ),
-      };
-    }
+    throw new ProvisioningError(
+      'Connecting Code requires configured document storage; local history was not published.',
+    );
   }
 
   async syncProjectCheckout(projectId: string): Promise<void> {
@@ -4977,7 +4991,7 @@ export class ProvisionerImpl implements Provisioner {
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
-    const preflightWarning = this.devcontainerWarningForProject(project);
+    const preflightWarning = await this.devcontainerWarningForProject(project);
     if (preflightWarning !== null && opts.confirmWarnings !== true) {
       await this.opts.store.updateProjectState(
         project.id,
@@ -4990,7 +5004,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       image =
         preparedImage ??
-        (await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true));
+        (await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true, opts.initiator));
     } catch (cause) {
       // The build runs with `{ ...process.env, DOCKER_HOST }`, so its stderr can
       // echo a token that lives in the server env. Redact before it lands in the
@@ -5086,19 +5100,31 @@ export class ProvisionerImpl implements Provisioner {
     );
     const canonicalClaudeGatewayUrl = claudeGateway.href;
     const canonicalCodexGatewayUrl = codexGateway.href;
-    const sandboxNetwork = projectNetworkName(project.id);
-    await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-      labels: { 'verity.project-id': project.id },
-    });
-    // Before the running Sandbox is removed (see ensureSandboxRuntime).
     await this.ensureSandboxRuntime(project);
+    const generation = randomUUID();
+    let sandboxNetwork: string;
+    if (this.opts.projectEgress !== undefined) {
+      await this.retireEgressGeneration(project.id);
+      sandboxNetwork = (
+        await this.opts.projectEgress.create({
+          projectId: project.id,
+          containerGeneration: generation,
+        })
+      ).networkName;
+    } else {
+      sandboxNetwork = projectNetworkName(project.id);
+      await this.opts.docker.ensureNetwork!(sandboxNetwork, {
+        labels: { 'verity.project-id': project.id },
+      });
+    }
+
     // Capabilities are currently one-row-per-project, so two generations cannot
     // authenticate concurrently. Fail closed: retire the old Sandbox before
     // revoking its relay, then construct the complete replacement generation.
     if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     await this.opts.projectRelay.stop(project.id);
     const relayActivation = await this.opts.projectRelay.start(
-      this.relayBinding(project, randomUUID()),
+      this.relayBinding(project, generation),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -5537,6 +5563,8 @@ export class ProvisionerImpl implements Provisioner {
         await ensureSharedKnowledge(this.opts.dataVolumeRoot);
         await ensureProjectKnowledge(this.opts.dataVolumeRoot, project.id);
         knowledgeBinds = knowledgeSandboxBinds(this.opts.dataVolumeRoot, project.id);
+        if (project.kind !== 'control_plane')
+          knowledgeBinds = knowledgeBinds.filter((bind) => !bind.includes(':/knowledge/insights'));
       } catch (cause) {
         const message = `knowledge folder could not be prepared: ${failureMessage(cause)}`;
         await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -5734,7 +5762,7 @@ export class ProvisionerImpl implements Provisioner {
             ),
           }
         : {}),
-      restartPolicy: 'unless-stopped',
+      restartPolicy: this.opts.projectEgress === undefined ? 'unless-stopped' : 'no',
       // Public traffic reaches project dev servers through the preview connector.
       // Keep those workloads behind gVisor's userspace-kernel boundary rather than
       // exposing a runc workload to arbitrary internet input. The root filesystem
@@ -5759,7 +5787,7 @@ export class ProvisionerImpl implements Provisioner {
       // devcontainer that happens to install it is the wrong default for adversarial
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
-        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
+        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges=true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
@@ -5828,9 +5856,16 @@ export class ProvisionerImpl implements Provisioner {
         }
       }
       try {
-        await this.opts.docker.startContainer(containerId);
+        if (this.opts.projectEgress !== undefined) {
+          await this.opts.projectEgress.start(relayActivation.identity, 'sandbox', containerId);
+        } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
-        if (!reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
+        if (
+          this.opts.projectEgress !== undefined ||
+          !reusedExisting ||
+          !isStaleGvisorFilestore(cause)
+        )
+          throw cause;
         // Starting a retained container reuses its id, which gVisor also uses as
         // the sandbox id. A sandbox torn down without `runsc delete` (host memory
         // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
@@ -6084,6 +6119,7 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     dirs: ProvisioningDirectory,
     forceRebuild = false,
+    initiator: AuditInitiator = UNKNOWN_INITIATOR,
   ): Promise<ProjectImage> {
     // Resolve the CURRENT default digest (bypassing the resolver's staleness
     // cache) so a freshly created — or recreated — container is pinned to the
@@ -6102,15 +6138,27 @@ export class ProvisionerImpl implements Provisioner {
     const overrideRef = configuredOverride?.image_override_ref ?? null;
     const usesDefaultImage = overrideRef === null;
     const baseImageRef = overrideRef ?? (await this.defaultImageRef(true));
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     const build = this.opts.devcontainerBuild;
     const dockerHost = this.opts.dockerHostForBuild;
-    if (build === undefined || dockerHost === undefined || !this.isDir(devcontainerDir)) {
+    if (policy?.devcontainer_enabled === false || !this.isDir(devcontainerDir)) {
       return {
         imageRef: baseImageRef,
         usesDevcontainerImage: false,
         usesConfiguredOverride: !usesDefaultImage,
       };
+    }
+    if (this.opts.projectEgress !== undefined)
+      throw new Error('Devcontainer builds are unavailable with experimental egress');
+    if (build === undefined || dockerHost === undefined) {
+      throw new Error(
+        'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
+      );
     }
     const feature = await this.devcontainerFeature();
     if (feature === undefined) {
@@ -6118,10 +6166,9 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath);
-    try {
-      const snapshotDevcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
-      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(snapshotDevcontainerDir);
+    const derivedImage = (snapshot: DevcontainerBuildSnapshot) => {
+      const devcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
+      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(devcontainerDir);
       if (unsupportedKeys.length > 0) {
         throw new Error(
           `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
@@ -6130,14 +6177,69 @@ export class ProvisionerImpl implements Provisioner {
       }
       const pinsBase = declaresDevcontainerBaseImageArg(snapshot);
       const hash = devcontainerContentHash(
-        snapshotDevcontainerDir,
+        devcontainerDir,
         baseImageRef,
         `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
           // Only for Dockerfiles the pin applies to, so every other project keeps
           // its cached image across this change.
           (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
       );
-      const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      return {
+        devcontainerDir,
+        pinsBase,
+        hash,
+        derivedTag: devcontainerImageTag(project.owner, project.repo, hash),
+      };
+    };
+    // Reusing an existing image builds nothing, so it must not need build storage.
+    // The derived tag depends only on `.devcontainer`, so name it from a copy of that
+    // directory alone, without a lease that a busy or blocked build storage would
+    // refuse — a Sandbox recreate whose image already exists then works even while
+    // another project's build holds or blocks the storage. Anything this shortcut
+    // cannot decide (an unconfined config, a configuration the snapshot refuses)
+    // falls through to the full path below, which reports it.
+    if (!forceRebuild && this.opts.docker.imageExists !== undefined) {
+      let probe: DevcontainerBuildSnapshot | undefined;
+      try {
+        probe = await createDevcontainerBuildSnapshot(dirs.clonePath, undefined, {
+          configurationOnly: true,
+        });
+        const named = derivedImage(probe);
+        if (devcontainerBuildInputsConfined(named.devcontainerDir)) {
+          // Held before the lookup, as below, so collection cannot remove it in between.
+          await this.opts.imageReferences?.reserve(project.id, named.derivedTag);
+        }
+        if (
+          devcontainerBuildInputsConfined(named.devcontainerDir) &&
+          (await this.opts.docker.imageExists(named.derivedTag))
+        ) {
+          return {
+            imageRef: named.derivedTag,
+            usesDevcontainerImage: true,
+            usesConfiguredOverride: !usesDefaultImage,
+          };
+        }
+      } catch {
+        // Decided below, with the full snapshot and its error reporting.
+      } finally {
+        await probe?.dispose();
+      }
+    }
+    const storageLease = await this.opts.buildStorage?.admitInTurn((ahead) => {
+      console.log(
+        `Devcontainer build for ${project.owner}/${project.repo} waits for ${ahead} other image build(s) on this Server to finish.`,
+      );
+    });
+    let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
+    try {
+      snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);
+      const {
+        devcontainerDir: snapshotDevcontainerDir,
+        pinsBase,
+        hash,
+        derivedTag,
+      } = derivedImage(snapshot);
+      await this.opts.imageReferences?.reserve(project.id, derivedTag);
       // Cache check: the derived tag on the daemon means an identical
       // (devcontainer + base) was already built — reuse it, skip the build.
       // A forced rebuild is precisely the request to not trust that conclusion,
@@ -6160,6 +6262,26 @@ export class ProvisionerImpl implements Provisioner {
             usesConfiguredOverride: !usesDefaultImage,
           };
       }
+      if (storageLease !== undefined) {
+        // Inspect at most the target tag and the last selected derived image.
+        // Never use the unrelated default/base image to size a first build.
+        let imageBytes: number | undefined;
+        const refs = [
+          derivedTag,
+          project.imageRef?.startsWith(DEVCONTAINER_IMAGE_PREFIX) ? project.imageRef : undefined,
+        ];
+        for (const ref of new Set(refs)) {
+          if (ref === undefined) continue;
+          try {
+            const size = (await this.opts.docker.inspectImageIdentity?.(ref))?.sizeBytes;
+            if (size !== null && size !== undefined && Number.isSafeInteger(size) && size > 0)
+              imageBytes = Math.max(imageBytes ?? 0, size);
+          } catch {
+            // Missing/pruned images and unavailable diagnostics use the fallback.
+          }
+        }
+        storageLease.reserveBuild(imageBytes);
+      }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
       // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
@@ -6176,22 +6298,180 @@ export class ProvisionerImpl implements Provisioner {
       // After the cache check, into the private copy only: the hash above was
       // computed over the project's own configuration.
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
-      await build({
-        workspaceFolder: snapshot.workspaceFolder,
-        imageName: derivedTag,
-        dockerHost,
-        additionalFeatures: feature.ref,
-        ...(registryToken !== undefined ? { registryToken } : {}),
-        ...(forceRebuild ? { noCache: true } : {}),
+      // Only claim a base we can identify: Dockerfile/Compose bases and variable
+      // substitutions require resolution by the builder and remain unknown here.
+      const rawConfig = readDevcontainerJson(snapshotDevcontainerDir);
+      const configuredImage =
+        rawConfig === undefined ? undefined : topLevelJsonValue(rawConfig, 'image');
+      const directImage = configuredImage?.kind === 'string' ? configuredImage.value : undefined;
+      const auditBaseImageRef = pinsBase
+        ? baseImageRef
+        : directImage &&
+            !directImage.includes('${') &&
+            rawConfig !== undefined &&
+            ['build', 'dockerFile', 'dockerComposeFile'].every(
+              (key) => topLevelJsonValue(rawConfig, key) === undefined,
+            )
+          ? directImage
+          : null;
+      // No build without a recorded intent: this throws before anything runs when
+      // audit storage is unavailable (ADR 0028).
+      const audit = await this.opts.audit?.beginBuild({
+        projectId: project.id,
+        projectLabel: `${project.owner}/${project.repo}`,
+        initiator,
+        imageTag: derivedTag,
+        forceRebuild,
+        commit: await this.checkoutCommit(dirs.clonePath),
+        baseImageRef: auditBaseImageRef,
+        configFingerprint: hash,
+        features: [DEVCONTAINER_NODE_FEATURE_REF, feature.ref],
       });
+      try {
+        await build({
+          ...(storageLease === undefined ? {} : { storageLease }),
+          workspaceFolder: snapshot.workspaceFolder,
+          imageName: derivedTag,
+          dockerHost,
+          additionalFeatures: feature.ref,
+          ...(registryToken !== undefined ? { registryToken } : {}),
+          ...(forceRebuild ? { noCache: true } : {}),
+        });
+      } catch (cause) {
+        // Best-effort: the build error, not an audit error, is what the caller reports.
+        if (audit !== undefined) {
+          await this.opts.buildDiagnostics
+            ?.save(audit.operationId, cause, registryToken === undefined ? [] : [registryToken])
+            .catch(() => undefined);
+        }
+        await audit?.failed().catch(() => undefined);
+        // The scoped registry token is not in process.env. Remove both forms
+        // before diagnostics escape into persisted project state or request logs.
+        const secrets = [
+          registryToken,
+          registryToken
+            ? Buffer.from(`x-access-token:${registryToken}`).toString('base64')
+            : undefined,
+        ];
+        const tail = buildOutputTail(cause);
+        // The build inherits the Server env, so the persisted tail also needs the
+        // inherited credentials the outer failure handlers redact.
+        if (tail !== undefined)
+          this.recordBuildFailure(
+            project.id,
+            redactSensitive(tail, [
+              ...secrets,
+              process.env.GITHUB_TOKEN,
+              process.env.GH_TOKEN,
+              process.env.VERITY_REGISTRY_AUTH,
+            ]),
+          );
+        // eslint-disable-next-line preserve-caught-error -- the raw cause can contain the registry credential
+        throw new Error(redactSensitive(buildFailureMessage(cause), secrets));
+      }
+      this.clearBuildFailure(project.id);
+      if (audit !== undefined)
+        await audit
+          .succeeded(await this.builtImageIdentity(derivedTag, auditBaseImageRef))
+          .catch(() => undefined);
       return {
         imageRef: derivedTag,
         usesDevcontainerImage: true,
         usesConfiguredOverride: !usesDefaultImage,
       };
     } finally {
-      await snapshot.dispose();
+      try {
+        if (!storageLease?.retainArtifacts) await snapshot?.dispose();
+      } finally {
+        storageLease?.dispose();
+      }
     }
+  }
+
+  private buildFailureFile(projectId: string): string | undefined {
+    const directory = this.opts.buildFailureLogDirectory;
+    if (directory === undefined || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId)) return undefined;
+    return join(directory, `${projectId}.json`);
+  }
+
+  /** Keep the failing build's output tail for diagnostics. Best-effort: a write
+   *  failure must never replace the build error the caller reports. */
+  private recordBuildFailure(projectId: string, tail: string): void {
+    const file = this.buildFailureFile(projectId);
+    if (file === undefined) return;
+    try {
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      writeFileSync(file, JSON.stringify({ recordedAt: new Date().toISOString(), tail }), {
+        mode: 0o600,
+      });
+    } catch {
+      /* diagnostics only */
+    }
+  }
+
+  /** Best-effort like {@link recordBuildFailure}: a diagnostics cleanup error must
+   *  not turn a successful build into a provisioning failure. */
+  private clearBuildFailure(projectId: string): void {
+    const file = this.buildFailureFile(projectId);
+    if (file === undefined) return;
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      /* diagnostics only */
+    }
+  }
+
+  /** The output tail of this project's last failed devcontainer build, until a build succeeds. */
+  lastBuildFailure(projectId: string): { recordedAt: string; tail: string } | undefined {
+    const file = this.buildFailureFile(projectId);
+    if (file === undefined) return undefined;
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+      const record = parsed as { recordedAt?: unknown; tail?: unknown };
+      return typeof record.recordedAt === 'string' && typeof record.tail === 'string'
+        ? { recordedAt: record.recordedAt, tail: record.tail }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The checked-out commit a build reads from; null when the clone has none. */
+  private async checkoutCommit(clonePath: string): Promise<string | null> {
+    try {
+      const head = (
+        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+      ).stdout.trim();
+      return /^[0-9a-f]{7,64}$/.test(head) ? head : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** What a successful build produced, for the audit trail. Missing facts stay null
+   *  rather than being guessed (ADR 0028). */
+  private async builtImageIdentity(
+    imageTag: string,
+    baseImageRef: string | null,
+  ): Promise<{ imageId: string | null; sizeBytes: number | null; baseImageDigest: string | null }> {
+    const docker = this.opts.docker;
+    const safely = async (ref: string) => {
+      try {
+        return await docker.inspectImageIdentity?.(ref);
+      } catch {
+        return undefined;
+      }
+    };
+    const image = await safely(imageTag);
+    // A daemon's local tag can differ from the image resolved by BuildKit.
+    // Only an explicitly pinned digest establishes the base's identity here.
+    const baseDigest =
+      baseImageRef === null ? null : /@(sha256:[0-9a-f]{64})$/.exec(baseImageRef)?.[1];
+    return {
+      imageId: image?.id ?? null,
+      sizeBytes: image?.sizeBytes ?? null,
+      baseImageDigest: baseDigest ?? null,
+    };
   }
 
   /** Create the container, pulling the image on demand when it's missing (ADR
@@ -6241,7 +6521,13 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private devcontainerWarningForProject(project: ProjectRecord): string | null {
+  private async devcontainerWarningForProject(project: ProjectRecord): Promise<string | null> {
+    const policy = await this.opts.db
+      .selectFrom('project_settings')
+      .select('devcontainer_enabled')
+      .where('project_id', '=', project.id)
+      .executeTakeFirst();
+    if (policy?.devcontainer_enabled === false) return null;
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
     if (!this.isDir(devcontainerDir)) return null;
@@ -6443,7 +6729,9 @@ export class DeprovisionerImpl implements Deprovisioner {
       throw new ProvisioningError('project gone mid-deprovision');
     }
     const teardown = () => this.deprovisionProject(projectId, project, opts);
-    return this.withTeardown ? this.withTeardown(project, teardown) : teardown();
+    return backupLifecycle.mutate([projectId], () =>
+      this.withTeardown ? this.withTeardown(project, teardown) : teardown(),
+    );
   }
 
   private async deprovisionProject(

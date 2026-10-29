@@ -28,6 +28,7 @@ policy. The packaging is described in
   - [Master password](#master-password)
   - [Upgrade notes](#upgrade-notes)
 - [Updates and recovery](#updates-and-recovery)
+- [Recovery from a copied backup](../docs/INSTALLER_RECOVERY.md)
 - [Docker socket security note](#docker-socket-security-note)
 - [Hardening an internet-reachable host](#hardening-an-internet-reachable-host)
 - [Claude egress credential boundary](#claude-egress-credential-boundary)
@@ -65,6 +66,12 @@ is not possible the update fails as `host-runtime-failed` before anything is act
 current generation keeps serving. The candidate's own `/healthz` does not guard this: the readiness
 probe accepts a `degraded` 503 on purpose. A host installed before the host component existed is
 told to re-run the Verity installer (the Quick start command below) once; no insecure compatibility mode is available.
+
+The gVisor devcontainer builder follows the release in the same way: during an update, the Updater
+asks the host component `verity-host-builder` to install the builder the target image ships. The
+component verifies the image's release signature itself and leaves an unchanged builder running. A
+builder that cannot be updated keeps the previous one and does not fail the update; see
+[`deploy/buildkit`](buildkit/README.md#builder-updates).
 
 That's it — Verity's data lives on the Docker-managed `verity-data` volume, which
 the daemon creates on first use and initializes with the right owner (the image
@@ -322,6 +329,11 @@ and supplementary GID to the Server but must not grant the group to project-agen
 users.
 
 ## Hardening an internet-reachable host
+
+For Docker subnets that overlap a LAN or VPN, see the
+[Docker address-pool runbook](../docs/runbooks/docker-address-pools.md). It covers
+host configuration and migration of existing networks without deleting data
+volumes; Verity does not automatically renumber networks.
 
 The reference deployment is designed for a trusted network segment. Everything
 below is what changes when the host is reachable from the public internet.
@@ -1011,10 +1023,17 @@ those would mean recreating every Sandbox on any deployment that runs without
 egress projection. So turning egress on for a deployment that already has
 Sandboxes repairs nothing and logs nothing; recreate those Sandboxes yourself.
 
-Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` on
-the configured Docker daemon. Verity injects the bundled
+Repos with a `.devcontainer/` directory are built with `@devcontainers/cli` through
+the dedicated [gVisor BuildKit service](buildkit/README.md). The resulting image is
+loaded into the configured project Docker daemon. Missing or unavailable builders
+fail the build without falling back to the Docker daemon’s default runtime. Verity injects the bundled
 `verity-sandbox-toolkit` Feature into that build so project-specific
 devcontainers still receive the shared agent tooling. Runtime-only
 `devcontainer.json` keys that Verity's Docker create path does not yet apply
 (`remoteUser`, `containerEnv`, `mounts`, `runArgs`, and related settings) fail
 closed instead of being silently ignored.
+
+Repository devcontainers can be disabled per project through
+`PATCH /projects/:id/settings` with `{"devcontainerEnabled":false}`. This skips
+repository build and lifecycle configuration and uses the configured base image
+on the next provisioning/recreation. Existing running containers are unaffected.

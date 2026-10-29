@@ -275,7 +275,7 @@ it('shares bounded runtime history and preserves the first sample for comparison
     await shareUpdateDiagnostics();
     const message = (share.mock.calls[0]![0] as { message: string }).message;
     const report = JSON.parse(message);
-    expect(report.schema).toBe(6);
+    expect(report.schema).toBe(7);
     expect(report.runtimeDiagnostics.baseline).toMatchObject({
       recordingAgeMs: 0,
       screen: 'settings',
@@ -293,4 +293,31 @@ it('shares bounded runtime history and preserves the first sample for comparison
     Object.defineProperty(AppState, 'currentState', { configurable: true, value: previous });
     jest.useRealTimers();
   }
+});
+
+it('exports scheduling probes and both touch delivery clocks without session contents', async () => {
+  readLogs.mockResolvedValue([]);
+  setGestureDiagnosticsEnabled(true);
+  recordGesture({ source: 'scheduling', event: 'session-timer', detail: { waitMs: 874 } });
+  recordGesture({
+    source: 'row',
+    event: 'touch-up',
+    row: 1,
+    detail: { uiReceivedWallMs: 1000, jsReceivedWallMs: 1874 },
+  });
+  await shareUpdateDiagnostics();
+  const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics.events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: 'scheduling',
+        event: 'session-timer',
+        detail: { waitMs: 874 },
+      }),
+      expect.objectContaining({
+        source: 'row',
+        detail: { uiReceivedWallMs: 1000, jsReceivedWallMs: 1874 },
+      }),
+    ]),
+  );
 });

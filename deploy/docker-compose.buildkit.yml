@@ -1,0 +1,15 @@
+# Apply after installing deploy/buildkit/install.sh on this same Linux host.
+# Include this override when sealing a managed deployment so generations inherit it.
+services:
+  verity:
+    environment:
+      VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: unix:///run/verity-buildkit/buildkitd.sock
+    volumes:
+      - type: bind
+        source: /run/verity-buildkit
+        target: /run/verity-buildkit
+        read_only: false
+        bind:
+          create_host_path: false
+    group_add:
+      - '${VERITY_BUILDKIT_GID:-1102}'

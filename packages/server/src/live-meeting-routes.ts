@@ -1,3 +1,4 @@
+import { meetingResultWorker } from './live-meeting-result.js';
 import { meetingQuestionChecks } from './live-meeting-questions.js';
 import type { FastifyInstance } from 'fastify';
 import type { EventStore } from '@verity/store';
@@ -216,6 +217,8 @@ export function registerLiveMeetingRoutes(
   store: EventStore,
   opts: {
     query?: MeetingInsightQuery;
+    onTasksChanged?: () => void;
+    onResultChanged?: (sessionId: string, meetingId: string) => void;
     knowledge?: (sessionId: string, transcript: string) => Promise<MeetingKnowledgeExcerpt[]>;
     delayMs?: number;
     minIntervalMs?: number;
@@ -239,6 +242,20 @@ export function registerLiveMeetingRoutes(
     }>
   >;
 } {
+  const resultWorker = meetingResultWorker({
+    store,
+    query: opts.query,
+    onChanged: (sessionId, meetingId) => opts.onResultChanged?.(sessionId, meetingId),
+    onReady: async (sessionId, meetingId) => {
+      await opts.onFinished?.(sessionId, meetingId);
+    },
+    onError: (error) => app.log.warn({ err: error }, 'meeting result failed'),
+  });
+  app.addHook('onReady', async () => {
+    for (const meeting of await store.liveMeetings.unfinishedResults()) {
+      resultWorker.start(meeting.sessionId, meeting.meetingId);
+    }
+  });
   const questionChecks = meetingQuestionChecks({
     store,
     query: opts.query,
@@ -257,6 +274,7 @@ export function registerLiveMeetingRoutes(
     for (let attempt = 0; ; attempt += 1) {
       try {
         await opts.onFinished(sessionId, meetingId);
+        resultWorker.start(sessionId, meetingId);
         return;
       } catch (error) {
         if (attempt >= 2) throw error;
@@ -452,6 +470,7 @@ export function registerLiveMeetingRoutes(
     queued.set(meetingId, { timer, sessionId, revision, transcript, terminal });
   };
   app.addHook('onClose', () => {
+    resultWorker.close();
     questionChecks.close();
     for (const { timer } of queued.values()) clearTimeout(timer);
     queued.clear();
@@ -469,6 +488,77 @@ export function registerLiveMeetingRoutes(
     return store.liveMeetings.changes(sessionId, after);
   });
 
+  app.get('/sessions/:id/live-meetings/:meetingId/result', async (request, reply) => {
+    const { id: sessionId, meetingId } = meetingParams.parse(request.params);
+    if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === null) {
+      reply.code(404);
+      return { error: 'meeting not found' };
+    }
+    return { result: await store.liveMeetings.result(sessionId, meetingId) };
+  });
+  app.patch(
+    '/sessions/:id/live-meetings/:meetingId/result/tasks/:taskId',
+    async (request, reply) => {
+      const {
+        id: sessionId,
+        meetingId,
+        taskId,
+      } = meetingParams.extend({ taskId: id }).parse(request.params);
+      const body = z
+        .discriminatedUnion('state', [
+          z.object({
+            state: z.literal('added'),
+            taskId: z.string().min(1).max(120),
+            revision: z.number().int().positive(),
+          }),
+          z.object({ state: z.literal('dismissed'), revision: z.number().int().positive() }),
+        ])
+        .parse(request.body);
+      const session = await store.getSession(sessionId);
+      if (
+        body.state === 'added' &&
+        (!session?.projectId ||
+          (request.localUserId != null &&
+            !(await store.hasProjectPermission(request.localUserId, session.projectId, 'execute'))))
+      ) {
+        reply.code(403);
+        return { error: 'a writable session project is required' };
+      }
+      const accepted = await store.liveMeetings.updateResultTask(
+        sessionId,
+        meetingId,
+        body.revision,
+        taskId,
+        { state: body.state, taskId: body.state === 'added' ? body.taskId : null },
+        request.localUserId ?? '00000000-0000-4000-8000-000000000001',
+        session?.projectId ?? undefined,
+      );
+      if (!accepted) {
+        reply.code(409);
+        return { error: 'result task changed or not found' };
+      }
+      resultWorker.start(sessionId, meetingId);
+      if (body.state === 'added') opts.onTasksChanged?.();
+      opts.onResultChanged?.(sessionId, meetingId);
+      await opts.onFinished?.(sessionId, meetingId);
+      return { result: await store.liveMeetings.result(sessionId, meetingId) };
+    },
+  );
+  app.post('/sessions/:id/live-meetings/:meetingId/result/retry', async (request, reply) => {
+    const { id: sessionId, meetingId } = meetingParams.parse(request.params);
+    const result = await store.liveMeetings.result(sessionId, meetingId);
+    if (!result || result.status !== 'failed') {
+      reply.code(409);
+      return { error: 'no failed result to retry' };
+    }
+    if (!opts.query) {
+      reply.code(503);
+      return { error: 'meeting analysis unavailable' };
+    }
+    resultWorker.start(sessionId, meetingId, true);
+    reply.code(202);
+    return { accepted: true };
+  });
   app.put('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {
     const { id: sessionId, meetingId } = meetingParams.parse(request.params);
     if (!(await store.getSession(sessionId))) {

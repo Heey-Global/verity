@@ -1049,6 +1049,7 @@ describe('native iOS compile gate', () => {
     expect(detector).toContain('scripts/enrollment-proof');
     expect(detector).toContain("'scripts/ios-pinned-tls-smoke*'");
     expect(detector).toContain('scripts/pinned-http-pool-smoke.swift');
+    expect(detector).toContain("'scripts/*ios_pinned_tls_server.py'");
     expect(detector).toContain('scripts/remote-control-tunnel');
     expect(detector).not.toMatch(/git diff[^;]*mobile-native-verify\.yml[\s\S]*compile=true/u);
     expect(named('Verify enrollment reference model and macOS Keychain probe')?.if).toContain(
@@ -1627,6 +1628,40 @@ describe('self-update release gate', () => {
     // Which release gets picked, and every fail-closed edge, is exercised for real
     // in packages/server/src/self-update/self-update-workflow.test.ts — asserting
     // the text of this step would agree with a broken version of it.
+  });
+
+  // The live smoke gates every Server release, so its critical path is the release's.
+  // Building the harness only after the registry pull and daemon start added its whole
+  // duration to that path; starting it before them and joining it before the image build
+  // keeps it off the path without ever running it beside the image build.
+  it('builds the smoke harness alongside the predecessor pull, never beside the image build', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsed.jobs['live-smoke']?.steps ?? [];
+    const index = (name: string) => {
+      const position = steps.findIndex((step) => step.name === name);
+      expect(position, name).toBeGreaterThanOrEqual(0);
+      return position;
+    };
+    const start = steps[index('Start the host-side harness build')];
+    const join = steps[index('Join the host-side harness build')];
+    expect(start?.run).toContain('npm ci --ignore-scripts && npm run build');
+    expect(start?.run).toContain('setsid bash -c');
+    expect(index('Start the host-side harness build')).toBeLessThan(
+      index('Fetch the previously released Server image'),
+    );
+    expect(index('Load the previous release into the isolated daemon')).toBeLessThan(
+      index('Join the host-side harness build'),
+    );
+    expect(index('Join the host-side harness build')).toBeLessThan(
+      index('Build the Server image into the isolated daemon'),
+    );
+    // A join that does not read the exit code turns a broken harness into a smoke that
+    // fails later and for the wrong reason, or not at all.
+    expect(join?.run).toContain('verity-harness-build.status');
+    expect(join?.run).toMatch(/if \[\[ "\$code" != 0 \]\]; then/u);
+    expect(steps.some((step) => /^\s*npm run build\s*$/mu.test(step.run ?? ''))).toBe(false);
   });
 
   it('prepares a candidate-backed predecessor only for the first package bootstrap', () => {
@@ -2387,6 +2422,15 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(
+      job?.steps?.some((step) =>
+        step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
+      ),
+    ).toBe(true);
+    expect(readFileSync('deploy/installer-ci.Dockerfile', 'utf8')).toMatch(
+      /apt-get install[^\n]+\bjq\b/,
+    );
+
     const suite = (job?.steps ?? []).find((step) =>
       step.run?.includes('node --test deploy/bin/verity-install.test.mjs'),
     );
@@ -3926,6 +3970,28 @@ describe('server image CI smoke', () => {
     .replace('${{ runner.temp }}', '$RUNNER_TEMP')
     .replace(/\$\{\{ env\.(\w+) \}\}/g, '$$$1');
 
+  it('builds the recovery candidate with the real pinned PostgreSQL image label', async () => {
+    const resolve = buildJob.steps.find((step) => step.id === 'postgres');
+    expect(resolve?.run).toBeDefined();
+    const root = await mkdtemp(join(tmpdir(), 'ci-postgres-pin-'));
+    const output = join(root, 'output');
+    try {
+      execFileSync('bash', ['-c', resolve!.run!], {
+        env: { ...process.env, GITHUB_OUTPUT: output },
+      });
+      const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8'));
+      expect(readFileSync(output, 'utf8').trim()).toBe(`image=${compose.services.postgres.image}`);
+      expect(build?.with?.['build-args']).toContain(
+        'VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}',
+      );
+      expect(readFileSync('deploy/Dockerfile', 'utf8')).toContain(
+        'LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exports the image once and loads that archive into every daemon that runs it', () => {
     // `load: true` next to the archive would export the image twice, and a
     // `docker save` anywhere re-packs what was just unpacked — each a minute or
@@ -4086,6 +4152,40 @@ describe('managed installer CI acceptance', () => {
   const step = job.steps.find((entry) =>
     entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
   );
+
+  it('runs the interruption driver below a container init so SIGKILL terminates it', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const command = source
+      .replaceAll('\\\n', ' ')
+      .split('\n')
+      .find((line) => line.includes('--entrypoint node') && line.includes('"$root/driver.mjs"'));
+    expect(command).toBeDefined();
+    expect(command).toMatch(/\binner run\b/);
+    expect(command).toMatch(/(?:^|\s)--init(?:\s|$)/);
+  });
+
+  it('keeps restore daemon sockets within the Linux Unix-socket path limit', () => {
+    const source = readFileSync('deploy/bin/verity-backup-restore-smoke', 'utf8');
+    const assignment = source.match(/^ {2}local socket_dir=(.+)$/m)?.[0];
+    expect(assignment).toBeDefined();
+    const workTemplate = source.match(/^work=\$\(mktemp -d "(.+)"\)$/m)?.[1];
+    expect(workTemplate).toBeDefined();
+    const paths = ['original', 'fresh'].map((host) =>
+      execFileSync(
+        'bash',
+        [
+          '-c',
+          `RUNNER_TEMP=/home/runner/work/_temp; work="${workTemplate}"; daemon_name="$1"; socket_path() { ${assignment}; printf '%s' "$socket_dir/docker.sock"; }; socket_path`,
+          'socket-guard',
+          `verity-backup-restore-dind-40510879161-1-${host}`,
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    expect(new Set(paths).size).toBe(2);
+    // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
+    for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
+  });
 
   it('runs the candidate through the installer in a separate disposable daemon', () => {
     // A green legacy Compose smoke does not exercise the managed installer.
@@ -4328,9 +4428,20 @@ describe('Claude ACP sandbox smoke', () => {
       );
       await expect(access(join(worktree, 'before'))).rejects.toThrow();
       const exited = once(child, 'exit', { signal: AbortSignal.timeout(5_000) });
-      child.stdin.end(`${JSON.stringify({ type: 'user', message: 'smoke' })}\n`);
+      child.stdin.end(
+        `${JSON.stringify({ type: 'user', message: 'smoke prompt for session title' })}\n${JSON.stringify(
+          {
+            type: 'control_request',
+            request_id: 'title-smoke',
+            request: { subtype: 'generate_session_title' },
+          },
+        )}\n`,
+      );
       const [code] = (await exited) as [number | null];
       expect(code, stderr).toBe(0);
+      const titleResponse = '"request_id":"title-smoke","response":{"title":"Sandbox live smoke"}';
+      expect(stdout).toContain(titleResponse);
+      expect(stdout.indexOf(titleResponse)).toBeLessThan(stdout.indexOf('"type":"assistant"'));
       expect(stdout).toContain('"subtype":"success"');
       expect(stdout).toContain('"stop_reason":"end_turn"');
       await expect(access(join(worktree, 'before'))).resolves.toBeUndefined();

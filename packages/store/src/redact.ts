@@ -70,11 +70,15 @@ export function redactSecrets(text: string): string {
 }
 
 /** Redact process diagnostics before they reach any sink, including live logs. */
-export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): string {
+export function redactProcessStderr(
+  text: string,
+  env: NodeJS.ProcessEnv = {},
+  options: { startsAtLineBoundary?: boolean } = {},
+): string {
   // The oldest line in a full byte tail may start halfway through a credential.
-  let out = Buffer.byteLength(text) >= 65_533 ? text.slice(text.indexOf('\n') + 1) : text;
-  if (Buffer.byteLength(text) >= 65_533 && !text.includes('\n'))
-    return '[truncated stderr line omitted]';
+  const partialTail = options.startsAtLineBoundary !== true && Buffer.byteLength(text) >= 65_533;
+  let out = partialTail ? text.slice(text.indexOf('\n') + 1) : text;
+  if (partialTail && !text.includes('\n')) return '[truncated stderr line omitted]';
   out = redactSecrets(out)
     // File-loaded credentials may have no recognizable value prefix. Omit the
     // remainder of a credential-bearing JSON line, including truncated values.

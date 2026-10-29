@@ -125,6 +125,7 @@ export type SwitchTransportPhase =
   | 'body-encoded'
   | 'route-ready'
   | 'lane-admitted'
+  | 'native-queued-start'
   | 'native-dispatch'
   | 'native-promise-returned'
   | 'native-return'

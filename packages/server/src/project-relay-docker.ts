@@ -128,10 +128,12 @@ export function createDockerProjectRelayStarter(
             options.relayGid,
             validateSocketTree,
           );
+    const generationNetwork = await context.egress?.prepare(context.identity);
     const spec: ContainerSpec = {
       image: options.image,
       name,
-      network: options.projectNetwork(context.identity.projectId),
+      network: generationNetwork?.networkName ?? options.projectNetwork(context.identity.projectId),
+      ...(context.egress === undefined ? {} : { runtime: 'runsc-project' as const }),
       user: `65532:${String(options.relayGid)}`,
       restartPolicy: 'no',
       readOnlyRootfs: true,
@@ -141,7 +143,7 @@ export function createDockerProjectRelayStarter(
       // relay states it rather than depend on that default.
       sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 32,
       memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,
@@ -199,27 +201,32 @@ export function createDockerProjectRelayStarter(
       ) {
         throw new Error(`refusing to adopt mismatched project relay: ${name}`);
       }
-      if (!existing.running) await options.docker.startContainer(existing.id);
-      return containerRuntime(options, context.identity, existing.id);
+      if (context.egress !== undefined)
+        await context.egress.start(context.identity, 'relay', existing.id);
+      else if (!existing.running) await options.docker.startContainer(existing.id);
+      return containerRuntime(options, context, existing.id);
     }
 
     const created = await createPullingIfMissing(options.docker, spec);
     try {
-      await options.docker.startContainer(created.id);
+      if (context.egress !== undefined)
+        await context.egress.start(context.identity, 'relay', created.id);
+      else await options.docker.startContainer(created.id);
     } catch (error) {
       const cleanup = await removeRelayContainer(options.docker, created.id);
       if (cleanup.length > 0) {
         throw new ProjectRelayStartError(
           `project relay start and rollback failed: ${context.identity.projectId}; ${cleanup.length} cleanup operation(s) failed`,
-          containerRuntime(options, context.identity, created.id),
+          containerRuntime(options, context, created.id),
           error,
         );
       }
       throw error;
     }
 
-    await sweepSupersededRelays(options, context.identity, created.id);
-    return containerRuntime(options, context.identity, created.id);
+    if (context.egress === undefined)
+      await sweepSupersededRelays(options, context.identity, created.id);
+    return containerRuntime(options, context, created.id);
   };
 }
 
@@ -298,15 +305,24 @@ async function sweepSupersededRelays(
 
 function containerRuntime(
   options: DockerProjectRelayOptions,
-  identity: InternalConnectionIdentity,
+  context: ProjectRelayStartContext,
   id: string,
 ): ProjectRelayRuntime {
   const { docker } = options;
+  const { identity, egress } = context;
   return {
     async quiesce(): Promise<void> {
+      await egress?.prepare(identity);
       await docker.stopContainer(id);
     },
     async close(): Promise<void> {
+      // A replacement may already have retired this generation before removing
+      // its Sandbox. Do not re-stop disappeared objects or revoke the new one.
+      if (
+        egress !== undefined &&
+        (await egress.current(identity.projectId))?.generation === identity.containerGeneration
+      )
+        await egress.retire(identity);
       const failures = await removeRelayContainer(docker, id);
       if (failures.length > 0) {
         throw new AggregateError(failures, `project relay teardown failed: ${id}`);
@@ -318,8 +334,9 @@ function containerRuntime(
     // generation is gone and the sandbox genuinely orphaned.
     async ensureRunning(): Promise<void> {
       const current = await docker.inspectContainer(id);
+      if (egress !== undefined) await egress.start(identity, 'relay', id);
       if (current.running) return;
-      await docker.startContainer(id);
+      if (egress === undefined) await docker.startContainer(id);
       // Warned, not merely noted: the relay has no restart policy on purpose, so an
       // exit here was never asked for. The status is what Docker knew about the
       // exit (`exited`, `dead`); the cause (OOM kill, crash) is in the host's kernel

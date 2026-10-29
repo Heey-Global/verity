@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# Bring the gVisor devcontainer builder (deploy/buildkit) on this host to the one a Verity
+# release ships, when the managed Updater asks.
+#
+# The builder is a host systemd service, so a Server image alone never changes it: before
+# this component, a builder fix reached a host only when someone re-ran the Verity installer.
+# The Updater cannot do it either (it is a container with the Docker socket and nothing
+# else), and it must not hand this root process anything to execute. So a request names
+# only an official Server image digest. This script pulls that digest, verifies the image's
+# release signature itself, takes the builder bundle out of the verified image, and runs the
+# bundle's own installer, the same one `verity-install` runs. The trust anchor is the release
+# signature, never the requester: everything this script executes or restores lives in a
+# root-only directory the Updater cannot reach, and from the shared request directory it
+# reads only the request and the installer's receipt.
+#
+#   verity-host-builder apply-request          answer the pending request (systemd path unit)
+#   verity-host-builder record <deploy-dir>    note the bundle verity-install just installed
+#   verity-host-builder forget                 drop that note (verity-install, no builder)
+#
+# Nothing changes when the verified bundle is the one already installed. A changed bundle is
+# installed with the builder's previous files kept aside; an installation that fails, is
+# interrupted, or leaves a builder that does not come back restores them and restarts the
+# previous builder. Builds in progress are interrupted only when the bundle actually changed.
+set -euo pipefail
+umask 0077
+
+STATE_DIR="${VERITY_HOST_RUNTIME_DIR:-/var/lib/verity/host-runtime}"
+# Root-only and never mounted into a container: staging, the verifier, the lock, the backup
+# and the record of the installed bundle.
+WORK_DIR="${VERITY_HOST_BUILDER_DIR:-/var/lib/verity/host-builder}"
+BUILDKIT_RUN_DIR="${VERITY_BUILDKIT_RUN_DIR:-/run/verity-buildkit}"
+READY_TIMEOUT_SECONDS="${VERITY_BUILDKIT_READY_TIMEOUT:-30}"
+# What deploy/buildkit/install.sh writes, kept aside before it runs.
+storage_unit=${VERITY_BUILD_STORAGE_UNIT_FILE:-$(dirname "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}")/verity-build-storage.service}
+storage_timer=${VERITY_BUILD_STORAGE_TIMER_FILE:-$(dirname "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}")/verity-build-storage.timer}
+BUILDER_PATHS=(
+  "${VERITY_BUILDKIT_CONFIG_DIR:-/etc/verity-buildkit}"
+  "${VERITY_BUILDKIT_LIBEXEC:-/usr/local/libexec/verity-buildkit}"
+  "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}"
+  "$storage_unit"
+  "$storage_timer"
+  "$(dirname "$storage_unit")/verity-buildkit-snapshotter.service"
+  "$(dirname "$storage_unit")/verity-buildkit-snapshotter.timer"
+)
+RECEIPT="$STATE_DIR/devcontainer-builder.json"
+BUNDLE_RECORD="$WORK_DIR/bundle.json"
+BACKUP="$WORK_DIR/previous.tar"
+IMAGE_PATTERN='^ghcr\.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$'
+# The release workflow identity that signs Server images, as docs/website/site/install.sh
+# verifies it.
+SIGNER_IDENTITY='https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main'
+SIGNER_ISSUER='https://token.actions.githubusercontent.com'
+# Images declaring this contract carry the bundle below; older images are not asked for it.
+CONTRACT_LABEL='org.verity.devcontainer-builder'
+CONTRACT='2'
+PAYLOAD='/opt/verity-install/deploy'
+# Same pins as docs/website/site/install.sh; scripts/verity-install.test.ts keeps them equal.
+COSIGN_VERSION=v3.1.3
+COSIGN_SHA256_AMD64=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
+
+log() { printf 'verity-host-builder: %s\n' "$*" >&2; }
+die() {
+  log "$*"
+  exit 1
+}
+
+need_tools() {
+  local tool
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null || die "missing required host tool: $tool"
+  done
+}
+
+prepare_work_dir() {
+  [[ ! -L $WORK_DIR ]] || die "$WORK_DIR must not be a symbolic link"
+  install -d -m 0700 "$WORK_DIR"
+}
+
+# The files deploy/buildkit/install.sh reads: the builder itself, and the gVisor pins and
+# runtime registration it installs runsc-real from. Documentation, and every other file in
+# the release, does not restart the builder.
+bundle_hash() {
+  local dir=$1 files
+  [[ -f $dir/buildkit/install.sh && -f $dir/gvisor/versions.env && -f $dir/host/verity-host-runtime ]] ||
+    die 'the release bundle is incomplete; nothing was changed'
+  files="$(cd "$dir" && find buildkit gvisor host/verity-host-runtime -type f ! -name '*.md' | LC_ALL=C sort)" ||
+    die 'could not list the release bundle; nothing was changed'
+  (cd "$dir" && while IFS= read -r file; do sha256sum -- "$file"; done <<<"$files") |
+    sha256sum | cut -d' ' -f1
+}
+
+write_json_atomically() {
+  local target=$1 body=$2 tmp
+  tmp="$(mktemp "$(dirname "$target")/.$(basename "$target").XXXXXX")"
+  printf '%s\n' "$body" >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+record_bundle() {
+  write_json_atomically "$BUNDLE_RECORD" "$(jq -cn --arg sha256 "$1" '{version: 1, sha256: $sha256}')"
+}
+
+builder_ready() {
+  systemctl is-active --quiet verity-buildkit.service && [[ -S $BUILDKIT_RUN_DIR/buildkitd.sock ]]
+}
+
+await_ready() {
+  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    builder_ready && return 0
+    sleep 1
+  done
+  builder_ready
+}
+
+cosign_binary() {
+  local dir=$1 arch sha
+  if [[ ${VERITY_HOST_RUNTIME_TEST:-} == 1 && -n ${VERITY_HOST_BUILDER_COSIGN:-} ]]; then
+    printf '%s' "$VERITY_HOST_BUILDER_COSIGN"
+    return
+  fi
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=amd64 sha=$COSIGN_SHA256_AMD64 ;;
+    aarch64 | arm64) arch=arm64 sha=$COSIGN_SHA256_ARM64 ;;
+    *) die "unsupported architecture: $(uname -m)" ;;
+  esac
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 120 \
+    "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch" \
+    --output "$dir/cosign" || die 'could not download the pinned signature verifier; nothing was changed'
+  printf '%s  %s\n' "$sha" "$dir/cosign" | sha256sum --check --status ||
+    die 'the signature verifier does not match its pinned checksum; nothing was changed'
+  chmod 0700 "$dir/cosign"
+  printf '%s' "$dir/cosign"
+}
+
+# Copy one path out of the verified image into the staging directory.
+extract() {
+  local container=$1 path=$2 into=$3
+  install -d -m 0700 "$into"
+  docker cp "$container:$PAYLOAD/$path" - | tar -x -C "$into" --no-same-owner ||
+    die "the release image has no $PAYLOAD/$path; nothing was changed"
+}
+
+restore_previous() {
+  local path
+  log 'restoring the previous builder'
+  systemctl disable --now verity-buildkit-snapshotter.timer || true
+  systemctl stop verity-buildkit-snapshotter.service || true
+  systemctl disable --now verity-build-storage.timer || true
+  systemctl stop verity-build-storage.service || true
+  for path in "${BUILDER_PATHS[@]}"; do rm -rf -- "$path"; done
+  if [[ -s $BACKUP ]]; then tar -xPf "$BACKUP" || log 'the kept-aside builder files could not be restored'; fi
+  systemctl daemon-reload || true
+  systemctl restart verity-buildkit.service || true
+  if [[ -f $(dirname "$storage_timer")/verity-buildkit-snapshotter.timer ]]; then
+    if ((snapshotter_timer_enabled)); then systemctl enable verity-buildkit-snapshotter.timer || true; fi
+    if ((snapshotter_timer_active)); then systemctl start verity-buildkit-snapshotter.timer || true; fi
+  fi
+  if [[ -f $storage_timer ]]; then
+    if ((storage_timer_enabled)); then systemctl enable verity-build-storage.timer || true; fi
+    if ((storage_timer_active)); then systemctl start verity-build-storage.timer || true; fi
+  fi
+}
+
+# Runs as its own process (see apply_request), so `set -e` holds for every step below.
+reconcile() {
+  local image=$1 work gid cosign hash installed path digests existing=()
+  [[ $image =~ $IMAGE_PATTERN ]] || die 'the request does not name an official Verity Server image digest'
+  need_tools curl docker jq sha256sum systemctl tar flock setsid
+  gid="$(jq -er 'select(.version == 1) | .gid | select(type == "number")' "$RECEIPT" 2>/dev/null)" ||
+    die 'this host has no installer-verified devcontainer builder; re-run the Verity installer once'
+
+  prepare_work_dir
+  exec 8>"$WORK_DIR/.lock"
+  flock -w 300 8 || die 'another builder reconciliation is still running'
+
+  work="$(mktemp -d "$WORK_DIR/stage.XXXXXX")"
+  # Global, not local: the EXIT trap runs after this function has returned.
+  container=''
+  # shellcheck disable=SC2064 # expand now: the trap must name this path.
+  trap "if [[ -n \${container:-} ]]; then docker rm -f \"\$container\" >/dev/null 2>&1 || true; fi; rm -rf '$work'" EXIT
+
+  # Always from the registry, by digest: the local store may hold anything under that name,
+  # and the signature below is checked against what the registry serves for it.
+  docker pull --quiet "$image" >/dev/null || die "could not pull $image; nothing was changed"
+  digests="$(docker image inspect --format '{{ range .RepoDigests }}{{ println . }}{{ end }}' "$image")" ||
+    die "$image is not present after the pull; nothing was changed"
+  grep -Fxq -- "$image" <<<"$digests" || die "the local image does not resolve to $image; nothing was changed"
+  cosign="$(cosign_binary "$work")"
+  TUF_ROOT="$work/tuf" "$cosign" verify --certificate-oidc-issuer "$SIGNER_ISSUER" \
+    --certificate-identity "$SIGNER_IDENTITY" "$image" >/dev/null 2>&1 ||
+    die "$image does not carry a valid Verity release signature; nothing was changed"
+  [[ $(docker image inspect --format "{{ index .Config.Labels \"$CONTRACT_LABEL\" }}" "$image") == "$CONTRACT" ]] ||
+    die "$image does not declare $CONTRACT_LABEL=$CONTRACT; nothing was changed"
+
+  container="$(docker create "$image")" || die "could not read $image; nothing was changed"
+  extract "$container" buildkit "$work/bundle"
+  extract "$container" gvisor "$work/bundle"
+  extract "$container" host/verity-host-runtime "$work/bundle/host"
+  docker rm -f "$container" >/dev/null || true
+  container=''
+  [[ -z $(find "$work/bundle" -type l -print -quit) ]] ||
+    die 'the release bundle contains a symbolic link; nothing was changed'
+
+  hash="$(bundle_hash "$work/bundle")" || exit 1
+  installed="$(jq -r 'select(.version == 1) | .sha256 // empty' "$BUNDLE_RECORD" 2>/dev/null || true)"
+  if [[ $hash == "$installed" ]] && builder_ready; then
+    log 'the devcontainer builder already matches this release'
+    return 0
+  fi
+
+  # Upgraded bridges fence the whole changed-bundle install, not just the
+  # snapshotter transaction. Old bridges retain their historical install semantics.
+  local admission_helper="${VERITY_BUILDKIT_LIBEXEC:-/usr/local/libexec/verity-buildkit}/snapshotter-migrate.sh"
+  if [[ -x $admission_helper && -f $BUILDKIT_RUN_DIR/build-admission.lock ]]; then
+    local migration_state="${VERITY_SNAPSHOTTER_STATE:-/var/lib/verity/buildkit-snapshotter}"
+    install -d -m 0700 "$migration_state"
+    exec 6>"$migration_state/lock"
+    flock -w 60 6 || die 'snapshotter maintenance is still running; builder update deferred'
+    exec 9<"$BUILDKIT_RUN_DIR/build-admission.lock"
+    flock -w 30 9 || die 'builds are still running; builder update deferred without restarting it'
+    "$admission_helper" drained || die 'build termination or client compatibility is unknown; builder update deferred without restarting it'
+    export VERITY_BUILDKIT_RELEASE_LOCK_HELD=1
+  fi
+
+  snapshotter_timer_enabled=0
+  snapshotter_timer_active=0
+  if systemctl is-enabled --quiet verity-buildkit-snapshotter.timer; then snapshotter_timer_enabled=1; fi
+  if systemctl is-active --quiet verity-buildkit-snapshotter.timer; then snapshotter_timer_active=1; fi
+  storage_timer_enabled=0
+  storage_timer_active=0
+  if systemctl is-enabled --quiet verity-build-storage.timer; then storage_timer_enabled=1; fi
+  if systemctl is-active --quiet verity-build-storage.timer; then storage_timer_active=1; fi
+  for path in "${BUILDER_PATHS[@]}"; do [[ -e $path ]] && existing+=("$path"); done
+  rm -f -- "$BACKUP"
+  if ((${#existing[@]})); then
+    tar -cPf "$BACKUP" "${existing[@]}" || die 'could not keep the current builder aside; nothing was changed'
+  else
+    : >"$BACKUP"
+  fi
+
+  log 'installing the devcontainer builder from this release (builds in progress are interrupted)'
+  # From here until the builder is ready, a stop puts the previous builder back. The installer
+  # runs in its own process group so a stop can end all of it at once, and in the background so
+  # this shell takes the signal now rather than after the installer has finished.
+  interrupted=0
+  install_pid=''
+  trap 'interrupted=1; if [[ -n $install_pid ]]; then kill -TERM -- "-$install_pid" 2>/dev/null || true; fi' TERM INT
+  VERITY_BUILDKIT_GID="$gid" setsid bash -c 'umask 0022 && exec bash "$1"' bash \
+    "$work/bundle/buildkit/install.sh" >&2 &
+  install_pid=$!
+  install_status=0
+  while kill -0 "$install_pid" 2>/dev/null; do
+    install_status=0
+    wait "$install_pid" || install_status=$?
+  done
+  if ((interrupted)); then
+    restore_previous
+    die 'interrupted while installing the builder; the previous builder was restored'
+  fi
+  if ((install_status != 0)); then
+    restore_previous
+    die 'the builder installation failed; the previous builder was restored'
+  fi
+  if ! await_ready || ((interrupted)); then
+    restore_previous
+    ((interrupted)) && die 'interrupted while installing the builder; the previous builder was restored'
+    die 'the new builder did not become ready; the previous builder was restored'
+  fi
+  trap - TERM INT
+  record_bundle "$hash"
+  log 'the devcontainer builder now matches this release'
+}
+
+# Answers the request on file: sets ANSWERED (its id, empty without a request) and STATUS.
+answer_once() {
+  local request="$STATE_DIR/builder-request.json" result="$STATE_DIR/builder-result.json"
+  local id image output child log
+  ANSWERED=''
+  STATUS=0
+  [[ -f $request ]] || return 0
+  if ! id="$(jq -er 'select(.version == 1) | .id | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"))' "$request")"; then
+    log 'builder-request.json is not a version-1 request'
+    STATUS=1
+    return 0
+  fi
+  ANSWERED=$id
+  # Already answered: the path unit fires again whenever the Updater rewrites the request.
+  if [[ -f $result ]] && [[ $(jq -r '.id // empty' "$result") == "$id" ]] &&
+    [[ $(jq -r '.ok' "$result") == true ]]; then
+    return 0
+  fi
+  image="$(jq -r '.image // empty' "$request")"
+  prepare_work_dir
+  log="$WORK_DIR/reconcile.log"
+  # A separate process, not a subshell or function: on the left of `||` a function runs with
+  # `set -e` suspended. Its output goes to a root-only file rather than a pipe, so nothing it
+  # writes while restoring can fail because this process stopped reading.
+  "${BASH_SOURCE[0]}" reconcile "$image" >"$log" 2>&1 &
+  child=$!
+  # systemd stops this unit with TERM to this process alone (KillMode=mixed). Pass it on, then
+  # keep waiting: the reconciler restores the previous builder, and this process publishes the
+  # answer before it exits.
+  trap 'kill -TERM "$child" 2>/dev/null || true' TERM INT
+  while kill -0 "$child" 2>/dev/null; do
+    STATUS=0
+    wait "$child" || STATUS=$?
+  done
+  trap - TERM INT
+  output="$(cat "$log")"
+  printf '%s\n' "$output" >&2
+  write_json_atomically "$result" "$(jq -cn --arg id "$id" --argjson ok "$([[ $STATUS -eq 0 ]] && echo true || echo false)" \
+    --arg message "$(printf '%s' "$output" | grep '^verity-host-builder: ' | tail -n 1 | sed 's/^verity-host-builder: //')" \
+    --arg finishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{version: 1, id: $id, ok: $ok, message: $message, finishedAt: $finishedAt}')"
+}
+
+apply_request() {
+  local previous='' attempt
+  need_tools jq
+  # systemd does not start the unit again for a request written while it is still running,
+  # so answer until the request on file is the one just answered.
+  for attempt in 1 2 3 4 5; do
+    answer_once
+    [[ -n $ANSWERED && $ANSWERED != "$previous" ]] || return "$STATUS"
+    previous=$ANSWERED
+    [[ $(jq -r '.id // empty' "$STATE_DIR/builder-request.json" 2>/dev/null) != "$previous" ]] ||
+      return "$STATUS"
+  done
+  log "more requests arrived during $attempt answers; the next trigger answers them"
+  return "$STATUS"
+}
+
+[[ $(id -u) -eq 0 || ${VERITY_HOST_RUNTIME_TEST:-} == 1 ]] || die 'must run as root'
+case "${1:-}" in
+  apply-request) apply_request ;;
+  reconcile)
+    [[ $# -eq 2 ]] || die 'usage: verity-host-builder reconcile <image>'
+    reconcile "$2"
+    ;;
+  record)
+    [[ $# -eq 2 ]] || die 'usage: verity-host-builder record <deploy-dir>'
+    need_tools jq sha256sum
+    prepare_work_dir
+    record_bundle "$(bundle_hash "$2")"
+    ;;
+  forget) rm -f -- "$BUNDLE_RECORD" ;;
+  *) die 'usage: verity-host-builder apply-request | record <deploy-dir> | forget' ;;
+esac

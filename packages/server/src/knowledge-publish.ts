@@ -45,13 +45,17 @@ export async function publishSharedInsight(
   dataRoot: string,
   projectId: string,
   input: PublishSharedInsightInput,
+  workingCopy?: string,
 ): Promise<{ path: string; digest: string; replaced: boolean }> {
   const projectRoot = await ensureProjectKnowledge(dataRoot, projectId);
   const sharedRoot = await ensureSharedKnowledge(dataRoot);
-  const source = insightPath(projectRoot, input.path);
+  // Only the server supplies this root, derived from the calling session.
+  const sourceRoot = workingCopy ?? join(projectRoot, KNOWLEDGE_INSIGHTS_DIR);
+  const source = sessionFilePath(sourceRoot, input.path);
+  if (!source.rel.endsWith('.md')) throw new Error('insights must be Markdown files');
   const destination = insightPath(sharedRoot, input.sharedPath ?? input.path);
   const sourceSlot = await openKnowledgeFileSlot(
-    { root: 'knowledge', dir: join(projectRoot, KNOWLEDGE_INSIGHTS_DIR) },
+    { root: 'knowledge', dir: sourceRoot },
     source.rel,
   );
   const sourceHandle = await open(

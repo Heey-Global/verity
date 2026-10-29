@@ -1,3 +1,4 @@
+import { managedServerApproval, confirmManagedServerApproval } from './managedServerApproval';
 import { APP_HELP_TOPICS } from '@verity/events';
 import { useFeatureHint } from '../FeatureHint';
 import { PremiumBadge } from '../premium/PremiumBadge';
@@ -309,25 +310,20 @@ export function StaticPreviewSheet({
     };
   }, [client, managedId, sessionId]);
 
-  /** The operator sees exactly what will run before it becomes reachable. */
-  const confirmCommand = (server: ManagedDevServer, action: string, mode: 'local' | 'online') =>
-    new Promise<boolean>((resolve) =>
-      Alert.alert(
-        mode === 'local' ? `Allow ${server.name} locally?` : `Share ${server.name} online?`,
-        `The agent set this server up. It runs:\n\n${server.command}${
-          server.workdir !== '.' ? `\n\nin ${server.workdir}` : ''
-        }${server.secretBindings?.length ? `\n\nSecrets: ${server.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\n${
-          mode === 'local'
-            ? 'Anyone on your network can open it without a PIN while it runs.'
-            : 'Anyone with the public link and its PIN can open it while it runs.'
-        }`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-          { text: action, onPress: () => resolve(true) },
-        ],
-        { cancelable: true, onDismiss: () => resolve(false) },
-      ),
-    );
+  const confirmCommand = (
+    server: ManagedDevServer,
+    seen: ReturnType<typeof managedServerApproval>,
+    action: string,
+    mode: 'local' | 'online',
+  ) =>
+    confirmManagedServerApproval(seen, {
+      title: mode === 'local' ? `Allow ${server.name} locally?` : `Share ${server.name} online?`,
+      action,
+      warning:
+        mode === 'local'
+          ? 'Anyone on your network can open it without a PIN while it runs.'
+          : 'Anyone with the public link and its PIN can open it while it runs.',
+    });
 
   const [managedSwitch, setManagedSwitch] = useState<{ id: string; kind: 'local' | 'online' }>();
   const sheetOpen = useRef(true);
@@ -363,16 +359,13 @@ export function StaticPreviewSheet({
     action: string,
     mode: 'local' | 'online',
   ) => {
+    const seen = managedServerApproval(server);
     if (server.approved) return true;
-    if (!(await confirmCommand(server, action, mode))) return false;
+    if (!(await confirmCommand(server, seen, action, mode))) return false;
     await client.approveManagedDevServer(
       sessionId,
       server.id,
-      {
-        command: server.command,
-        workdir: server.workdir,
-        ...(server.secretBindings?.length ? { secretBindings: server.secretBindings } : {}),
-      },
+      seen,
       // Approved for a public link only: the server must not also open locally.
       mode === 'online' && server.accessSwitches && !managedLocalOn(server) ? { local: false } : {},
     );

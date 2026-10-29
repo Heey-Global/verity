@@ -71,6 +71,38 @@ const sampleSpec: ContainerSpec = {
 };
 
 describe('createDockerClient (#174)', () => {
+  it('preserves complete restart policy and renames retained installer containers through the Engine API', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/retained\/update$/, method: 'POST', resp: res({}, { status: 200 }) },
+      {
+        match: /\/containers\/retained\/rename\?name=previous-server$/,
+        method: 'POST',
+        resp: res({}, { status: 204 }),
+      },
+      {
+        match: /\/containers\/retained\/json$/,
+        method: 'GET',
+        resp: res({
+          Id: 'retained',
+          State: { Running: false },
+          HostConfig: { RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 7 } },
+        }),
+      },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+    await docker.setContainerRestartPolicy!('retained', {
+      name: 'on-failure',
+      maximumRetryCount: 7,
+    });
+    await docker.renameContainer!('retained', 'previous-server');
+    expect(JSON.parse(fetch.calls[0]!.init!.body!)).toEqual({
+      RestartPolicy: { Name: 'on-failure', MaximumRetryCount: 7 },
+    });
+    expect(await docker.inspectContainer('retained')).toMatchObject({
+      restartPolicy: 'on-failure',
+      restartMaximumRetryCount: 7,
+    });
+  });
   it('does not re-add a volume the replacement already inherits through Binds', async () => {
     // The shape every Gateway actually has: compose declares its volumes as Binds,
     // and HostConfig.Mounts is empty. Carrying them over a second time as Mounts
@@ -83,6 +115,7 @@ describe('createDockerClient (#174)', () => {
           Name: '/verity-agent-gateway-1',
           Config: { Image: 'ghcr.io/heey-global/verity/verity-server@sha256:old' },
           HostConfig: {
+            SecurityOpt: ['no-new-privileges:true'],
             Binds: [
               'verity-agent-gateway-control:/run/verity-agent-gateway:rw',
               '/var/run/docker.sock:/var/run/docker.sock',
@@ -149,8 +182,13 @@ describe('createDockerClient (#174)', () => {
 
     const create = fetch.calls.find((call) => /\/containers\/create\?/.test(call.url));
     const body = JSON.parse(create?.init?.body ?? '{}') as {
-      HostConfig?: { Binds?: string[]; Mounts?: Array<{ Target?: string }> };
+      HostConfig?: {
+        SecurityOpt?: string[];
+        Binds?: string[];
+        Mounts?: Array<{ Target?: string }>;
+      };
     };
+    expect(body.HostConfig?.SecurityOpt).toEqual(['no-new-privileges=true']);
     // The bound volume stays a Bind and must not appear a second time as a Mount.
     expect(body.HostConfig?.Binds).toContain(
       'verity-agent-gateway-control:/run/verity-agent-gateway:rw',
@@ -713,7 +751,7 @@ describe('createDockerClient (#174)', () => {
       ...sampleSpec,
       capDrop: ['ALL'],
       capAdd: ['NET_BIND_SERVICE'],
-      securityOpt: ['no-new-privileges:true'],
+      securityOpt: ['no-new-privileges=true'],
       pidsLimit: 512,
       memoryBytes: 2 * 1024 ** 3,
       memorySwapBytes: 2 * 1024 ** 3,
@@ -727,7 +765,7 @@ describe('createDockerClient (#174)', () => {
     const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
     expect(body.HostConfig.CapDrop).toEqual(['ALL']);
     expect(body.HostConfig.CapAdd).toEqual(['NET_BIND_SERVICE']);
-    expect(body.HostConfig.SecurityOpt).toEqual(['no-new-privileges:true']);
+    expect(body.HostConfig.SecurityOpt).toEqual(['no-new-privileges=true']);
     expect(body.HostConfig.PidsLimit).toBe(512);
     expect(body.HostConfig.Memory).toBe(2 * 1024 ** 3);
     // Pinned to `Memory`: the swap ceiling is what stops a capped container from
@@ -1226,7 +1264,7 @@ describe('createDockerClient (#174)', () => {
             Tmpfs: { '/tmp': 'rw,noexec' },
             CapDrop: ['ALL'],
             CapAdd: null,
-            SecurityOpt: ['no-new-privileges:true'],
+            SecurityOpt: ['no-new-privileges=true'],
             PidsLimit: 128,
             Memory: 536_870_912,
             MemorySwap: 536_870_912,
@@ -2099,6 +2137,32 @@ describe('createDockerClient network primitives (H2)', () => {
     await expect(client(fetch409).ensureNetwork!('verity-proj-abc')).resolves.toBeUndefined();
   });
 
+  it('creates generation bridges with explicit identity and never accepts a conflict', async () => {
+    const name = `verity-egress-${'a'.repeat(32)}`;
+    const bridge = 'vep0123456789ab';
+    const id = 'b'.repeat(64);
+    const fetch = fakeFetch([
+      { match: /\/networks\/create/, method: 'POST', resp: res({ Id: id }, { status: 201 }) },
+    ]);
+    expect(await client(fetch).createEgressNetwork!(name, bridge)).toEqual({ id });
+    expect(JSON.parse(fetch.calls[0]?.init?.body ?? '{}')).toEqual({
+      Name: name,
+      Driver: 'bridge',
+      CheckDuplicate: true,
+      EnableIPv6: true,
+      IPAM: { Config: [{ Subnet: 'fdaa:aaaa:aaaa:aaaa::/64' }] },
+      Options: { 'com.docker.network.bridge.name': bridge },
+    });
+    const conflict = fakeFetch([
+      {
+        match: /\/networks\/create/,
+        method: 'POST',
+        resp: res({ message: 'exists' }, { ok: false, status: 409 }),
+      },
+    ]);
+    await expect(client(conflict).createEgressNetwork!(name, bridge)).rejects.toThrow();
+  });
+
   it('ensureNetwork throws on a real failure (500)', async () => {
     const fetch = fakeFetch([
       {
@@ -2164,7 +2228,7 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
   const client = (fetch: ReturnType<typeof fakeFetch>) =>
     createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
 
-  it('listContainers strips the daemon leading slash and drops entries with no image id', async () => {
+  it('listContainers strips the daemon leading slash and includes every container', async () => {
     const fetch = fakeFetch([
       {
         match: /\/containers\/json\?all=true/,
@@ -2178,11 +2242,6 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
             Created: 100,
           },
           { Id: 'c2', ImageID: 'sha256:b' },
-          // The GC removes an image only when NO container references it, so an
-          // entry whose ImageID the daemon did not report must not become a
-          // summary that silently claims "references nothing".
-          { Id: 'c3', Names: ['/no-image'] },
-          null,
         ]),
       },
     ]);
@@ -2197,6 +2256,28 @@ describe('createDockerClient inventory endpoints (disk GC)', () => {
       { id: 'c2', imageId: 'sha256:b', names: [], labels: {} },
     ]);
     expect(fetch.calls[0]?.url).toBe('http://127.0.0.1:9234/v1.41/containers/json?all=true');
+  });
+
+  it.each(
+    [
+      null,
+      {},
+      'invalid',
+      [null],
+      [42],
+      [[]],
+      [{ ImageID: 'sha256:a' }],
+      [{ Id: '', ImageID: 'sha256:a' }],
+      [{ Id: 'c1' }],
+      [{ Id: 'c1', ImageID: '' }],
+      [{ Id: 'c1', ImageID: 'sha256:a' }, { Id: 'c2' }],
+    ].map((inventory) => ({ inventory })),
+  )('rejects incomplete container inventory $inventory', async ({ inventory }) => {
+    const fetch = fakeFetch([{ match: /\/containers\/json/, method: 'GET', resp: res(inventory) }]);
+    await expect(client(fetch).listContainers?.()).rejects.toMatchObject({
+      kind: 'other',
+      message: 'Docker container inventory is incomplete or malformed',
+    });
   });
 
   it('listContainers surfaces a daemon failure instead of reporting an empty fleet', async () => {
@@ -2417,6 +2498,18 @@ describe('createDockerClient runtime + response validation', () => {
     });
   });
 
+  it('containerLogs applies the requested time window and asks for timestamps', async () => {
+    const fetch = fakeFetch([
+      { match: /\/containers\/abc\/logs/, method: 'GET', resp: textRes('ready') },
+    ]);
+    const window = { since: '2026-10-28T12:00:00Z', until: '2026-10-28T13:00:00Z' };
+    await client(fetch).containerLogs?.('abc', 100, window);
+    const url = new URL(fetch.calls[0]!.url);
+    expect(url.searchParams.get('since')).toBe(window.since);
+    expect(url.searchParams.get('until')).toBe(window.until);
+    expect(url.searchParams.get('timestamps')).toBe('1');
+  });
+
   it('containerLogs maps a 404 to container_not_found', async () => {
     const fetch = fakeFetch([
       {
@@ -2438,12 +2531,8 @@ describe('createDockerClient runtime + response validation', () => {
     );
   });
 
-  // Deliberately asserted as it behaves, not as it ought to: the byte budget cuts
-  // NON-MULTIPLEXED output SILENTLY. `[truncated]` is appended by the frame decoder,
-  // and plain output returns before reaching it — so a capped read is indistinguishable
-  // from a complete one. Marking it is a production change and is not made here; pinning
-  // the current behaviour is what makes that change visible when someone makes it.
-  it('containerLogs bounds a streaming log body at the read budget, unmarked', async () => {
+  // A bounded plain-text read must never look like a complete diagnostic.
+  it('containerLogs bounds a streaming log body at the read budget and marks truncation', async () => {
     // The Engine streams logs; a runaway container must not be able to pull an
     // unbounded body into the Server's heap through a diagnostics read.
     const chunk = new Uint8Array(32 * 1024).fill(97);
@@ -2468,8 +2557,9 @@ describe('createDockerClient runtime + response validation', () => {
     ]);
     const logs = await client(fetch).containerLogs?.('abc', 25);
     // Plain (non-multiplexed) output comes back verbatim, capped at the budget.
-    expect(Buffer.byteLength(logs ?? '')).toBe(64 * 1024 - 32);
-    expect(logs).toMatch(/^a+$/);
+    expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
+    expect(logs).toContain('[truncated]');
+    expect(logs).toMatch(/^a+\n\[truncated\]\n$/);
   });
 
   it('containerLogs falls back to arrayBuffer when the response exposes no stream', async () => {
@@ -2486,9 +2576,9 @@ describe('createDockerClient runtime + response validation', () => {
       },
     ]);
     const logs = await client(fetch).containerLogs?.('abc', 25);
-    expect(Buffer.byteLength(logs ?? '')).toBe(64 * 1024 - 32);
-    // Same unmarked cut as the streaming path above, by the same route.
-    expect(logs).toMatch(/^b+$/);
+    expect(Buffer.byteLength(logs ?? '')).toBeLessThanOrEqual(64 * 1024);
+    expect(logs).toContain('[truncated]');
+    expect(logs).toMatch(/^b+\n\[truncated\]\n$/);
   });
 
   it('containerLogs marks a trailing partial frame header as truncated', async () => {
@@ -2983,4 +3073,23 @@ describe('replaceContainerImage refusal and rollback arms', () => {
       'companion rename failed and its predecessor could not be restarted',
     );
   });
+});
+
+it('DockerClient.pullImage honors caller cancellation during a disposable operation', async () => {
+  const controller = new AbortController();
+  const fetch: HttpFetch = async (_url, init) => {
+    const signal = init?.signal;
+    expect(signal).toBeDefined();
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(new Error('aborted'));
+      signal!.addEventListener('abort', abort, { once: true });
+      if (signal!.aborted) abort();
+      controller.abort();
+    });
+    throw new Error('unreachable');
+  };
+  const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+  await expect(
+    docker.pullImage!('postgres:18-alpine', { signal: controller.signal }),
+  ).rejects.toMatchObject({ kind: 'network' });
 });

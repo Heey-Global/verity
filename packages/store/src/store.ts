@@ -1,3 +1,5 @@
+import { RepairSupervisionStore } from './repair-supervision.js';
+import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -422,6 +424,8 @@ export interface SessionAutomationInput {
 }
 
 export interface ProjectSettingsRecord {
+  /** Absent on older clients; defaults to enabled. Changing it affects the next recreation. */
+  devcontainerEnabled?: boolean;
   projectId: string;
   dopplerTokenRef: string | null;
   dopplerToken: string | null;
@@ -486,6 +490,7 @@ export interface ProjectMcpBindingRecord {
 }
 
 type ProjectSettingsKey =
+  | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
   | 'dopplerProject'
@@ -1226,6 +1231,23 @@ const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
+  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
+
+  /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
+  subscribeBackupRevocations(listener: () => Promise<void>): () => void {
+    this.backupRevocationListeners.add(listener);
+    return () => {
+      this.backupRevocationListeners.delete(listener);
+    };
+  }
+
+  private async notifyBackupRevocations(): Promise<void> {
+    // A destination outage must not undo or misreport an already committed token deletion.
+    await Promise.allSettled(
+      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
+    );
+  }
+
   /** PGlite does not enforce table-lock conflicts across its concurrent async
    * transactions, so serialize this rare dual-unique mutation in-process too.
    * The SQL table lock below remains the cross-process Postgres guard. */
@@ -1390,18 +1412,22 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
-    this.liveMeetings = new LiveMeetingStore(db);
+    this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
+    this.repairs = new RepairSupervisionStore(db);
   }
 
+  readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly repairs: RepairSupervisionStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
@@ -2894,6 +2920,45 @@ export class EventStore implements EventSink {
         .where('session_id', '=', sessionId)
         .where('operation_id', '=', operationId)
         .execute();
+    });
+  }
+
+  /** Replace a legacy local Git workspace after its verified filesystem migration. */
+  async replaceLocalSessionWorkspace(
+    sessionId: string,
+    projectId: string,
+    previous: string,
+    next: string,
+    note: string,
+  ): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      const project = await tx
+        .selectFrom('projects')
+        .select(['kind', 'hidden_at'])
+        .where('id', '=', projectId)
+        .forShare()
+        .executeTakeFirstOrThrow();
+      if (project.kind !== 'local' || project.hidden_at !== null)
+        throw new Error('Local project is unavailable');
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['worktree', 'project_id'])
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!session) return;
+      if (session.project_id !== projectId)
+        throw new Error('Session changed project during migration');
+      if (session.worktree === next) return;
+      if (session.worktree !== previous)
+        throw new Error('Session changed workspace during migration');
+      await tx
+        .updateTable('sessions')
+        .set({ worktree: next })
+        .where('session_id', '=', sessionId)
+        .execute();
+      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
+      await tx.insertInto('session_pending_note').values({ session_id: sessionId, note }).execute();
     });
   }
 
@@ -4420,11 +4485,12 @@ export class EventStore implements EventSink {
     sessionId: string,
     beforeSeq?: number,
     snapshotSeq?: number,
+    eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
     // One query establishes the initial snapshot, including the empty-log case.
     const source = await this.getEventsBeforeSeq(
       sessionId,
-      HISTORY_MAX_EVENTS,
+      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
       snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
     );
     const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
@@ -4446,7 +4512,23 @@ export class EventStore implements EventSink {
       };
       const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
       if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0)
+        if (page.events.length === 0) {
+          if (eventOffset !== undefined) {
+            const serialized = JSON.stringify(candidate);
+            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
+            // Leave room for the chunk envelope, including all numeric cursors.
+            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
+            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
+            return {
+              contract: 'bounded-history-v1',
+              kind: 'event-chunk',
+              seq: event.seq,
+              snapshotSeq: snapshot,
+              offset: eventOffset,
+              totalChars: serialized.length,
+              data: serialized.slice(eventOffset, eventOffset + chunkChars),
+            };
+          }
           return {
             contract: 'bounded-history-v1',
             kind: 'oversized-event',
@@ -4455,6 +4537,7 @@ export class EventStore implements EventSink {
             maxBytes: HISTORY_MAX_BYTES,
             snapshotSeq: snapshot,
           };
+        }
         return page;
       }
       Object.assign(page, candidate);
@@ -4495,6 +4578,21 @@ export class EventStore implements EventSink {
       return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
     });
     return { events, hasMore };
+  }
+
+  /** The user behind the session's most recent prompt that names one, or `undefined`
+   *  when no prompt in the session has an initiator. */
+  async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
   }
 
   /**
@@ -6640,6 +6738,7 @@ export class EventStore implements EventSink {
   private projectSettingsRowToRecord(
     row: {
       project_id: string;
+      devcontainer_enabled: boolean;
       doppler_token_ref: string | null;
       doppler_token: string | null;
       doppler_project: string | null;
@@ -6661,6 +6760,7 @@ export class EventStore implements EventSink {
   ): ProjectSettingsRecord {
     return {
       projectId: row.project_id,
+      devcontainerEnabled: row.devcontainer_enabled,
       dopplerTokenRef: row.doppler_token_ref,
       dopplerToken: decrypt ? this.decryptSecret(row.doppler_token) : row.doppler_token,
       dopplerProject: row.doppler_project,
@@ -6682,6 +6782,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly projectSettingsColumns = [
+    'devcontainer_enabled',
     'project_id',
     'doppler_token_ref',
     'doppler_token',
@@ -7822,6 +7923,7 @@ export class EventStore implements EventSink {
 
     const values = {
       project_id: projectId,
+      devcontainer_enabled: patch.devcontainerEnabled ?? true,
       doppler_token_ref: normalizeSetting(patch.dopplerTokenRef),
       doppler_token: this.encryptSecret(normalizeSetting(patch.dopplerToken)),
       doppler_project: normalizeSetting(patch.dopplerProject),
@@ -7877,6 +7979,9 @@ export class EventStore implements EventSink {
         .values(values)
         .onConflict((oc) =>
           oc.column('project_id').doUpdateSet({
+            ...(patch.devcontainerEnabled !== undefined
+              ? { devcontainer_enabled: patch.devcontainerEnabled }
+              : {}),
             ...(patch.dopplerTokenRef !== undefined
               ? { doppler_token_ref: normalizeSetting(patch.dopplerTokenRef) }
               : {}),
@@ -8131,14 +8236,120 @@ export class EventStore implements EventSink {
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
   async deleteAuthToken(id: string): Promise<boolean> {
-    const res = await this.db.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
-    return (res?.numDeletedRows ?? 0n) > 0n;
+    const deleted = await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in row exclusive mode`.execute(trx);
+      const record = await trx
+        .selectFrom('auth_tokens')
+        .select('id')
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!record) return false;
+      if (policy?.journal_enabled)
+        await trx
+          .insertInto('backup_revocation_outbox')
+          .values({ id: randomUUID(), device_id: id })
+          .execute();
+      const res = await trx.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
+      return (res?.numDeletedRows ?? 0n) > 0n;
+    });
+    if (deleted) await this.notifyBackupRevocations();
+    return deleted;
   }
 
   /** Revoke every device token (e.g. on GitHub disconnect / master-password
    *  change) — forces all devices to re-authenticate. */
   async deleteAllAuthTokens(): Promise<void> {
-    await this.db.deleteFrom('auth_tokens').execute();
+    await this.db.transaction().execute(async (trx) => {
+      const policy = await trx
+        .selectFrom('backup_policy')
+        .select('journal_enabled')
+        .where('id', '=', 1)
+        .forShare()
+        .executeTakeFirst();
+      await sql`lock table auth_tokens in share row exclusive mode`.execute(trx);
+      if (policy?.journal_enabled) {
+        const devices = await trx.selectFrom('auth_tokens').select('id').forUpdate().execute();
+        for (const device of devices)
+          await trx
+            .insertInto('backup_revocation_outbox')
+            .values({ id: randomUUID(), device_id: device.id })
+            .execute();
+      }
+      await trx.deleteFrom('auth_tokens').execute();
+    });
+    await this.notifyBackupRevocations();
+  }
+
+  /** Runtime backup policy is disabled explicitly by restore before any token cleanup. */
+  async setBackupJournaling(enabled: boolean): Promise<void> {
+    await this.db
+      .updateTable('backup_policy')
+      .set({ journal_enabled: enabled })
+      .where('id', '=', 1)
+      .execute();
+  }
+
+  async listBackupRevocations(): Promise<{ id: string; deviceId: string; revokedAt: string }[]> {
+    const rows = await this.db
+      .selectFrom('backup_revocation_outbox')
+      .selectAll()
+      .orderBy('created_at')
+      .limit(1000)
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      deviceId: row.device_id,
+      revokedAt: row.created_at.toISOString(),
+    }));
+  }
+
+  async acknowledgeBackupRevocation(id: string): Promise<void> {
+    await this.db.deleteFrom('backup_revocation_outbox').where('id', '=', id).execute();
+  }
+
+  /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
+  async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
+    if (
+      !path ||
+      path.startsWith('/') ||
+      path.includes('\\') ||
+      path.split('/').some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid backup Git bookkeeping path');
+    const key = randomUUID();
+    if (projectId === null) {
+      await this.db
+        .insertInto('backup_unassigned_git_repositories')
+        .values({ path, repo_key: key })
+        .onConflict((conflict) => conflict.column('path').doNothing())
+        .execute();
+      return (
+        await this.db
+          .selectFrom('backup_unassigned_git_repositories')
+          .select('repo_key')
+          .where('path', '=', path)
+          .executeTakeFirstOrThrow()
+      ).repo_key;
+    }
+    await this.db
+      .insertInto('backup_git_repositories')
+      .values({ project_id: projectId, path, repo_key: key })
+      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
+      .execute();
+    const row = await this.db
+      .selectFrom('backup_git_repositories')
+      .select('repo_key')
+      .where('project_id', '=', projectId)
+      .where('path', '=', path)
+      .executeTakeFirstOrThrow();
+    return row.repo_key;
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────

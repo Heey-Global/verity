@@ -445,6 +445,7 @@ interface ProjectIdentityClaimsTable {
  * GitHub/project sync can refresh lifecycle metadata without touching local
  * runtime preferences or secret references. */
 export interface ProjectSettingsTable {
+  devcontainer_enabled: Generated<boolean>;
   project_id: string;
   doppler_token_ref: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_token: ColumnType<string | null, string | null | undefined, string | null>;
@@ -637,6 +638,24 @@ export interface SecretKeyMetaTable {
  * NOT a secret column — validated while the store is SEALED, like
  * {@link SecretKeyMetaTable}. `id` is an opaque public handle for revocation.
  */
+interface BackupGitRepositoriesTable {
+  project_id: string;
+  path: string;
+  repo_key: string;
+}
+interface BackupUnassignedGitRepositoriesTable {
+  path: string;
+  repo_key: string;
+}
+interface BackupPolicyTable {
+  id: number;
+  journal_enabled: boolean;
+}
+interface BackupRevocationOutboxTable {
+  id: string;
+  device_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
 export interface AuthTokenTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null | undefined>;
   id: string;
@@ -983,6 +1002,38 @@ interface SecretAuditEventsTable {
   recorded_at: ColumnType<Date, string, never>;
 }
 
+/** Allocation counter and verification state of one durable audit stream (ADR 0028). */
+interface AuditStreamsTable {
+  stream_id: string;
+  next_sequence: number;
+  head_sequence: number | null;
+  head_hash: string | null;
+  unverified: boolean;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/**
+ * Append-only, hash-chained audit event (ADR 0028). `event_json` is the canonical
+ * envelope `event_hash` is computed over; the other columns are denormalized from it
+ * for grouping and search and are never trusted without it.
+ */
+interface AuditEventsTable {
+  stream_id: string;
+  sequence: number;
+  event_id: string;
+  schema_version: number;
+  recorded_at: ColumnType<Date, string, never>;
+  operation_id: string;
+  domain: string;
+  kind: string;
+  project_id: string | null;
+  project_label: string | null;
+  image_id: string | null;
+  event_json: string;
+  prev_hash: string;
+  event_hash: string;
+}
+
 /**
  * Server-held keys the MCP gateway takes request MACs under (ADR 0014 D3).
  *
@@ -1081,6 +1132,7 @@ export interface ManagedDevServersTable {
     string | undefined,
     string
   >;
+  approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,
@@ -1540,6 +1592,15 @@ export interface VulnDigestsTable {
   day: string;
 }
 export interface Database {
+  repair_mandates: RepairMandatesTable;
+  repair_incidents: RepairIncidentsTable;
+  repair_workflow_heads: RepairWorkflowHeadsTable;
+  repair_attempts: RepairAttemptsTable;
+  repair_session_history: RepairSessionHistoryTable;
+  qa_coordinator: QACoordinatorTable;
+  qa_inbox: QAInboxTable;
+  qa_proposals: QAProposalsTable;
+  qa_decisions: QADecisionsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1548,6 +1609,7 @@ export interface Database {
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
+  live_meeting_results: LiveMeetingResultsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
@@ -1600,9 +1662,14 @@ export interface Database {
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
+  project_egress_policy: ProjectEgressPolicyTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
+  backup_policy: BackupPolicyTable;
+  backup_revocation_outbox: BackupRevocationOutboxTable;
+  backup_git_repositories: BackupGitRepositoriesTable;
+  backup_unassigned_git_repositories: BackupUnassignedGitRepositoriesTable;
   device_push_tokens: DevicePushTokensTable;
   push_receipts: PushReceiptsTable;
   session_backend_state: SessionBackendStateTable;
@@ -1616,6 +1683,8 @@ export interface Database {
   secret_revocations: SecretRevocationsTable;
   secret_audit_events: SecretAuditEventsTable;
   audit_mac_keys: AuditMacKeysTable;
+  audit_streams: AuditStreamsTable;
+  audit_events: AuditEventsTable;
   secret_job_frames: SecretJobFramesTable;
   trusted_cli_outputs: TrustedCliOutputsTable;
   secret_jobs: SecretJobsTable;
@@ -1698,4 +1767,104 @@ interface LiveMeetingInsightsTable {
   evidence_b: string | null;
   source_path: string | null;
   created_at: number;
+}
+
+interface LiveMeetingResultsTable {
+  filed_revision: number | null;
+  meeting_id: string;
+  revision: number;
+  status: 'working' | 'ready' | 'failed';
+  title: string | null;
+  summary: string | null;
+  decisions_json: string;
+  tasks_json: string;
+  open_questions_json: string;
+  model: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ProjectEgressPolicyTable {
+  project_id: string;
+  state: import('./project-egress.js').EgressPolicy;
+}
+
+interface RepairMandatesTable {
+  project_id: string;
+  sponsor_user_id: string;
+  mode: import('./repair-supervision.js').RepairMode;
+  revision: Generated<number>;
+  cursor: string | null;
+  health: Generated<string>;
+  checked_at: Date | null;
+}
+interface RepairIncidentsTable {
+  id: string;
+  project_id: string;
+  resource: string;
+  revision: string;
+  evidence: string;
+  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
+  owner_session_id: string | null;
+  last_session_id: string | null;
+  attempts: Generated<number>;
+  dispatch_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface RepairWorkflowHeadsTable {
+  project_id: string;
+  workflow: string;
+  run_id: ColumnType<string, string | number, string | number>;
+}
+interface RepairAttemptsTable {
+  dispatch_id: string;
+  incident_id: string;
+  session_id: string;
+  started_at: Generated<Date>;
+  ended_at: Date | null;
+  outcome: string | null;
+  start_seq: ColumnType<string | null, string | number | null, string | number | null>;
+}
+interface RepairSessionHistoryTable {
+  project_id: string;
+  resource: string;
+  session_id: string;
+  created_at: Generated<Date>;
+}
+interface QACoordinatorTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor: string | null;
+  session_id: string | null;
+  health: Generated<string>;
+  active_dispatch: string | null;
+  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
+  active_revision: number | null;
+  active_snapshot: string | null;
+  wake_day: string | null;
+  wakes: Generated<number>;
+}
+interface QAInboxTable {
+  project_id: string;
+  fingerprint: string;
+  acknowledged: string | null;
+  updated_at: Generated<Date>;
+}
+interface QAProposalsTable {
+  id: string;
+  project_id: string;
+  incident_id: string;
+  mandate_revision: number;
+  qa_revision: number;
+  state: Generated<string>;
+  decided_by: string | null;
+  created_at: Generated<Date>;
+}
+interface QADecisionsTable {
+  dispatch_id: string;
+  session_id: string;
+  snapshot: string;
+  outcome: string | null;
+  created_at: Generated<Date>;
 }

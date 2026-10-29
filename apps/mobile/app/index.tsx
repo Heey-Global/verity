@@ -1,3 +1,4 @@
+import { SchedulingDiagnostics } from '../components/SchedulingDiagnostics';
 import { sessionLayout } from '../lib/sessionLayout';
 import { useSessionLayoutNavigation } from '../hooks/useSessionLayoutNavigation';
 import { DeferredSessionPane } from '../components/DeferredSessionPane';
@@ -238,6 +239,7 @@ function SessionList({ client }: { client: VerityClient }) {
     projects,
     loading: projectsLoading,
     error: projectsError,
+    listState: projectListState,
     refresh: refreshProjects,
     devServersByProject,
     detectionsByProject,
@@ -285,10 +287,19 @@ function SessionList({ client }: { client: VerityClient }) {
       baseUrl,
       previousGroups.current,
       forgeConnections,
+      projectListState,
     );
     previousGroups.current = next;
     return next;
-  }, [baseUrl, detectionsByProject, devServersByProject, forgeConnections, projects, sessions]);
+  }, [
+    baseUrl,
+    detectionsByProject,
+    devServersByProject,
+    forgeConnections,
+    projects,
+    projectListState,
+    sessions,
+  ]);
   // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
@@ -952,11 +963,13 @@ function SessionList({ client }: { client: VerityClient }) {
   );
 
   finishHomeWork();
-  if (!wide) return master;
+  if (!wide) return <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>;
 
   return (
     <View style={styles.splitRow}>
-      <View style={[styles.leftPane, { width: sidebarWidth }]}>{master}</View>
+      <View style={[styles.leftPane, { width: sidebarWidth }]}>
+        <SchedulingDiagnostics stage="sidebar">{master}</SchedulingDiagnostics>
+      </View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane

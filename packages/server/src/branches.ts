@@ -483,9 +483,9 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
 
   async function current(worktreePath: string, sessionWorktreePath?: string): Promise<string> {
     // The base checkout has no session record; route its read through the owning session.
-    if (sessionWorktreePath !== undefined && opts.withGit) {
+    if (opts.withGit) {
       const { withGit, ...scopedOptions } = opts;
-      return withGit(sessionWorktreePath, (scopedGit) =>
+      return withGit(sessionWorktreePath ?? worktreePath, (scopedGit) =>
         createGitBranchService({ ...scopedOptions, git: scopedGit }).current(worktreePath),
       );
     }
@@ -533,6 +533,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   async function sessionBranches(worktreePath: string): Promise<string[]> {
+    if (opts.withGit) {
+      const { withGit, ...scopedOptions } = opts;
+      return withGit(worktreePath, (scopedGit) =>
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(worktreePath),
+      );
+    }
     const here = await current(worktreePath);
     let extra: string[] = [];
     try {

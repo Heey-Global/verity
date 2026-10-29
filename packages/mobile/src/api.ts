@@ -1,3 +1,13 @@
+import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
+import {
+  auditHealthSchema,
+  auditOperationListSchema,
+  auditOperationResponseSchema,
+  type AuditHealth,
+  type AuditOperationDetail,
+  type AuditOperationList,
+  type AuditOperationQuery,
+} from './audit.js';
 import {
   vulnerabilitySettingsSchema,
   vulnerabilityProjectSchema,
@@ -7,6 +17,7 @@ import {
 } from './vulnerability.js';
 import {
   boundedHistoryResultSchema,
+  boundedHistoryPageSchema,
   HISTORY_MAX_BYTES,
   type BoundedHistoryPage,
 } from '@verity/events';
@@ -118,6 +129,7 @@ const pullRequestSchema = z
       pending: z.number().int().nonnegative(),
     }),
     // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
+    viewerCanMerge: z.boolean().optional(),
     mergeable: z.boolean().nullable().catch(null),
     // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
     mergeState: mergeStateSchema,
@@ -132,6 +144,7 @@ const sessionPrSchema = z.object({
   // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
   // not green yet, or GitHub still computing mergeability just after a push).
   // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
+  viewerCanMerge: z.boolean().optional(),
   mergeable: z.boolean().nullable().catch(null),
   // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
   // also means GitHub started no `pull_request` checks — the one state that must read
@@ -315,7 +328,44 @@ const sessionPlanningSchema = z
   .catch(undefined);
 export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
 
+const gmailSessionConnectionSchema = z.object({
+  accountId: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  source: z.enum(['project', 'session']).nullable().optional(),
+  mode: z.enum(['inherit', 'disabled', 'account']).optional(),
+  enabled: z.boolean(),
+  accountEmail: z.string().nullable(),
+  clientId: z.string().nullable(),
+  connected: z.boolean(),
+});
+export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
+export type CalendarSessionConnection = GmailSessionConnection;
+export type ContactsSessionConnection = GmailSessionConnection;
+
+const sessionGoogleWorkspaceFileSchema = z.object({
+  accountEmail: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  accountId: z.string().nullable().optional(),
+  folderLinkId: z.string().nullable().optional(),
+  assignmentId: z.string(),
+  kind: z.enum(['slides', 'docs', 'sheets']),
+  fileId: z.string(),
+  name: z.string(),
+  webViewLink: z.string().url(),
+  revisionId: z.string().nullable(),
+});
+export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
+
+const sessionGoogleStatusSchema = z.object({
+  gmail: gmailSessionConnectionSchema,
+  calendar: gmailSessionConnectionSchema,
+  contacts: gmailSessionConnectionSchema,
+  workspaceFile: sessionGoogleWorkspaceFileSchema.nullable(),
+});
+export type SessionGoogleStatus = z.infer<typeof sessionGoogleStatusSchema>;
+
 export const sessionDetailSchema = sessionSummarySchema.safeExtend({
+  googleStatus: sessionGoogleStatusSchema.optional(),
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
@@ -708,7 +758,13 @@ const sessionDevServerSchema = z.object({
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
+const managedServerProviderSnapshotSchema = z.object({
+  provider: z.literal('doppler'),
+  project: z.string().min(1),
+  config: z.string().min(1),
+});
 const managedDevServerSchema = z.object({
+  providerSnapshot: managedServerProviderSnapshotSchema.nullable().optional(),
   secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),
   id: z.string(),
   name: z.string(),
@@ -1046,40 +1102,12 @@ const googleConnectResultSchema = z.object({
   scopes: z.array(z.string()),
 });
 
-const gmailSessionConnectionSchema = z.object({
-  accountId: z.string().nullable().optional(),
-  accountName: z.string().nullable().optional(),
-  source: z.enum(['project', 'session']).nullable().optional(),
-  mode: z.enum(['inherit', 'disabled', 'account']).optional(),
-  enabled: z.boolean(),
-  accountEmail: z.string().nullable(),
-  clientId: z.string().nullable(),
-  connected: z.boolean(),
-});
-export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
-export type CalendarSessionConnection = GmailSessionConnection;
-export type ContactsSessionConnection = GmailSessionConnection;
-
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
   path: z.string(),
   name: z.string(),
 });
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
-
-const sessionGoogleWorkspaceFileSchema = z.object({
-  accountEmail: z.string().nullable().optional(),
-  accountName: z.string().nullable().optional(),
-  accountId: z.string().nullable().optional(),
-  folderLinkId: z.string().nullable().optional(),
-  assignmentId: z.string(),
-  kind: z.enum(['slides', 'docs', 'sheets']),
-  fileId: z.string(),
-  name: z.string(),
-  webViewLink: z.string().url(),
-  revisionId: z.string().nullable(),
-});
-export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
@@ -1772,10 +1800,13 @@ export const sessionFileEntrySchema = z.object({
   modifiedAt: z.string().nullable(),
 });
 export type SessionFileEntry = z.infer<typeof sessionFileEntrySchema>;
-export type SessionFileRoot = 'worktree' | 'knowledge' | 'shared';
+export type SessionFileRoot =
+  'worktree' | 'knowledge' | 'shared' | 'sources' | 'documents' | 'drafts';
 
 export const sessionDirectorySchema = z.object({
-  root: z.enum(['worktree', 'knowledge', 'shared']).optional(),
+  documentStatus: z.object({ pending: z.boolean(), running: z.boolean() }).optional(),
+  workspaceKind: z.enum(['documents', 'code']).optional(),
+  root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
   entries: z.array(sessionFileEntrySchema),
   truncated: z.boolean(),
@@ -2334,6 +2365,33 @@ const liveMeetingInsightSchema = z.object({
     .transform((path) => path ?? null),
   createdAt: z.number(),
 });
+const liveMeetingResultItemSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  quote: z.string(),
+  speaker: z.number().nullable(),
+  atSeconds: z.number().nullable(),
+});
+export const liveMeetingResultSchema = z.object({
+  meetingId: z.string(),
+  revision: z.number(),
+  status: z.enum(['working', 'ready', 'failed']),
+  title: z.string().nullable(),
+  summary: z.string().nullable(),
+  decisions: z.array(liveMeetingResultItemSchema),
+  tasks: z.array(
+    liveMeetingResultItemSchema.extend({
+      state: z.enum(['proposed', 'added', 'dismissed']),
+      taskId: z.string().nullable(),
+    }),
+  ),
+  openQuestions: z.array(liveMeetingResultItemSchema),
+  model: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+export type LiveMeetingResult = z.infer<typeof liveMeetingResultSchema>;
+
 export type LiveMeeting = z.infer<typeof liveMeetingSchema>;
 export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
@@ -2383,6 +2441,7 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     edits: {
+      title?: string | null;
       speakerNames?: Record<string, string>;
       speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
       speakerMerges?: Record<string, number>;
@@ -2408,6 +2467,43 @@ export class VerityClient {
     this.readListeners.add(listener);
     for (const resource of this.observedReads.values()) listener(resource);
     return () => this.readListeners.delete(listener);
+  }
+
+  async getLiveMeetingResult(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      { method: 'GET' },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async updateLiveMeetingResultTask(
+    sessionId: string,
+    meetingId: string,
+    proposalId: string,
+    body:
+      | { revision: number; state: 'added'; taskId: string }
+      | { revision: number; state: 'dismissed' },
+  ): Promise<LiveMeetingResult | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/tasks/${encodeURIComponent(proposalId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z.object({ result: liveMeetingResultSchema.nullable() }).parse(await res.json()).result;
+  }
+
+  async retryLiveMeetingResult(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result/retry`,
+      { method: 'POST' },
+    );
   }
 
   async getLiveMeetingInsights(
@@ -2923,7 +3019,10 @@ export class VerityClient {
     return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
   }
 
-  async listSessionLinks(id: string): Promise<
+  async listSessionLinks(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<
     Array<{
       sessionId: string;
       name: string | null;
@@ -2931,7 +3030,10 @@ export class VerityClient {
       projectName: string;
     }>
   > {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/links`, { method: 'GET' });
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return z
       .object({
         links: z.array(
@@ -2946,7 +3048,10 @@ export class VerityClient {
       .parse(await res.json()).links;
   }
 
-  async listPendingLinkedMessages(id: string): Promise<
+  async listPendingLinkedMessages(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<
     Array<{
       id: string;
       targetSessionId: string;
@@ -2957,6 +3062,7 @@ export class VerityClient {
   > {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/linked-message-approvals`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({
@@ -3035,13 +3141,8 @@ export class VerityClient {
   /** Verity projects for the overview. Plain absent GitHub repos are deliberately
    * excluded; paused projects remain listed with `state='absent'`. */
   async listProjects(): Promise<ProjectRecord[]> {
-    try {
-      const res = await this.request('/projects', { method: 'GET' });
-      return z.array(projectRecordSchema).parse(await res.json());
-    } catch (err) {
-      if (err instanceof VerityApiError && err.status === 503) return [];
-      throw err;
-    }
+    const res = await this.request('/projects', { method: 'GET' });
+    return z.array(projectRecordSchema).parse(await res.json());
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
@@ -3101,6 +3202,67 @@ export class VerityClient {
     try {
       const res = await this.request('/connections', { method: 'GET' });
       return forgeConnectionListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  /** Audit operations, newest first. `null` when this device is not an
+   *  administrator's or the Server has no audit trail (403/404). */
+  async auditOperations(query: AuditOperationQuery = {}): Promise<AuditOperationList | null> {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
+      return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async buildDiagnostic(operationId: string) {
+    const res = await this.request(
+      `/audit/operations/${encodeURIComponent(operationId)}/diagnostics`,
+      { method: 'GET' },
+    );
+    return buildDiagnosticResponseSchema.parse(await res.json());
+  }
+
+  async systemLogs(query: {
+    source: 'server' | 'host';
+    since: string;
+    until: string;
+    level?: 'all' | 'error' | 'warning' | 'info';
+  }) {
+    const params = new URLSearchParams(query);
+    const res = await this.request(`/diagnostics/logs?${params.toString()}`, { method: 'GET' });
+    return systemLogResponseSchema.parse(await res.json());
+  }
+
+  async auditOperation(operationId: string): Promise<AuditOperationDetail> {
+    const res = await this.request(`/audit/operations/${encodeURIComponent(operationId)}`, {
+      method: 'GET',
+    });
+    return auditOperationResponseSchema.parse(await res.json()).operation;
+  }
+
+  /** `null` when audit logs are not available to this device (403/404). */
+  async auditHealth(): Promise<AuditHealth | null> {
+    try {
+      const res = await this.request('/audit/health', { method: 'GET' });
+      return auditHealthSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
@@ -3344,8 +3506,11 @@ export class VerityClient {
       .parse(await response.json());
   }
 
-  async listGoogleAccounts(): Promise<GoogleAccount[]> {
-    const response = await this.request('/google/accounts', { method: 'GET' });
+  async listGoogleAccounts(signal?: AbortSignal): Promise<GoogleAccount[]> {
+    const response = await this.request('/google/accounts', {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return z.object({ accounts: z.array(googleAccountSchema) }).parse(await response.json())
       .accounts;
   }
@@ -3445,9 +3610,24 @@ export class VerityClient {
     });
   }
 
-  async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
+  async getSessionGoogleStatus(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionGoogleStatus> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/google-status`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
+    return sessionGoogleStatusSchema.parse(await res.json());
+  }
+
+  async getSessionGmailConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3463,9 +3643,13 @@ export class VerityClient {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
   }
 
-  async getSessionCalendarConnection(sessionId: string): Promise<CalendarSessionConnection> {
+  async getSessionCalendarConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<CalendarSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3481,9 +3665,13 @@ export class VerityClient {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, { method: 'DELETE' });
   }
 
-  async getSessionContactsConnection(sessionId: string): Promise<ContactsSessionConnection> {
+  async getSessionContactsConnection(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ContactsSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/contacts`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3590,10 +3778,11 @@ export class VerityClient {
 
   async getSessionGoogleWorkspaceFile(
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<SessionGoogleWorkspaceFile | null> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`,
-      { method: 'GET' },
+      { method: 'GET', ...(signal ? { signal } : {}) },
     );
     const parsed = z
       .object({ file: sessionGoogleWorkspaceFileSchema.nullable() })
@@ -4463,6 +4652,7 @@ export class VerityClient {
     sessionId: string,
     serverId: string,
     seen: {
+      providerSnapshot?: z.infer<typeof managedServerProviderSnapshotSchema> | null;
       command: string;
       workdir: string;
       secretBindings?: { secretAlias: string; env: string }[];
@@ -4681,12 +4871,12 @@ export class VerityClient {
 
   async getSession(
     id: string,
-    timingContext?: { trace: SwitchTiming | undefined },
+    timingContext?: { trace: SwitchTiming | undefined; signal?: AbortSignal },
   ): Promise<SessionDetail> {
     const timing = timingContext ? timingContext.trace : sessionSwitchTiming(id);
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}`,
-      { method: 'GET' },
+      { method: 'GET', ...(timingContext?.signal ? { signal: timingContext.signal } : {}) },
       this.fetchImpl,
       { trace: timing },
     );
@@ -4788,44 +4978,91 @@ export class VerityClient {
     const params = new URLSearchParams();
     if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
     if (opts.snapshotSeq !== undefined) params.set('snapshotSeq', String(opts.snapshotSeq));
-    let res;
-    try {
-      res = await this.request(
-        `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
-        { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
-        this.fetchImpl,
-        { trace: opts.timing },
-      );
-    } catch (error) {
-      if (error instanceof VerityApiError && error.status === 404) {
-        throw new Error(
-          'Bounded history is unavailable. Update Core and check that this session still exists.',
-          { cause: error },
+    const read = async () => {
+      let res;
+      try {
+        res = await this.request(
+          `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
+          { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
+          this.fetchImpl,
+          { trace: opts.timing },
         );
+      } catch (error) {
+        if (error instanceof VerityApiError && error.status === 404) {
+          throw new Error(
+            'Bounded history is unavailable. Update Core and check that this session still exists.',
+            { cause: error },
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    markSessionSwitch(opts.timing, 'events-body-read-start');
-    const body = await res.text();
-    markSessionSwitch(opts.timing, 'events-body-read-end');
-    if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
-      throw new Error('Core returned history above the supported size limit. Update Core.');
-    }
-    let json: unknown;
-    try {
-      json = JSON.parse(body);
-    } catch {
-      throw new Error('Core does not support the required history contract. Update Core.');
-    }
-    const parsed = boundedHistoryResultSchema.safeParse(json);
-    if (!parsed.success)
-      throw new Error('Core does not support the required history contract. Update Core.');
-    const page = parsed.data;
+      markSessionSwitch(opts.timing, 'events-body-read-start');
+      const body = await res.text();
+      markSessionSwitch(opts.timing, 'events-body-read-end');
+      if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
+        throw new Error('Core returned history above the supported size limit. Update Core.');
+      }
+      let json: unknown;
+      try {
+        json = JSON.parse(body);
+      } catch {
+        throw new Error('Core does not support the required history contract. Update Core.');
+      }
+      const parsed = boundedHistoryResultSchema.safeParse(json);
+      if (!parsed.success)
+        throw new Error('Core does not support the required history contract. Update Core.');
+      return parsed.data;
+    };
+    let page = await read();
     if (page.kind === 'oversized-event') {
-      throw new Error(
-        `History event ${page.seq} exceeds the page size limit. No events were skipped.`,
-      );
+      const boundary = page;
+      if (
+        (opts.snapshotSeq !== undefined && boundary.snapshotSeq !== opts.snapshotSeq) ||
+        boundary.seq > boundary.snapshotSeq ||
+        (opts.beforeSeq !== undefined && boundary.seq >= opts.beforeSeq)
+      )
+        throw new Error('Core returned invalid history cursors.');
+      // Pin all chunks to this event and snapshot. No history cursor advances
+      // until the complete original page has been reconstructed and validated.
+      params.set('snapshotSeq', String(boundary.snapshotSeq));
+      params.set('beforeSeq', String(boundary.seq + 1));
+      const chunks: string[] = [];
+      let offset = 0;
+      let totalChars: number | undefined;
+      do {
+        if (opts.signal?.aborted) throw new Error('History loading was cancelled.');
+        params.set('eventOffset', String(offset));
+        const chunk = await read();
+        if (chunk.kind === 'oversized-event')
+          throw new Error(
+            'Oversized history recovery is unavailable. Update Core. No events were skipped.',
+          );
+        if (
+          chunk.kind !== 'event-chunk' ||
+          chunk.seq !== boundary.seq ||
+          chunk.snapshotSeq !== boundary.snapshotSeq ||
+          chunk.offset !== offset ||
+          chunk.totalChars > boundary.requiredBytes ||
+          (totalChars !== undefined && chunk.totalChars !== totalChars) ||
+          offset + chunk.data.length > chunk.totalChars
+        )
+          throw new Error('Core returned invalid history chunks.');
+        totalChars = chunk.totalChars;
+        chunks.push(chunk.data);
+        offset += chunk.data.length;
+      } while (offset < totalChars);
+      const serialized = chunks.join('');
+      if (new TextEncoder().encode(serialized).byteLength !== boundary.requiredBytes)
+        throw new Error('Core returned incomplete history chunks.');
+      page = boundedHistoryPageSchema.parse(JSON.parse(serialized));
+      if (
+        page.snapshotSeq !== boundary.snapshotSeq ||
+        page.events.length !== 1 ||
+        page.events[0]?.seq !== boundary.seq
+      )
+        throw new Error('Core returned invalid history chunks.');
     }
+    if (page.kind !== 'page') throw new Error('Core returned unexpected history chunks.');
     if (
       (opts.snapshotSeq !== undefined && page.snapshotSeq !== opts.snapshotSeq) ||
       page.events.some(
@@ -5119,10 +5356,13 @@ export class VerityClient {
 
   /** The routable models for the new-session picker (#143): the Claude ids plus any
    * OpenCode provider-qualified ids the server enumerates, and the spawn default. */
-  async listModels(projectId?: string): Promise<ModelList> {
+  async listModels(projectId?: string, signal?: AbortSignal): Promise<ModelList> {
     // A project narrows the list to its allowed agents and resolves its default.
     const query = projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`;
-    const res = await this.request(`/models${query}`, { method: 'GET' });
+    const res = await this.request(`/models${query}`, {
+      method: 'GET',
+      ...(signal ? { signal } : {}),
+    });
     return modelListSchema.parse(await res.json());
   }
 
@@ -5407,6 +5647,93 @@ export class VerityClient {
       { method: 'GET' },
     );
     return res.arrayBuffer();
+  }
+
+  async qaApprovals(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/qa-approvals`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        proposals: z.array(
+          z.object({
+            id: z.string(),
+            project_id: z.string(),
+            owner: z.string(),
+            repo: z.string(),
+            resource: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json());
+  }
+  async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalId, allow }),
+    });
+  }
+  async qaSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/qa',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
+      .parse(await res.json());
+  }
+
+  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/repairs`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        qaEnabled: z.boolean().optional(),
+        mandate: z
+          .object({
+            mode: z.enum(['off', 'monitor', 'automatic']),
+            health: z.string(),
+            checked_at: z.string().nullable(),
+          })
+          .nullable(),
+        incidents: z
+          .array(
+            z.object({
+              id: z.string(),
+              resource: z.string(),
+              revision: z.string(),
+              state: z.string(),
+              owner_session_id: z.string().nullable(),
+              last_session_id: z.string().nullable(),
+              attempts: z.number(),
+              evidence: z.string(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(await res.json());
+  }
+  async retryRepair(projectId: string, incidentId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ incidentId }),
+    });
   }
 
   async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {

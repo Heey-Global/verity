@@ -255,6 +255,21 @@ export async function saveSpeakerEdits(
   );
 }
 
+export async function updateMeetingTitle(id: string, title: string): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'UPDATE meetings SET title = ?, revision = revision + 1 WHERE id = ? AND owner_token IS NOT NULL',
+    title.trim() || null,
+    id,
+  );
+}
+
+export async function updateNote(note: MeetingNote, text: string): Promise<void> {
+  await saveNote({ ...note, text });
+  if (!(await finalizeNote(note.id, text))) throw new Error('The note changed while saving.');
+}
+
 export async function touchMeeting(id: string): Promise<void> {
   await (
     await db()

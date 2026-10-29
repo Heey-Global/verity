@@ -1,3 +1,5 @@
+import type { RepairDiscovery } from './repair-supervisor.js';
+import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
@@ -45,6 +47,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  backup?: ServerDeps['backup'];
   eventStore: EventStore;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
    * the route layer; provisioning the same folder does not make it visible to
@@ -97,6 +100,7 @@ export interface ControlPlaneDeps {
   pushEnabled?: boolean | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
+  attendeeEdge?: ServerDeps['attendeeEdge'];
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
@@ -178,6 +182,8 @@ export interface ControlPlaneDeps {
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
   /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
+  invalidateProjectPrStatus?: (projectId: string) => void;
+  repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
   /** Compact PR strip status for a multi-branch session — the most-recently-updated
@@ -290,6 +296,10 @@ export interface ControlPlaneDeps {
   /** Deprovisioner (concept §19.8, #174). Stops + removes a project container,
    * optionally purges the bind-mount clone. Omit → deprovision route returns 503. */
   deprovisioner?: Deprovisioner | undefined;
+  /** Post-delete image cleanup. Without forwarding, a deleted project's images stayed on disk. */
+  onProjectHidden?: ServerDeps['onProjectHidden'];
+  /** Durable audit trail (ADR 0028). */
+  audit?: ServerDeps['audit'];
   /** Computes whether a running project container should be rebuilt/recreated to
    * pick up the current Verity sandbox/toolkit artifact. */
   sandboxUpdates?: SandboxUpdateChecker | undefined;
@@ -322,6 +332,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   const sessionChanges = createSessionChangeFeed();
   return buildServer({
     eventStore: deps.eventStore,
+    ...(deps.backup ? { backup: deps.backup } : {}),
     sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
@@ -384,6 +395,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.previewSharingCapability !== undefined
       ? { previewSharingCapability: deps.previewSharingCapability }
       : {}),
+    ...(deps.attendeeEdge !== undefined ? { attendeeEdge: deps.attendeeEdge } : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
@@ -445,6 +457,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.worktrees !== undefined ? { worktrees: deps.worktrees } : {}),
     ...(deps.workspaceDir !== undefined ? { workspaceDir: deps.workspaceDir } : {}),
     ...(deps.branches !== undefined ? { branches: deps.branches } : {}),
+    ...(deps.invalidateProjectPrStatus !== undefined
+      ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
+      : {}),
+    ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
     ...(deps.branchPrStatusForBranches !== undefined
@@ -504,6 +520,8 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.projectWorktrees !== undefined ? { projectWorktrees: deps.projectWorktrees } : {}),
     ...(deps.deprovisioner !== undefined ? { deprovisioner: deps.deprovisioner } : {}),
+    ...(deps.onProjectHidden !== undefined ? { onProjectHidden: deps.onProjectHidden } : {}),
+    ...(deps.audit !== undefined ? { audit: deps.audit } : {}),
     ...(deps.sandboxUpdates !== undefined ? { sandboxUpdates: deps.sandboxUpdates } : {}),
     // Factory form: called with the app logger so the sink logs through it.
     conductor: (logger) =>
@@ -512,6 +530,34 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         bus: deps.bus,
         onSessionChanged: (sessionId, change) => sessionChanges.emit(sessionId, change),
         ...deps.conductor,
+        prepareSession: async (sessionId) => {
+          await deps.conductor?.prepareSession?.(sessionId);
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId)
+            await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
+        },
+        prepareWorkspace: async (session) => {
+          await deps.conductor?.prepareWorkspace?.(session);
+          const view = documentViewForSession(session);
+          if (deps.dataRoot && session.projectId && view)
+            await documentWorkspace(deps.dataRoot, session.projectId, view).prepare();
+        },
+        settleWorkspace: async (session) => {
+          const view = documentViewForSession(session);
+          if (deps.dataRoot && session.projectId && view) {
+            const result = await documentWorkspace(
+              deps.dataRoot,
+              session.projectId,
+              view,
+            ).publish();
+            if (result.conflicts.length)
+              await deps.eventStore.appendPendingNote(
+                session.sessionId,
+                `Document conflicts were preserved at: ${result.conflicts.join(', ')}`,
+              );
+          }
+          await deps.conductor?.settleWorkspace?.(session);
+        },
         ...(deps.conductor?.sessionBackend === undefined &&
         derivedProjectSessionBackend !== undefined
           ? { sessionBackend: derivedProjectSessionBackend }
