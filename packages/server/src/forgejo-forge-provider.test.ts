@@ -284,3 +284,30 @@ it('rechecks the base branch permission before a merge, bypassing the status cac
     json.mock.calls.some(([path, method]) => path.endsWith('/merge') && method === 'POST'),
   ).toBe(false);
 });
+
+it('reloads repository-bound Forgejo data after shared-cache invalidation without leaking credentials', async () => {
+  const { createForgeStatusCache } = await import('./forge-status-cache.js');
+  const { provider, json } = fixture();
+  const service = provider.repositoryPrService!({ owner: 'owner', repo: 'repo' });
+  const cache = createForgeStatusCache();
+  const scope = { authority: 'credential-a', owner: 'owner', repo: 'repo' };
+  const load = () => service.prStatusForBranch('feature');
+  expect(await cache.read(scope, 'feature', load)).toMatchObject({ phase: 'open' });
+  const implementation = json.getMockImplementation()!;
+  json.mockImplementation(async (path, ...args) => {
+    const value = await implementation(path, ...args);
+    return path.includes('/pulls?') && Array.isArray(value)
+      ? (value as Record<string, unknown>[]).map((pull) => ({
+          ...pull,
+          state: 'closed',
+          merged: true,
+        }))
+      : value;
+  });
+  expect(await cache.read(scope, 'feature', load)).toMatchObject({ phase: 'open' });
+  expect(await cache.read({ ...scope, authority: 'credential-b' }, 'feature', load)).toMatchObject({
+    phase: 'merged',
+  });
+  cache.invalidate(scope);
+  expect(await cache.read(scope, 'feature', load)).toMatchObject({ phase: 'merged' });
+});

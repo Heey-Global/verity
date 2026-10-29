@@ -183,6 +183,10 @@ export interface ControlPlaneDeps {
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
   /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
   invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
@@ -460,6 +464,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.invalidateProjectPrStatus !== undefined
       ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
       : {}),
+    ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),

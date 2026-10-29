@@ -28,8 +28,15 @@ function harness() {
       if (!(await ctx.store.getSession(id)))
         await ctx.store.createSession({ sessionId: id, worktree: '/wt/qa', model: 'm' });
     }),
-    dispatch: vi.fn(async (_id: string, _prompt: string, validate: () => Promise<boolean>) =>
-      validate(),
+    dispatch: vi.fn<QACoordinatorDeps['dispatch']>(
+      async (id, prompt, validate, _sponsor, dispatchId) => {
+        if (!(await validate())) return false;
+        await ctx.store.clearRunningTurn(id);
+        return !!(await ctx.store.admitBackgroundDispatch(dispatchId, id, {
+          t: 'prompt',
+          text: prompt,
+        }));
+      },
     ),
     delegate: vi.fn(async () => undefined),
   };
@@ -181,7 +188,12 @@ describe('QA admission and durable inbox', () => {
   it('keeps unknown dispatch acceptance owned instead of retrying', async () => {
     await enroll();
     const { deps, coordinator } = harness();
-    vi.mocked(deps.dispatch).mockRejectedValue(new Error('lost response'));
+    vi.mocked(deps.dispatch).mockImplementation(
+      async (id, prompt, _validate, _sponsor, dispatchId) => {
+        await ctx.store.admitBackgroundDispatch(dispatchId, id, { t: 'prompt', text: prompt });
+        throw new Error('lost response');
+      },
+    );
     await coordinator.tick();
     await coordinator.tick();
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
@@ -200,7 +212,7 @@ it('reconsiders an assignment after temporary admission failure', async () => {
   await coordinator.tick();
   await answer(incident);
   await coordinator.tick();
-  expect(await ctx.store.repairs.qaPending()).toHaveLength(1);
+  expect(await ctx.store.repairs.qaPending(['a'])).toHaveLength(1);
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
@@ -270,3 +282,29 @@ it('wakes again when an acknowledged pending rerun fails on the same revision', 
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+
+it.each(['off', 'unauthorized'] as const)(
+  'filters over fifty %s inbox entries before limiting eligible projects',
+  async (reason) => {
+    await enroll();
+    const { deps, coordinator } = harness();
+    for (let n = 0; n < 51; n++) {
+      const id = 'ineligible-' + n;
+      await ctx.store.upsertProject({
+        id,
+        owner: 'team',
+        repo: id,
+        containerName: id,
+        state: 'active',
+      });
+      await ctx.store.repairs.configure(id, 'admin', reason === 'off' ? 'off' : 'monitor');
+      await ctx.store.repairs.qaObserve(id, 'old');
+    }
+    vi.mocked(deps.authorized).mockImplementation(async (_user, id) => id === 'a');
+    await coordinator.tick();
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((await ctx.store.repairs.qa()).active_snapshot!)).toEqual([
+      expect.objectContaining({ projectId: 'a' }),
+    ]);
+  },
+);

@@ -27,7 +27,7 @@ export function parseQADecision(text: string) {
     return undefined;
   }
 }
-function hasFreshRepairEvidence(incident: RepairIncident): boolean {
+export function hasFreshRepairEvidence(incident: RepairIncident): boolean {
   try {
     const evidence = JSON.parse(incident.evidence) as {
       observedAt?: string;
@@ -72,6 +72,7 @@ export interface QACoordinatorDeps {
     prompt: string,
     validate: () => Promise<boolean>,
     sponsor: string,
+    dispatchId: string,
   ): Promise<boolean>;
   delegate(this: void, projectId: string, incidentId: string, revision: string): Promise<void>;
 }
@@ -91,7 +92,10 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
     );
   }
   async function tick() {
-    const state = await store.qa();
+    let state = await store.qa();
+    if (state.active_dispatch && state.session_id && !deps.busy(state.session_id)) {
+      if (await store.cancelReservedDispatch(state.active_dispatch)) state = await store.qa();
+    }
     if (!state.enabled || stopped) return;
     if (!state.sponsor || !(await deps.administrator(state.sponsor))) {
       await store.qaHealth('access-revoked');
@@ -100,7 +104,11 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
     const sessionId = state.session_id ?? (await store.qaSession(randomUUID()));
     if (deps.busy(sessionId)) return;
     if (state.active_dispatch) {
-      const events = await deps.store.getEventsAfter(sessionId, Number(state.active_seq ?? 0));
+      const receipt = await store.dispatchReceipt(state.active_dispatch);
+      const events = await deps.store.getEventsAfter(
+        sessionId,
+        Number(receipt?.prompt_seq ?? state.active_seq ?? 0),
+      );
       const terminal = events.find(
         (row) =>
           row.event.t === 'interrupted' ||
@@ -216,7 +224,7 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
         incidents,
       });
     }
-    const pending = await store.qaPending();
+    const pending = await store.qaPending(snapshot.map((row) => row.projectId));
     const batch = snapshot
       .filter((row) =>
         pending.some((p) => p.project_id === row.projectId && p.fingerprint === row.fingerprint),
@@ -240,12 +248,19 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
         prompt,
         () => active(state.revision),
         state.sponsor,
+        claim,
       );
-      if (!accepted) await store.qaFinish(claim, 'dispatch-deferred');
+      if (!accepted) {
+        await store.cancelReservedDispatch(claim);
+        await store.qaFinish(claim, 'dispatch-deferred');
+      }
     } catch {
       // Unknown acceptance stays claimed until terminal evidence arrives.
       if (dispatchAttempted) await store.qaHealth('dispatch-uncertain');
-      else await store.qaFinish(claim, 'session-unavailable');
+      else {
+        await store.cancelReservedDispatch(claim);
+        await store.qaFinish(claim, 'session-unavailable');
+      }
     }
   }
   return {
