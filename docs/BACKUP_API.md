@@ -1,9 +1,9 @@
 # Backup administration API
 
 These administrator-only routes implement setup, status and restore probes
-of [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md). The recovery
-acceptance gate is closed until the complete fresh-host round trip is verified.
-A registered route does not imply that backups are available.
+of [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md). They are
+available on every installation whose installer provisioned the backup
+prerequisites; the app's Backup settings use them.
 
 Every request requires a paired device and current installation administrator
 authority. Project credentials and agent capabilities grant no access. Responses
@@ -47,13 +47,16 @@ is durably retired by the root helper before replacement publication; old local
 CA material is deleted without claiming deletion of external copies. Live identity
 rotation and device trust reset are separate required steps after exposure.
 
-Status returns `{ available: false, reason: "recovery-validation-pending" }`
-while the acceptance gate is closed. Once that gate opens, hosts without the
-installer prerequisites return `reason: "installer-required"`. A runtime initialization
+Hosts without the installer prerequisites return
+`{ available: false, reason: "installer-required" }`. Servers released before the
+gate was removed may still report `reason: "recovery-validation-pending"`; clients
+treat any unknown reason as unavailable. A runtime initialization
 failure returns `reason: "runtime-unavailable"`; ordinary server operation continues. An available
 installation returns `available: true`, `configured`, and `alerts`; a configured
-installation also returns `paused`, `lastSuccess` (Unix milliseconds or null),
-`lastProbe` and `probe`. `lastProbe` is null until a complete probe succeeds, then
+installation also returns `paused`, `intervalMs`, `lastSuccess` (Unix milliseconds
+or null), `capturing` (true only while a capture runs), `lastProbe` and `probe`.
+Before the first successful backup, `stale-backup` counts from setup, so a fresh
+setup does not report a missing backup. `lastProbe` is null until a complete probe succeeds, then
 contains the authenticated repository, sequence and completion time. It describes
 that snapshot, not later backups. `probe` contains the current or most recent job,
 or null. A `probe-overdue` alert appears 90 days after the last successful probe,
@@ -115,8 +118,7 @@ must apply the same memory-only handling used for setup confirmation.
 validation, disposable database import, revocation-journal inspection and
 resource cleanup have all completed. Failures preserve the previous success.
 Revocation findings remain findings: a successful probe never authorizes
-restored devices or bypasses installer device review. All endpoints remain
-behind the recovery acceptance gate until the complete fresh-host proof passes.
+restored devices or bypasses installer device review.
 
 ## Disposable migration worker
 
@@ -147,8 +149,7 @@ artifact published alongside the release, rather than consulting the current
 moving channel. Missing historical evidence fails closed; a republished tag that
 names another image is rejected by the signed digest comparison. An envelope
 loader may also be supplied for retained release evidence.
-The production runtime composes these adapters for probe jobs. These adapters
-alone do not satisfy the recovery acceptance gate.
+The production runtime composes these adapters for probe jobs.
 
 
 The default capacity check runs a short container from the same pinned PostgreSQL

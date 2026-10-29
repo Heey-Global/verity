@@ -3,9 +3,9 @@
 This matrix assesses commit `4e4b0befb89752c116278a350d2f0e3da97765d5`
 against [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md) and the
 [1a, 1b and 1c acceptance criteria](BACKUP_RECOVERY_CONCEPT.md#implementation-sequence-and-acceptance).
-It records evidence, not permission to enable the feature.
-`BACKUP_RECOVERY_ACCEPTED` remains `false` in
-[routes.ts](../packages/server/src/backup/routes.ts).
+It records evidence. On 2026-10-29 the `BACKUP_RECOVERY_ACCEPTED` gate was removed
+by product decision, before the rows below marked open were met; backups are
+available wherever the installer provisioned them. The open rows remain open.
 
 ## Evidence rules
 
@@ -280,7 +280,7 @@ native pin reset, normal-server reboot, app management or the global gate.
 
 | Requirement | Executable evidence | Required result |
 | --- | --- | --- |
-| A05, O01: sealed normal-server restart | Docker driver `verify-backup-gate`, `verify-enabled-restart` | Unchanged image exposes closed gate and no scheduler attempt; isolated enabled derivative restarts the normal server, captures while sealed and extracts authenticated content. |
+| A05, O01: sealed normal-server restart | Docker driver `verify-restored-schedule`, `verify-enabled-restart` | The ordinary image captures a restored host on its own; the diagnostics derivative restarts the normal server, captures while sealed and extracts authenticated content. |
 | A02: repair and destination safety | Docker `assert-prerequisites`, `installer-destination.test.ts` | Repair preserves installation/target/credential and paired mounts; unsupported relocation fails before creating the new directory. |
 | A14: read-only snapshot | `database-prerequisites.test.ts`, `database.test.ts` | Actual installer SQL grants deny writes, preserve ordered COPY/sequences and encrypted bytes, and isolate concurrent changes. |
 | A11, A40: pinned import | Existing `fixture.test.ts`, `probe-migrate-postgres.test.ts`, Docker restore | Immutable sole-supported format passes actual extraction/import; current pinned migration succeeds only into an empty database. |
@@ -295,8 +295,7 @@ be called demonstrated. The 16 MiB Git fixture is a bounded measurement, not a
 large-installation performance acceptance or an agreed latency budget. Local
 object writes do not establish off-host network transfer. Native device reset,
 app warning/display/deletion/partial restore, update backup coordination and
-same-host snapshot rollback remain outside this backend package. The production
-`BACKUP_RECOVERY_ACCEPTED` constant remains false.
+same-host snapshot rollback remain outside this backend package.
 
 ## 1a: Capture, recovery and prerequisites
 
@@ -363,7 +362,7 @@ same-host snapshot rollback remain outside this backend package. The production
 | B08 | Apply revocations and set automatic-update hold before starting same-host restore | Not implemented | Fresh-host revocation coverage E13 does not prove this missing same-host path. |
 | B09 | Reject architecture/downgrade incompatible with current backup state/format/envelope before mutation | Partial | E15 rejects unsupported native recovery releases; no complete same-host preservation/format downgrade test exists. |
 | B10 | Rollback prompt explains changes after snapshot are absent | Not implemented | Requires update/rollback UI; docs alone do not satisfy prompt acceptance. |
-| C01 | Phone setup/status/probe, installer-required explanation and key-risk guidance | Not implemented | Backend E09/E20 exists; no corresponding backup screen located in `apps/mobile`. |
+| C01 | Phone setup/status/probe, installer-required explanation and key-risk guidance | Test-covered | `apps/mobile/app/settings/backup*.tsx` per [app-v1 mockup](assets/backup/app-v1.html); `settings-backup.test.tsx`, `backup-api.test.ts`. Not yet exercised on a physical device. |
 | C02 | Snapshot list with key generation, retention settings and persistent alerts | Not implemented | Partial backend retention/alerts exist (E11/E12); public UI and complete management API absent. |
 | C03 | Confirmed single deletion; shared objects survive | Partial | E11 proves internal pruning preserves shared objects. No confirmed user deletion flow in E22. |
 | C04 | Pause stops schedule/pre-update without deleting data | Partial | E10/E20 cover scheduler pause; pre-update integration B01–B05 is absent. |
@@ -405,8 +404,9 @@ must be local and restored before further changes or publication.
    retention-set tests and independently verified two-host ownership acceptance.
 5. Implement backup app/management and partial restore, including negative authority
    tests and disk/log secret instrumentation (C01–C08).
-6. Reconcile every row and its mutation evidence on one release candidate, run the
-   full acceptance suite, and only then assess opening the global gate.
+6. Reconcile every row and its mutation evidence on one release candidate and run
+   the full acceptance suite. The global gate is already gone, so this is the
+   remaining assurance work rather than a release precondition.
 
 This ordering describes remaining work; this evidence audit does not authorize
 or implement those packages. Remote destinations, hosted Uplink functionality

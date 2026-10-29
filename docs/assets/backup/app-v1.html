@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Verity Backup · App v1 mockup</title>
+<!--
+  First app release of the backup screens, using the default backup folder.
+  mockup.html stays the complete concept; screens it shows without an API (Back up
+  now, snapshots, project restore, update waiting, delete) are named in the v1-07 caption.
+  Same components and CSS as mockup.html. Each .shot renders to one PNG v1-*.png.
+-->
+<style>
+  @font-face { font-family: 'Inter'; src: url(../../website/site/assets/inter-latin-variable.woff2) format('woff2'); font-weight: 100 900; }
+  :root { --background:#07080d;--surface:#0c0e17;--surfaceAlt:#111422;--border:#22263a;--text:#f5f5f8;--textMuted:#a5a8b8;--textFaint:#80849a;--action:#18c8f5;--actionLabel:#6fdcf8;--signature:#ff18b7;--success:#2ee6a6;--attention:#ff5c8a;--scrim:rgba(3,4,8,0.72); --device:#1b1d26; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #12131a; color: var(--text); font: 15px/1.5 Inter, -apple-system, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; padding: 24px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 32px; }
+  .fi { width: 16px; height: 16px; display: block; }
+  .mono { font-family: ui-monospace, Menlo, 'DejaVu Sans Mono', monospace; }
+
+  .shot { display: flex; flex-direction: column; gap: 10px; width: 393px; padding: 4px; background: #12131a; }
+  .shot.wide { width: 760px; }
+  .cap { font-size: 15px; font-weight: 600; padding-left: 4px; }
+  .cap small { display: block; color: var(--textMuted); font-weight: 400; font-size: 13px; margin-top: 2px; line-height: 1.4; }
+
+  /* device */
+  .phone { position: relative; width: 385px; height: 820px; border-radius: 52px; border: 10px solid var(--device); background: var(--background); overflow: hidden; display: flex; flex-direction: column; }
+  .sbar { height: 48px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 6px 30px 0 34px; font-size: 15px; font-weight: 600; }
+  .sbar .r { display: flex; gap: 6px; align-items: center; } .sbar .bat { width: 24px; height: 11px; border-radius: 3px; background: var(--text); }
+  .island { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 112px; height: 32px; border-radius: 16px; background: #000; z-index: 50; }
+  .pnav { height: 44px; flex: none; display: flex; align-items: center; justify-content: center; position: relative; }
+  .ptitle { font-weight: 600; font-size: 16px; }
+  .pback { position: absolute; left: 12px; color: var(--action); } .pback .fi { width: 22px; height: 22px; }
+  .pbody { padding: 8px 16px 16px; flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+  .pfoot { padding: 8px 16px 30px; flex: none; display: flex; flex-direction: column; gap: 8px; }
+  .home { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 128px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--text) 30%, transparent); }
+
+  /* type */
+  .label { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--textMuted); margin: 16px 4px 0; }
+  .label:first-child { margin-top: 4px; }
+  .peb { font-size: 11px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--signature); margin: 16px 4px 0; }
+  .phead { font-size: 28px; font-weight: 750; line-height: 1.15; letter-spacing: -.035em; margin: 24px 4px 0; }
+  .phead em { font-style: normal; color: var(--signature); }
+  .plead { color: var(--textMuted); font-size: 15px; margin: 0 4px; }
+  .foot { color: var(--textFaint); font-size: 12px; margin: 0 4px; line-height: 1.4; }
+
+  /* rows, groups, cards */
+  .row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 10px 14px; }
+  .group { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  .group .row + .row { border-top: 1px solid var(--border); }
+  .lead { flex: none; display: grid; place-items: center; }
+  .tile { width: 32px; height: 32px; border-radius: 10px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--textMuted); }
+  .tile.act { background: color-mix(in srgb, var(--action) 14%, transparent); color: var(--action); }
+  .tile.sig { background: color-mix(in srgb, var(--signature) 14%, transparent); color: var(--signature); }
+  .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .rt { font-size: 16px; font-weight: 600; line-height: 1.3; }
+  .rt.act { color: var(--action); }
+  .sub { font-size: 13px; color: var(--textMuted); line-height: 1.4; }
+  .trail { display: flex; align-items: center; gap: 8px; color: var(--textMuted); font-size: 15px; max-width: 45%; white-space: nowrap; }
+  .chev { color: var(--textFaint); }
+  .card { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+  .card.stacked { flex-direction: column; align-items: stretch; gap: 0; padding: 0; }
+  .card.stacked > .sec { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .card.stacked > .sec + .sec { border-top: 1px solid var(--border); }
+  .card.att { border-color: color-mix(in srgb, var(--attention) 35%, transparent); }
+  .chead { display: flex; align-items: center; gap: 12px; }
+  .stack { display: grid; gap: 8px; }
+  .ttl { font-size: 20px; font-weight: 700; letter-spacing: -.02em; line-height: 1.25; }
+  .small { font-size: 14px; color: var(--textMuted); line-height: 1.43; }
+
+  /* status */
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--textMuted); line-height: 1.2; }
+  .tag.success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+  .tag.attention { background: color-mix(in srgb, var(--attention) 14%, transparent); color: var(--attention); }
+  .dot { width: 8px; height: 8px; border-radius: 4px; display: inline-block; background: var(--textFaint); flex: none; }
+  .dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .dot.att { background: var(--attention); box-shadow: 0 0 8px var(--attention); }
+  .dotw { display: inline-flex; align-items: center; gap: 8px; color: var(--textMuted); font-size: 14px; }
+  .spin { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; display: inline-block; flex: none; }
+
+  /* toggle */
+  .toggle { width: 46px; height: 28px; border-radius: 14px; position: relative; flex: none; display: inline-block; background: var(--textFaint); }
+  .toggle i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 11px; background: #fff; outline: 1px solid var(--background); box-shadow: 0 2px 5px rgba(0,0,0,.4); }
+  .toggle.on { background: var(--action); } .toggle.on i { left: 21px; }
+
+  /* buttons */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 48px; padding: 0 20px; border-radius: 12px; font: 700 15px Inter, sans-serif; white-space: nowrap; }
+  .btn.full { width: 100%; }
+  .btn.compact { height: 36px; padding: 0 14px; font-size: 14px; }
+  .btn.primary { background: color-mix(in srgb, var(--action) 14%, transparent); border: 1px solid color-mix(in srgb, var(--action) 35%, transparent); color: var(--actionLabel); }
+  .btn.secondary { background: var(--surfaceAlt); border: 1px solid var(--border); color: var(--text); }
+  .btn.text { color: var(--action); padding: 0 4px; height: 36px; }
+  .btn.destructive { border: 1px solid color-mix(in srgb, var(--attention) 60%, transparent); color: var(--attention); }
+  .brow { display: flex; gap: 8px; } .brow .btn { flex: 1; padding: 0 8px; }
+
+  /* fields */
+  .fwrap { display: flex; flex-direction: column; gap: 6px; }
+  .flabel { font-size: 13px; color: var(--textMuted); margin: 0 2px; }
+  .field { min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-radius: 12px; background: var(--surfaceAlt); border: 1px solid var(--border); }
+  .field.focus { border-color: var(--action); box-shadow: 0 0 0 3px color-mix(in srgb, var(--action) 20%, transparent); }
+  .fv { font-size: 15px; } .fv.ph { color: var(--textFaint); } .fv.mono { letter-spacing: .06em; font-size: 14px; }
+  .eye { margin-left: auto; color: var(--textFaint); }
+  .keybox { padding: 14px 16px; border-radius: 12px; background: var(--surfaceAlt); border: 1px solid var(--border); font-size: 16px; line-height: 1.7; letter-spacing: .08em; text-align: center; }
+  .hint { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: color-mix(in srgb, var(--attention) 8%, transparent); border: 1px solid color-mix(in srgb, var(--attention) 30%, transparent); }
+  .hint .hic { color: var(--attention); flex: none; margin-top: 2px; }
+  .hint b { display: block; font-size: 14px; } .hint span span { font-size: 13px; color: var(--textMuted); }
+
+  /* sheet */
+  .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 60; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 70; background: var(--surface); border-top: 1px solid var(--border); border-radius: 16px 16px 0 0; padding: 8px 18px 34px; box-shadow: 0 -18px 50px rgba(0,0,0,.6); display: flex; flex-direction: column; gap: 12px; }
+  .handle { width: 38px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--textFaint) 45%, var(--surface)); margin: 0 auto 4px; }
+  .shead { display: flex; align-items: center; }
+  .stitle { font-size: 20px; font-weight: 700; letter-spacing: -.02em; flex: 1; }
+  .sx { width: 32px; height: 32px; border-radius: 10px; background: var(--surfaceAlt); color: var(--textMuted); display: grid; place-items: center; }
+  .ssub { color: var(--textMuted); font-size: 14px; margin: -4px 0 2px; }
+
+  /* success moment */
+  .phero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 0 16px; text-align: center; }
+  .pcheck { width: 76px; height: 76px; border-radius: 22px; display: grid; place-items: center; color: var(--signature); background: color-mix(in srgb, var(--signature) 14%, transparent); border: 1px solid color-mix(in srgb, var(--signature) 50%, transparent); box-shadow: 0 0 46px color-mix(in srgb, var(--signature) 35%, transparent); }
+  .pcheck .fi { width: 34px; height: 34px; }
+  .pht { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+  .confetti { position: absolute; inset: 100px 0 auto 0; height: 200px; pointer-events: none; background:
+    radial-gradient(circle at 12% 20%, var(--signature) 0 3px, transparent 4px), radial-gradient(circle at 30% 8%, var(--action) 0 3px, transparent 4px),
+    radial-gradient(circle at 48% 30%, var(--success) 0 3px, transparent 4px), radial-gradient(circle at 70% 12%, var(--signature) 0 3px, transparent 4px),
+    radial-gradient(circle at 86% 34%, var(--action) 0 3px, transparent 4px), radial-gradient(circle at 20% 52%, var(--action) 0 2px, transparent 3px),
+    radial-gradient(circle at 80% 60%, var(--signature) 0 2px, transparent 3px); }
+
+  /* push notification (system UI) */
+  .push { position: absolute; top: 52px; left: 10px; right: 10px; z-index: 60; background: #262834; border-radius: 22px; padding: 12px 14px; display: flex; gap: 12px; align-items: center; box-shadow: 0 18px 50px rgba(0,0,0,.6); }
+  .push .app { width: 38px; height: 38px; border-radius: 10px; background: var(--background); border: 1px solid var(--border); color: var(--signature); display: grid; place-items: center; flex: none; }
+  .push .pt { font-size: 14px; font-weight: 700; display: flex; justify-content: space-between; }
+  .push .pt span { color: var(--textMuted); font-weight: 400; font-size: 12px; }
+  .push .pb { font-size: 14px; line-height: 1.35; }
+
+  /* terminal (installer on the host) */
+  .term { background: var(--background); border-radius: 16px; border: 1px solid var(--border); overflow: hidden; }
+  .term .tb { height: 36px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; padding: 0 14px; font-size: 13px; color: var(--textMuted); }
+  .term .tb i { width: 11px; height: 11px; border-radius: 6px; background: var(--border); display: inline-block; }
+  .term .tb span { margin-left: 8px; }
+  .term pre { margin: 0; padding: 18px 20px 22px; font: 14px/1.6 ui-monospace, Menlo, 'DejaVu Sans Mono', monospace; color: var(--text); white-space: pre-wrap; }
+  .term .m { color: var(--textMuted); } .term .f { color: var(--textFaint); }
+  .term .a { color: var(--action); } .term .ok { color: var(--success); }
+  .term .in { font-weight: 700; }
+</style>
+<style>
+  .keybox.long { font-size: 13px; line-height: 1.55; letter-spacing: .02em; text-align: left; word-break: break-all; }
+  .radio { width: 22px; height: 22px; border-radius: 11px; border: 2px solid var(--textFaint); flex: none; }
+  .radio.on { border-color: var(--action); box-shadow: inset 0 0 0 4px var(--surface), inset 0 0 0 12px var(--action); }
+  .later .rt { color: var(--textMuted); }
+</style>
+</head>
+<body>
+
+<!-- ───────── v1-00 · Settings ───────── -->
+<div class="shot" id="v1-00-settings">
+  <div class="cap">v1 · 0 · Einstieg in den Settings<small>Die heutige Settings-Seite. Neu ist nur „Backup“ in „App &amp; Server“, nur für Administratoren sichtbar.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="ptitle">Settings</span></div>
+    <div class="pbody">
+      <div class="label">Features</div>
+      <div class="group">
+        <div class="row"><span class="lead tile act"><i data-i="link"></i></span><span class="body"><span class="rt">Connections</span><span class="sub">AI, code, documents and other services</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile act"><i data-i="check-square"></i></span><span class="body"><span class="rt">Tasks</span><span class="sub">Capture bubble, screenshot tips</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile sig"><i data-i="zap"></i></span><span class="body"><span class="rt">Verity Premium</span><span class="sub">Online sharing, remote access</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+      </div>
+      <div class="label">App &amp; Server</div>
+      <div class="group">
+        <div class="row"><span class="lead tile act"><i data-i="download"></i></span><span class="body"><span class="rt">Updates</span><span class="sub">Server and app</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile act"><i data-i="hard-drive"></i></span><span class="body"><span class="rt">Backup</span><span class="sub">Last backup today 14:00</span></span><span class="trail"><span class="tag success">On</span><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile act"><i data-i="server"></i></span><span class="body"><span class="rt">Server address</span><span class="sub">https://verity.home.arpa</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile act"><i data-i="monitor"></i></span><span class="body"><span class="rt">Devices &amp; Web Browsers</span><span class="sub">3 connected</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+      </div>
+      <div class="foot" style="margin-top:8px">Status tag: “Set up” before setup, then “On”, “Paused” or “Needs attention”.</div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-01 · Explain ───────── -->
+<div class="shot" id="v1-01-setup">
+  <div class="cap">v1 · 1 · Einrichten<small>Kein Pfad-Feld: Backups landen im Standardordner des Servers. Karten sind reine Info, nicht tippbar.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Backup</span></div>
+    <div class="pbody">
+      <div class="phead">Your server,<br><em>backed up.</em></div>
+      <div class="plead">Settings, projects, sessions and knowledge, saved automatically.</div>
+      <div class="peb">How it works</div>
+      <div class="stack">
+        <div class="card"><span class="lead tile act"><i data-i="clock"></i></span><span class="body"><span class="rt">Every 6 hours</span><span class="sub">You can change this later</span></span></div>
+        <div class="card"><span class="lead tile sig"><i data-i="lock"></i></span><span class="body"><span class="rt">Encrypted</span><span class="sub">Only your recovery key opens it</span></span></div>
+        <div class="card"><span class="lead tile act"><i data-i="hard-drive"></i></span><span class="body"><span class="rt">Stored on this server</span><span class="sub">Copy the backup folder elsewhere to survive a broken disk</span></span></div>
+      </div>
+    </div>
+    <div class="pfoot"><span class="btn primary full"><i data-i="hard-drive"></i>Set up backup</span></div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-02 · Recovery key ───────── -->
+<div class="shot" id="v1-02-key">
+  <div class="cap">v1 · 2 · Wiederherstellungsschlüssel<small>Einmal angezeigt. Kopieren, als Datei sichern (System-Dialog „In Dateien sichern“) oder drucken. Kein QR-Code, keine erneute Eingabe.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Backup</span></div>
+    <div class="pbody">
+      <div class="peb">Recovery key</div>
+      <div class="plead">You need this key to restore. Verity keeps no copy, so store it somewhere safe, for example in your password manager.</div>
+      <div class="keybox mono long" style="margin-top:8px">verity-recovery-v1.ak8_ATKxPHDBo4kKuZvUrdkutYAoHJ4wbp0AapiV00RnK6713m22UuETunYw-AUe4XqL_erK44ftfXc5fzRed8LyVr__2Rklkvm9QDraSFdCiTPhqgzsFtqJTW5INS77wp_IbsXOxlLZKyZrJUkSbjh37IfMGPfm6a3MQuLKJqVrpFo_YtyRLT8o4VL6KPxvVGIm</div>
+      <div class="brow"><span class="btn secondary compact"><i data-i="copy"></i>Copy</span><span class="btn secondary compact"><i data-i="file"></i>Save</span><span class="btn secondary compact"><i data-i="printer"></i>Print</span></div>
+      <div class="foot">If you leave without turning backup on, this key is discarded and you get a new one next time.</div>
+    </div>
+    <div class="pfoot"><span class="btn primary full">I saved it, turn on backup</span></div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-03 · Success ───────── -->
+<div class="shot" id="v1-03-success">
+  <div class="cap">v1 · 3 · Backup aktiviert<small>Das erste Backup läuft sofort los. Die Karte ist nur Anzeige. „Done“ führt zur Status-Seite (Screen 4).</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>9:42</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="ptitle">Backup</span></div>
+    <div class="confetti"></div>
+    <div class="pbody">
+      <div class="phero"><div class="pcheck"><i data-i="check"></i></div><div class="pht">Backup activated</div><div class="plead">Your server is now backed up every 6 hours.</div></div>
+      <div class="card"><span class="body"><span class="rt">First backup running</span><span class="sub">Takes a while the first time, then only changes. You can keep working.</span></span><span class="trail"><span class="dotw"><span class="spin"></span></span></span></div>
+    </div>
+    <div class="pfoot"><span class="btn primary full">Done</span></div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-04 · Status ───────── -->
+<div class="shot" id="v1-04-status">
+  <div class="cap">v1 · 4 · Status<small>Wie Konzept-Screen 5, ohne „Back up now“ und Snapshots. Alles aus <span class="mono">lastSuccess</span>, <span class="mono">intervalMs</span>, <span class="mono">lastProbe</span>.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>14:03</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Backup</span></div>
+    <div class="pbody">
+      <div class="label">Status</div>
+      <div class="group">
+        <div class="row"><span class="body"><span class="rt">Last backup</span></span><span class="trail"><span class="dotw"><i class="dot ok"></i>Today 14:00</span></span></div>
+        <div class="row"><span class="body"><span class="rt">Next backup</span></span><span class="trail">About 20:00</span></div>
+        <div class="row"><span class="body"><span class="rt">Restore test</span></span><span class="trail"><span class="dotw"><i class="dot"></i>Not tested</span></span></div>
+      </div>
+      <div class="label">Actions</div>
+      <div class="group">
+        <div class="row"><span class="lead tile act"><i data-i="check-square"></i></span><span class="body"><span class="rt">Test restore</span><span class="sub">Checks that your backup and key work</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+      </div>
+      <div class="label">More</div>
+      <div class="group">
+        <div class="row"><span class="lead tile act"><i data-i="sliders"></i></span><span class="body"><span class="rt">Options</span><span class="sub">Schedule, pause, recovery key</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+      </div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-05 · Problem ───────── -->
+<div class="shot" id="v1-05-problem">
+  <div class="cap">v1 · 5 · Problem<small>Push kommt schon heute vom Server. Im Screen ein kurzer App-Text je Alert-Code; nur „probe-overdue“ hat eine eigene Aktion.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="push"><span class="app"><i data-i="hard-drive"></i></span><span style="flex:1"><span class="pt">Verity <span>now</span></span><span class="pb">The next backup may not fit. Free disk space or explicitly delete old snapshots.</span></span></div>
+    <div class="sbar"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Backup</span></div>
+    <div class="pbody" style="padding-top:84px">
+      <div class="card stacked att">
+        <div class="sec">
+          <div class="chead"><span class="body"><span class="rt">Backup</span><span class="sub">Last backup 2 days ago</span></span><span class="tag attention">Needs attention</span></div>
+          <div class="hint"><span class="hic"><i data-i="alert-circle"></i></span><span><b>Not enough space</b><span>The next backup may not fit. Free disk space on the server.</span></span></div>
+          <div class="hint"><span class="hic"><i data-i="alert-circle"></i></span><span><b>Not tested recently</b><span>Run a restore test to check your backup.</span></span></div>
+          <div class="brow"><span class="btn primary compact">Test restore</span></div>
+        </div>
+      </div>
+      <div class="label">Status</div>
+      <div class="group">
+        <div class="row"><span class="body"><span class="rt">Next backup</span></span><span class="trail">Retrying</span></div>
+      </div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-06 · Test restore ───────── -->
+<div class="shot" id="v1-06-test">
+  <div class="cap">v1 · 6 · Restore-Test<small>Schlüssel bei jedem Test. Während des Laufs Phase und Abbrechen; danach Ergebnis. App-Daten bleiben unverändert.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>14:40</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Test restore</span></div>
+    <div class="pbody">
+      <div class="label">Last test</div>
+      <div class="group"><div class="row"><span class="body"><span class="rt">Backup works</span><span class="sub">Today 14:38 · Snapshot 14:00</span></span><span class="trail"><i class="dot ok"></i></span></div></div>
+      <div class="label">Running</div>
+      <div class="group"><div class="row"><span class="body"><span class="rt">Checking the database</span><span class="sub">Step 6 of 8</span></span><span class="trail"><span class="dotw"><span class="spin"></span></span></span></div></div>
+      <div class="label">Test again</div>
+      <div class="fwrap"><span class="flabel">Recovery key</span><span class="field"><span class="fv ph">Paste your recovery key</span></span></div>
+      <div class="foot">Only enter this key on a server you trust. The key is used for this test only.</div>
+    </div>
+    <div class="pfoot"><span class="btn secondary full">Cancel test</span></div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-07 · Options ───────── -->
+<div class="shot" id="v1-07-options">
+  <div class="cap">v1 · 7 · Optionen<small>Wie die Settings-Übersicht mit Icon-Kacheln. Nicht in v1: Back up now, Snapshots &amp; Projekt-Restore, Backup vor Updates, alles löschen.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>14:03</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Options</span></div>
+    <div class="pbody">
+      <div class="label">Schedule</div>
+      <div class="group">
+        <div class="row"><span class="lead tile act"><i data-i="clock"></i></span><span class="body"><span class="rt">How often</span></span><span class="trail">Every 6 h<span class="chev"><i data-i="chevron-right"></i></span></span></div>
+        <div class="row"><span class="lead tile act"><i data-i="pause"></i></span><span class="body"><span class="rt">Pause backups</span><span class="sub">Existing backups are kept</span></span><span class="toggle"><i></i></span></div>
+      </div>
+      <div class="label">Recovery key</div>
+      <div class="group">
+        <div class="row"><span class="lead tile sig"><i data-i="key"></i></span><span class="body"><span class="rt">Create new recovery key</span><span class="sub">If you lost your current one</span></span><span class="trail"><span class="chev"><i data-i="chevron-right"></i></span></span></div>
+      </div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-08 · Interval sheet ───────── -->
+<div class="shot" id="v1-08-interval">
+  <div class="cap">v1 · 8 · Intervall wählen<small>Sheet mit festen Werten innerhalb 1–24 h. Speichert sofort.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>14:03</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Options</span></div>
+    <div class="pbody"></div>
+    <div class="scrim"></div>
+    <div class="sheet">
+      <div class="handle"></div>
+      <div class="shead"><span class="stitle">How often</span><span class="sx"><i data-i="x"></i></span></div>
+      <div class="group">
+        <div class="row"><span class="body"><span class="rt">Every hour</span></span><span class="radio"></span></div>
+        <div class="row"><span class="body"><span class="rt">Every 3 hours</span></span><span class="radio"></span></div>
+        <div class="row"><span class="body"><span class="rt">Every 6 hours</span><span class="sub">Recommended</span></span><span class="radio on"></span></div>
+        <div class="row"><span class="body"><span class="rt">Every 12 hours</span></span><span class="radio"></span></div>
+        <div class="row"><span class="body"><span class="rt">Once a day</span></span><span class="radio"></span></div>
+      </div>
+    </div>
+    <div class="home" style="z-index:80"></div>
+  </div>
+</div>
+
+<!-- ───────── v1-09 · New key ───────── -->
+<div class="shot" id="v1-09-new-key">
+  <div class="cap">v1 · 9 · Neuer Schlüssel<small>Kein Grund abgefragt. Das Sheet sagt, was mit den alten Backups passiert; danach Screen 2 mit dem neuen Schlüssel.</small></div>
+  <div class="phone"><div class="island"></div>
+    <div class="sbar"><span>14:03</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="pnav"><span class="pback"><i data-i="chevron-left"></i></span><span class="ptitle">Options</span></div>
+    <div class="pbody"></div>
+    <div class="scrim"></div>
+    <div class="sheet">
+      <div class="handle"></div>
+      <div class="shead"><span class="stitle">Create new recovery key</span><span class="sx"><i data-i="x"></i></span></div>
+      <div class="ssub">For example if you lost your key. From now on, backups use the new key.</div>
+      <div class="stack">
+        <div class="card"><span class="lead tile"><i data-i="hard-drive"></i></span><span class="body"><span class="rt">Older backups are kept</span><span class="sub">They still open only with your old key and are removed over time as usual, after about 6 months at the latest.</span></span></div>
+        <div class="card"><span class="lead tile"><i data-i="lock"></i></span><span class="body"><span class="rt">Your old key stops working</span><span class="sub">for every backup made from now on.</span></span></div>
+      </div>
+      <span class="btn primary full">Create new key</span>
+    </div>
+    <div class="home" style="z-index:80"></div>
+  </div>
+</div>
+
+<script>
+  // Feather icons (the app's set), drawn as in docs/design-system/index.html.
+  const P = {
+    'chevron-left': '<path d="M15 18l-6-6 6-6"/>',
+    'chevron-right': '<path d="M9 18l6-6-6-6"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+    'hard-drive': '<path d="M22 12H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/>',
+    zap: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+    'check-square': '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>',
+    file: '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/>',
+    printer: '<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
+    grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+    check: '<path d="M20 6L9 17l-5-5"/>',
+    sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+    pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+    key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+    'alert-circle': '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
+    x: '<path d="M18 6L6 18M6 6l12 12"/>',
+    eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  };
+  for (const el of document.querySelectorAll('i[data-i]')) {
+    el.outerHTML = `<svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[el.dataset.i]}</svg>`;
+  }
+</script>
+</body>
+</html>
