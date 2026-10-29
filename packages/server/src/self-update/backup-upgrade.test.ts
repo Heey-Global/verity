@@ -132,13 +132,16 @@ it('archives the old updater handoff and starts a monotone same-digest guarded u
   expect(await readdir(options.managedRoot)).toContain('update-journal-g8.json');
   expect(await scheduleLegacyBackupUpgrade(options)).toBe(false);
 });
-it('recovers a crash between archiving the handoff and creating the repair journal', async () => {
-  const options = await setup();
-  await completed(options.managedRoot);
-  await archiveUpdateJournal(options.managedRoot);
-  expect(await scheduleLegacyBackupUpgrade(options)).toBe(true);
-  expect(await readUpdateJournal(options.managedRoot)).toMatchObject({ generation: 9 });
-});
+it.each([false, true])(
+  'recovers an archive/create crash with backup mounts %s',
+  async (mounted) => {
+    const options = await setup(mounted);
+    await completed(options.managedRoot);
+    await archiveUpdateJournal(options.managedRoot);
+    expect(await scheduleLegacyBackupUpgrade(options)).toBe(true);
+    expect(await readUpdateJournal(options.managedRoot)).toMatchObject({ generation: 9 });
+  },
+);
 it('does not reboot-loop after a completed repair or retry a failed operation automatically', async () => {
   const options = await setup();
   await completed(options.managedRoot, `backup-provision-v1:${image.split('@')[1]}`);
@@ -159,6 +162,7 @@ it('does not schedule when the release predates the contract or verification fai
 
 it('journals unreadable preparation state for visible failure handling, but skips a ready host', async () => {
   const options = await setup(true);
+  await completed(options.managedRoot);
   vi.mocked(backupProvisionPlan).mockResolvedValue({
     version: 1,
     statePath: '/etc/verity',
@@ -170,4 +174,11 @@ it('journals unreadable preparation state for visible failure handling, but skip
   vi.mocked(backupProvisionPlan).mockRejectedValue(new Error('unsafe state'));
   expect(await scheduleLegacyBackupUpgrade(options)).toBe(true);
   expect(await readUpdateJournal(options.managedRoot)).toMatchObject({ phase: 'requested' });
+});
+
+it('does not race the installer during the first boot of a newly sealed installation', async () => {
+  const options = await setup(true);
+  expect(await scheduleLegacyBackupUpgrade(options)).toBe(false);
+  expect(await readUpdateJournal(options.managedRoot)).toBeNull();
+  expect(backupProvisionPlan).not.toHaveBeenCalled();
 });

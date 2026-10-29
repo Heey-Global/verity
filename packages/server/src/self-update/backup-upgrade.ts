@@ -35,6 +35,12 @@ export async function scheduleLegacyBackupUpgrade(options: {
     const mounted =
       state.spec.mounts.some((mount) => mount.target === '/run/verity-backups') &&
       state.spec.mounts.some((mount) => mount.target === '/run/verity-backup-identity');
+    const generation = await readHighestGeneration(options.managedRoot);
+    // The installer starts the Updater before finishing PostgreSQL grants and
+    // still holds its lock. A fresh sealed installation owns its own setup;
+    // do not race it with a repair. Archived update history distinguishes a
+    // crash between journal archive and repair creation from that first boot.
+    if (mounted && journal === null && generation === 0) return false;
     if (mounted) {
       // Unsafe/unreadable host state must fail inside the visible update journal,
       // rather than disappearing as a startup-only error with no retry surface.
@@ -43,7 +49,6 @@ export async function scheduleLegacyBackupUpgrade(options: {
       );
       if (plan?.provisioned) return false;
     }
-    const generation = await readHighestGeneration(options.managedRoot);
     if (journal) await archiveUpdateJournal(options.managedRoot);
     await beginUpdate({
       root: options.managedRoot,
