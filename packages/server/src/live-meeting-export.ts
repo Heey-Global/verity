@@ -1,5 +1,6 @@
 import type {
   LiveMeetingInsight,
+  LiveMeetingResult,
   LiveMeetingNoteSyncRecord,
   LiveMeetingSyncRecord,
 } from '@verity/store';
@@ -204,10 +205,29 @@ export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt' | 'title'>):
   return `Live meeting ${started.slice(0, 10)} ${started.slice(11, 16)} UTC`;
 }
 
+export function liveMeetingTranscriptLines(
+  meeting: Meeting,
+): Array<{ speaker: number | null; at: number | null; text: string }> {
+  const aligned = meeting.timedWords?.length
+    ? reconcileTimedTranscript(meeting.transcript, meeting.timedWords)
+    : null;
+  if (!aligned)
+    return meeting.transcript.trim() ? [{ speaker: null, at: null, text: meeting.transcript }] : [];
+  const rows: Array<{ speaker: number | null; at: number | null; text: string }> = speakerLines(
+    aligned.words,
+    meeting.speakerTurns ?? [],
+    meeting.speakerCorrections ?? [],
+    meeting.speakerMerges ?? {},
+  ).map((line) => ({ speaker: line.speaker, at: line.start, text: line.text }));
+  if (aligned.tail) rows.push({ speaker: null, at: null, text: aligned.tail });
+  return rows;
+}
+
 export function renderLiveMeetingMarkdown(input: {
   meeting: Meeting;
   notes: LiveMeetingNoteSyncRecord[];
   insights: LiveMeetingInsight[];
+  result?: LiveMeetingResult | null;
 }): string {
   const { meeting } = input;
   const names = meeting.speakerNames ?? {};
@@ -231,7 +251,10 @@ export function renderLiveMeetingMarkdown(input: {
     rows.push({ speaker: null, at: null, text: meeting.transcript });
   }
 
-  const header = [`# ${liveMeetingTitle(meeting)}`, ''];
+  const header = [
+    `# ${liveMeetingTitle({ ...meeting, title: meeting.title || input.result?.title || null })}`,
+    '',
+  ];
   header.push(`- Date: ${new Date(meeting.startedAt).toISOString().slice(0, 10)}`);
   if (meeting.endedAt !== null && meeting.endedAt > meeting.startedAt)
     header.push(`- Duration: ${clock((meeting.endedAt - meeting.startedAt) / 1000)}`);
@@ -244,6 +267,25 @@ export function renderLiveMeetingMarkdown(input: {
     header.push('- Status: the recording was interrupted; the transcript may be incomplete');
 
   const sections: string[][] = [header];
+  if (input.result?.status === 'ready') {
+    const result = input.result;
+    if (result.summary) sections.push(['## Summary', '', paragraph(result.summary)]);
+    for (const [heading, items] of [
+      ['Decisions', result.decisions],
+      ['Tasks', result.tasks.filter((task) => task.state !== 'dismissed')],
+      ['Open questions', result.openQuestions],
+    ] as const) {
+      if (!items.length) continue;
+      sections.push([
+        `## ${heading}`,
+        '',
+        ...items.flatMap((item) => [
+          `- ${inline(item.text)}${item.atSeconds === null ? '' : ` (${clock(item.atSeconds)})`}`,
+          `  - ${label(item.speaker)}: “${inline(item.quote)}”`,
+        ]),
+      ]);
+    }
+  }
   if (input.insights.length) {
     const lines = ['## Verity insights', ''];
     for (const insight of [...input.insights].sort((a, b) => a.createdAt - b.createdAt)) {
@@ -296,6 +338,7 @@ export function liveMeetingSavedMessage(
     durationMinutes: number;
     people: number;
     answers?: number;
+    summary?: string;
     notes: number;
   },
 ): string {

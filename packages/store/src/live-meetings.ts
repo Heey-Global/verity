@@ -1,3 +1,5 @@
+import { TaskStore } from './tasks.js';
+import { createPassthroughCipher, type SecretCipher } from './crypto.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 
@@ -50,8 +52,219 @@ export interface LiveMeetingInsight {
   createdAt: number;
 }
 
+export interface LiveMeetingResultItem {
+  id: string;
+  text: string;
+  quote: string;
+  speaker: number | null;
+  atSeconds: number | null;
+}
+
+export interface LiveMeetingResultTask extends LiveMeetingResultItem {
+  state: 'proposed' | 'added' | 'dismissed';
+  taskId: string | null;
+}
+
+export interface LiveMeetingResult {
+  meetingId: string;
+  revision: number;
+  status: 'working' | 'ready' | 'failed';
+  title: string | null;
+  summary: string | null;
+  decisions: LiveMeetingResultItem[];
+  tasks: LiveMeetingResultTask[];
+  openQuestions: LiveMeetingResultItem[];
+  model: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export class LiveMeetingStore {
-  constructor(private readonly db: Kysely<Database>) {}
+  constructor(
+    private readonly db: Kysely<Database>,
+    private readonly cipher: SecretCipher = createPassthroughCipher(),
+  ) {}
+
+  async unfinishedResults(): Promise<Array<{ sessionId: string; meetingId: string }>> {
+    const rows = await this.db
+      .selectFrom('live_meeting_results as result')
+      .innerJoin('live_meetings as meeting', 'meeting.id', 'result.meeting_id')
+      .select(['meeting.session_id', 'meeting.id'])
+      .where((eb) =>
+        eb.or([
+          eb('result.status', '=', 'working'),
+          eb.and([eb('result.status', '=', 'ready'), eb('result.filed_revision', 'is', null)]),
+        ]),
+      )
+      .where('meeting.state', '!=', 'active')
+      .execute();
+    return rows.map((row) => ({ sessionId: row.session_id, meetingId: row.id }));
+  }
+
+  async resultFiled(sessionId: string, meetingId: string, revision: number): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('live_meeting_results as result')
+      .innerJoin('live_meetings as meeting', 'meeting.id', 'result.meeting_id')
+      .select('result.filed_revision')
+      .where('meeting.session_id', '=', sessionId)
+      .where('meeting.id', '=', meetingId)
+      .executeTakeFirst();
+    return row?.filed_revision != null && Number(row.filed_revision) === revision;
+  }
+
+  async markResultFiled(sessionId: string, meetingId: string, revision: number): Promise<void> {
+    await this.db
+      .updateTable('live_meeting_results')
+      .set({ filed_revision: revision })
+      .where('meeting_id', '=', meetingId)
+      .where('revision', '=', revision)
+      .where('status', '=', 'ready')
+      .where(
+        'meeting_id',
+        'in',
+        this.db
+          .selectFrom('live_meetings')
+          .select('id')
+          .where('session_id', '=', sessionId)
+          .where('revision', '=', revision),
+      )
+      .execute();
+  }
+
+  async result(
+    sessionId: string,
+    meetingId: string,
+    includeStale = false,
+  ): Promise<LiveMeetingResult | null> {
+    const row = await this.db
+      .selectFrom('live_meeting_results as result')
+      .innerJoin('live_meetings as meeting', 'meeting.id', 'result.meeting_id')
+      .selectAll('result')
+      .where('meeting.session_id', '=', sessionId)
+      .where('meeting.id', '=', meetingId)
+      .$if(!includeStale, (query) => query.whereRef('meeting.revision', '=', 'result.revision'))
+      .executeTakeFirst();
+    if (!row) return null;
+    return {
+      meetingId: row.meeting_id,
+      revision: Number(row.revision),
+      status: row.status,
+      title: row.title,
+      summary: row.summary,
+      decisions: JSON.parse(row.decisions_json) as LiveMeetingResultItem[],
+      tasks: JSON.parse(row.tasks_json) as LiveMeetingResultTask[],
+      openQuestions: JSON.parse(row.open_questions_json) as LiveMeetingResultItem[],
+      model: row.model,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  async updateResultTask(
+    sessionId: string,
+    meetingId: string,
+    revision: number,
+    taskId: string,
+    patch: { state: 'added' | 'dismissed'; taskId: string | null },
+    ownerUserId?: string,
+    expectedProjectId?: string,
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'revision', 'speaker_names_json', 'title'])
+        .where('id', '=', meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (meeting?.session_id !== sessionId || Number(meeting.revision) !== revision) return false;
+      const row = await trx
+        .selectFrom('live_meeting_results')
+        .selectAll()
+        .where('meeting_id', '=', meetingId)
+        .where('revision', '=', revision)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row || row.status !== 'ready') return false;
+      const tasks = JSON.parse(row.tasks_json) as LiveMeetingResultTask[];
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) return false;
+      if (task.state !== 'proposed')
+        return task.state === patch.state && task.taskId === patch.taskId;
+      if (patch.state === 'added') {
+        if (!ownerUserId || !patch.taskId) return false;
+        const session = await trx
+          .selectFrom('sessions')
+          .select('project_id')
+          .where('session_id', '=', sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!session?.project_id || session.project_id !== expectedProjectId) return false;
+        const names = JSON.parse(meeting.speaker_names_json) as Record<string, string>;
+        await new TaskStore(trx, this.cipher).upsert(
+          {
+            id: patch.taskId,
+            ownerUserId,
+            projectId: session.project_id,
+            sourceSessionId: sessionId,
+            origin: 'user',
+            title: task.text,
+            detail: [
+              meeting.title || row.title || 'Meeting',
+              task.speaker === null ? '' : names[task.speaker] || `Speaker ${task.speaker + 1}`,
+              task.atSeconds === null
+                ? ''
+                : `${Math.floor(task.atSeconds / 60)}:${String(Math.floor(task.atSeconds % 60)).padStart(2, '0')}`,
+              task.quote,
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          },
+          0,
+        );
+      }
+      Object.assign(task, patch);
+      await trx
+        .updateTable('live_meeting_results')
+        .set({ tasks_json: JSON.stringify(tasks), updated_at: Date.now(), filed_revision: null })
+        .where('meeting_id', '=', meetingId)
+        .execute();
+      return true;
+    });
+  }
+
+  /** Lock the meeting before checking its revision so a late model response cannot overwrite edits. */
+  async saveResult(sessionId: string, result: LiveMeetingResult): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'revision'])
+        .where('id', '=', result.meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (meeting?.session_id !== sessionId || Number(meeting.revision) !== result.revision)
+        return false;
+      const values = {
+        filed_revision: null,
+        meeting_id: result.meetingId,
+        revision: result.revision,
+        status: result.status,
+        title: result.title,
+        summary: result.summary,
+        decisions_json: JSON.stringify(result.decisions),
+        tasks_json: JSON.stringify(result.tasks),
+        open_questions_json: JSON.stringify(result.openQuestions),
+        model: result.model,
+        created_at: result.createdAt,
+        updated_at: result.updatedAt,
+      };
+      await trx
+        .insertInto('live_meeting_results')
+        .values(values)
+        .onConflict((oc) => oc.column('meeting_id').doUpdateSet(values))
+        .execute();
+      return true;
+    });
+  }
 
   async addInsight(
     sessionId: string,
@@ -341,6 +554,42 @@ export class LiveMeetingStore {
         Number(existing.revision) === meeting.revision &&
         existing.state !== 'active'
       ) {
+        // Persist the job with the terminal revision: a crash after upload acknowledgement
+        // must not leave a meeting without any recoverable result work.
+        const now = Date.now();
+        await trx
+          .insertInto('live_meeting_results')
+          .values({
+            meeting_id: meeting.id,
+            revision: meeting.revision,
+            status: 'working',
+            filed_revision: null,
+            title: null,
+            summary: null,
+            decisions_json: '[]',
+            tasks_json: '[]',
+            open_questions_json: '[]',
+            model: null,
+            created_at: now,
+            updated_at: now,
+          })
+          .onConflict((oc) =>
+            oc
+              .column('meeting_id')
+              .doUpdateSet({
+                revision: meeting.revision,
+                status: 'working',
+                filed_revision: null,
+                title: null,
+                summary: null,
+                decisions_json: '[]',
+                open_questions_json: '[]',
+                model: null,
+                updated_at: now,
+              })
+              .where('live_meeting_results.revision', '<', meeting.revision),
+          )
+          .execute();
         await trx
           .updateTable('live_meeting_commands')
           .set({

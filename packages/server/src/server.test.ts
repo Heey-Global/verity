@@ -32,6 +32,7 @@ import {
   WorktreeMissingError,
 } from '@verity/session';
 import {
+  boundedHistoryResultSchema,
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -2880,6 +2881,31 @@ describe('GET /sessions/:id/events (backward pagination)', () => {
       kind: 'oversized-event',
     });
     expect(Buffer.byteLength(bounded.body)).toBeLessThanOrEqual(256 * 1024);
+    const boundary = bounded.json();
+    const chunks: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/sessions/s1/history/v1?beforeSeq=${boundary.seq + 1}&snapshotSeq=${boundary.snapshotSeq}&eventOffset=${offset}`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(Buffer.byteLength(response.body)).toBeLessThanOrEqual(256 * 1024);
+      const chunk = boundedHistoryResultSchema.parse(response.json());
+      if (chunk.kind !== 'event-chunk') throw new Error('expected chunk');
+      expect(chunk).toMatchObject({ kind: 'event-chunk', seq: boundary.seq, offset });
+      chunks.push(chunk.data);
+      offset += chunk.data.length;
+      if (offset === chunk.totalChars) break;
+    }
+    const recovered = JSON.parse(chunks.join(''));
+    expect(recovered.events[0].event.delta).toBe('界'.repeat(100_000));
+    expect(recovered.hasMore).toBe(false);
+    const invalidOffset = await app.inject({
+      method: 'GET',
+      url: `/sessions/s1/history/v1?eventOffset=${offset}`,
+    });
+    expect(invalidOffset.statusCode).toBe(400);
     const legacy = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
     expect(legacy.json().events[0].event.delta).toBe('界'.repeat(100_000));
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'complete tail '.repeat(1000) });
@@ -9116,6 +9142,51 @@ describe('GET /sessions/:id/branches', () => {
     },
   );
 
+  // Nobody asks for a repair turn, so without an initiator an authenticated server refuses
+  // every gateway call the agent makes while fixing the PR.
+  it('runs a background repair for the session user who wrote last', async () => {
+    await createExistingSession('s1');
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Open a PR',
+      initiatedBy: { userId: 'earlier' },
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Ship it',
+      initiatedBy: { userId: 'latest' },
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'Unattributed follow-up' });
+    branchSvc.current.mockResolvedValue('feat/background-repair');
+    const backgroundApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus: vi.fn(async () => ({
+        number: 119,
+        title: 'Background repair',
+        url: 'https://github.com/heey-global/verity/pull/119',
+        phase: 'open' as const,
+        headSha: 'abc123',
+        pipeline: 'failure' as const,
+        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        mergeable: false,
+      })),
+      pullRequestRepairPollMs: 20,
+    });
+    try {
+      await backgroundApp.ready();
+      await vi.waitFor(() => expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1));
+      expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
+        displayPrompt: 'Fix failing CI for PR #119',
+        initiatedBy: { userId: 'latest' },
+      });
+    } finally {
+      await backgroundApp.close();
+    }
+  });
+
   it('automatically asks the agent to fix failed CI once per PR head', async () => {
     let now = 0;
     await createExistingSession('s1');
@@ -10002,6 +10073,53 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     },
   );
 
+  it('runs the merge repair turn for the authenticated caller', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feature');
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('phone');
+    const caller = registry.resolveUserId(token);
+    let calls = 0;
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      secretCipher: createSealableSecretCipher(),
+      authRegistry: registry,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            prStatus(
+              ++calls === 1
+                ? { pipeline: 'success', mergeable: true }
+                : { mergeState: 'dirty', pipeline: 'unknown' },
+            ),
+          ),
+        ),
+      mergePr: vi.fn().mockResolvedValue(false),
+    });
+    try {
+      const response = await withMerge.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(409);
+      // Without an initiator, the gateway would refuse every tool the repair turn needs.
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        's1',
+        expect.any(String),
+        undefined,
+        expect.objectContaining({ initiatedBy: { userId: caller } }),
+      );
+    } finally {
+      await withMerge.close();
+    }
+  });
+
   it('does not call the merge provider when its credential explicitly lacks permission', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     branchSvc.current.mockResolvedValue('feature');
@@ -10556,6 +10674,7 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       expect.stringContaining('Review the working tree'),
       {},
       'Save to project',
+      {},
     );
     expect(sendTurn.mock.invocationCallOrder[0]).toBeLessThan(
       branchSvc.mergeIntoLocalBase.mock.invocationCallOrder[0]!,
@@ -10633,6 +10752,72 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       ),
     );
     expect(branchSvc.mergeIntoLocalBase).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  // Under authentication the gateway refuses every tool call in a turn that has no initiator,
+  // so the save's own turns must run for the user who asked for them.
+  it('runs the save and its follow-up turns for the authenticated caller', async () => {
+    await seedLocalSession();
+    localIsDirty.mockResolvedValueOnce(true);
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('phone');
+    const caller = registry.resolveUserId(token);
+    expect(caller).toBeDefined();
+    const app = buildLocal({ authRegistry: registry, secretCipher: createSealableSecretCipher() });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/save-to-project',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(res.statusCode).toBe(202);
+    await vi.waitFor(() =>
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        's1',
+        expect.stringContaining('still uncommitted'),
+        undefined,
+        { displayPrompt: 'Save to project needs attention', initiatedBy: { userId: caller } },
+      ),
+    );
+    expect(sendTurn).toHaveBeenCalledWith(
+      's1',
+      expect.stringContaining('Review the working tree'),
+      {},
+      'Save to project',
+      { initiatedBy: { userId: caller } },
+    );
+    await app.close();
+  });
+
+  it('runs the merged follow-up turn for the authenticated caller', async () => {
+    await seedLocalSession();
+    branchSvc.mergeIntoLocalBase.mockResolvedValue({
+      base: 'main',
+      branch: 'feat/notes',
+      mergedTip: 'deadbee',
+      baseTip: 'merged11',
+    });
+    branchSvc.resetToLocalBase.mockResolvedValue({ base: 'main', deletedBranch: 'feat/notes' });
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('phone');
+    const caller = registry.resolveUserId(token);
+    const app = buildLocal({ authRegistry: registry, secretCipher: createSealableSecretCipher() });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/merge',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(dispatchTurn).toHaveBeenCalledWith(
+      's1',
+      expect.stringContaining('detached at the merged commit'),
+      undefined,
+      { displayPrompt: 'Saved to project', initiatedBy: { userId: caller } },
+    );
     await app.close();
   });
 
@@ -11205,6 +11390,7 @@ describe('error boundary', () => {
   it('never reflects an internal store error to the client', async () => {
     const throwing = {
       tasks: { expirePendingTitles: async () => [] },
+      liveMeetings: { unfinishedResults: async () => [] },
       listMovePreviewRestarts: async () => [],
       listSessions: () => Promise.reject(new Error('driver destroyed SECRET-INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
@@ -11479,6 +11665,7 @@ describe('GET /live (WebSocket)', () => {
   it('ends the subscription without detail if the backlog read fails', async () => {
     const throwing = {
       tasks: { expirePendingTitles: async () => [] },
+      liveMeetings: { unfinishedResults: async () => [] },
       listMovePreviewRestarts: async () => [],
       getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),

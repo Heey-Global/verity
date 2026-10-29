@@ -31,10 +31,16 @@ WORK_DIR="${VERITY_HOST_BUILDER_DIR:-/var/lib/verity/host-builder}"
 BUILDKIT_RUN_DIR="${VERITY_BUILDKIT_RUN_DIR:-/run/verity-buildkit}"
 READY_TIMEOUT_SECONDS="${VERITY_BUILDKIT_READY_TIMEOUT:-30}"
 # What deploy/buildkit/install.sh writes, kept aside before it runs.
+storage_unit=${VERITY_BUILD_STORAGE_UNIT_FILE:-$(dirname "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}")/verity-build-storage.service}
+storage_timer=${VERITY_BUILD_STORAGE_TIMER_FILE:-$(dirname "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}")/verity-build-storage.timer}
 BUILDER_PATHS=(
   "${VERITY_BUILDKIT_CONFIG_DIR:-/etc/verity-buildkit}"
   "${VERITY_BUILDKIT_LIBEXEC:-/usr/local/libexec/verity-buildkit}"
   "${VERITY_BUILDKIT_UNIT_FILE:-/etc/systemd/system/verity-buildkit.service}"
+  "$storage_unit"
+  "$storage_timer"
+  "$(dirname "$storage_unit")/verity-buildkit-snapshotter.service"
+  "$(dirname "$storage_unit")/verity-buildkit-snapshotter.timer"
 )
 RECEIPT="$STATE_DIR/devcontainer-builder.json"
 BUNDLE_RECORD="$WORK_DIR/bundle.json"
@@ -46,7 +52,7 @@ SIGNER_IDENTITY='https://github.com/Heey-Global/verity/.github/workflows/release
 SIGNER_ISSUER='https://token.actions.githubusercontent.com'
 # Images declaring this contract carry the bundle below; older images are not asked for it.
 CONTRACT_LABEL='org.verity.devcontainer-builder'
-CONTRACT='1'
+CONTRACT='2'
 PAYLOAD='/opt/verity-install/deploy'
 # Same pins as docs/website/site/install.sh; scripts/verity-install.test.ts keeps them equal.
 COSIGN_VERSION=v3.1.3
@@ -141,10 +147,22 @@ extract() {
 restore_previous() {
   local path
   log 'restoring the previous builder'
+  systemctl disable --now verity-buildkit-snapshotter.timer || true
+  systemctl stop verity-buildkit-snapshotter.service || true
+  systemctl disable --now verity-build-storage.timer || true
+  systemctl stop verity-build-storage.service || true
   for path in "${BUILDER_PATHS[@]}"; do rm -rf -- "$path"; done
   if [[ -s $BACKUP ]]; then tar -xPf "$BACKUP" || log 'the kept-aside builder files could not be restored'; fi
   systemctl daemon-reload || true
   systemctl restart verity-buildkit.service || true
+  if [[ -f $(dirname "$storage_timer")/verity-buildkit-snapshotter.timer ]]; then
+    if ((snapshotter_timer_enabled)); then systemctl enable verity-buildkit-snapshotter.timer || true; fi
+    if ((snapshotter_timer_active)); then systemctl start verity-buildkit-snapshotter.timer || true; fi
+  fi
+  if [[ -f $storage_timer ]]; then
+    if ((storage_timer_enabled)); then systemctl enable verity-build-storage.timer || true; fi
+    if ((storage_timer_active)); then systemctl start verity-build-storage.timer || true; fi
+  fi
 }
 
 # Runs as its own process (see apply_request), so `set -e` holds for every step below.
@@ -194,6 +212,28 @@ reconcile() {
     return 0
   fi
 
+  # Upgraded bridges fence the whole changed-bundle install, not just the
+  # snapshotter transaction. Old bridges retain their historical install semantics.
+  local admission_helper="${VERITY_BUILDKIT_LIBEXEC:-/usr/local/libexec/verity-buildkit}/snapshotter-migrate.sh"
+  if [[ -x $admission_helper && -f $BUILDKIT_RUN_DIR/build-admission.lock ]]; then
+    local migration_state="${VERITY_SNAPSHOTTER_STATE:-/var/lib/verity/buildkit-snapshotter}"
+    install -d -m 0700 "$migration_state"
+    exec 6>"$migration_state/lock"
+    flock -w 60 6 || die 'snapshotter maintenance is still running; builder update deferred'
+    exec 9<"$BUILDKIT_RUN_DIR/build-admission.lock"
+    flock -w 30 9 || die 'builds are still running; builder update deferred without restarting it'
+    "$admission_helper" drained || die 'build termination or client compatibility is unknown; builder update deferred without restarting it'
+    export VERITY_BUILDKIT_RELEASE_LOCK_HELD=1
+  fi
+
+  snapshotter_timer_enabled=0
+  snapshotter_timer_active=0
+  if systemctl is-enabled --quiet verity-buildkit-snapshotter.timer; then snapshotter_timer_enabled=1; fi
+  if systemctl is-active --quiet verity-buildkit-snapshotter.timer; then snapshotter_timer_active=1; fi
+  storage_timer_enabled=0
+  storage_timer_active=0
+  if systemctl is-enabled --quiet verity-build-storage.timer; then storage_timer_enabled=1; fi
+  if systemctl is-active --quiet verity-build-storage.timer; then storage_timer_active=1; fi
   for path in "${BUILDER_PATHS[@]}"; do [[ -e $path ]] && existing+=("$path"); done
   rm -f -- "$BACKUP"
   if ((${#existing[@]})); then

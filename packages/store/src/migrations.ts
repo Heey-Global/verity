@@ -4670,6 +4670,53 @@ migrations['0168_audit_events'] = {
   },
 };
 
+migrations['0169_live_meeting_results'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table live_meeting_results (
+      meeting_id text primary key references live_meetings(id) on delete cascade,
+      revision bigint not null,
+      status text not null check (status in ('working', 'ready', 'failed')),
+      filed_revision bigint,
+      title text,
+      summary text,
+      decisions_json text not null default '[]',
+      tasks_json text not null default '[]',
+      open_questions_json text not null default '[]',
+      model text,
+      created_at bigint not null,
+      updated_at bigint not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await db.schema.dropTable('live_meeting_results').execute();
+  },
+};
+
+migrations['0170_backup_foundation'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
+      db,
+    );
+    await sql`insert into backup_policy(id) values (1)`.execute(db);
+    await sql`create table backup_revocation_outbox (
+      id text primary key, device_id text not null, created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table backup_git_repositories (
+      project_id text not null references projects(id) on delete cascade,
+      path text not null, repo_key text not null unique, primary key (project_id, path)
+    )`.execute(db);
+    await sql`create table backup_unassigned_git_repositories (
+      path text primary key, repo_key text not null unique
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table backup_unassigned_git_repositories`.execute(db);
+    await sql`drop table backup_git_repositories`.execute(db);
+    await sql`drop table backup_revocation_outbox`.execute(db);
+    await sql`drop table backup_policy`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

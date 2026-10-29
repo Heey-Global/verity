@@ -48,7 +48,14 @@ export async function startManagedUpdaterMain(): Promise<void> {
     throw new Error('Updater control token file must be a private regular file');
   }
   const token = (await readFile(tokenFile, 'utf8')).trim();
-  const docker = createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' });
+  const docker = createDockerClient({
+    baseUrl: 'unix:///var/run/docker.sock',
+    // Pulls outside update preparation (companions, the control-plane runner)
+    // narrate their progress too; preparation passes its own log per call.
+    pullLog: (message) => {
+      console.log(`[self-update] ${message}`);
+    },
+  });
   // An Updater that died mid-update left durable intent behind, and the
   // journal is the only thing that knows how far it got. Finish that, then
   // reconcile — both before the boundary opens, so a restart continues the

@@ -278,11 +278,16 @@ function rowTouchObserver(
     touch && origin
       ? { dx: Math.round(touch.absoluteX - origin.x), dy: Math.round(touch.absoluteY - origin.y) }
       : {};
-  const down = (event: { allTouches: { absoluteX: number; absoluteY: number }[] }) => {
+  const down = (
+    event: { allTouches: { absoluteX: number; absoluteY: number }[] },
+    uiReceivedWallMs: number,
+  ) => {
     const touch = event.allTouches[0];
     origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
     reported = 0;
-    record('row', 'touch-down', { detail: { width: Math.round(width()) } });
+    record('row', 'touch-down', {
+      detail: { width: Math.round(width()), uiReceivedWallMs, jsReceivedWallMs: Date.now() },
+    });
   };
   const move = (event: { allTouches: { absoluteX: number; absoluteY: number }[] }) => {
     const moved = delta(event.allTouches[0]);
@@ -292,13 +297,20 @@ function rowTouchObserver(
       reported++;
     }
   };
-  const finish = (name: string, touch: { absoluteX: number; absoluteY: number } | undefined) => {
-    record('row', name, delta(touch));
+  const finish = (
+    name: string,
+    touch: { absoluteX: number; absoluteY: number } | undefined,
+    uiReceivedWallMs: number,
+  ) => {
+    record('row', name, {
+      ...delta(touch),
+      detail: { uiReceivedWallMs, jsReceivedWallMs: Date.now() },
+    });
   };
   return Gesture.Manual()
     .onTouchesDown((event) => {
       'worklet';
-      runOnJS(down)(event);
+      runOnJS(down)(event, Date.now());
     })
     .onTouchesMove((event) => {
       'worklet';
@@ -306,13 +318,13 @@ function rowTouchObserver(
     })
     .onTouchesUp((event, manager) => {
       'worklet';
-      runOnJS(finish)('touch-up', event.changedTouches[0]);
+      runOnJS(finish)('touch-up', event.changedTouches[0], Date.now());
       // Native recognizer state must be released on the UI runtime.
       if (event.numberOfTouches === 0) manager.fail();
     })
     .onTouchesCancelled((event, manager) => {
       'worklet';
-      runOnJS(finish)('touch-cancelled', event.changedTouches[0]);
+      runOnJS(finish)('touch-cancelled', event.changedTouches[0], Date.now());
       manager.fail();
     });
 }

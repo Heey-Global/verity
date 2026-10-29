@@ -147,6 +147,38 @@ function jsonBody(call: Call | undefined): unknown {
 }
 
 describe('VerityClient live meetings', () => {
+  it('validates result reads and sends revision-scoped confirmation and retry requests', async () => {
+    const result = {
+      meetingId: 'm',
+      revision: 2,
+      status: 'ready',
+      title: 'Release',
+      summary: 'Ship.',
+      decisions: [],
+      tasks: [],
+      openQuestions: [],
+      model: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ result }),
+      json({ result }),
+      json({ accepted: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getLiveMeetingResult('s', 'm')).toEqual(result);
+    await client.updateLiveMeetingResultTask('s', 'm', 'proposal', {
+      revision: 2,
+      state: 'added',
+      taskId: 'task',
+    });
+    expect(calls[1]?.url).toBe('http://host/sessions/s/live-meetings/m/result/tasks/proposal');
+    expect(jsonBody(calls[1])).toEqual({ revision: 2, state: 'added', taskId: 'task' });
+    await client.retryLiveMeetingResult('s', 'm');
+    expect(calls[2]?.init?.method).toBe('POST');
+  });
+
   it('loads server-generated insights for the selected meeting', async () => {
     const insight = {
       id: 'insight-1',

@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Full capture and installer recovery on separate disposable Docker hosts.
+set -euo pipefail
+image=${1:?usage: verity-backup-restore-smoke <server-image> <daemon-fixture-image> <image-archive>}
+fixture_image=${2:?daemon fixture image required}
+archive=${3:?server image archive required}
+: "${GITHUB_RUN_ID:?CI run identity required}"
+: "${GITHUB_RUN_ATTEMPT:?CI attempt required}"
+: "${RUNNER_TEMP:?private CI temporary directory required}"
+outer=unix:///var/run/docker.sock
+work=$(mktemp -d "$RUNNER_TEMP/verity-backup-restore.XXXXXXXX")
+chmod 0700 "$work"
+prefix="verity-backup-restore-dind-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+original="$prefix-original"
+fresh="$prefix-fresh"
+root=/opt/verity-restore-fixture
+repo=ghcr.io/heey-global/verity/verity-server
+registry=registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+repo_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+host_docker() { docker --host "$outer" "$@"; }
+inside() { host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock "$daemon_name" "$@"; }
+inner() { docker --host "$socket" "$@"; }
+cleanup() {
+  local status=$?
+  trap - EXIT
+  # Never print the private input or installer output, even on an assertion failure.
+  for name in "$original" "$fresh"; do
+    host_docker rm -f "$name" >/dev/null 2>&1 || true
+    host_docker volume rm "$name-data" >/dev/null 2>&1 || true
+  done
+  rm -rf -- "$work"
+  exit "$status"
+}
+trap cleanup EXIT
+start_host() {
+  daemon_name=$1
+  [[ $daemon_name = "$original" || $daemon_name = "$fresh" ]]
+  local socket_dir="$work/${daemon_name##*-}"
+  mkdir -m 0700 "$socket_dir"
+  socket="unix://$socket_dir/docker.sock"
+  host_docker volume create "$daemon_name-data" >/dev/null
+  host_docker run --detach --privileged --name "$daemon_name" --add-host ghcr.io:127.0.0.1 \
+    --volume "$socket_dir:$socket_dir" --mount "type=volume,src=$daemon_name-data,dst=/var/lib/docker" \
+    --env DOCKER_TLS_CERTDIR= "$fixture_image" --host=unix:///var/run/docker.sock \
+    --host="unix://$socket_dir/docker.sock" --insecure-registry ghcr.io >/dev/null
+  for attempt in $(seq 1 120); do
+    if inside docker info >/dev/null 2>&1; then break; fi
+    [[ $attempt != 120 ]] || { host_docker logs "$daemon_name" >&2; echo 'restore fixture daemon did not start' >&2; exit 1; }
+    sleep 0.25
+  done
+  inside chmod 0666 "$socket_dir/docker.sock"
+  daemon_id=$(inner info --format '{{.ID}}')
+  [[ -n $daemon_id && $daemon_id != "$(host_docker info --format '{{.ID}}')" ]]
+  [[ $daemon_id = "$(inside docker info --format '{{.ID}}')" ]]
+  [[ -z $(inner ps -aq) && -z $(inner volume ls -q) ]]
+  inner load --input "$archive" >/dev/null
+  inner run -d --name restore-registry --publish 80:5000 --publish 443:5000 "$registry" >/dev/null
+  for attempt in $(seq 1 120); do
+    if inside curl --fail --silent http://127.0.0.1/v2/ >/dev/null; then break; fi
+    [[ $attempt != 120 ]] || exit 1
+    sleep 0.25
+  done
+  inner tag "$image" "$repo:restore-acceptance"
+  inner push --quiet "$repo:restore-acceptance" >/dev/null
+  digest=$(inner image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:restore-acceptance" | awk -v prefix="$repo@sha256:" 'index($0,prefix)==1 {print;exit}')
+  [[ $digest =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]]
+  inner pull --quiet "$digest" >/dev/null
+  inside mkdir -p "$root"
+  host_docker cp "$repo_root/.github/scripts/backup-restore-docker.mjs" "$daemon_name:$root/driver.mjs"
+  host_docker cp "$repo_root/.github/scripts/backup-restore-diagnostics.mjs" "$daemon_name:$root/backup-restore-diagnostics.mjs"
+}
+run_driver() {
+  local action=$1 fault=${2:-} job='' phase=''
+  local -a mounts=(--mount "type=bind,src=$root,dst=$root")
+  if [[ $action != capture && $action != diagnose-activation && $action != monitor-activation ]]; then
+    if [[ $action != late-revoke ]]; then mounts+=(--mount "type=bind,src=$root/backup,dst=$root/backup,readonly"); fi
+    if [[ $action = no-space ]]; then mounts+=(--mount "type=tmpfs,dst=$root/host/restore,tmpfs-size=33554432,tmpfs-mode=0700"); fi
+    if inside test -f "$root/host/restore/job"; then
+      job=$(inside jq -r .id "$root/host/restore/job")
+      phase=$(inside jq -r .phase "$root/host/restore/job")
+    fi
+    if [[ $phase =~ ^(promoted|accepting|accepted)$ ]]; then
+      inner volume inspect verity-data >/dev/null
+      mounts+=(--mount type=volume,src=verity-data,dst=/restore-live --mount type=volume,src=verity-data,dst=/srv/verity)
+    fi
+  fi
+  # Keep the driver out of PID 1 so self-SIGKILL exercises a real abrupt exit.
+  inner run --rm --init --user 0:0 --network host --label "verity.restore-job=$job" \
+    --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock "${mounts[@]}" \
+    --env VERITY_RESTORE_DOCKER_ACCEPTANCE=1 --env "VERITY_RESTORE_TEST_DAEMON_ID=$daemon_id" \
+    --env "VERITY_RESTORE_TEST_IMAGE=$digest" --env "VERITY_RESTORE_TEST_INTERRUPT=$fault" \
+    --env "VERITY_RESTORE_TEST_NEW_IDENTITY=${new_identity:-0}" \
+    --entrypoint node "$digest" "$root/driver.mjs" "$action"
+}
+expect_interruption() {
+  local effect=$1 status
+  set +e
+  run_driver advance "$effect" >"$work/interruption.log" 2>&1
+  status=$?
+  set -e
+  if [[ $status != 137 ]]; then
+    sed -n '/^Restore fixture failure: /p' "$work/interruption.log" >&2
+    echo "expected process interruption during $effect, got $status" >&2
+    exit 1
+  fi
+}
+prepare_reviewed() {
+  run_driver begin
+  for step in 1 2 3; do run_driver advance; done
+  run_driver wrong-password
+  sleep 6
+  run_driver review
+  run_driver advance
+}
+
+start_host "$original"
+original_id=$daemon_id
+original_digest=$digest
+run_driver capture
+mkdir -m 0700 "$work/copied"
+host_docker cp "$original:$root/backup" "$work/copied/backup"
+host_docker cp "$original:$root/input" "$work/copied/input"
+# This tiny intentionally unsupported image represents a downloadable historical release.
+host_docker cp "$original:$root/unsupported-release.tar" "$work/unsupported-release.tar"
+# This deletes the source database, source projects, original identity and local deduplication index.
+host_docker rm -f "$original" >/dev/null
+host_docker volume rm "$original-data" >/dev/null
+start_host "$fresh"
+[[ $daemon_id != "$original_id" && $digest = "$original_digest" ]]
+host_docker cp "$work/copied/." "$fresh:$root"
+inner load --input "$work/unsupported-release.tar" >/dev/null
+inner push --quiet "$repo:restore-unsupported" >/dev/null
+inside test ! -e "$root/original"
+inside test ! -e "$root/original-index"
+
+run_driver seed-compose
+
+echo '--- recovery: wrong recovery key and retry'
+run_driver begin
+run_driver wrong-key
+run_driver abort
+echo '--- recovery: unauthenticated historical release and snapshot rejection'
+run_driver begin
+run_driver bad-release
+run_driver abort
+run_driver begin
+# Damage only the copied snapshot, then restore its bytes before retrying.
+snapshot="$root/backup/repositories/$(inside jq -r .repository "$root/input")/snapshots/$(inside jq -r .sequence "$root/input")-manual"
+[[ -n $snapshot ]]
+inside cp "$snapshot" "$root/snapshot-original"
+inside sh -c 'printf tampered > "$1"' sh "$snapshot"
+run_driver rejected-snapshot
+inside cp "$root/snapshot-original" "$snapshot"
+run_driver abort
+# The verification root is a genuinely constrained filesystem, below its 64 MiB reserve.
+run_driver no-space
+run_driver unsupported
+run_driver abort
+
+echo '--- recovery: actual process interruption after each preparation transition'
+for effect in verify stage trial review; do
+  run_driver begin
+  case "$effect" in
+    verify) ;;
+    stage) run_driver advance ;;
+    trial) run_driver advance; run_driver advance ;;
+    review) run_driver advance; run_driver advance; run_driver advance; run_driver review ;;
+  esac
+  expect_interruption "$effect"
+  run_driver advance
+  run_driver abort
+done
+echo '--- recovery: interrupted publication and abort restore only owned resources'
+prepare_reviewed
+expect_interruption promote
+run_driver abort
+run_driver assert-aborted
+
+echo '--- recovery: preserved identity, master authentication and restart-safe acceptance'
+prepare_reviewed
+run_driver late-revoke
+expect_interruption promote
+run_driver advance
+run_driver assert-restored
+expect_interruption accept
+run_driver advance
+expect_interruption initialize
+
+activate_installer() {
+  local payload monitor status=0
+  inside mkdir -p /opt/verity-install
+  payload=$(inner create "$digest")
+  inner cp "$payload:/opt/verity-install/." - | host_docker exec -i "$fresh" tar -xf - -C /opt/verity-install
+  inner rm "$payload" >/dev/null
+  inside rm -f "$root/activation-monitor-stop"
+  # Capture safe summaries before managed-up removes an unhealthy candidate during rollback.
+  run_driver monitor-activation >"$work/activation-diagnostics.log" 2>&1 &
+  monitor=$!
+  # The real bundled installer consumes the supplied keys on stdin and performs normal deployment activation.
+  inside jq -r '.recoveryKey,.masterPassword' "$root/input" \
+    | host_docker exec -i --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+        --env VERITY_API_HOST_PORT=0 --env VERITY_PAIRING_HOST=127.0.0.1 "$fresh" \
+        sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --image "$1" --restore "$2/backup" --restore-action accept --restore-secrets-stdin >"$2/install.log" 2>&1' sh "$digest" "$root" || status=$?
+  inside touch "$root/activation-monitor-stop"
+  wait "$monitor" || true
+  if [[ $status != 0 ]]; then
+    sed -n '/^Restore .* diagnostic: /p' "$work/activation-diagnostics.log" >&2
+    run_driver diagnose-activation >&2 || true
+    return "$status"
+  fi
+}
+activate_installer
+run_driver verify-api
+
+echo '--- recovery: interrupted rollback refences resumed managed writers'
+new_identity=1
+prepare_reviewed
+run_driver advance
+set +e
+run_driver abort rollback-resume >"$work/rollback-interruption.log" 2>&1
+rollback_status=$?
+set -e
+[[ $rollback_status = 137 ]]
+run_driver abort
+run_driver assert-aborted
+
+echo '--- recovery: new identity retains no old device credentials'
+new_identity=1
+prepare_reviewed
+run_driver advance
+run_driver assert-restored
+run_driver advance
+activate_installer
+run_driver verify-api
+echo 'Separate-host capture, restore, interruption, abort, acceptance and identity checks passed.'
