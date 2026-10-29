@@ -3780,7 +3780,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number; existing: boolean } | undefined> {
-    const { type, payload } = await this.prepareEventRow(event);
+    const eventRow = await this.prepareEventRow(event);
     const result = await this.db.transaction().execute(async (trx) => {
       const receipt = await trx
         .selectFrom('qa_dispatches')
@@ -3801,7 +3801,7 @@ export class EventStore implements EventSink {
       );
       const row = await trx
         .insertInto('events')
-        .values({ session_id: sessionId, type, payload })
+        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
         .returning(['id', 'created_at'])
         .executeTakeFirstOrThrow();
       await trx
@@ -3820,7 +3820,7 @@ export class EventStore implements EventSink {
         sessionId,
         result.seq,
         new Date(result.ts),
-        JSON.parse(payload) as AgentEvent,
+        JSON.parse(eventRow.payload) as AgentEvent,
       );
     return result;
   }
