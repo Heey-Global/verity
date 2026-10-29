@@ -3821,6 +3821,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     )?.event;
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
   };
+  /** Every gateway tool the assistant session may call (docs/assistant.md). */
+  const ASSISTANT_TOOLS: ReadonlySet<string> = new Set([
+    'verity_assistant',
+    'verity_session_handoff',
+    'verity_tasks',
+    'verity_app_help',
+    'verity_knowledge',
+    'verity_gmail',
+    'verity_google_calendar',
+    'verity_google_contacts',
+    'verity_google_drive',
+    'verity_google_docs',
+    'verity_google_sheets',
+    'verity_google_slides',
+    'verity_start_planning',
+    'verity_present_plan',
+    'verity_end_planning',
+  ]);
   // The assistant acts for the user behind its running turn, and only in granted projects.
   // Reading and filing tasks follow the project routes, where administrators count as
   // readers. Handing off starts a turn, so it needs the same execute permission as
@@ -6537,6 +6555,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           throw new ControlPlaneSessionAuthorityError(
             'QA uses server-validated decisions, not executable tools.',
           );
+        // The assistant reads mail and voice notes, so it gets an allow-list rather than
+        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
+        // Control later stays closed to it until it is listed here.
+        if (
+          !ASSISTANT_TOOLS.has(toolName) &&
+          (await deps.eventStore.assistant.settings()).session_id === sessionId
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The assistant reaches projects only through verity_assistant and handoffs to granted projects.',
+          );
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -6732,19 +6760,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           await requireAssistantSession(deps.eventStore, sessionId);
           return;
         }
-        // The assistant reads mail and voice notes, so it must not observe projects nobody
-        // granted. Control's fleet-wide reads stay with plain Control sessions; the
-        // assistant reaches projects through verity_assistant and granted handoffs only.
-        if (
-          (toolName === 'verity_diagnostics' ||
-            toolName === 'verity_list_sessions' ||
-            toolName === 'verity_session_progress' ||
-            toolName === 'verity_recent_session_messages') &&
-          (await deps.eventStore.assistant.settings()).session_id === sessionId
-        )
-          throw new ControlPlaneSessionAuthorityError(
-            'The assistant reaches projects only through verity_assistant and handoffs to granted projects.',
-          );
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -10097,6 +10112,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ensuringAssistant = undefined;
       })),
     sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    cancel: (id) => conductor.cancelTurn(id),
   });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {

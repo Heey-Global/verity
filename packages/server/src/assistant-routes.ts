@@ -7,6 +7,8 @@ export interface AssistantRouteDeps {
   ensureSession(): Promise<string>;
   /** Whether the stored session still exists; reads never create it. */
   sessionExists(sessionId: string): Promise<boolean>;
+  /** Stops the session's running turn when the assistant is switched off. */
+  cancel(sessionId: string): Promise<boolean>;
 }
 
 /** System and per-project settings of the Verity assistant (docs/assistant.md). */
@@ -58,6 +60,8 @@ export function registerAssistantRoutes(
           .send({ error: 'The assistant session could not be created. Try again.' });
       }
     }
+    const sessionId = (await store.assistant.settings()).session_id;
+    if (!enabled && sessionId !== null) await deps.cancel(sessionId);
     return status();
   });
 
@@ -88,10 +92,11 @@ export function registerAssistantRoutes(
       .object({ mode: z.enum(['off', 'tasks', 'delegate']) })
       .strict()
       .parse(request.body);
+    const project = await store.getProject(id);
+    if (!project) return reply.code(404).send({ error: 'Project not found' });
     if (mode !== 'off' && !(await store.assistant.settings()).enabled)
       return reply.code(409).send({ error: 'Enable the assistant in system settings first' });
-    const project = await store.getProject(id);
-    if (!project || project.kind === 'control_plane')
+    if (project.kind === 'control_plane')
       return reply.code(409).send({ error: 'The assistant can only be granted project access' });
     await store.assistant.setGrant(id, request.localUserId!, mode);
     return { mode };

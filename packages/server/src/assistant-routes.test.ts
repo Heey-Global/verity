@@ -33,11 +33,13 @@ function server(userId: string) {
     sessions.add(id);
     return id;
   });
+  const cancel = vi.fn(async () => true);
   registerAssistantRoutes(app, ctx.store, {
     ensureSession,
     sessionExists: async (id) => sessions.has(id),
+    cancel,
   });
-  return { app, ensureSession, sessions };
+  return { app, ensureSession, sessions, cancel };
 }
 
 describe('assistant settings routes', () => {
@@ -65,7 +67,7 @@ describe('assistant settings routes', () => {
 
   it('creates the session only when switched on and reports granted projects', async () => {
     vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(true);
-    const { app, ensureSession, sessions } = server('admin');
+    const { app, ensureSession, sessions, cancel } = server('admin');
     try {
       expect((await app.inject({ method: 'GET', url: '/settings/assistant' })).json()).toEqual({
         enabled: false,
@@ -92,6 +94,9 @@ describe('assistant settings routes', () => {
         (await app.inject({ method: 'GET', url: '/settings/assistant' })).json(),
       ).toMatchObject({ enabled: true, sessionId: null });
       expect(ensureSession).toHaveBeenCalledTimes(1);
+      // Switching off stops a running turn, as QA does; tool calls are refused anyway.
+      await app.inject({ method: 'PUT', url: '/settings/assistant', payload: { enabled: false } });
+      expect(cancel).toHaveBeenCalledWith('assistant-session');
     } finally {
       await app.close();
     }
@@ -108,6 +113,7 @@ describe('assistant settings routes', () => {
         throw new Error('Verity Control unavailable');
       },
       sessionExists: async () => false,
+      cancel: async () => false,
     });
     try {
       const response = await app.inject({

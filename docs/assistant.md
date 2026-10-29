@@ -10,9 +10,9 @@ is a second, specialised function next to it.
 
 Settings → Assistant holds the installation-wide switch. It is off by default and
 only administrators can change it. Turning it on creates the session in Verity
-Control (turning it on again recreates a deleted session); turning it off keeps
-the session and its history, and every assistant tool call is refused until it
-is on again.
+Control (turning it on again recreates a deleted session); turning it off stops
+a running turn, keeps the session and its history, and refuses every assistant
+tool call until it is on again.
 
 Mail, calendar and contacts use the Google accounts assigned to the Verity
 Control project (Settings → Assistant → Mail and calendar). Sending mail and
@@ -47,10 +47,13 @@ Verity Control itself can never be granted.
   every later tool call of that turn is checked against. It is checked before
   a new session is created and again right before delivery. Handoffs from other
   Verity Control sessions are unchanged.
-- Control's fleet-wide reads (`verity_diagnostics`, `verity_list_sessions`,
-  `verity_session_progress`, `verity_recent_session_messages`) are refused for
-  the assistant session, because it processes mail and voice notes. To hand off,
-  it targets a project or a new session.
+- Because it processes mail and voice notes, the assistant session may only call
+  an allow-list of tools: `verity_assistant`, `verity_session_handoff`, its own
+  tasks, app help, the knowledge of Verity Control, the Google tools and the
+  planning tools. Control's fleet-wide reads (`verity_diagnostics`,
+  `verity_list_sessions`, `verity_session_progress`,
+  `verity_recent_session_messages`), secrets and brokered HTTP are refused. To hand
+  off, it targets a project or a new session.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
