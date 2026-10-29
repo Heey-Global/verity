@@ -34,7 +34,21 @@ export function splitTableCells(line: string): string[] {
  * table starts where a header row is immediately followed by a `|---|` separator;
  * its body runs until the first non-row (or another separator). */
 export function parseMarkdownBlocks(content: string): MdBlock[] {
-  const lines = content.split('\n');
+  // Coordination contracts remain in the audit transcript, not in user-facing prose.
+  const visible: string[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const start = content.indexOf('```qa:decision', cursor);
+    if (start < 0) break;
+    const headerEnd = content.indexOf('\n', start);
+    // No later opening can have a complete header if the remaining text has no newline.
+    if (headerEnd < 0) break;
+    visible.push(content.slice(cursor, start));
+    const end = content.indexOf('\n```', headerEnd + 1);
+    cursor = end < 0 ? content.length : end + 4;
+  }
+  visible.push(content.slice(cursor));
+  const lines = visible.join('').split('\n');
   const blocks: MdBlock[] = [];
   let buf: string[] = [];
   const flush = (): void => {

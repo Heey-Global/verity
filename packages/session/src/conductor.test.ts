@@ -405,6 +405,28 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
+  it('enforces tool-free QA turns even when a caller requests execution tools', async () => {
+    await ctx.store.repairs.configureQA(false, 'admin');
+    await ctx.store.repairs.qaSession('qa');
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaClaim((await ctx.store.repairs.qa()).revision, '[]', 0);
+    await ctx.store.repairs.configureQA(false, 'admin');
+    await ctx.store.createSession({ sessionId: 'qa', worktree: '/wt/qa', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('qa', 'Explain open incidents', {
+      permissionMode: 'bypassPermissions',
+      allowedTools: ['Bash'],
+    });
+    expect(fake.last().toolless).toBe(true);
+    expect(fake.last().resumeSessionId).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi

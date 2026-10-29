@@ -5649,6 +5649,93 @@ export class VerityClient {
     return res.arrayBuffer();
   }
 
+  async qaApprovals(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/qa-approvals`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        proposals: z.array(
+          z.object({
+            id: z.string(),
+            project_id: z.string(),
+            owner: z.string(),
+            repo: z.string(),
+            resource: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json());
+  }
+  async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalId, allow }),
+    });
+  }
+  async qaSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/qa',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
+      .parse(await res.json());
+  }
+
+  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/repairs`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        qaEnabled: z.boolean().optional(),
+        mandate: z
+          .object({
+            mode: z.enum(['off', 'monitor', 'automatic']),
+            health: z.string(),
+            checked_at: z.string().nullable(),
+          })
+          .nullable(),
+        incidents: z
+          .array(
+            z.object({
+              id: z.string(),
+              resource: z.string(),
+              revision: z.string(),
+              state: z.string(),
+              owner_session_id: z.string().nullable(),
+              last_session_id: z.string().nullable(),
+              attempts: z.number(),
+              evidence: z.string(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(await res.json());
+  }
+  async retryRepair(projectId: string, incidentId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ incidentId }),
+    });
+  }
+
   async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {
     const res = await this.request(
       '/settings/vulnerability-scan',

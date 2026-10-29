@@ -1375,6 +1375,43 @@ export class Conductor {
       // nothing to tailor and skips the project read entirely.
       resumeSessionId === undefined ? await this.codeHostForSession(session) : 'github',
     );
+    // Role identity is durable and server-owned; request options cannot reopen tools.
+    const qa = await this.deps.store.repairs.qa();
+    if (qa.session_id === sessionId) {
+      if (
+        prompt.includes('[[verity:qa-review]]') &&
+        (!qa.enabled || qa.active_revision !== qa.revision)
+      )
+        throw new Error('QA background dispatch was disabled or superseded.');
+      builtRunOpts.toolless = true;
+      const observations: unknown[] = [];
+      if (qa.sponsor && (await this.deps.store.isActiveAdministrator(qa.sponsor))) {
+        for (const mandate of (await this.deps.store.repairs.mandates()).slice(0, 50)) {
+          if (mandate.mode === 'off') continue;
+          observations.push({
+            projectId: mandate.project_id,
+            mode: mandate.mode,
+            health: mandate.health,
+            checkedAt: mandate.checked_at,
+            incidents: (await this.deps.store.repairs.incidents(mandate.project_id))
+              .slice(0, 20)
+              .map((i) => ({
+                id: i.id,
+                resource: i.resource,
+                revision: i.revision,
+                state: i.state,
+                sessionId: i.last_session_id,
+                attempts: i.attempts,
+              })),
+          });
+        }
+      }
+      const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or execute assignments; only scheduled decision reviews can propose repairs. Current cached observations (not fresh forge evidence): ${JSON.stringify(observations)}\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.appendSystemPrompt =
+        'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.';
+      resumeSessionId = undefined;
+    }
     const runOpts = {
       ...builtRunOpts,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),

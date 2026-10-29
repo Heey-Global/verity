@@ -1,3 +1,4 @@
+import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
@@ -1418,6 +1419,7 @@ export class EventStore implements EventSink {
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
+    this.repairs = new RepairSupervisionStore(db);
   }
 
   readonly projectEgress: ProjectEgressStore;
@@ -1425,6 +1427,7 @@ export class EventStore implements EventSink {
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly repairs: RepairSupervisionStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
