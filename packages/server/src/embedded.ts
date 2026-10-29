@@ -4825,6 +4825,10 @@ export async function buildEmbeddedServer(
       for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
       return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
     },
+    repairPullRequest: async (project, number) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
+    },
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider?.discover) throw new Error('Repository monitoring unsupported');

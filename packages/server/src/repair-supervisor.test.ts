@@ -63,7 +63,15 @@ function harness() {
         model: 'm',
       });
     }),
-    dispatch: vi.fn(async () => true),
+    dispatch: vi.fn<RepairSupervisorDeps['dispatch']>(
+      async (sessionId, prompt, dispatchId, validate) => {
+        if (!(await validate())) return false;
+        return !!(await ctx.store.admitBackgroundDispatch(dispatchId, sessionId, {
+          t: 'prompt',
+          text: prompt,
+        }));
+      },
+    ),
   };
   return { deps, observation, supervisor: createRepairSupervisor(deps) };
 }
@@ -128,7 +136,7 @@ describe('repair supervision', () => {
     });
     await h.supervisor.sweep();
     expect(h.deps.dispatch).not.toHaveBeenCalled();
-    expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('blocked');
+    expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('open');
   });
   it('restores ownership after coordinator restart without dispatching twice', async () => {
     await ctx.store.repairs.configure('a', 'user', 'automatic');
@@ -198,7 +206,10 @@ describe('repair supervision', () => {
 it('retains ownership after uncertain dispatch even without a local busy marker', async () => {
   await ctx.store.repairs.configure('a', 'user', 'automatic');
   const { deps } = harness();
-  vi.mocked(deps.dispatch).mockRejectedValue(new Error('response lost'));
+  vi.mocked(deps.dispatch).mockImplementation(async (sessionId, prompt, dispatchId) => {
+    await ctx.store.admitBackgroundDispatch(dispatchId, sessionId, { t: 'prompt', text: prompt });
+    throw new Error('response lost');
+  });
   const supervisor = createRepairSupervisor(deps);
   await supervisor.sweep();
   await supervisor.sweep();
@@ -336,4 +347,137 @@ it('persists the event boundary before dispatch into a reused session', async ()
   const events = await ctx.store.listRecentSessionProjectionEvents('reused', 20);
   expect(repairTurnTerminated(events.filter((row) => row.seq > boundary!))).toBe(false);
   expect(vi.mocked(deps.dispatch).mock.calls[0]?.[5]).toBe('a');
+});
+
+it.each(['open', 'closed', 'merged', null] as const)(
+  'reconciles a persisted workflow repair PR in state %s after restart',
+  async (state) => {
+    await ctx.store.repairs.configure('a', 'user', 'automatic');
+    const { deps, observation, supervisor } = harness();
+    observation.page.pulls = [];
+    observation.statuses = [];
+    observation.page.runs = [
+      {
+        id: '20',
+        workflow: 'build',
+        sha: 'sha1',
+        branch: 'main',
+        conclusion: 'failure',
+        url: 'https://example.test/run/20',
+      },
+    ];
+    const proposal = {
+      number: 77,
+      title: 'Fix',
+      url: 'https://example.test/77',
+      phase: 'open' as const,
+      pipeline: 'pending' as const,
+      mergeable: false,
+      checks: { total: 0, completed: 0, successful: 0, failed: 0, pending: 0 },
+    };
+    deps.result = vi.fn(async () => proposal);
+    deps.pullRequest = vi.fn(async () => (state ? { state } : null));
+    await supervisor.sweep();
+    vi.mocked(deps.terminated).mockResolvedValue(true);
+    await supervisor.sweep();
+    expect((await ctx.store.repairs.incidents('a'))[0]).toMatchObject({
+      state: 'awaiting_merge',
+      repair_pr: 77,
+    });
+    await createRepairSupervisor(deps).sweep();
+    expect(deps.pullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'a', owner: 'team', repo: 'app' }),
+      77,
+    );
+    expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe(
+      state === 'closed' ? 'open' : 'awaiting_merge',
+    );
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each(['pending', 'off', 'revoked', 'exhausted'] as const)(
+  'does not reopen an abandoned workflow repair when %s',
+  async (guard) => {
+    await ctx.store.repairs.configure('a', 'user', 'automatic');
+    const { deps, observation, supervisor } = harness();
+    observation.page.pulls = [];
+    observation.statuses = [];
+    observation.page.runs = [
+      {
+        id: '20',
+        workflow: 'build',
+        sha: 'sha1',
+        branch: 'main',
+        conclusion: 'failure',
+        url: 'https://example.test/run/20',
+      },
+    ];
+    deps.pullRequest = vi.fn(async () => ({ state: 'closed' as const }));
+    await supervisor.sweep();
+    const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+    await ctx.store.repairs.trackRepairPr(claim.id, 77);
+    await ctx.store.repairs.finishAttempt(
+      claim.id,
+      claim.dispatch_id!,
+      'awaiting_merge',
+      claim.evidence,
+    );
+    if (guard === 'pending')
+      observation.page.runs.unshift({ ...observation.page.runs[0]!, id: '21', conclusion: null });
+    if (guard === 'off') await ctx.store.repairs.configure('a', 'user', 'off');
+    if (guard === 'revoked') vi.mocked(deps.authorized).mockResolvedValue(false);
+    if (guard === 'exhausted')
+      await ctx.db.updateTable('repair_resource_budgets').set({ used: 2 }).execute();
+    await supervisor.sweep();
+    expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('awaiting_merge');
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('recovers an unstarted reservation while globally disabled without launching work', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const incident = await ctx.store.repairs.observe('a', 'pr:42', 'sha1', '{}');
+  const claim = (await ctx.store.repairs.claim(incident.id, 'never-created', 1))!;
+  const { deps } = harness();
+  deps.enabled = async () => false;
+  await createRepairSupervisor(deps).sweep();
+  expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('cancelled');
+  expect(await ctx.store.repairs.budgetUsed('a', 'pr:42')).toBe(0);
+  expect(deps.dispatch).not.toHaveBeenCalled();
+});
+
+it('does not recover a live reservation while delegated session provisioning is slow', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const incident = await ctx.store.repairs.observe('a', 'pr:42', 'sha1', '{}');
+  const { deps } = harness();
+  const spawn = deps.spawn;
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  deps.spawn = async (...args) => {
+    entered();
+    await gate;
+    await spawn(...args);
+  };
+  const supervisor = createRepairSupervisor({ ...deps, coordinate: true });
+  const admission = supervisor.delegate('a', incident.id, 'sha1');
+  await started;
+  try {
+    await supervisor.sweep();
+    const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+    expect(claim.owner_session_id).toBeTruthy();
+    expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('reserved');
+  } finally {
+    release();
+    await admission;
+  }
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  const claim = (await ctx.store.repairs.incidents('a'))[0]!;
+  expect((await ctx.store.repairs.dispatchReceipt(claim.dispatch_id!))?.state).toBe('admitted');
 });
