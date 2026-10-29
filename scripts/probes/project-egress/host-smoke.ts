@@ -225,7 +225,7 @@ try {
       '--security-opt',
       'no-new-privileges=true',
       '--user',
-      '0:0',
+      '0:1101',
       '--mount',
       `type=bind,src=${runtime},dst=/run/verity-runner`,
       '--mount',
@@ -334,13 +334,19 @@ try {
     `delete table inet ${table}\ndelete table bridge ${table}\ndelete table inet verity_egress_boot\ndelete table bridge verity_egress_boot\n`,
   );
   await docker('start', containerId);
+  let receiverLog = '';
   for (
     let i = 0;
-    i < 50 && !(await docker('logs', 'veh-receiver')).includes('host-startup-marker');
+    i < 50 &&
+    !['host-startup-marker', 'transferred-startup-marker'].every((marker) =>
+      receiverLog.includes(marker),
+    );
     i++
-  )
+  ) {
     await delay(100);
-  assert.ok((await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
+    receiverLog = await docker('logs', 'veh-receiver');
+  }
+  assert.ok(receiverLog.includes('host-startup-marker'));
   assert.ok((await docker('logs', 'veh-receiver')).includes('transferred-startup-marker'));
   results.push(
     'removed-fence positive control reaches receiver with inherited and transferred sockets',
