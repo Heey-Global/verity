@@ -75,6 +75,7 @@ ready() {
 ready
 docker save "$fixture_image" | docker exec -i "$name" docker load > "$PROBE_EVIDENCE/image-load.txt"
 docker exec "$name" docker tag "$fixture_image" project-egress-fixture:local
+timeout 120 docker exec "$name" node /probe/host-smoke.mjs > "$PROBE_EVIDENCE/host-smoke.txt" 2>&1
 timeout 240 docker exec "$name" node /probe/adapter-smoke.mjs > "$PROBE_EVIDENCE/adapter-smoke.txt" 2>&1
 # No project probe receives the outer/inner Docker socket or evidence mount.
 timeout 600 docker exec "$name" python3 /probe/probe.py before-restart > "$PROBE_EVIDENCE/before-restart.txt" 2>&1
