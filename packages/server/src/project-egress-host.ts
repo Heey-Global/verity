@@ -226,9 +226,19 @@ export class ProjectEgressHost {
         await this.deps.inspectContainer(record.binding, request.containerId, request.role);
         await this.deps.inspectNetwork(record.binding, containerIds(record));
       } catch (error) {
-        await this.deps.apply(projectEgressStartupRules(record.binding));
-        await this.deps.stopContainer(request.containerId);
-        throw error;
+        const containment = await Promise.allSettled([
+          Promise.resolve().then(() => this.deps.apply(projectEgressStartupRules(record.binding))),
+          Promise.resolve().then(() => this.deps.stopContainer(request.containerId)),
+        ]);
+        throw new AggregateError(
+          [
+            error,
+            ...containment.flatMap((result) =>
+              result.status === 'rejected' ? [result.reason as unknown] : [],
+            ),
+          ],
+          'Host start failed; containment attempted',
+        );
       }
       return { state: 'started-denied', generation: record.binding.generation };
     });

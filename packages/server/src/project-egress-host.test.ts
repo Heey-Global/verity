@@ -149,7 +149,7 @@ it('denies and stops after a post-start inspection mismatch', async () => {
     .mockResolvedValueOnce(undefined)
     .mockResolvedValueOnce(undefined)
     .mockRejectedValueOnce(new Error('changed'));
-  await expect(host.execute(start)).rejects.toThrow('changed');
+  await expect(host.execute(start)).rejects.toThrow('containment attempted');
   expect(calls.slice(-2)).toEqual(['deny', 'stop']);
 });
 it('rejects supplied commands and admission operations absent from the protocol', () => {
@@ -253,4 +253,16 @@ it('requires authentication on the real Unix listener and never exposes raw exec
   expect(deps.apply).not.toHaveBeenCalled();
   expect(await send('a'.repeat(64), { operation: 'register', binding })).toBe(200);
   expect(await send('a'.repeat(64), { operation: 'exec', command: 'true' })).toBe(409);
+});
+
+it('still stops a mismatched started container when restoring the firewall also fails', async () => {
+  const { host, deps } = fixture();
+  await host.execute({ operation: 'register', binding });
+  deps.inspectContainer
+    .mockResolvedValueOnce(undefined)
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('changed attachment'));
+  deps.apply.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('nft unavailable'));
+  await expect(host.execute(start)).rejects.toThrow('containment attempted');
+  expect(deps.stopContainer).toHaveBeenCalledWith(id);
 });
