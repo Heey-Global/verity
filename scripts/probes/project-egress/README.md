@@ -165,3 +165,9 @@ permissions. Profile, image, user and mount substitutions must fail before start
 absence of traffic alone is not acceptance. This probe does not execute an agent
 turn or certify all production shared IPC paths, transport admission, daemon boot
 ordering, or hard expiry under host suspension. Those remain explicit gates.
+
+If the normal relay start fails, disposable diagnostic clones retain the same
+image, mounts, CPU and memory limits on the already-denied generation network.
+They use a logging-only runtime variant and compare PID ceilings of 32 and 64
+sequentially. Their output is diagnostic only: the original error still fails the
+job, and the host controller never accepts the debug runtime as a protected role.

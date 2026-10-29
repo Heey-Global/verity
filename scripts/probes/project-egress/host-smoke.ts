@@ -389,7 +389,17 @@ try {
     relayGid: 65532,
     projectNetwork: () => generationNetwork,
   };
-  const startRelay = createDockerProjectRelayStarter(relayOptions);
+  let relaySpec: ContainerSpec | undefined;
+  const startRelay = createDockerProjectRelayStarter({
+    ...relayOptions,
+    docker: {
+      ...relayOptions.docker,
+      createContainer: async (spec) => {
+        relaySpec = structuredClone(spec);
+        return relayOptions.docker.createContainer(spec);
+      },
+    },
+  });
   const context = {
     identity,
     egress: lifecycle,
@@ -444,7 +454,51 @@ try {
     assert.ok(!starts.includes(created), `${name} must fail before process start`);
   }
   results.push('profile, user, image and mount substitutions refused before actual process start');
-  await startRelay(context);
+  try {
+    await startRelay(context);
+  } catch (originalError) {
+    // Diagnostic clones are never an acceptance fallback. They keep the already-denied
+    // network and exact image/mounts; the normal host start failure still fails this job.
+    const diagnosticSpec = relaySpec;
+    await (async () => {
+      if (diagnosticSpec) {
+        await mkdir('/evidence/runsc-debug', { recursive: true });
+        await mkdir('/evidence/runsc-panic', { recursive: true });
+        for (const pidsLimit of [32, 64]) {
+          const diagnostic = await relayOptions.docker.createContainer({
+            ...diagnosticSpec,
+            name: `veh-relay-diagnostic-${pidsLimit}`,
+            runtime: 'runsc-relay-debug',
+            pidsLimit,
+          });
+          extraContainers.push(diagnostic.id);
+          let error: string | undefined;
+          try {
+            await docker('start', diagnostic.id);
+            await delay(250);
+          } catch (failure) {
+            error = String(failure);
+          }
+          await writeFile(
+            `/evidence/diagnostic-${pidsLimit}.json`,
+            JSON.stringify(
+              {
+                error,
+                container: JSON.parse(await docker('inspect', diagnostic.id)) as unknown,
+                logs: await docker('logs', diagnostic.id).catch(() => 'unavailable'),
+              },
+              null,
+              2,
+            ),
+          );
+          await docker('rm', '-f', diagnostic.id);
+        }
+      }
+    })().catch((error) => {
+      process.stderr.write(`Diagnostic capture failed: ${String(error)}\n`);
+    });
+    throw originalError;
+  }
   relayName = projectRelayContainerName(identity);
   const relayId = (await docker('inspect', '--format', '{{.Id}}', relayName)).trim();
   // Loopback reaches the actual relay without adding any network admission rule.
