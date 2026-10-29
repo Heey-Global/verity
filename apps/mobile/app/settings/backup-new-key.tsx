@@ -85,12 +85,11 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
       .catch(async (failure: unknown) => {
         const after = await client.getBackupStatus().catch(() => undefined);
         const before = generation.current;
-        const unchanged =
-          after?.available === true &&
-          after.keyGeneration !== undefined &&
-          before !== undefined &&
-          after.keyGeneration === before;
-        if (!unchanged) {
+        const known =
+          after?.available === true && after.keyGeneration !== undefined && before !== undefined;
+        const changed = known && after.keyGeneration! > before;
+        const expired = failure instanceof VerityApiError && failure.status === 410;
+        if (changed || (expired && !known)) {
           // The key changed, or this device cannot tell: only a restore test can say
           // whether the key shown here is the one in use.
           pending.current = null;
@@ -98,7 +97,7 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
           setError(KEY_OUTCOME_UNKNOWN);
           return;
         }
-        if (failure instanceof VerityApiError && failure.status === 410) {
+        if (expired) {
           // The key generation did not move, so the current key stays in force.
           setOffer(null);
           setError('The new key expired before it was confirmed. Retry to get another one.');

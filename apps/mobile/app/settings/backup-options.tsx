@@ -66,7 +66,7 @@ function BackupOptionsView({ client }: { client: VerityClient }) {
             title="How often"
             trailing={formatInterval(interval)}
             navigates
-            disabled={status === undefined}
+            disabled={status === undefined || saving}
             onPress={() => setSheet('interval')}
           />
           <ToggleRow
