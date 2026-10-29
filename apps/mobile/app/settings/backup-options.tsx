@@ -129,7 +129,7 @@ function BackupOptionsView({ client }: { client: VerityClient }) {
             <Row
               leading={{ icon: 'hard-drive' }}
               title="Older backups are kept"
-              subtitle="They still open only with your old key and are removed over time as usual, after about 6 months at the latest."
+              subtitle="They still require your old key. Replacing the key does not delete them; normal retention rules still apply."
             />
           </Card>
           <Card flush>
