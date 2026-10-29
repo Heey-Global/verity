@@ -1,3 +1,4 @@
+import { inspectEgressRelay, type EgressRelayPolicy } from './project-egress-relay-policy.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { constants } from 'node:fs';
@@ -37,7 +38,7 @@ const container = z
       Id: z.string(),
       HostConfig: z.object({
         NetworkMode: z.string(),
-        Runtime: z.literal('runsc-project'),
+        Runtime: z.string(),
         Privileged: z.literal(false),
         RestartPolicy: z.object({ Name: z.literal('no') }),
         CapAdd: z.array(z.string()).nullable(),
@@ -69,7 +70,7 @@ export function verifyEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
   reply: unknown,
-  role: 'sandbox' | 'relay' = 'relay',
+  role: 'sandbox' | 'relay' = 'sandbox',
 ): void {
   const value = container.parse(reply)[0]!;
   const endpoints = Object.entries(value.NetworkSettings.Networks);
@@ -81,6 +82,7 @@ export function verifyEgressHostContainer(
     caps.length === 0 ||
     (role === 'sandbox' && JSON.stringify(caps) === JSON.stringify(runnerCaps));
   if (
+    value.HostConfig.Runtime !== (role === 'relay' ? 'runsc-relay' : 'runsc-project') ||
     value.Id !== id ||
     ![binding.networkId, binding.networkName].includes(value.HostConfig.NetworkMode) ||
     !permittedCaps ||
@@ -109,16 +111,24 @@ export async function inspectEgressHostNetwork(
   if (!device.isSymbolicLink()) throw new Error('Missing host bridge');
 }
 /** A runtime name alone does not prove Docker uses isolated gVisor networking. */
-export function verifyEgressHostRuntime(reply: unknown): void {
+export function verifyEgressHostRuntime(
+  reply: unknown,
+  role: 'sandbox' | 'relay' = 'sandbox',
+): void {
+  const name = role === 'relay' ? 'runsc-relay' : 'runsc-project';
   const runtime = z
     .object({
-      'runsc-project': z.object({
+      [name]: z.object({
         path: z.string().regex(/^\/opt\/verity\/runsc\/release-[0-9.]+\/runsc$/u),
         runtimeArgs: z.array(z.string()),
       }),
     })
-    .parse(reply)['runsc-project'];
-  const expected = ['--host-uds=create', '--network=sandbox', '--platform=systrap'];
+    .parse(reply)[name]!;
+  const expected = [
+    role === 'relay' ? '--host-uds=open' : '--host-uds=create',
+    '--network=sandbox',
+    '--platform=systrap',
+  ];
   if (JSON.stringify([...runtime.runtimeArgs].sort()) !== JSON.stringify(expected))
     throw new Error('Unsupported host runtime network profile');
 }
@@ -127,10 +137,16 @@ export async function inspectEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
   role: 'sandbox' | 'relay',
+  relayPolicy?: EgressRelayPolicy,
 ): Promise<void> {
   verifyEgressHostRuntime(
     JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
+    role,
   );
+  if (role === 'relay') {
+    if (!relayPolicy) throw new Error('Relay host policy is not configured');
+    await inspectEgressRelay(binding, id, relayPolicy, projectEgressHostDocker);
+  }
   verifyEgressHostContainer(
     binding,
     id,

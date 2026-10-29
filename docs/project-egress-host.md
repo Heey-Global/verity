@@ -119,3 +119,35 @@ same generation; repair must retire that generation and allocate a fresh one.
 Generation networks and retired host reservations are retained, not garbage
 collected by this increment. Complete systemd/daemon failure, hard-expiry and
 real Runner/relay traffic evidence remain open acceptance gates.
+
+## Experimental relay profile
+
+The optional host-controlled relay uses `runsc-relay` with exactly
+`--platform=systrap`, `--network=sandbox`, and `--host-uds=open`. Only the disposable
+egress CI daemon registers this profile. The production installer and the Sandbox's
+`runsc-project` registration are unchanged. Missing or different profiles refuse
+protected startup; there is no runc, host-network, or `host-uds=all` fallback.
+
+The host service optionally reads `/etc/verity-egress/relay.json`, a canonical,
+root-owned private file. Absence disables relay starts. Its strict schema contains
+`image` (an immutable repository digest or image content ID), `dataVolume`,
+`socketOwnerUid`, `relayGid`, `brokerSubpath`, `claudeSubpath`, and optional
+`codexSubpath`. Paths are relative directories below the inspected local Docker
+volume, not arbitrary bind sources. Provisioning does not write this policy.
+
+For each start, including adoption, the host derives the generation directory
+using the same identity helper as the existing listeners. It checks declared
+volume subpaths, effective mounts, socket inode permissions and directory contents,
+non-writable/non-symlinked ancestors, image identity, fixed entrypoint, non-root
+user, read-only filesystem and private namespaces. Only the three compiled relay
+socket targets are eligible; extra mounts, devices, published ports, overridden
+commands and additional environment settings are refused. Forge proxy overrides
+are consequently unavailable on this experimental path. Read-only mounts restrict
+filesystem changes, not socket operations: existing broker/account/action and
+model authorization remain required.
+
+After Docker becomes available, the host service revalidates restored container
+bindings before serving control requests. Mismatches cause attempted container
+stops and leave the controller unavailable. The bootstrap rule restoration remains
+independent of Docker. This does not establish daemon boot acceptance or hard lease
+expiry under host suspension.

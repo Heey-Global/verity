@@ -1,11 +1,23 @@
-import { createDockerClient } from '../../../packages/server/src/docker.js';
+import {
+  createDockerProjectRelayStarter,
+  projectRelayContainerName,
+} from '../../../packages/server/src/project-relay-docker.js';
+import {
+  relaySocketMounts,
+  type EgressRelayPolicy,
+} from '../../../packages/server/src/project-egress-relay-policy.js';
+import { createDockerClient, type ContainerSpec } from '../../../packages/server/src/docker.js';
 import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
 import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { createServer, request, type Server } from 'node:http';
 import { mkdtemp, writeFile, rm, mkdir, chmod, chown } from 'node:fs/promises';
-import { createConnection } from 'node:net';
+import {
+  createServer as createNetServer,
+  createConnection,
+  type Server as NetServer,
+} from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -30,12 +42,19 @@ let generationNetwork = '';
 const directory = await mkdtemp('/tmp/egress-host-');
 const token = randomBytes(32).toString('hex');
 const store = await openProjectEgressHostStore(directory);
+let relayPolicy: EgressRelayPolicy | undefined;
+const starts: string[] = [];
 const dependencies = {
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: applyProjectFenceRules,
   inspectNetwork: inspectEgressHostNetwork,
-  inspectContainer: inspectEgressHostContainer,
+  inspectContainer: (
+    binding: Parameters<typeof inspectEgressHostContainer>[0],
+    id: string,
+    role: 'sandbox' | 'relay',
+  ) => inspectEgressHostContainer(binding, id, role, relayPolicy),
   startContainer: async (id: string) => {
+    starts.push(id);
     await docker('start', id);
   },
   stopContainer: async (id: string) => {
@@ -43,7 +62,11 @@ const dependencies = {
   },
 };
 let server: Server | undefined;
-let broker: Server | undefined;
+const socketServers: (Server | NetServer)[] = [];
+let relayName = '';
+const volumeName = 'veh-relay-data';
+const extraNetworks: string[] = [];
+const extraContainers: string[] = [];
 const results: string[] = [];
 try {
   for (const [name, subnet] of [['veh-receiver', '172.30.105.0/24']])
@@ -254,42 +277,148 @@ try {
     true,
   );
   results.push('actual Runner supervisor and session-home broker answer through mounted socket');
-  const brokerDirectory = `${directory}/broker`;
-  await mkdir(brokerDirectory, { mode: 0o755 });
+  await docker('volume', 'create', volumeName);
+  const dataRoot = (
+    await docker('volume', 'inspect', '--format', '{{.Mountpoint}}', volumeName)
+  ).trim();
+  relayPolicy = {
+    image: (
+      await docker('image', 'inspect', '--format', '{{.Id}}', 'project-egress-relay:local')
+    ).trim(),
+    dataVolume: volumeName,
+    socketOwnerUid: 0,
+    relayGid: 65532,
+    brokerSubpath: 'broker',
+    claudeSubpath: 'claude',
+    codexSubpath: 'codex',
+  };
   let brokerRequests = 0;
-  broker = createServer((_request, response) => {
-    brokerRequests++;
-    response.end('project-bound-fixture');
-  });
-  await new Promise<void>((resolve) => broker!.listen(`${brokerDirectory}/broker.sock`, resolve));
-  await chmod(`${brokerDirectory}/broker.sock`, 0o666);
-  const relayId = (
+  const sockets = relaySocketMounts(binding, relayPolicy);
+  for (const item of sockets) {
+    const path = `${dataRoot}/${item.subpath}`;
+    await mkdir(path, { recursive: true });
+    await chown(path, 0, 65532);
+    await chmod(path, 0o710);
+    const listener =
+      item.socket === 'broker.sock'
+        ? createServer((_request, response) => {
+            brokerRequests++;
+            response.end('project-bound-fixture');
+          })
+        : createNetServer((socket) => socket.once('data', () => socket.end(item.socket)));
+    socketServers.push(listener);
+    await new Promise<void>((resolve) => listener.listen(`${path}/${item.socket}`, resolve));
+    await chown(`${path}/${item.socket}`, 0, 65532);
+    await chmod(`${path}/${item.socket}`, 0o660);
+  }
+  const udsIdentity = { projectId: 'uds-open-negative', containerGeneration: 'gen1' };
+  const udsBinding = await lifecycle.create(udsIdentity);
+  extraNetworks.push(udsBinding.networkName);
+  const udsProbe = `const fs=require('node:fs');const p='/probe-broker/broker.sock';if(!fs.statSync(p).isSocket())process.exit(2);const s=require('node:net').connect(p,()=>process.exit(1));s.setTimeout(3000,()=>process.exit(3));s.on('error',()=>{console.log('sandbox-uds-open-denied');process.exit(0)});`;
+  const udsId = (
     await docker(
       'create',
-      '--name',
-      'veh-relay',
       '--runtime',
       'runsc-project',
+      '--network',
+      udsBinding.networkName,
       '--restart',
       'no',
-      '--network',
-      generationNetwork,
-      '--memory',
-      '256m',
-      '--pids-limit',
-      '64',
       '--cap-drop',
       'ALL',
       '--security-opt',
       'no-new-privileges=true',
-      '--sysctl',
-      'net.ipv4.ip_unprivileged_port_start=0',
+      '--memory',
+      '128m',
+      '--pids-limit',
+      '32',
+      '--user',
+      '65532:65532',
       '--mount',
-      `type=bind,src=${brokerDirectory},dst=/run/verity-relay/broker,readonly`,
-      'project-egress-relay:local',
+      `type=volume,src=${volumeName},dst=/probe-broker,volume-subpath=${sockets[0]!.subpath},readonly`,
+      '--entrypoint',
+      '/nodejs/bin/node',
+      relayPolicy.image,
+      '-e',
+      udsProbe,
     )
   ).trim();
-  await lifecycle.start(identity, 'relay', relayId);
+  extraContainers.push(udsId);
+  await lifecycle.start(udsIdentity, 'sandbox', udsId);
+  assert.equal((await docker('wait', udsId)).trim(), '0', await docker('logs', udsId));
+  assert.ok((await docker('logs', udsId)).includes('sandbox-uds-open-denied'));
+  await lifecycle.retire(udsIdentity);
+  results.push('Sandbox can see an injected broker socket but cannot open it');
+  const relayOptions = {
+    docker: createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
+    image: relayPolicy.image,
+    dataVolume: volumeName,
+    dataVolumeRoot: dataRoot,
+    brokerSocketRoot: `${dataRoot}/broker`,
+    claudeSocketRoot: `${dataRoot}/claude`,
+    codexSocketRoot: `${dataRoot}/codex`,
+    socketOwnerUid: 0,
+    relayGid: 65532,
+    projectNetwork: () => generationNetwork,
+  };
+  const startRelay = createDockerProjectRelayStarter(relayOptions);
+  const context = {
+    identity,
+    egress: lifecycle,
+    brokerSocketPath: `${dataRoot}/${sockets[0]!.subpath}/broker.sock`,
+    claudeSocketPath: `${dataRoot}/${sockets[1]!.subpath}/claude.sock`,
+    codexSocketPath: `${dataRoot}/${sockets[2]!.subpath}/codex.sock`,
+  };
+  const badSpecs: [string, (spec: ContainerSpec) => ContainerSpec][] = [
+    ['sandbox-profile', (spec) => ({ ...spec, runtime: 'runsc-project' })],
+    ['root-user', (spec) => ({ ...spec, user: '0:0' })],
+    ['mutable-image-reference', (spec) => ({ ...spec, image: 'project-egress-relay:local' })],
+    [
+      'extra-runner-mount',
+      (spec) => ({
+        ...spec,
+        volumeMounts: [
+          ...spec.volumeMounts!,
+          {
+            volume: volumeName,
+            target: '/run/verity-runner',
+            subpath: sockets[0]!.subpath,
+            readOnly: true,
+          },
+        ],
+      }),
+    ],
+    [
+      'foreign-generation',
+      (spec) => ({
+        ...spec,
+        volumeMounts: spec.volumeMounts!.map((mount, i) =>
+          i === 0 ? { ...mount, subpath: sockets[1]!.subpath } : mount,
+        ),
+      }),
+    ],
+  ];
+  for (const [name, mutate] of badSpecs) {
+    let created = '';
+    const badStarter = createDockerProjectRelayStarter({
+      ...relayOptions,
+      docker: {
+        ...relayOptions.docker,
+        createContainer: async (spec) => {
+          const value = await relayOptions.docker.createContainer(mutate(spec));
+          created = value.id;
+          return value;
+        },
+      },
+    });
+    await assert.rejects(badStarter(context), undefined, name);
+    assert.ok(created, `${name} must reach actual Docker creation`);
+    assert.ok(!starts.includes(created), `${name} must fail before process start`);
+  }
+  results.push('profile, user, image and mount substitutions refused before actual process start');
+  await startRelay(context);
+  relayName = projectRelayContainerName(identity);
+  const relayId = (await docker('inspect', '--format', '{{.Id}}', relayName)).trim();
   // Loopback reaches the actual relay without adding any network admission rule.
   const relayProbe = `const h=require('node:http');const r=h.request({host:'127.0.0.1',port:8080,method:'POST',path:'/internal/project/memory'},s=>{let b='';s.on('data',c=>b+=c);s.on('end',()=>{console.log(JSON.stringify({status:s.statusCode,body:b}));});});r.setTimeout(3000,()=>r.destroy());r.on('error',()=>process.exit(1));r.end();`;
   let relayReply = '';
@@ -305,14 +434,23 @@ try {
     `actual relay UDS positive control failed: ${relayReply}`,
   );
   assert.ok(brokerRequests > 0);
-  results.push('actual relay forwards loopback control to its mounted project broker socket');
+  for (const [port, name] of [
+    [8443, 'claude.sock'],
+    [8444, 'codex.sock'],
+  ] as const) {
+    const probe = `const s=require('node:net').connect(${port},'127.0.0.1',()=>s.write('probe'));s.setTimeout(3000,()=>s.destroy(new Error('timeout')));s.on('data',d=>{console.log(d.toString());s.destroy()});s.on('error',()=>process.exit(1));`;
+    assert.ok((await docker('exec', relayId, '/nodejs/bin/node', '-e', probe)).includes(name));
+  }
+  await docker('stop', '--time', '1', relayId);
+  await startRelay({ ...context, resumeExisting: true });
+  results.push('actual relay forwards broker and model sockets and survives mediated restart');
 
   await delay(2000);
   assert.ok((await docker('logs', 'veh-source')).includes('sending'));
   assert.ok((await docker('logs', 'veh-source')).includes('transferred-socket-ready'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('transferred-startup-marker'));
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
-  results.push('no receiver observation from first process instruction');
+  results.push('no receiver observation during Runner/relay startup and mediated restart');
   // Reconstruct the host controller from its real fsynced state while traffic continues.
   await new Promise<void>((resolve, reject) =>
     server!.close((error) => (error ? reject(error) : resolve())),
@@ -320,6 +458,7 @@ try {
   server = undefined;
   const recovered = new ProjectEgressHost(await store.load(), dependencies);
   await recovered.restore();
+  await recovered.revalidate();
   server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
@@ -328,6 +467,18 @@ try {
   await lifecycle.retire(identity);
   await assert.rejects(lifecycle.start(identity, 'sandbox', containerId));
   results.push('retired generation cannot restart');
+  const nextIdentity = { ...identity, containerGeneration: 'gen2' };
+  const nextBinding = await lifecycle.create(nextIdentity);
+  extraNetworks.push(nextBinding.networkName);
+  assert.notEqual(nextBinding.networkId, binding.networkId);
+  await assert.rejects(lifecycle.start(nextIdentity, 'relay', relayId));
+  await assert.rejects(lifecycle.start(identity, 'relay', relayId));
+  await lifecycle.retire(nextIdentity);
+  results.push('replacement gets a fresh network and rejects old-generation container identities');
+  const deniedLog = await docker('logs', 'veh-receiver');
+  assert.ok(
+    !deniedLog.includes('host-startup-marker') && !deniedLog.includes('transferred-startup-marker'),
+  );
   // Deliberately broken boundary: the same source must reach the independent receiver.
   const table = projectEgressStartupRules(binding).match(/add table inet (\w+)/)![1];
   await applyProjectFenceRules(
@@ -366,15 +517,23 @@ try {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
-  for (const name of ['veh-source', 'veh-receiver', 'veh-unsupported', 'veh-relay']) {
+  for (const name of [
+    'veh-source',
+    'veh-receiver',
+    'veh-unsupported',
+    relayName,
+    ...extraContainers,
+  ].filter(Boolean)) {
     await writeFile(
       `/evidence/${name}.jsonl`,
       await docker('logs', name).catch(() => 'unavailable'),
     );
     await docker('rm', '-f', name).catch(() => undefined);
   }
-  for (const name of [generationNetwork, 'veh-receiver'].filter(Boolean))
+  for (const name of [generationNetwork, 'veh-receiver', ...extraNetworks].filter(Boolean))
     await docker('network', 'rm', name).catch(() => undefined);
-  if (broker) await new Promise<void>((resolve) => broker!.close(() => resolve()));
+  for (const listener of socketServers)
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+  await docker('volume', 'rm', volumeName).catch(() => undefined);
   await rm(directory, { recursive: true, force: true });
 }

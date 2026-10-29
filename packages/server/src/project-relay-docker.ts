@@ -87,7 +87,10 @@ export function createDockerProjectRelayStarter(
   options: DockerProjectRelayOptions,
 ): (context: ProjectRelayStartContext) => Promise<ProjectRelayRuntime> {
   return async (context) => {
-    if (!/@sha256:[a-f0-9]{64}$/i.test(options.image)) {
+    if (
+      !/@sha256:[a-f0-9]{64}$/i.test(options.image) &&
+      !(context.egress !== undefined && /^sha256:[a-f0-9]{64}$/u.test(options.image))
+    ) {
       throw new Error('project relay image must be digest-pinned');
     }
     const name = projectRelayContainerName(context.identity);
@@ -133,7 +136,7 @@ export function createDockerProjectRelayStarter(
       image: options.image,
       name,
       network: generationNetwork?.networkName ?? options.projectNetwork(context.identity.projectId),
-      ...(context.egress === undefined ? {} : { runtime: 'runsc-project' as const }),
+      ...(context.egress === undefined ? {} : { runtime: 'runsc-relay' as const }),
       user: `65532:${String(options.relayGid)}`,
       restartPolicy: 'no',
       readOnlyRootfs: true,

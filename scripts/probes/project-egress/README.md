@@ -119,7 +119,7 @@ anonymous daemon volume and tagged images. The workflow has read-only repository
 permissions, no secrets and no production-daemon access. It runs on matching PR
 changes or a manual workflow dispatch; merely creating the local files runs no CI.
 
-## Production differences and limits
+## Reduced baseline differences and limits
 
 The reference launcher is
 [`packages/server/src/provisioner.ts`](../../../packages/server/src/provisioner.ts),
@@ -158,8 +158,10 @@ receiver starts first. A project-UID process continuously sends on an inherited
 UDP descriptor and a descriptor transferred with SCM_RIGHTS. Both must become
 observable when the fence is deliberately removed.
 
-The actual relay must also complete a loopback-to-mounted-broker-socket positive
-control under the same inspected runtime. A failed positive control fails the job;
+The actual relay is started through the production Docker lifecycle adapter under
+the separately inspected `runsc-relay` profile. Broker, Claude and Codex socket
+positive controls use generation-specific volume subpaths and production inode
+permissions. Profile, image, user and mount substitutions must fail before start. A failed positive control fails the job;
 absence of traffic alone is not acceptance. This probe does not execute an agent
 turn or certify all production shared IPC paths, transport admission, daemon boot
 ordering, or hard expiry under host suspension. Those remain explicit gates.

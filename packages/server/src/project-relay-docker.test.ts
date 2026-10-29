@@ -504,7 +504,7 @@ it('routes new, running and stopped experimental relays through host acknowledge
   const runtime = await h.start({ ...context, egress });
   expect(h.createContainer.mock.calls[0]?.[0]).toMatchObject({
     network: 'generation-network',
-    runtime: 'runsc-project',
+    runtime: 'runsc-relay',
     restartPolicy: 'no',
   });
   expect(start).toHaveBeenCalledWith(identity, 'relay', 'relay-cid');
