@@ -176,11 +176,15 @@ their new separate-daemon and live rotation scenarios require a new CI result.
 They must not inherit the earlier run's demonstrated status.
 
 Local verification on the integrated main base used real PostgreSQL 15 and one
-test worker: all 454 assertions in 82 affected backup/authentication/pairing,
-TLS/content and workflow test files passed. The separate root rotation suite
-passed all 28 tests after twelve detected and restored mutations, including
-replaced container inventory and stale invitations. Server build, changed-file ESLint, formatting, script
-syntax and restored mutation-source/test digests passed. PostgreSQL cleanup
+test worker: 269 tests in 80 affected backup/authentication/pairing and TLS/content
+files passed. All 203 workflow tests passed in a separate rerun after a timeout
+under concurrent verification. The repository metadata follow-up passed nine
+repository/service/key-replacement tests and a detected/restored substitution
+mutation. The separate root rotation suite passed 19 tests and the unchanged
+pairing helper suite passed 12 tests. Coverage includes replaced container inventory,
+stale invitations and updater restart ordering. Server build, changed-file ESLint,
+formatting, script syntax and restored mutation-source/test digests passed.
+PostgreSQL cleanup
 used the documented teardown-only formatting workaround. Docker and native
 execution are not provided by this local sandbox; dedicated Docker CI remains
 required.

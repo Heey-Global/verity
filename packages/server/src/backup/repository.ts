@@ -177,6 +177,22 @@ export class BackupRepository {
     } else await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
     await this.withLock(async () => {
+      // Persist randomized ciphertext before destination publication: a retry must
+      // compare the exact artifact for this path, not just its shared signature domain.
+      const artifact = async (name: string, create: () => Promise<Buffer>): Promise<Buffer> => {
+        if (!resumeConfirmedReplacement) return create();
+        const path = join(this.stateRoot, `initialization-${name}`);
+        try {
+          const existing = await readBounded(path, 65536);
+          verifyMetadata(this.host.verificationKey, existing);
+          return existing;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        const bytes = await create();
+        await writeDurable(path, bytes, true);
+        return bytes;
+      };
       const publish = async (
         path: string,
         bytes: Uint8Array,
@@ -188,9 +204,7 @@ export class BackupRepository {
           if (!resumeConfirmedReplacement || (error as NodeJS.ErrnoException).code !== 'EEXIST')
             throw error;
           const existing = await readBounded(path, 65536);
-          if (path.endsWith('/header') || path.endsWith('/keys'))
-            verifyMetadata(this.host.verificationKey, existing);
-          else if (!Buffer.from(bytes).equals(existing))
+          if (!Buffer.from(bytes).equals(existing))
             throw new Error('Replacement repository is not empty', { cause: error });
         }
       };
@@ -208,20 +222,26 @@ export class BackupRepository {
       });
       await publish(
         join(this.root, 'header'),
-        await sealMetadata(
-          this.host,
-          Buffer.from(
-            JSON.stringify({
-              kind: 'repository',
-              format: 1,
-              repository: this.name,
-              createdAt: new Date().toISOString(),
-            }),
+        await artifact('header', () =>
+          sealMetadata(
+            this.host,
+            Buffer.from(
+              JSON.stringify({
+                kind: 'repository',
+                format: 1,
+                repository: this.name,
+                createdAt: new Date().toISOString(),
+              }),
+            ),
           ),
         ),
         true,
       );
-      await publish(join(this.root, 'keys'), await sealHostKeyBundle(this.host), true);
+      await publish(
+        join(this.root, 'keys'),
+        await artifact('keys', () => sealHostKeyBundle(this.host)),
+        true,
+      );
       await publish(join(this.root, 'sequence'), Buffer.from('0'), true);
       await publish(
         join(this.stateRoot, 'index'),

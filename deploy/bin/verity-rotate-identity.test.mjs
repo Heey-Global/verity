@@ -65,17 +65,21 @@ docker() {
  if [[ $1 = ps ]]; then
    if [[ $2 = -q && $* = *service=verity-updater* && \${FAIL_PHASE:-} = updater-inventory ]]; then return 8; fi
    if [[ $2 = -aq && $* != *--filter* && \${FAIL_PHASE:-} = inventory ]]; then return 9; fi
-   if [[ \${RACE_REPLACE:-0} = 1 && -f $ROTATION_RACE_FILE ]]; then
+   if [[ ( \${RACE_REPLACE:-0} = 1 || \${RACE_RESTART:-0} = 1 ) && -f $ROTATION_RACE_FILE ]]; then
      if [[ $2 = -aq && $* != *--filter* ]]; then printf '${updater}\\n${replacement}\\n';
-     elif [[ $* = *service=verity-updater* ]]; then :;
-     else printf '${replacement}\\n'; fi
+     elif [[ $* = *service=verity-updater* ]]; then if [[ $2 = -aq || \${RACE_RESTART:-0} = 1 || -f $ROTATION_RACE_FILE.updater-running ]]; then printf '${updater}\\n'; fi;
+     else printf '${replacement}\\n'; if [[ \${RACE_RESTART:-0} = 1 || -f $ROTATION_RACE_FILE.updater-running ]]; then printf '${updater}\\n'; fi; fi
      return
    fi
    if [[ $* = *label=com.docker.compose.service=postgres* ]]; then printf '${postgres}\\n';
    elif [[ $* = *service=verity-updater* ]]; then printf '${updater}\\n';
    else printf '${server}\\n${updater}\\n'; fi
- elif [[ \${RACE_REPLACE:-0} = 1 && -f $ROTATION_RACE_FILE && $* = *${server}* ]]; then return 44
+ elif [[ ( \${RACE_REPLACE:-0} = 1 || \${RACE_RESTART:-0} = 1 ) && -f $ROTATION_RACE_FILE && $* = *${server}* ]]; then return 44
  elif [[ $1 = stop && $* = *${updater}* && \${RACE_REPLACE:-0} = 1 ]]; then touch "$ROTATION_RACE_FILE"
+ elif [[ $1 = start && $* = *${updater}* ]]; then
+   [[ \${FAIL_PHASE:-} != updater-start ]] || return 8
+   touch "$ROTATION_RACE_FILE.updater-running"
+   if [[ \${RACE_RESTART:-0} = 1 ]]; then touch "$ROTATION_RACE_FILE"; fi
  elif [[ $1 = inspect ]]; then printf '%s\\n' '{"Name":"unless-stopped","MaximumRetryCount":0}'
  elif [[ $1 = exec ]]; then
    cat >>"$ROTATION_LOG"
@@ -91,7 +95,9 @@ flock() {
  if [[ $1 = --exclusive && -n \${ROTATION_HELPER_ATTEMPT:-} ]]; then printf attempt >"$ROTATION_HELPER_ATTEMPT"; fi
  command flock "$@"
 }
-mv() { if [[ \${FAIL_PHASE:-} = inventory-save && -f $ROTATION_RACE_FILE && $* = *identity-rotation/checkpoint ]]; then return 45; fi; if [[ \${FAIL_PHASE:-} = publish && $* = *tls-key.pem* ]]; then return 9; fi; command mv "$@"; }
+mv() { if [[ \${FAIL_PHASE:-} = inventory-save && -f $ROTATION_RACE_FILE && $* = *identity-rotation/checkpoint ]]; then return 45; fi; if [[ \${FAIL_PHASE:-} = publish && $* = *tls-key.pem* ]]; then return 9; fi; command mv "$@" || return
+ if [[ \${@: -1} = *identity-rotation/checkpoint ]]; then printf 'checkpoint %s\\n' "$(jq -r .phase "\${@: -1}")" >>"$ROTATION_LOG"; fi
+}
 opt_restart_rotation=\${RESTART_ROTATION:-0}
 STATE_DIR=$VERITY_STATE_DIR
 PROJECT_PATH="$STATE_DIR/compose-project"
@@ -449,6 +455,77 @@ test('failed updater inventory cannot silently skip fencing before identity publ
     assert.ok(!log.includes('stop --time 60'));
     const retry = await f.run();
     assert.equal(retry.code, 0, retry.output);
+  } finally {
+    await f.clean();
+  }
+});
+
+test('updater restart can replace the Server only after other policies and completion are durable', async () => {
+  const f = await fixture();
+  try {
+    const result = await f.run({ RACE_RESTART: '1' });
+    assert.equal(result.code, 0, result.output);
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    const restorePolicy = log.indexOf(`update --restart=unless-stopped ${server}`);
+    const complete = log.indexOf('checkpoint complete');
+    const startUpdater = log.indexOf(`start ${updater}`);
+    assert.ok(restorePolicy >= 0 && restorePolicy < complete, log);
+    assert.ok(complete < startUpdater, log);
+    assert.ok(!log.slice(startUpdater).includes(server), log);
+    const before = log.split('DELETE FROM auth_tokens;').length - 1;
+    const repeat = await f.run({ RACE_RESTART: '1' });
+    assert.equal(repeat.code, 0, repeat.output);
+    const retriedLog = await readFile(join(f.root, 'log'), 'utf8');
+    assert.equal(retriedLog.split('DELETE FROM auth_tokens;').length - 1, before);
+    assert.ok(!retriedLog.slice(log.length).includes(server));
+  } finally {
+    await f.clean();
+  }
+});
+
+test('completed checkpoint resumes failed updater start without repeating Server or device operations', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.run({ FAIL_PHASE: 'updater-start' });
+    assert.notEqual(first.code, 0);
+    assert.match(first.output, /completion is durable/);
+    assert.equal(
+      JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint'))).phase,
+      'complete',
+    );
+    const before = await readFile(join(f.root, 'log'), 'utf8');
+    const retry = await f.run({ RACE_RESTART: '1' });
+    assert.equal(retry.code, 0, retry.output);
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    assert.equal(log.split(`start ${server}`).length - 1, 1);
+    assert.equal(log.split(`start ${updater}`).length - 1, 2);
+    await readFile(join(f.root, 'replacement-created'));
+    assert.equal(log.split('DELETE FROM auth_tokens;').length - 1, 1);
+    assert.ok(!log.slice(before.length).includes(server));
+  } finally {
+    await f.clean();
+  }
+});
+
+test('published retry discovers a Server replaced by an earlier updater restart attempt', async () => {
+  const f = await fixture();
+  try {
+    const first = await f.run({ FAIL_PHASE: 'start' });
+    assert.notEqual(first.code, 0);
+    assert.equal(
+      JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint'))).phase,
+      'published',
+    );
+    await writeFile(join(f.root, 'replacement-created'), 'existing updater replaced old Server');
+    const retry = await f.run({ RACE_RESTART: '1' });
+    assert.equal(retry.code, 0, retry.output);
+    const completed = JSON.parse(await readFile(join(f.state, 'identity-rotation/checkpoint')));
+    assert.equal(completed.phase, 'complete');
+    assert.deepEqual(completed.containers, [updater, replacement]);
+    assert.ok(!Object.hasOwn(completed.policies, server));
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    assert.equal(log.split('DELETE FROM auth_tokens;').length - 1, 1);
+    assert.ok(log.includes(`start ${replacement}`));
   } finally {
     await f.clean();
   }

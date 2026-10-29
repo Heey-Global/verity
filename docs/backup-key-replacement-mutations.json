@@ -108,5 +108,23 @@
       "FAIL  packages/server/src/backup/key-replacement.test.ts > does not retire a lost-key generation and rejects concurrent state changes on restart",
       "AssertionError: expected { intervalMs: 21600000, \u2026(4) } to match object { paused: true, intervalMs: 7200000 }"
     ]
+  },
+  {
+    "id": "replacement-metadata-path-binding",
+    "file": "packages/server/src/backup/repository.ts",
+    "test": "packages/server/src/backup/repository.test.ts",
+    "sourceSha256": "e3dd8574d0952c1dcde954ad3b851f14cb627a46c75f51a4d572f0c99cf978cb",
+    "testSha256": "020b3a34618d0844af04869d228be5bdf60f754fe96a7ed717782c826b98b630",
+    "mutation": {
+      "replace": "if (!Buffer.from(bytes).equals(existing))",
+      "with": "if (!path.endsWith('/header') && !path.endsWith('/keys') && !Buffer.from(bytes).equals(existing))"
+    },
+    "exitCode": 1,
+    "failureEvidence": [
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      " FAIL  packages/server/src/backup/repository.test.ts > backup repository > resumes only the exact path-specific ciphertext of a confirmed replacement",
+      "AssertionError: promise resolved \"undefined\" instead of rejecting",
+      "      Tests  1 failed | 5 passed (6)"
+    ]
   }
 ]

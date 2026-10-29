@@ -30,6 +30,24 @@ verity_rotate_identity() {
       sync -f "$STATE_DIR"
     fi
   }
+  _verity_rotation_resume_updaters() {
+    local updater existing_updaters running_updaters restart
+    existing_updaters=$(docker ps -aq) || die 'identity rotated; cannot confirm updater existence; retry --rotate-identity'
+    existing_updaters=$(printf '%s\n' "$existing_updaters" | jq -Rsc 'split("\n")|map(select(length>0))')
+    while IFS= read -r updater; do
+      [[ -n $updater ]] || continue
+      # A completed updater can replace itself or its Server. Never revisit old Server IDs here.
+      if jq -e --arg updater "$updater" 'index($updater) != null' <<<"$existing_updaters" >/dev/null; then
+        restart=$(jq -r --arg updater "$updater" '.policies[$updater]' "$checkpoint")
+        docker update --restart="$restart" "$updater" >/dev/null || die 'identity rotated; retry --rotate-identity to restore updater restart policy'
+        docker start "$updater" >/dev/null || die 'identity rotated; completion is durable; retry --rotate-identity to start updater'
+      fi
+    done < <(jq -r '.updaters // [] | .[]' "$checkpoint")
+    if jq -e '.updaters // [] | length > 0' "$checkpoint" >/dev/null; then
+      running_updaters=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater') || die 'identity rotated; cannot confirm updater restart; retry --rotate-identity'
+      [[ -n $running_updaters ]] || die 'identity rotated; updater is missing; repair the managed companion before continuing'
+    fi
+  }
   _verity_rotation_resume_helper() {
     # The oneshot takes this lock too. Release it before synchronous publication.
     flock --unlock "$rotation_helper_lock"
@@ -87,10 +105,11 @@ verity_rotate_identity() {
     chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"; sync -f "$STATE_DIR"
   fi
   [[ -f $checkpoint && ! -L $checkpoint && $(stat -c %u "$checkpoint") = 0 ]] || die 'invalid identity rotation checkpoint'
-  jq -e '.format==1 and (.phase|IN("fencing","prepared","revoked","published","complete")) and (.containers|length>0 and all(.[];test("^[a-f0-9]{12,64}$"))) and (.postgres|test("^[a-f0-9]{12,64}$")) and (.oldCa|test("^[a-f0-9]{64}$")) and (.helperActive|type=="boolean") and (. as $c | all(.containers[]; . as $id | $c.policies[$id]|type=="string" and test("^(no|always|unless-stopped|on-failure:[0-9]+)$")))' "$checkpoint" >/dev/null || die 'invalid identity rotation checkpoint'
+  jq -e '.format==1 and (.phase|IN("fencing","prepared","revoked","published","complete")) and (.containers|length>0 and all(.[];test("^[a-f0-9]{12,64}$"))) and (.postgres|test("^[a-f0-9]{12,64}$")) and (.oldCa|test("^[a-f0-9]{64}$")) and (.helperActive|type=="boolean") and (. as $c | all(.updaters // [] | .[]; . as $id | $c.containers | index($id) != null)) and (. as $c | all(.containers[]; . as $id | $c.policies[$id]|type=="string" and test("^(no|always|unless-stopped|on-failure:[0-9]+)$")))' "$checkpoint" >/dev/null || die 'invalid identity rotation checkpoint'
   phase=$(jq -r .phase "$checkpoint")
   if [[ $phase = complete ]]; then
     _verity_rotation_refresh_invitation
+    _verity_rotation_resume_updaters
     _verity_rotation_resume_helper
     note 'Identity rotation already completed; all devices must pair again.'
     return
@@ -105,11 +124,10 @@ verity_rotate_identity() {
   done <<<"$updater_ids"
   # The updater may remove the saved Server and create a replacement before stopping.
   # Retain stopped checkpoint members on retries, but never act on IDs proven removed.
-  local fresh_compose='' fresh_managed='' existing
-  if [[ $phase = fencing ]]; then
-    fresh_compose=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres') || die 'cannot refresh Compose runtime inventory'
-    fresh_managed=$(docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")") || die 'cannot refresh managed runtime inventory'
-  fi
+  local fresh_compose fresh_managed existing
+  # Also discover a replacement left by an interrupted published-phase attempt.
+  fresh_compose=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres') || die 'cannot refresh Compose runtime inventory'
+  fresh_managed=$(docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")") || die 'cannot refresh managed runtime inventory'
   existing=$(docker ps -aq) || die 'cannot reconcile runtime inventory; Docker did not confirm container existence'
   existing=$(printf '%s\n' "$existing" | jq -Rsc 'split("\n")|map(select(length>0))')
   jq -e 'all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$existing" >/dev/null || die 'invalid existing container inventory'
@@ -177,13 +195,19 @@ SQL
   fi
   _verity_rotation_refresh_invitation
   # A published generation is irreversible. Resuming never executes credential deletion again.
-  updater_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater' | jq -Rsc 'split("\n")|map(select(length>0))')
-  while IFS= read -r name; do docker start "$name" >/dev/null || die 'replacement identity published; retry rotation to restart runtime'; done < <(jq -r --argjson updaters "$updater_ids" '.containers | sort_by(. as $id | $updaters | index($id) != null)[]' "$checkpoint")
+  updater_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label=com.docker.compose.service=verity-updater') || die 'cannot classify stopped updater containers'
+  updater_ids=$(printf '%s\n' "$updater_ids" | jq -Rsc 'split("\n")|map(select(length>0))')
+  temporary=$(mktemp "$root/.checkpoint.XXXXXXXX")
+  jq --argjson updaters "$updater_ids" '.updaters=[.containers[] | select(. as $id | $updaters | index($id) != null)]' "$checkpoint" >"$temporary"
+  chmod 0600 "$temporary"; sync -f "$temporary"; mv -T -- "$temporary" "$checkpoint"; sync -f "$root"
+  # An updater can replace the Server as soon as it starts. Finish every Server operation first.
+  while IFS= read -r name; do docker start "$name" >/dev/null || die 'replacement identity published; retry rotation to restart runtime'; done < <(jq -r '. as $c | .containers[] | select(. as $id | $c.updaters | index($id) == null)' "$checkpoint")
   while IFS= read -r name; do
     policy=$(jq -r --arg id "$name" '.policies[$id]' "$checkpoint")
     docker update --restart="$policy" "$name" >/dev/null || die 'replacement identity published; retry to restore runtime restart policy'
-  done < <(jq -r '.containers[]' "$checkpoint")
+  done < <(jq -r '. as $c | .containers[] | select(. as $id | $c.updaters | index($id) == null)' "$checkpoint")
   _verity_rotation_save complete
+  _verity_rotation_resume_updaters
   _verity_rotation_resume_helper
   note 'Identity rotated. Remove the saved server from each device and pair again; offline devices retain their old trust until you do so.'
   unset -f _verity_rotation_save
