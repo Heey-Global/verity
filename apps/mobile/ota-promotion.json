@@ -1,18 +1,15 @@
 {
   "schema": 1,
-  "version": "1.80.1",
+  "version": "1.80.2",
   "runtime": "1.80.0",
   "channel": "production",
-  "commit": "f45ec782967ded20acd8d679983dc1e1984d01cf",
-  "tag": "mobile-v1.80.1",
-  "branch": "staging-mobile-v1.80.1-f45ec782967ded20acd8d679983dc1e1984d01cf",
-  "baseline": "mobile-v1.80.0",
-  "group": "65406cca-c2d5-47b9-8ca1-e35a60904716",
+  "commit": "05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
+  "tag": "mobile-v1.80.2",
+  "branch": "staging-mobile-v1.80.2-05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
+  "baseline": "mobile-v1.80.1",
+  "group": "2b46ddfd-aea3-4ede-8704-5ea3b395c72b",
   "notes": [
-    "derive a meeting result after a live meeting ends (#1978)",
-    "add administrator logs for project image operations (#1977)",
-    "steady the iPad meeting column before and during the transcript (#1972)",
-    "revalidate execution and provider authority (#1971)",
-    "render inline images and readable code blocks (#1973)"
+    "recover oversized events in bounded chunks (#2007)",
+    "group features and app administration settings (#2005)"
   ]
 }

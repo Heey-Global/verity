@@ -7,6 +7,7 @@ import {
   PreviewShareRemovalQueuedError,
   type PreviewEdgeControl,
   type PreviewEdgeBinding,
+  type PreviewCreateDiagnostic,
 } from './preview-share-manager.js';
 import {
   ATTENDEE_WEBHOOK_PATH,
@@ -16,6 +17,17 @@ import {
   verifyAttendeeSignature,
 } from './attendee-client.js';
 
+interface MeetingStartDiagnostic {
+  requestId?: string;
+  meetingId: string;
+  phase:
+    PreviewCreateDiagnostic['phase'] | 'connector_connect' | 'connector_ready' | 'provider_setup';
+  code: string;
+  shareCreateSent: boolean;
+  bindingPresent: boolean;
+  botCreateAttempted: boolean;
+  event: 'progress' | 'failed';
+}
 /** Safe startup guidance that the API may expose without internal error details. */
 export class OnlineMeetingStartError extends Error {}
 
@@ -245,7 +257,13 @@ export class AttendeeMeetings {
       .catch(() => undefined);
   }
 
-  async start(sessionId: string, meetingUrl: string, listenForVerity: boolean, title?: string) {
+  async start(
+    sessionId: string,
+    meetingUrl: string,
+    listenForVerity: boolean,
+    title?: string,
+    diagnostics?: { requestId: string; emit: (entry: MeetingStartDiagnostic) => void },
+  ) {
     return this.serial(async () => {
       if (!this.options.edge || !this.targetOrigin)
         throw new OnlineMeetingStartError(
@@ -286,17 +304,54 @@ export class AttendeeMeetings {
       };
       await this.publish(state);
       const sharingGeneration = this.sharingGeneration;
+      let phase: MeetingStartDiagnostic['phase'] = 'ensure_sharing';
+      let code = 'pending';
+      let shareCreateSent = false;
+      const emit = (event: MeetingStartDiagnostic['event']) => {
+        try {
+          diagnostics?.emit({
+            requestId: diagnostics.requestId,
+            meetingId: id,
+            phase,
+            code,
+            shareCreateSent,
+            bindingPresent: Boolean(state.binding),
+            botCreateAttempted: Boolean(state.botCreateAttempted),
+            event,
+          });
+        } catch {
+          /* Diagnostics must not affect meeting state. */
+        }
+      };
+      const progress = (entry: PreviewCreateDiagnostic) => {
+        phase = entry.phase;
+        code = entry.code;
+        shareCreateSent = entry.shareCreateSent;
+        emit('progress');
+      };
       try {
-        const binding = await this.options.edge.create({
-          durationSeconds: 30 * 24 * 60 * 60,
-          pinHash: hashPreviewPin(state.pin),
-          webhook: { path: ATTENDEE_WEBHOOK_PATH },
-        });
+        emit('progress');
+        const binding = await this.options.edge.create(
+          {
+            durationSeconds: 30 * 24 * 60 * 60,
+            pinHash: hashPreviewPin(state.pin),
+            webhook: { path: ATTENDEE_WEBHOOK_PATH },
+          },
+          progress,
+        );
         state.binding = { ...binding, expiresAt: binding.expiresAt.toISOString() };
         await this.save(state);
+        phase = 'connector_connect';
+        code = 'pending';
+        emit('progress');
         await this.connect(state);
+        phase = 'connector_ready';
+        code = 'ready';
+        emit('progress');
         const webhookUrl = new URL(ATTENDEE_WEBHOOK_PATH, binding.publicOrigin);
         webhookUrl.searchParams.set('pin', state.pin);
+        phase = 'provider_setup';
+        code = 'pending';
         state.botCreateAttempted = true;
         await this.save(state);
         if (
@@ -322,6 +377,8 @@ export class AttendeeMeetings {
         await this.publish(state);
         return { meetingId: id };
       } catch (error) {
+        if (code === 'pending' || code === 'ready') code = 'failed';
+        emit('failed');
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
         if (!state.botCreateAttempted) {
           if (state.binding) {

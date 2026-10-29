@@ -294,3 +294,30 @@ it('shares bounded runtime history and preserves the first sample for comparison
     jest.useRealTimers();
   }
 });
+
+it('exports scheduling probes and both touch delivery clocks without session contents', async () => {
+  readLogs.mockResolvedValue([]);
+  setGestureDiagnosticsEnabled(true);
+  recordGesture({ source: 'scheduling', event: 'session-timer', detail: { waitMs: 874 } });
+  recordGesture({
+    source: 'row',
+    event: 'touch-up',
+    row: 1,
+    detail: { uiReceivedWallMs: 1000, jsReceivedWallMs: 1874 },
+  });
+  await shareUpdateDiagnostics();
+  const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics.events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: 'scheduling',
+        event: 'session-timer',
+        detail: { waitMs: 874 },
+      }),
+      expect.objectContaining({
+        source: 'row',
+        detail: { uiReceivedWallMs: 1000, jsReceivedWallMs: 1874 },
+      }),
+    ]),
+  );
+});
