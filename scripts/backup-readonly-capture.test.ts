@@ -4,16 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { expect, it } from 'vitest';
-import { createPostgresDb, migrateToLatest } from '@verity/store';
-import { seedRestoreContent } from '../../../../scripts/backup-restore-content.mjs';
-import { captureInstallation } from './capture.js';
-import { generateBackupKeys } from './crypto.js';
-import { BackupDestination } from './destination.js';
-import { readCaptureInventory } from './inventory.js';
-import { BackupLifecycleCoordinator } from './lifecycle.js';
-import { BackupRepository } from './repository.js';
-import { sanitizeRestoredDatabase } from './restore-database.js';
-import { writeBackupIdentityFixture } from './testing.js';
+import { createPostgresDb, migrateToLatest } from '../packages/store/src/db.js';
+import { seedRestoreContent } from './backup-restore-content.mjs';
+import { captureInstallation } from '../packages/server/src/backup/capture.js';
+import { generateBackupKeys } from '../packages/server/src/backup/crypto.js';
+import { BackupDestination } from '../packages/server/src/backup/destination.js';
+import { readCaptureInventory } from '../packages/server/src/backup/inventory.js';
+import { BackupLifecycleCoordinator } from '../packages/server/src/backup/lifecycle.js';
+import { BackupRepository } from '../packages/server/src/backup/repository.js';
+import { sanitizeRestoredDatabase } from '../packages/server/src/backup/restore-database.js';
+import { writeBackupIdentityFixture } from '../packages/server/src/backup/testing.js';
 
 const adminUrl = process.env.VERITY_TEST_SHARED_POSTGRES_URL;
 it.skipIf(!adminUrl)(
@@ -55,7 +55,7 @@ it.skipIf(!adminUrl)(
         "INSERT INTO projects(id,owner,repo,clone_dir,container_name,state,kind) VALUES ('verity-control','verity','control','control','verity-control','active','control_plane')",
       );
       const script = await readFile(
-        new URL('../../../../deploy/host/verity-backup-prerequisites', import.meta.url),
+        new URL('../deploy/host/verity-backup-prerequisites', import.meta.url),
         'utf8',
       );
       const sql = script
@@ -87,7 +87,9 @@ it.skipIf(!adminUrl)(
       );
       await repository.initialize();
       const schema = (
-        await pool.query('SELECT name FROM kysely_migration ORDER BY name DESC LIMIT 1')
+        await pool.query<{ name: string }>(
+          'SELECT name FROM kysely_migration ORDER BY name DESC LIMIT 1',
+        )
       ).rows[0].name;
       const keys = new Map<string, string>();
       const manifest = await captureInstallation({
