@@ -41,6 +41,8 @@ const container = z
         Privileged: z.literal(false),
         RestartPolicy: z.object({ Name: z.literal('no') }),
         CapAdd: z.array(z.string()).nullable(),
+        CapDrop: z.array(z.string()),
+        SecurityOpt: z.array(z.string()),
       }),
       NetworkSettings: z.object({
         Networks: z.record(z.string(), z.object({ NetworkID: z.string() })),
@@ -67,13 +69,26 @@ export function verifyEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
   reply: unknown,
+  role: 'sandbox' | 'relay' = 'relay',
 ): void {
   const value = container.parse(reply)[0]!;
   const endpoints = Object.entries(value.NetworkSettings.Networks);
+  // Fixed Runner identity-switching capabilities, inside isolated gVisor only.
+  // Never accept a caller-supplied capability list or networking/admin capabilities.
+  const runnerCaps = ['CHOWN', 'KILL', 'SETGID', 'SETPCAP', 'SETUID'];
+  const caps = (value.HostConfig.CapAdd ?? []).map((cap) => cap.replace(/^CAP_/u, '')).sort();
+  const permittedCaps =
+    caps.length === 0 ||
+    (role === 'sandbox' && JSON.stringify(caps) === JSON.stringify(runnerCaps));
   if (
     value.Id !== id ||
     ![binding.networkId, binding.networkName].includes(value.HostConfig.NetworkMode) ||
-    (value.HostConfig.CapAdd?.length ?? 0) !== 0 ||
+    !permittedCaps ||
+    value.HostConfig.CapDrop.length !== 1 ||
+    value.HostConfig.CapDrop[0] !== 'ALL' ||
+    !value.HostConfig.SecurityOpt.some(
+      (option) => option === 'no-new-privileges' || option === 'no-new-privileges=true',
+    ) ||
     endpoints.length !== 1 ||
     endpoints[0]![0] !== binding.networkName ||
     (endpoints[0]![1].NetworkID !== '' && endpoints[0]![1].NetworkID !== binding.networkId)
@@ -111,6 +126,7 @@ export function verifyEgressHostRuntime(reply: unknown): void {
 export async function inspectEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
+  role: 'sandbox' | 'relay',
 ): Promise<void> {
   verifyEgressHostRuntime(
     JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
@@ -119,6 +135,7 @@ export async function inspectEgressHostContainer(
     binding,
     id,
     JSON.parse(await projectEgressHostDocker('container', 'inspect', id)),
+    role,
   );
 }
 
