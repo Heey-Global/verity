@@ -83,6 +83,12 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     };
     service = await BackupService.open(options);
     expect(service).toBeDefined();
+    // Every provisioned installation runs the service; before setup it stays quiet.
+    const idle = vi.fn(async () => true);
+    service!.setAlertNotifier(idle);
+    await expect(service!.tick()).resolves.toBeUndefined();
+    expect(idle).not.toHaveBeenCalled();
+    expect(await service!.status()).toEqual({ configured: false, alerts: [] });
     const candidate = await service!.beginSetup();
     helper.mockRejectedValueOnce(new Error('Helper unavailable'));
     await expect(service!.confirmSetup(candidate.id, candidate.recoveryKey)).rejects.toThrow(

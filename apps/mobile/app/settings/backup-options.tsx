@@ -18,7 +18,7 @@ import {
   SettingsMessage,
   SettingsScaffold,
 } from '../../components/settings/SettingsChrome';
-import { Button, Card, Group, Row, Sheet, ToggleRow } from '../../components/ui';
+import { Button, Card, Group, Row, Sheet, Text, ToggleRow } from '../../components/ui';
 import { createVerityClient } from '../../lib/client';
 
 export default function BackupOptionsScreen() {
@@ -139,6 +139,10 @@ function BackupOptionsView({ client }: { client: VerityClient }) {
               subtitle="Your old key cannot open any backup made from now on."
             />
           </Card>
+          <Text variant="footnote" tone="faint">
+            Someone else saw your key? Also have the server identity rotated with the Verity
+            installer.
+          </Text>
         </View>
       </Sheet>
     </SettingsScaffold>

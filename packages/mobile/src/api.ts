@@ -3880,13 +3880,13 @@ export class VerityClient {
   }
   /** Sends back the key the app was given; Verity keeps no copy of it. */
   async confirmBackupSetup(offer: BackupKeyOffer): Promise<void> {
-    await this.backupPost('/api/backups/setup/confirm', {
+    await this.backupCommand('/api/backups/setup/confirm', {
       id: offer.id,
       recoveryKey: offer.recoveryKey,
     });
   }
   async cancelBackupSetup(): Promise<void> {
-    await this.backupPost('/api/backups/setup/cancel');
+    await this.backupCommand('/api/backups/setup/cancel');
   }
   /** Always the "lost" replacement: older snapshots stay readable with the old key. */
   async beginBackupKeyReplacement(): Promise<BackupKeyOffer> {
@@ -3895,13 +3895,13 @@ export class VerityClient {
     );
   }
   async confirmBackupKeyReplacement(offer: BackupKeyOffer): Promise<void> {
-    await this.backupPost('/api/backups/key-replacement/confirm', {
+    await this.backupCommand('/api/backups/key-replacement/confirm', {
       id: offer.id,
       recoveryKey: offer.recoveryKey,
     });
   }
   async cancelBackupKeyReplacement(): Promise<void> {
-    await this.backupPost('/api/backups/key-replacement/cancel');
+    await this.backupCommand('/api/backups/key-replacement/cancel');
   }
   async setBackupPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
     await this.request('/api/backups/policy', {
@@ -3925,6 +3925,14 @@ export class VerityClient {
     return backupProbeJobSchema.parse(
       await this.backupPost(`/api/backups/probes/${encodeURIComponent(id)}/cancel`),
     );
+  }
+  /** Confirm and cancel ignore the reply, so an empty success body is fine. */
+  private async backupCommand(path: string, body: object = {}): Promise<void> {
+    await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
   }
   private async backupPost(path: string, body: object = {}): Promise<unknown> {
     const res = await this.request(path, {

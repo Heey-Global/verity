@@ -17,25 +17,25 @@ jest.mock('../lib/sessionFileUi', () => ({
   }),
   loadPrintModule: async () => undefined,
 }));
-const mockFiles: { uri: string; content: string | undefined; deleted: boolean }[] = [];
+// One entry per path, as a real file system keeps it across `File` objects.
+const mockFiles = new Map<string, { content: string | undefined; deleted: boolean }>();
 jest.mock('expo-file-system', () => ({
   Paths: { cache: 'file:///cache' },
   File: class {
     uri: string;
-    entry: { uri: string; content: string | undefined; deleted: boolean };
     constructor(dir: string, name: string) {
       this.uri = `${dir}/${name}`;
-      this.entry = { uri: this.uri, content: undefined, deleted: false };
-      mockFiles.push(this.entry);
     }
     get exists() {
-      return this.entry.content !== undefined && !this.entry.deleted;
+      const entry = mockFiles.get(this.uri);
+      return entry !== undefined && !entry.deleted;
     }
     write(content: string) {
-      this.entry.content = content;
+      mockFiles.set(this.uri, { content, deleted: false });
     }
     delete() {
-      this.entry.deleted = true;
+      const entry = mockFiles.get(this.uri);
+      if (entry) entry.deleted = true;
     }
   },
 }));
@@ -111,7 +111,7 @@ function backupClient(overrides: Partial<Record<keyof VerityClient, jest.Mock>> 
 
 beforeEach(() => {
   mockShareAsync.mockReset().mockResolvedValue(undefined);
-  mockFiles.length = 0;
+  mockFiles.clear();
 });
 afterEach(() => {
   resetSettingsHarness();
@@ -201,19 +201,37 @@ describe('backup setup', () => {
     expect(client.cancelBackupSetup).not.toHaveBeenCalled();
   });
 
-  it('saves the key through the share sheet and removes the temporary file', async () => {
+  it('treats a lost reply as success when the server already turned backups on', async () => {
+    const client = backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+      confirmBackupSetup: jest.fn().mockRejectedValue(new Error('network')),
+    });
+    render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    await screen.findByText(KEY);
+    client.getBackupStatus.mockResolvedValue(configured({ lastSuccess: null }));
+    fireEvent.press(screen.getByText('I saved it, turn on backup'));
+    expect(await screen.findByText('Backup activated')).toBeOnTheScreen();
+  });
+
+  it('saves the key through the share sheet and removes the file on leaving', async () => {
     backupClient({
       getBackupStatus: jest
         .fn()
         .mockResolvedValue({ available: true, configured: false, alerts: [] }),
     });
-    render(<BackupScreen />);
+    const { unmount } = render(<BackupScreen />);
     fireEvent.press(await screen.findByText('Set up backup'));
     fireEvent.press(await screen.findByText('Save'));
     await waitFor(() => expect(mockShareAsync).toHaveBeenCalled());
     expect(mockShareAsync.mock.calls[0]?.[0]).toBe('file:///cache/verity-recovery-key.txt');
-    expect(mockFiles[0]?.content).toContain(KEY);
-    await waitFor(() => expect(mockFiles[0]?.deleted).toBe(true));
+    const saved = mockFiles.get('file:///cache/verity-recovery-key.txt');
+    expect(saved?.content).toContain(KEY);
+    expect(saved?.deleted).toBe(false);
+    unmount();
+    expect(saved?.deleted).toBe(true);
   });
 
   it('explains a Server that needs the installer once more', async () => {

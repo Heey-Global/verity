@@ -4,7 +4,7 @@
 // and no QR code: a second device is just another place to paste or save it.
 import * as Clipboard from 'expo-clipboard';
 import { File, Paths } from 'expo-file-system';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -15,6 +15,9 @@ const FILE_NAME = 'verity-recovery-key.txt';
 
 export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
   const [copied, setCopied] = useState(false);
+  // The app the key was shared to may still read the file, so it goes only
+  // when the operator leaves this step.
+  useEffect(() => removeKeyFile, []);
   const copy = (): void => {
     void Clipboard.setStringAsync(recoveryKey).then(() => {
       setCopied(true);
@@ -73,14 +76,14 @@ export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
   );
 }
 
-/** Through the share sheet, so "Save to Files" and password managers both work.
- *  The temporary file is removed once the sheet closes. */
+/** Through the share sheet, so "Save to Files" and password managers both work. */
 async function saveRecoveryKey(recoveryKey: string): Promise<void> {
   const sharing = await loadSharingModule();
   if (sharing === undefined || !(await sharing.isAvailableAsync())) {
     Alert.alert('Saving is not available', 'Copy the key instead.');
     return;
   }
+  removeKeyFile();
   const file = new File(Paths.cache, FILE_NAME);
   try {
     file.write(`Verity recovery key\n\n${recoveryKey}\n`);
@@ -90,8 +93,15 @@ async function saveRecoveryKey(recoveryKey: string): Promise<void> {
     });
   } catch (error) {
     Alert.alert('Could not save the key', error instanceof Error ? error.message : String(error));
-  } finally {
+  }
+}
+
+function removeKeyFile(): void {
+  try {
+    const file = new File(Paths.cache, FILE_NAME);
     if (file.exists) file.delete();
+  } catch {
+    // Nothing to remove.
   }
 }
 

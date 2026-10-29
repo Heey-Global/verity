@@ -107,7 +107,14 @@ function BackupView({ client }: { client: VerityClient }) {
         setStep({ kind: 'success' });
         void reload();
       })
-      .catch(() => {
+      .catch(async () => {
+        // A reply lost after the server committed still means backups are on.
+        const after = await client.getBackupStatus().catch(() => undefined);
+        if (after?.available === true && after.configured) {
+          setStep({ kind: 'success' });
+          void reload();
+          return;
+        }
         if (Date.now() >= offer.expiresAt) {
           // The server has already dropped an expired key; only a new one can work.
           setStep({ kind: 'status' });
