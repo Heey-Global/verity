@@ -27,7 +27,7 @@ export function parseQADecision(text: string) {
     return undefined;
   }
 }
-export function hasFreshRepairEvidence(incident: RepairIncident): boolean {
+function hasFreshRepairEvidence(incident: RepairIncident): boolean {
   try {
     const evidence = JSON.parse(incident.evidence) as {
       observedAt?: string;
