@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:net';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   inspectEgressRelay,
@@ -22,7 +22,7 @@ const policy = {
   image: `repo@sha256:${'a'.repeat(64)}`,
   dataVolume: 'data',
   socketOwnerUid: process.getuid!(),
-  relayGid: process.getgid!(),
+  relayGid: process.getgid!() || 65532,
   brokerSubpath: 'b',
   claudeSubpath: 'c',
   codexSubpath: 'x',
@@ -214,17 +214,21 @@ afterEach(async () => {
 });
 it('checks actual socket ownership, contents and non-symlinked ancestors', async () => {
   // Keep AF_UNIX names short while avoiding the intentionally writable /tmp ancestor.
-  const root = await mkdtemp(join(dirname(process.cwd()), 'eg-'));
+  const root = await mkdtemp(
+    join(process.getuid!() === 0 ? '/root' : dirname(process.cwd()), 'eg-'),
+  );
   roots.push(root);
   const f = fixture(root);
   const expected = relaySocketMounts(binding, policy);
   for (const item of expected) {
     const dir = join(root, item.subpath);
     await mkdir(dir, { recursive: true });
+    await chown(dir, policy.socketOwnerUid, policy.relayGid);
     await chmod(dir, 0o710);
     const server = createServer();
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(join(dir, item.socket), resolve));
+    await chown(join(dir, item.socket), policy.socketOwnerUid, policy.relayGid);
     await chmod(join(dir, item.socket), 0o660);
   }
   const docker = async (kind: string) =>
