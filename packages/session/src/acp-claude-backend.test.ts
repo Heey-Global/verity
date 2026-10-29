@@ -1194,6 +1194,37 @@ describe('AcpClaudeBackend', () => {
     ).toEqual([expect.objectContaining({ t: 'text', delta: 'Done.' })]);
   });
 
+  it('keeps the Verity-tools-only limit when an assistant session is resumed', async () => {
+    // Resumed turns load the conversation in a fresh adapter; if the limit rode only on
+    // session/new, every turn after the first would get shell, files and web back.
+    await ctx.store.createSession({
+      sessionId: 'verity-session-gateway-resume',
+      worktree: '/work/project',
+      model: 'claude',
+    });
+    const fake = acpSpawner({ httpMcp: true });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-gateway-resume',
+      resumeSessionId: 'claude-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      spawner: fake.spawner,
+      gatewayToolsOnly: true,
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'turn-bearer' },
+      mcpServers: [{ name: 'personal', url: 'https://mcp.example/', headers: [] }],
+    });
+    const load = fake.writes.find((message) => message['method'] === 'session/load');
+    expect(load).toMatchObject({
+      params: {
+        mcpServers: [{ name: 'verity' }],
+        _meta: { claudeCode: { options: { tools: [] } } },
+      },
+    });
+    expect(JSON.stringify(load)).not.toContain('mcp.example');
+  });
+
   it('fails clearly when the ACP adapter cannot load a persisted session', async () => {
     await ctx.store.createSession({
       sessionId: 'verity-session-4',

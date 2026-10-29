@@ -36,9 +36,10 @@ export default function ProjectAssistantSettingsScreen() {
   );
   const enabled = resource.data?.assistantEnabled === true;
   const choose = async (mode: Mode) => {
+    if (!client || !projectId) return;
     setSaving(true);
     try {
-      await client!.projectAssistant(projectId, mode);
+      await client.projectAssistant(projectId, mode);
       resource.reload();
     } catch (error) {
       resource.setError(
