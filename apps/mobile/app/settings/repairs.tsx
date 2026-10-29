@@ -29,7 +29,7 @@ export default function RepairSettingsScreen() {
       const rows = [];
       for (const project of projects)
         rows.push({ project, ...(await client.projectRepairs(project.id)) });
-      return { rows, qa: await client.qaSettings() };
+      return { rows, qa: await client.qaSettings().catch(() => null) };
     }, [client]),
   );
   const act = async (work: () => Promise<unknown>) => {
@@ -57,8 +57,8 @@ export default function RepairSettingsScreen() {
       </Text>
       <SettingsGroup title="QA">
         <Text>
-          {resource.data?.qa.enabled ? 'Enabled' : 'Disabled'} ·{' '}
-          {resource.data?.qa.health ?? 'Not loaded'}
+          {resource.data?.qa?.enabled ? 'Enabled' : 'Disabled'} ·{' '}
+          {resource.data?.qa?.health ?? 'Global settings unavailable'}
         </Text>
         <Text variant="footnote">
           Disabled by default. Turning QA off stops background monitoring, automatic AI reviews and
@@ -66,15 +66,15 @@ export default function RepairSettingsScreen() {
           bars remain available.
         </Text>
         <Button
-          label={resource.data?.qa.enabled ? 'Disable QA' : 'Enable QA'}
-          disabled={saving || !resource.data}
-          onPress={() => void act(() => client!.qaSettings(!resource.data!.qa.enabled))}
+          label={resource.data?.qa?.enabled ? 'Disable QA' : 'Enable QA'}
+          disabled={saving || !resource.data?.qa}
+          onPress={() => void act(() => client!.qaSettings(!resource.data!.qa?.enabled))}
         />
-        {resource.data?.qa.session_id ? (
+        {resource.data?.qa?.session_id ? (
           <Button
             variant="secondary"
             label="Open QA activity"
-            onPress={() => router.push(`/session/${resource.data!.qa.session_id}`)}
+            onPress={() => router.push(`/session/${resource.data!.qa?.session_id}`)}
           />
         ) : null}
       </SettingsGroup>

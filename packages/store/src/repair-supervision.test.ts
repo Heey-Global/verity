@@ -131,10 +131,10 @@ describe('QA consent', () => {
   });
 });
 
-it('always returns an owned incident beyond the bounded history window', async () => {
+it.each([true, false])('returns an active incident beyond history, owned=%s', async (owned) => {
   await ctx.store.repairs.configure('a', 'user', 'automatic');
   const incident = await ctx.store.repairs.observe('a', 'pr:old', 'sha', '{}');
-  await ctx.store.repairs.claim(incident.id, 'worker', 1);
+  if (owned) await ctx.store.repairs.claim(incident.id, 'worker', 1);
   await sql`update repair_incidents set updated_at=now()-interval '1 day' where id=${incident.id}`.execute(
     ctx.db,
   );
@@ -143,7 +143,7 @@ it('always returns an owned incident beyond the bounded history window', async (
   );
   expect(
     (await ctx.store.repairs.incidents('a')).some(
-      (i) => i.id === incident.id && i.owner_session_id === 'worker',
+      (i) => i.id === incident.id && i.owner_session_id === (owned ? 'worker' : null),
     ),
   ).toBe(true);
 });

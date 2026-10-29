@@ -107,6 +107,8 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           workflow_id: number;
           head_sha: string;
           head_branch: string;
+          event: string;
+          head_repository?: { full_name?: string };
           conclusion: string | null;
           html_url: string;
         }[];
@@ -121,7 +123,13 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
         })),
         runs: body.workflow_runs
-          .filter((r) => r.head_branch === repository.default_branch)
+          .filter(
+            (r) =>
+              r.head_branch === repository.default_branch &&
+              ['push', 'schedule', 'workflow_dispatch'].includes(r.event) &&
+              r.head_repository?.full_name?.toLowerCase() ===
+                `${ref.owner}/${ref.repo}`.toLowerCase(),
+          )
           .map((r) => ({
             id: String(r.id),
             workflow: String(r.workflow_id),

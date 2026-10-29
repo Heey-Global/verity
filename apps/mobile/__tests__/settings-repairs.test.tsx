@@ -87,3 +87,16 @@ it('sets the project mode independently of the system switch', async () => {
   fireEvent.press(screen.getByRole('button', { name: 'Monitor only' }));
   await waitFor(() => expect(projectRepairs).toHaveBeenCalledWith('p', 'monitor'));
 });
+
+it('shows accessible project incidents when global settings are denied', async () => {
+  mockCreateVerityClient.mockReturnValue({
+    listProjects: jest
+      .fn()
+      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+    projectRepairs: jest.fn().mockResolvedValue({ mandate: null, incidents: [] }),
+    qaSettings: jest.fn().mockRejectedValue(new Error('403')),
+  } as unknown as VerityClient);
+  render(<RepairsScreen />);
+  await screen.findByText('team/app');
+  expect(screen.getByRole('button', { name: 'Enable QA' })).toBeDisabled();
+});

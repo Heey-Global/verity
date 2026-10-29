@@ -295,6 +295,21 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
             else if (!deps.coordinate) await delegate(mandate, incident);
           }
         } catch {
+          // A forge outage cannot keep a confirmed terminated worker holding capacity.
+          for (const incident of await store.incidents(project.id)) {
+            if (
+              incident.owner_session_id &&
+              incident.dispatch_id &&
+              !deps.busy(incident.owner_session_id) &&
+              (await deps.terminated(incident.owner_session_id))
+            )
+              await store.finishAttempt(
+                incident.id,
+                incident.dispatch_id,
+                'verifying',
+                incident.evidence,
+              );
+          }
           await store.health(project.id, 'unavailable', mandate.cursor);
         }
         const current = await store.mandate(project.id);

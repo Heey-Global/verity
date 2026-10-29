@@ -307,3 +307,13 @@ it('retries a failed workflow repair but waits for a newer pending run', async (
   await supervisor.sweep();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+
+it('releases a confirmed terminated worker even when forge discovery fails', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { deps, supervisor } = harness();
+  await supervisor.sweep();
+  vi.mocked(deps.terminated).mockResolvedValue(true);
+  vi.mocked(deps.discover).mockRejectedValue(new Error('forge unavailable'));
+  await supervisor.sweep();
+  expect((await ctx.store.repairs.incidents('a'))[0]!.owner_session_id).toBeNull();
+});
