@@ -476,6 +476,7 @@ export class BackupService {
     intervalMs?: number;
     lastSuccess?: number | null;
     capturing?: boolean;
+    keyGeneration?: number;
     lastProbe?: BackupState['lastProbe'];
     probe?: ProbeJob | null;
     alerts: string[];
@@ -488,6 +489,7 @@ export class BackupService {
           intervalMs: current.schedule.intervalMs,
           lastSuccess: current.schedule.lastSuccess,
           capturing: this.scheduler.capturing,
+          keyGeneration: current.keyGeneration,
           lastProbe: current.lastProbe,
           probe: this.probes?.status() ?? null,
           alerts: [

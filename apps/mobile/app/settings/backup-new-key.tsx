@@ -1,7 +1,7 @@
 // A new recovery key, reached from Backup options. Same key step as setup; the
 // new key takes over only when the operator confirms they saved it, and leaving
 // earlier discards it on the server so the current key stays in force.
-import { type BackupKeyOffer, type VerityClient } from '@verity/mobile';
+import { VerityApiError, type BackupKeyOffer, type VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator } from 'react-native';
@@ -33,11 +33,19 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
   const [error, setError] = useState<string | undefined>(undefined);
   const pending = useRef<BackupKeyOffer | null>(null);
   const left = useRef(false);
+  // The key generation in force before this visit, to recognise a confirmation
+  // the server applied even though its reply was lost.
+  const generation = useRef<number | undefined>(undefined);
 
   const begin = (): void => {
     setError(undefined);
     void client
-      .beginBackupKeyReplacement()
+      .getBackupStatus()
+      .then((status) => {
+        if (status.available) generation.current = status.keyGeneration;
+      })
+      .catch(() => undefined)
+      .then(() => client.beginBackupKeyReplacement())
       .then((next) => {
         // The operator left while the key was being generated.
         if (left.current) {
@@ -73,8 +81,18 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
     void client
       .confirmBackupKeyReplacement(current)
       .then(() => setDone(true))
-      .catch(() => {
-        if (Date.now() >= current.expiresAt) {
+      .catch(async (failure: unknown) => {
+        const after = await client.getBackupStatus().catch(() => undefined);
+        if (
+          after?.available === true &&
+          after.keyGeneration !== undefined &&
+          generation.current !== undefined &&
+          after.keyGeneration > generation.current
+        ) {
+          setDone(true);
+          return;
+        }
+        if (failure instanceof VerityApiError && failure.status === 410) {
           // The server has already dropped an expired key; the current key stays.
           setOffer(null);
           setError('The new key expired before it was confirmed. Retry to get another one.');

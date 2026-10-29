@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { BackupService } from './service.js';
+import { BackupSetupExpiredError } from './setup.js';
 
 type BackupApi = Pick<
   BackupService,
@@ -52,7 +53,13 @@ export function registerBackupRoutes(app: FastifyInstance, deps: BackupRouteDepe
     ): Promise<T | { error: string }> => {
       try {
         return await action();
-      } catch {
+      } catch (error) {
+        // An expired offer is the one failure a client must handle differently: retrying
+        // cannot work, a new key is needed.
+        if (error instanceof BackupSetupExpiredError) {
+          reply.code(410);
+          return { error: 'backup key offer expired' };
+        }
         reply.code(409);
         return { error: 'backup operation failed' };
       }

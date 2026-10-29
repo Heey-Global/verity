@@ -3,7 +3,12 @@
 // what follows checks where it goes — back to the server exactly once, never
 // kept in a field, and discarded on the server when the operator walks away.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import type { BackupProbeJob, BackupStatus, VerityClient } from '@verity/mobile';
+import {
+  VerityApiError,
+  type BackupProbeJob,
+  type BackupStatus,
+  type VerityClient,
+} from '@verity/mobile';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -189,8 +194,9 @@ describe('backup setup', () => {
       getBackupStatus: jest
         .fn()
         .mockResolvedValue({ available: true, configured: false, alerts: [] }),
-      beginBackupSetup: jest.fn().mockResolvedValue({ ...OFFER, expiresAt: Date.now() - 1 }),
-      confirmBackupSetup: jest.fn().mockRejectedValue(new Error('backup operation failed')),
+      confirmBackupSetup: jest
+        .fn()
+        .mockRejectedValue(new VerityApiError(410, 'backup key offer expired')),
     });
     render(<BackupScreen />);
     fireEvent.press(await screen.findByText('Set up backup'));
@@ -350,6 +356,18 @@ describe('new recovery key', () => {
     expect(client.confirmBackupKeyReplacement).toHaveBeenCalledWith(OFFER);
     fireEvent.press(screen.getByText('Done'));
     expect(mockBack).toHaveBeenCalled();
+  });
+
+  it('recognises a new key the server applied although the reply was lost', async () => {
+    const client = backupClient({
+      getBackupStatus: jest.fn().mockResolvedValue(configured({ keyGeneration: 2 })),
+      confirmBackupKeyReplacement: jest.fn().mockRejectedValue(new Error('network')),
+    });
+    render(<BackupNewKeyScreen />);
+    await screen.findByText(KEY);
+    client.getBackupStatus.mockResolvedValue(configured({ keyGeneration: 3 }));
+    fireEvent.press(screen.getByText('I saved it, use the new key'));
+    expect(await screen.findByText('New key is active')).toBeOnTheScreen();
   });
 
   it('keeps the current key when the operator leaves without confirming', async () => {

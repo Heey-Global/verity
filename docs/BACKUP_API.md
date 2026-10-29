@@ -54,7 +54,10 @@ treat any unknown reason as unavailable. A runtime initialization
 failure returns `reason: "runtime-unavailable"`; ordinary server operation continues. An available
 installation returns `available: true`, `configured`, and `alerts`; a configured
 installation also returns `paused`, `intervalMs`, `lastSuccess` (Unix milliseconds
-or null), `capturing` (true only while a capture runs), `lastProbe` and `probe`.
+or null), `capturing` (true only while a capture runs), `keyGeneration` (non-secret,
+increases with each confirmed key replacement), `lastProbe` and `probe`. A setup or
+replacement confirmation for an offer that expired or was replaced returns 410 with
+`{ error: "backup key offer expired" }`; only a new offer can succeed.
 Before the first successful backup, `stale-backup` counts from setup, so a fresh
 setup does not report a missing backup. `lastProbe` is null until a complete probe succeeds, then
 contains the authenticated repository, sequence and completion time. It describes

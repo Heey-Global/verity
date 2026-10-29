@@ -1191,6 +1191,7 @@ export const backupStatusSchema = z.discriminatedUnion('available', [
     intervalMs: z.number().optional(),
     lastSuccess: z.number().nullable().optional(),
     capturing: z.boolean().optional(),
+    keyGeneration: z.number().optional(),
     lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
     probe: backupProbeJobSchema.nullable().optional(),
     alerts: z.array(z.string()),

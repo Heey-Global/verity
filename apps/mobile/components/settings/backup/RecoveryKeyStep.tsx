@@ -32,7 +32,7 @@ export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
         in your password manager.
       </Text>
       <Card>
-        <Text variant="code" selectable accessibilityLabel="Recovery key">
+        <Text variant="code" selectable>
           {recoveryKey}
         </Text>
       </Card>

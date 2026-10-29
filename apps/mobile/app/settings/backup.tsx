@@ -2,7 +2,12 @@
 // Setup is three steps on this one route — explain, show the recovery key once,
 // success — and afterwards the route is the status page. Restoring a lost
 // server stays with the installer (docs/INSTALLER_RECOVERY.md).
-import { type BackupKeyOffer, type BackupStatus, type VerityClient } from '@verity/mobile';
+import {
+  VerityApiError,
+  type BackupKeyOffer,
+  type BackupStatus,
+  type VerityClient,
+} from '@verity/mobile';
 import { router, type Href } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
@@ -107,7 +112,7 @@ function BackupView({ client }: { client: VerityClient }) {
         setStep({ kind: 'success' });
         void reload();
       })
-      .catch(async () => {
+      .catch(async (failure: unknown) => {
         // A reply lost after the server committed still means backups are on.
         const after = await client.getBackupStatus().catch(() => undefined);
         if (after?.available === true && after.configured) {
@@ -115,7 +120,7 @@ function BackupView({ client }: { client: VerityClient }) {
           void reload();
           return;
         }
-        if (Date.now() >= offer.expiresAt) {
+        if (failure instanceof VerityApiError && failure.status === 410) {
           // The server has already dropped an expired key; only a new one can work.
           setStep({ kind: 'status' });
           setError('The key expired before it was confirmed. Set up again to get a new key.');

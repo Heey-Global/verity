@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { registerBackupRoutes, type BackupRouteDependencies } from './routes.js';
+import { BackupSetupExpiredError } from './setup.js';
 
 it('checks current administrator authority on every registered backup route', async () => {
   const app = Fastify();
@@ -337,6 +338,33 @@ it('starts, polls and cancels probe jobs with current admin checks and safe fail
     expect(failure.statusCode).toBe(409);
     expect(failure.body).not.toContain('private');
     expect(logs.join('')).not.toContain('private-recovery-key');
+  } finally {
+    await app.close();
+  }
+});
+
+it('reports an expired key offer distinctly so clients start over instead of retrying', async () => {
+  const app = Fastify();
+  const expired = vi.fn(async () => {
+    throw new BackupSetupExpiredError();
+  });
+  const service = {
+    confirmSetup: expired,
+    confirmKeyReplacement: expired,
+  } as unknown as NonNullable<BackupRouteDependencies['service']>;
+  registerBackupRoutes(app, {
+    userId: () => 'admin',
+    isAdministrator: async () => true,
+    service,
+  });
+  try {
+    const payload = { id: randomUUID(), recoveryKey: 'verity-recovery-v1.sample' };
+    for (const url of ['/api/backups/setup/confirm', '/api/backups/key-replacement/confirm']) {
+      const response = await app.inject({ method: 'POST', url, payload });
+      expect(response.statusCode, url).toBe(410);
+      expect(response.json()).toEqual({ error: 'backup key offer expired' });
+      expect(response.body).not.toContain(payload.recoveryKey);
+    }
   } finally {
     await app.close();
   }
