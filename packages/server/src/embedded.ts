@@ -4771,7 +4771,7 @@ export async function buildEmbeddedServer(
     runtimeDiagnostics: createRuntimeDiagnostics({
       dockerBaseUrl: config.dockerBaseUrl,
       dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId,
+      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
       builderAdmissionDirectory: '/run/verity-buildkit',

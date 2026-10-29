@@ -247,6 +247,10 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
     (key) =>
       sourceErrors[key] || (sources[key] !== undefined && sources[key].state !== 'available'),
   );
+  const incomplete = (['server', 'host'] as const).filter(
+    (key) =>
+      sources[key]?.state === 'available' && (sources[key]?.stale || sources[key]?.truncated),
+  );
   const loading =
     (filter !== 'system' && events === undefined) ||
     (systemVisible &&
@@ -320,10 +324,18 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
       ) : null}
       {systemVisible ? (
         <>
-          {unavailable.length ? (
+          {unavailable.length || incomplete.length ? (
             <HintBox
-              title={`${unavailable.map((key) => SOURCE_LABELS[key]).join(' and ')} unavailable`}
-              message="Other sources are still shown."
+              title={
+                unavailable.length
+                  ? `${unavailable.map((key) => SOURCE_LABELS[key]).join(' and ')} unavailable`
+                  : 'Log history is incomplete'
+              }
+              message={
+                incomplete.length
+                  ? `${incomplete.map((key) => SOURCE_LABELS[key]).join(' and ')} history is outdated or shortened. Other sources are still shown.`
+                  : 'Other sources are still shown.'
+              }
             >
               <Button
                 variant="text"

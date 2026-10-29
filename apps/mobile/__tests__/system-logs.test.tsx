@@ -244,3 +244,21 @@ it('re-reads the first page in place on return and hides system entries beyond u
   expect(screen.getByText('Image build succeeded')).toBeOnTheScreen();
   expect(screen.queryByText('Loading logs…')).toBeNull();
 });
+
+it.each(['stale', 'truncated'] as const)(
+  'warns when an available source is %s',
+  async (condition) => {
+    const systemLogs = jest.fn(({ source }) =>
+      Promise.resolve({
+        ...logs(source === 'server' ? 'message' : 'host message', source),
+        [condition]: source === 'server',
+      }),
+    );
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { systemLogs, auditEvents: jest.fn().mockResolvedValue(emptyAudit) }),
+    );
+    render(<LogsScreen />);
+    expect(await screen.findByText('Log history is incomplete')).toBeOnTheScreen();
+    expect(screen.getByText('message')).toBeOnTheScreen();
+  },
+);
