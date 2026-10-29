@@ -1412,6 +1412,10 @@ export class Conductor {
         'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.';
       resumeSessionId = undefined;
     }
+    // Every assistant turn, fresh or resumed: it reads untrusted mail and notes, so it
+    // acts only through Verity's server-checked tools (docs/assistant.md).
+    if ((await this.deps.store.assistant.settings()).session_id === sessionId)
+      builtRunOpts.gatewayToolsOnly = true;
     const runOpts = {
       ...builtRunOpts,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),

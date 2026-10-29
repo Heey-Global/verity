@@ -53,8 +53,11 @@ Verity Control itself can never be granted.
   planning tools. Control's fleet-wide reads (`verity_diagnostics`,
   `verity_list_sessions`, `verity_session_progress`,
   `verity_recent_session_messages`), secrets and brokered HTTP are refused. To hand
-  off, it targets a project or a new session. This list covers Verity's gateway
-  tools; the backend's built-in tools are those of every Verity Control session.
+  off, it targets a project or a new session.
+- Its turns also run without the backend's built-in tools (shell, files, web)
+  and without the operator's own MCP connections; only the Verity gateway
+  remains. A backend that cannot enforce this refuses the turn, so the assistant
+  runs on Claude.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 

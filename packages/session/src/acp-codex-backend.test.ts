@@ -1075,6 +1075,22 @@ describe('AcpCodexBackend', () => {
     expect(fake.writes).toEqual([]);
   });
 
+  it('refuses a Verity-tools-only turn it cannot enforce', async () => {
+    const fake = acpSpawner({ httpMcp: true });
+    await expect(
+      new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-codex-gateway-only',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'File this note',
+        spawner: fake.spawner,
+        gatewayToolsOnly: true,
+      }),
+    ).rejects.toThrow('cannot run a turn limited to Verity tools');
+    expect(fake.writes).toEqual([]);
+  });
+
   it('offers the turn gateway when Codex advertises HTTP MCP', async () => {
     const url = 'http://relay:8080/internal/mcp';
     const fake = acpSpawner({ httpMcp: true });

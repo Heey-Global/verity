@@ -444,9 +444,11 @@ describe('Conductor.sendTurn', () => {
     });
     await conductor.sendTurn('assistant', 'Did Jonas send the offer?');
     expect(fake.last().toolless).not.toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
     expect(fake.last().appendSystemPrompt).toContain('# Verity assistant');
     await conductor.sendTurn('plain', 'Continue');
     expect(fake.last().appendSystemPrompt).not.toContain('# Verity assistant');
+    expect(fake.last().gatewayToolsOnly).not.toBe(true);
   });
 
   it('does not claim a turn when pre-admission migration fails', async () => {

@@ -59,6 +59,7 @@ const startTurnRequestSchema = z
     allowedTools: z.array(boundedString(4096)).max(256).optional(),
     disallowedTools: z.array(boundedString(4096)).max(256).optional(),
     toolless: z.boolean().optional(),
+    gatewayToolsOnly: z.boolean().optional(),
     timeoutMs: z.number().int().min(1).max(86_400_000).optional(),
     trustedCliExecution: z.boolean().optional(),
     mcpGatewayToken: boundedString(512).min(1).optional(),
@@ -223,6 +224,7 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   ...(request.allowedTools !== undefined ? { allowedTools: request.allowedTools } : {}),
   ...(request.disallowedTools !== undefined ? { disallowedTools: request.disallowedTools } : {}),
   ...(request.toolless === true ? { toolless: true } : {}),
+  ...(request.gatewayToolsOnly === true ? { gatewayToolsOnly: true } : {}),
   ...(mcpServers !== undefined ? { mcpServers } : {}),
   ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
   // The Sandbox's own environment stays the base; only Verity's per-turn runtime
