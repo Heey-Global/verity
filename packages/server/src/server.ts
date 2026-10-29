@@ -10089,7 +10089,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
-  // One Verity Control session, recreated under the same id if it was deleted. Concurrent
+  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
   // callers share one attempt, so two requests never spawn the same session id twice.
   let ensuringAssistant: Promise<string> | undefined;
   const ensureAssistantSession = async (): Promise<string> => {

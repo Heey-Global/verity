@@ -78,6 +78,7 @@ export function registerAssistantRoutes(
     const { id } = params.parse(request.params);
     if (!(await allowed(request, id, 'read')))
       return reply.code(403).send({ error: 'Project access required' });
+    if (!(await store.getProject(id))) return reply.code(404).send({ error: 'Project not found' });
     const grant = await store.assistant.grant(id);
     return {
       assistantEnabled: (await store.assistant.settings()).enabled,

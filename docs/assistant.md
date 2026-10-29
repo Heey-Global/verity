@@ -12,7 +12,7 @@ Settings → Assistant holds the installation-wide switch. It is off by default 
 only administrators can change it. Turning it on creates the session in Verity
 Control (turning it on again recreates a deleted session); turning it off stops
 a running turn, keeps the session and its history, and refuses every assistant
-tool call until it is on again.
+tool call until it is on again. Notes already queued still reach the session.
 
 Mail, calendar and contacts use the Google accounts assigned to the Verity
 Control project (Settings → Assistant → Mail and calendar). Sending mail and
@@ -53,7 +53,8 @@ Verity Control itself can never be granted.
   planning tools. Control's fleet-wide reads (`verity_diagnostics`,
   `verity_list_sessions`, `verity_session_progress`,
   `verity_recent_session_messages`), secrets and brokered HTTP are refused. To hand
-  off, it targets a project or a new session.
+  off, it targets a project or a new session. This list covers Verity's gateway
+  tools; the backend's built-in tools are those of every Verity Control session.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
