@@ -63,11 +63,9 @@
       "replace": "for (const container of startOrder) {",
       "with": "for (const container of previous.containers) {",
       "command": [
-        "node",
-        "/work/backup-tools/node_modules/vitest/vitest.mjs",
+        "npx",
+        "vitest",
         "run",
-        "--config",
-        "/work/backup-tools/security-verification.config.ts",
         "packages/server/src/backup/restore-previous-runtime.test.ts",
         "--maxWorkers=1"
       ],
@@ -78,7 +76,8 @@
         "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
         " FAIL  packages/server/src/backup/restore-previous-runtime.test.ts > starts the updater after the Server so immediate replacement cannot invalidate pending inspections",
         "Error: container_not_found"
-      ]
+      ],
+      "executionNote": "Local execution used the repository configuration with a teardown wrapper for an unrelated Vite cleanup error; the command shown is the repository-supported reproduction."
     }
   ],
   "description": "Scoped omission mutations for independent content recovery assertions and the immutable format v1 probe/import path. Public synthetic fixtures only; original sources restored after every run. Includes rollback startup ordering when an updater immediately replaces the Server.",
