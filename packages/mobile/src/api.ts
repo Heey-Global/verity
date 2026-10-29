@@ -1,6 +1,7 @@
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
+  auditEventListSchema,
   auditOperationListSchema,
   auditOperationResponseSchema,
   type AuditHealth,
@@ -3214,6 +3215,8 @@ export class VerityClient {
     // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
     // dropped parameters before, which would silently unfilter the list.
     const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
     if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
       params.push(['q', query.search.trim()]);
@@ -3226,6 +3229,30 @@ export class VerityClient {
     try {
       const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
       return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditEvents(query: AuditOperationQuery = {}) {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/events${suffix}`, { method: 'GET' });
+      return auditEventListSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;

@@ -8,6 +8,7 @@ export { SectionHeader } from './SectionHeader';
 export { ConfirmSheet, Sheet, useConfirm } from './Sheet';
 export { StatusDot, StatusTag } from './Status';
 export { Text } from './Text';
+export { LogList, LogRow } from './LogList';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
 

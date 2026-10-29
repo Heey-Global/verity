@@ -14,6 +14,7 @@ import {
   SettingsMessage,
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
+import { BuildOutput } from '../../../components/logs/LogEntries';
 import { Row, StatusTag, Text } from '../../../components/ui';
 import type { StatusIntent } from '../../../components/ui/Status';
 import {
@@ -197,18 +198,11 @@ export function AuditOperationView({
                   : `${(build.durationMs / 1000).toFixed(1)} seconds`
               }
             />
-            {operation.status === 'failed' ? (
-              <Row
-                title="Build failed"
-                subtitle="Image build · build_failed"
-                navigates
-                onPress={() =>
-                  router.push(
-                    `/settings/system-logs?operationId=${encodeURIComponent(operation.operationId)}` as Href,
-                  )
-                }
-              />
-            ) : null}
+            <BuildOutput
+              client={client}
+              operationId={operation.operationId}
+              status={operation.status}
+            />
           </SettingsListPanel>
         </SettingsGroup>
       ) : null}
@@ -252,5 +246,5 @@ export function AuditOperationView({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
+  head: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing.md },
 }));

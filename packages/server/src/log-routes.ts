@@ -1,3 +1,4 @@
+import { DockerError } from './docker.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { sanitizeDiagnostic, type BuildDiagnosticStore } from './build-diagnostics.js';
@@ -92,7 +93,14 @@ export function registerLogRoutes(app: FastifyInstance, deps: LogRouteDeps) {
     };
     if (query.source === 'host') {
       if (deps.runtimeDiagnostics === undefined)
-        return { ...base, state: 'unavailable', stale: false, truncated: false, entries: [] };
+        return {
+          ...base,
+          state: 'unavailable',
+          reason: 'not_configured',
+          stale: false,
+          truncated: false,
+          entries: [],
+        };
       try {
         const result = await deps.runtimeDiagnostics({ window: { since, until } });
         const snapshot = result.host.snapshot;
@@ -112,6 +120,9 @@ export function registerLogRoutes(app: FastifyInstance, deps: LogRouteDeps) {
             )
             .map((entry) => ({
               at: entry.at,
+              source: entry.source,
+              code: entry.code,
+              ...(entry.exitCode === undefined ? {} : { exitCode: entry.exitCode }),
               level: null,
               text: `${entry.source}: ${entry.code}${entry.exitCode === undefined ? '' : ` (exit ${entry.exitCode})`}`,
             })),
@@ -121,7 +132,14 @@ export function registerLogRoutes(app: FastifyInstance, deps: LogRouteDeps) {
       }
     }
     if (deps.serverLogs === undefined)
-      return { ...base, state: 'unavailable', stale: false, truncated: false, entries: [] };
+      return {
+        ...base,
+        state: 'unavailable',
+        reason: 'not_configured',
+        stale: false,
+        truncated: false,
+        entries: [],
+      };
     try {
       const raw = await deps.serverLogs({ since, until });
       const safe = sanitizeDiagnostic(raw);
@@ -153,8 +171,18 @@ export function registerLogRoutes(app: FastifyInstance, deps: LogRouteDeps) {
         truncated: raw.includes('[truncated') || raw.split('\n').filter(Boolean).length >= 1000,
         entries,
       };
-    } catch {
-      return { ...base, state: 'failed', stale: false, truncated: false, entries: [] };
+    } catch (error) {
+      const reason =
+        error instanceof DockerError
+          ? error.kind === 'container_not_found'
+            ? 'container_not_found'
+            : error.status === 401 || error.status === 403
+              ? 'access_denied'
+              : error.kind === 'network'
+                ? 'docker_unreachable'
+                : 'read_failed'
+          : 'read_failed';
+      return { ...base, state: 'failed', reason, stale: false, truncated: false, entries: [] };
     }
   });
 }

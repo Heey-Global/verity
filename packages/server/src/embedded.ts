@@ -1,3 +1,4 @@
+import { createServerLogSource } from './server-log-source.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
@@ -4956,15 +4957,7 @@ export async function buildEmbeddedServer(
       recorder: auditRecorder,
       log: auditLog,
       buildDiagnostics,
-      serverLogs:
-        runtimeDocker?.containerLogs === undefined
-          ? undefined
-          : (window) =>
-              runtimeDocker.containerLogs!(
-                config.diagnosticServerContainerId ?? hostname(),
-                1000,
-                window,
-              ),
+      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
     },
     ...(projectDocker === undefined
       ? {}
