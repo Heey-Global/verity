@@ -179,3 +179,26 @@ it('rechecks revocation after asynchronous DNS work', async () => {
   );
   expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
 });
+
+it('coalesces overlapping grants and canonical IPv6 addresses into one set element', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [grant, { ...grant, id: 'overlap', expiresAt: 1500 }],
+  });
+  expect(deps.apply.mock.calls.at(-1)![0].match(/8\.8\.8\.8 \. tcp \. 443 timeout/g)).toHaveLength(
+    1,
+  );
+  const rules = projectFenceRules(
+    binding,
+    [
+      { address: '2001:4860:4860::8888', protocol: 'tcp', port: 443, expiresAt: 1500 },
+      { address: '2001:4860:4860:0:0:0:0:8888', protocol: 'tcp', port: 443, expiresAt: 3000 },
+    ],
+    1000,
+    false,
+  );
+  expect(rules.match(/2001:4860:4860::8888 \. tcp \. 443 timeout 1000ms/g)).toHaveLength(1);
+});

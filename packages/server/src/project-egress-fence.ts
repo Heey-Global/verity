@@ -84,21 +84,29 @@ export function projectFenceRules(
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
   const commands = replace ? [`delete table inet ${table}`, `delete table bridge ${table}`] : [];
+  const unique = new Map<string, Lease>();
+  for (const lease of leases) {
+    if (
+      !publicAddress(lease.address) ||
+      !['tcp', 'udp'].includes(lease.protocol) ||
+      !Number.isInteger(lease.port) ||
+      lease.port < 1 ||
+      lease.port > 65535 ||
+      !Number.isFinite(lease.expiresAt)
+    )
+      throw new Error('Invalid project fence lease');
+    const address = ipaddr.parse(lease.address).toString();
+    const key = `${address}|${lease.protocol}|${lease.port}`;
+    const previous = unique.get(key);
+    if (!previous || previous.expiresAt < lease.expiresAt) unique.set(key, { ...lease, address });
+  }
   const elements = (family: number): string =>
-    leases
-      .filter((l) => isIP(l.address) === family && l.expiresAt - now >= 1)
-      .map((l) => {
-        if (
-          !publicAddress(l.address) ||
-          !['tcp', 'udp'].includes(l.protocol) ||
-          !Number.isInteger(l.port) ||
-          l.port < 1 ||
-          l.port > 65535 ||
-          !Number.isFinite(l.expiresAt)
-        )
-          throw new Error('Invalid project fence lease');
-        return `${l.address} . ${l.protocol} . ${l.port} timeout ${Math.min(LEASE_MS, Math.floor(l.expiresAt - now))}ms`;
-      })
+    [...unique.values()]
+      .filter((lease) => isIP(lease.address) === family && lease.expiresAt - now >= 1)
+      .map(
+        (lease) =>
+          `${lease.address} . ${lease.protocol} . ${lease.port} timeout ${Math.min(LEASE_MS, Math.floor(lease.expiresAt - now))}ms`,
+      )
       .join(', ');
   const sets = [4, 6]
     .map((f) => {
