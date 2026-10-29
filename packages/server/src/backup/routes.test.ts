@@ -61,6 +61,14 @@ it('checks current administrator authority and the recovery gate on every regist
     }
     for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
     accepted = true;
+    // Availability must never grant project or agent actors administrator authority.
+    for (const route of routes)
+      for (const user of ['member', 'agent', 'project-container'])
+        expect(
+          (await app.inject({ ...route, headers: { 'x-user': user } })).statusCode,
+          `${user} ${route.url}`,
+        ).toBe(403);
+    for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
     const headers = { 'x-user': 'admin' };
     expect(
       (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),

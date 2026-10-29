@@ -4,6 +4,8 @@ The recovery acceptance gate remains closed. This implementation must pass the
 complete v1 acceptance requirements in [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md)
 before backup setup and scheduling become available. A successful restore probe
 alone does not satisfy that gate.
+The [acceptance evidence matrix](BACKUP_RECOVERY_EVIDENCE.md) separates verified
+scenarios from remaining implementation and evidence gaps.
 
 Recovery requires the entire copied local backup directory, its recovery key,
 the master password current at capture time, Docker and a supported Linux host.

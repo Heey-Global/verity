@@ -13,6 +13,21 @@ import { sealCaIdentityReceipt } from './identity-receipt.js';
 import { readRevocations } from './revocations.js';
 import { writeBackupIdentityFixture } from './testing.js';
 
+vi.mock('node:fs/promises', async (originalImport) => {
+  const original = await originalImport<typeof import('node:fs/promises')>();
+  return {
+    ...original,
+    statfs: async (...args: Parameters<typeof original.statfs>) => {
+      const result = await original.statfs(...args);
+      // Alert transitions use explicit capacity fixtures, independent of host disk usage.
+      return {
+        ...result,
+        blocks: typeof result.bavail === 'bigint' ? result.bavail * 2n : result.bavail * 2,
+      };
+    },
+  };
+});
+
 it('commits only after identity confirmation, skips abandoned repositories and syncs revocations while paused', async () => {
   const root = await mkdtemp(join(tmpdir(), 'backup-service-'));
   let service: BackupService | undefined;

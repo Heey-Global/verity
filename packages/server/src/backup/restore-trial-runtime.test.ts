@@ -93,6 +93,15 @@ it.each(['staging', 'canonical'] as const)(
       );
       const spec = createContainer.mock.calls[0]?.[0];
       expect(spec).not.toHaveProperty('portBindings');
+      expect(spec).not.toHaveProperty('volumeMounts');
+      expect(spec!.env).toHaveLength(2);
+      expect(spec!.binds).toEqual([`${join(state, 'trial')}:/restore:rw`]);
+      expect(JSON.stringify(spec)).not.toMatch(
+        /docker\.sock|tls-ca-key|backup-identity|run\/verity-backup/,
+      );
+      expect(spec!.capDrop).toEqual(['ALL']);
+      expect(spec!.securityOpt).toContain('no-new-privileges:true');
+
       expect(spec!.env).toContain(
         `VERITY_RESTORE_DATABASE_URL=postgres://${target === 'canonical' ? 'verity' : 'restore'}:${'a'.repeat(64)}@${resources.container}:5432/${target === 'canonical' ? 'verity' : resources.database}`,
       );
