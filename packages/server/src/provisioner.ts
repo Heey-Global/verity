@@ -1,5 +1,6 @@
 import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
+import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { connectDocumentCode } from './document-code.js';
 import { migrateLocalDocuments } from './document-migration.js';
@@ -989,6 +990,7 @@ export interface ProvisionerOptions {
   /** Durable audit trail for project image builds (ADR 0028). When wired, a build
    *  whose intent cannot be recorded is refused. */
   audit?: AuditRecorder | undefined;
+  buildDiagnostics?: BuildDiagnosticStore | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -6282,6 +6284,11 @@ export class ProvisionerImpl implements Provisioner {
         });
       } catch (cause) {
         // Best-effort: the build error, not an audit error, is what the caller reports.
+        if (audit !== undefined) {
+          await this.opts.buildDiagnostics
+            ?.save(audit.operationId, cause, registryToken === undefined ? [] : [registryToken])
+            .catch(() => undefined);
+        }
         await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.

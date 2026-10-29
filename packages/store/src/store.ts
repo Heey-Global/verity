@@ -1,3 +1,4 @@
+import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -1410,6 +1411,7 @@ export class EventStore implements EventSink {
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
+    this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db, cipher);
@@ -1418,6 +1420,7 @@ export class EventStore implements EventSink {
     this.tasks = new TaskStore(db, cipher);
   }
 
+  readonly projectEgress: ProjectEgressStore;
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;

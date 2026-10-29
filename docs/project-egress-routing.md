@@ -1,7 +1,8 @@
 # Project egress routing and consent
 
-Status: target contract for implementation; no firewall, role, connector or UI
-behavior is enabled by this document. Network destination permissions are shared
+Status: target contract with draft policy persistence and authenticated management
+APIs implemented. No firewall, connector or UI activation is enabled. The APIs
+report `enforcement: unavailable`; stored grants do not admit network traffic. Network destination permissions are shared
 by all sessions and background processes of a project. Account, secret and action
 permissions retain their own identities and scopes. This supersedes session-only
 network grant proposals in [the foundation contract](pre-egress-security-contract.md)
@@ -287,3 +288,31 @@ The next scoped code change is item 1, after separate implementation approval;
 the runtime experiment can then use the same policy semantics. This document
 changes no production behavior, existing account ownership, sharing, UI or
 firewall. The earlier local experiment files are preserved unchanged.
+
+
+## Policy management implementation
+
+The first increment stores a serialized, transaction-locked policy document per
+project in `project_egress_policy`. Its project primary key and row lock serialize
+request deduplication, decisions and revision changes across server instances.
+User, membership and project rows are locked while current authority is checked
+and the decision is saved. This retains control-plane project restrictions.
+
+Paired routes under `/projects/:id/egress` provide reading, requests, decisions,
+explicit reopening, revocation and permanent settings rules. Requests need execute
+permission; decisions, reopening, revocation and permanent rules need manage.
+The routes reject missing authenticated user identity even on an unpaired server.
+A denied, expired or obsolete request does not generate another automatic card;
+a manager must reopen it with the current revision. Default grants last one hour
+from approval; permanent rules require the separate settings endpoint.
+
+These are draft management APIs. They perform no DNS lookup, traffic admission,
+payload buffering or replay. Runtime identity/generation checks, final destination
+classification (including mandatory-broker overlap), DNS answer validation and
+packet enforcement remain required before these rules can be activated. The
+trusted-adapter policy evaluator is not a sandbox-facing admission endpoint.
+
+Managers may explicitly remove non-denied request records with the current policy
+revision to recover request capacity. This permits a fresh request for that target;
+it does not revoke an existing grant. Denied records cannot be removed until a
+manager explicitly reopens them, preserving persistent denial suppression.

@@ -274,8 +274,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           {auditHealth !== null ? (
             <SettingsNavRow
               icon="file-text"
-              title="Audit logs"
-              subtitle="Image builds and project deletions"
+              title="Logs"
+              subtitle="Audit history and system output"
               status={
                 auditHealth.status === 'degraded'
                   ? { intent: 'needsSetup', label: 'Needs review' }

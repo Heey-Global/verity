@@ -4717,6 +4717,18 @@ migrations['0170_backup_foundation'] = {
   },
 };
 
+migrations['0171_project_egress_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_egress_policy (
+      project_id text primary key references projects(id) on delete cascade,
+      state jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_egress_policy`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);
