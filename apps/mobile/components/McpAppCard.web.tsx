@@ -81,6 +81,19 @@ function McpAppFrame({
     const target = iframe?.contentWindow;
     if (!iframe || !target) return;
     const controller = new AbortController();
+    let loaded = false;
+    const onLoad = () => {
+      if (!loaded) {
+        loaded = true;
+        return;
+      }
+      // A navigated document keeps the same WindowProxy; revoke its bridge.
+      controller.abort();
+      ready.current = false;
+      bridgeRef.current = null;
+      void bridge.close();
+      failed();
+    };
     const bridge = new AppBridge(
       null,
       { name: 'Verity', version: '1.0.0' },
@@ -135,7 +148,10 @@ function McpAppFrame({
     void bridge
       .connect(new PostMessageTransport(target, target))
       .then(() => {
-        if (!controller.signal.aborted) iframe.srcdoc = document;
+        if (!controller.signal.aborted) {
+          iframe.addEventListener('load', onLoad);
+          iframe.srcdoc = document;
+        }
       })
       .catch(failed);
     return () => {
@@ -144,6 +160,7 @@ function McpAppFrame({
       clearTimeout(timer);
       controller.abort();
       observer.disconnect();
+      iframe.removeEventListener('load', onLoad);
       void bridge
         .teardownResource({}, { timeout: 500 })
         .catch(() => undefined)

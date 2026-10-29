@@ -62,8 +62,11 @@ and tool visibility, and requires a fresh permission decision. App-only tools ar
 hidden from the agent. Views cannot call tools on another connection or access
 Verity credentials, page storage, or the parent document.
 
-Views run in sandboxed iframes. Network access defaults to disabled; declared CSP
-resource and connection domains must be exact HTTPS origins. Nested frames,
+Views run in sandboxed iframes. CSP blocks resource loads and fetch connections
+unless explicitly declared with exact HTTPS origins. This is not full network
+isolation: browsers still permit a view to navigate itself, potentially sending
+its app data to another origin. Only enable Apps from trusted MCP providers. A
+second frame load revokes the bridge and shows the text fallback. Nested frames,
 workers, forms, native device permissions, chat-context updates, downloads and
 external-link requests are not enabled in this first implementation.
 

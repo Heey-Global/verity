@@ -174,3 +174,26 @@ it('retains text fallback when the app resource is revoked or unavailable', asyn
   expect(container.textContent).toContain('Count: 1');
   expect(container.querySelector('iframe')).toBeNull();
 });
+
+it('revokes the bridge when the frame loads another document', async () => {
+  await React.act(async () => {
+    root.render(React.createElement(McpAppCard, { event }));
+    await tick();
+  });
+  const iframe = container.querySelector('iframe')!;
+  const target = iframe.contentWindow!;
+  await React.act(async () => {
+    iframe.dispatchEvent(new Event('load'));
+    iframe.dispatchEvent(new Event('load'));
+    await tick();
+  });
+  await message(target, {
+    jsonrpc: '2.0',
+    id: 88,
+    method: 'tools/call',
+    params: { name: 'refresh' },
+  });
+  expect(mocks.callMcpAppTool).not.toHaveBeenCalled();
+  expect(container.querySelector('iframe')).toBeNull();
+  expect(container.textContent).toContain('Count: 1');
+});
