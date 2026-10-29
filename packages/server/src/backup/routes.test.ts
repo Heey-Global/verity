@@ -22,6 +22,13 @@ it('checks current administrator authority and the recovery gate on every regist
     })),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
+    beginKeyReplacement: vi.fn(async () => ({
+      id: randomUUID(),
+      recoveryKey: 'replacement-secret',
+      expiresAt: 123,
+    })),
+    confirmKeyReplacement: vi.fn(async () => undefined),
+    cancelKeyReplacement: vi.fn(async () => undefined),
     setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => {
       throw new Error('not configured');
@@ -61,6 +68,14 @@ it('checks current administrator authority and the recovery gate on every regist
     }
     for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
     accepted = true;
+    // Availability must never grant project or agent actors administrator authority.
+    for (const route of routes)
+      for (const user of ['member', 'agent', 'project-container'])
+        expect(
+          (await app.inject({ ...route, headers: { 'x-user': user } })).statusCode,
+          `${user} ${route.url}`,
+        ).toBe(403);
+    for (const method of Object.values(service)) expect(method).not.toHaveBeenCalled();
     const headers = { 'x-user': 'admin' };
     expect(
       (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),
@@ -120,6 +135,45 @@ it('checks current administrator authority and the recovery gate on every regist
     expect(
       (await app.inject({ method: 'POST', url: '/api/backups/setup/cancel', headers })).statusCode,
     ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/backups/key-replacement',
+          headers,
+          payload: { reason: 'exposed' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(service.beginKeyReplacement).toHaveBeenCalledWith('exposed');
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/backups/key-replacement',
+          headers,
+          payload: { reason: 'invalid' },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/backups/key-replacement/confirm',
+          headers,
+          payload: confirmation,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(service.confirmKeyReplacement).toHaveBeenCalledWith(
+      confirmation.id,
+      confirmation.recoveryKey,
+    );
+    expect(
+      (await app.inject({ method: 'POST', url: '/api/backups/key-replacement/cancel', headers }))
+        .statusCode,
+    ).toBe(200);
     administrator = false;
     for (const route of routes)
       expect((await app.inject({ ...route, headers })).statusCode).toBe(403);
@@ -138,6 +192,13 @@ it('requires installer resources, validates input and never echoes recovery mate
     }),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
+    beginKeyReplacement: vi.fn(async () => ({
+      id: randomUUID(),
+      recoveryKey: 'replacement-secret',
+      expiresAt: 123,
+    })),
+    confirmKeyReplacement: vi.fn(async () => undefined),
+    cancelKeyReplacement: vi.fn(async () => undefined),
     setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => {
       throw new Error('not configured');
@@ -226,6 +287,13 @@ it('starts, polls and cancels probe jobs with current admin checks and safe fail
     }),
     confirmSetup: vi.fn(async () => undefined),
     cancelSetup: vi.fn(async () => undefined),
+    beginKeyReplacement: vi.fn(async () => ({
+      id: randomUUID(),
+      recoveryKey: 'replacement-secret',
+      expiresAt: 123,
+    })),
+    confirmKeyReplacement: vi.fn(async () => undefined),
+    cancelKeyReplacement: vi.fn(async () => undefined),
     setPolicy: vi.fn(async () => undefined),
     startProbe: vi.fn(async () => job),
     probeStatus: vi.fn((requested) => (requested === id ? job : null)),

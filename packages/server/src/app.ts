@@ -1,3 +1,4 @@
+import type { RepairDiscovery } from './repair-supervisor.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
@@ -181,6 +182,12 @@ export interface ControlPlaneDeps {
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
   /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
+  invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
   /** Compact PR strip status for a multi-branch session — the most-recently-updated
@@ -454,6 +461,11 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.worktrees !== undefined ? { worktrees: deps.worktrees } : {}),
     ...(deps.workspaceDir !== undefined ? { workspaceDir: deps.workspaceDir } : {}),
     ...(deps.branches !== undefined ? { branches: deps.branches } : {}),
+    ...(deps.invalidateProjectPrStatus !== undefined
+      ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
+      : {}),
+    ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
+    ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
     ...(deps.branchPrStatusForBranches !== undefined

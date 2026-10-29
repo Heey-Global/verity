@@ -9,6 +9,10 @@ setup_backup_prerequisites() {
   [[ $(readlink -m -- "$backup_dir") = "$backup_dir" ]] || die 'backup directory must have no symlinked parents or dot segments'
   [[ $backup_dir =~ ^/[A-Za-z0-9/_.-]+$ && $backup_dir != / && $backup_dir != "$STATE_DIR" && $STATE_DIR != "$backup_dir/"* ]] || die 'backup directory must be a dedicated absolute path'
   [[ $STATE_DIR =~ ^/[A-Za-z0-9/_.-]+$ ]] || die 'backup helper requires a normalized installer state path'
+  # Never silently adopt another destination or move an existing backup archive.
+  local previous
+  previous=$(read_state "$STATE_DIR/backup-dir")
+  [[ -z $previous || $previous = "$backup_dir" ]] || die 'backup directory differs from installer state; moving backup repositories requires an explicit migration'
   if [[ -e $backup_dir || -L $backup_dir ]]; then
     [[ -d $backup_dir && ! -L $backup_dir ]] || die 'backup destination must be a directory, not a symlink'
   else
@@ -24,10 +28,6 @@ setup_backup_prerequisites() {
   backup_password=$(read_state "$STATE_DIR/backup-postgres-password")
   if [[ -z $backup_password ]]; then backup_password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); fi
   [[ $backup_password =~ ^[a-f0-9]{64}$ ]] || die 'invalid persisted backup PostgreSQL credential'
-  # Never silently adopt another destination or move an existing backup archive.
-  local previous
-  previous=$(read_state "$STATE_DIR/backup-dir")
-  [[ -z $previous || $previous = "$backup_dir" ]] || die 'backup directory differs from installer state; moving backup repositories requires an explicit migration'
   printf '%s\n' "$installation_id" | write_state "$STATE_DIR/installation-id" 0644
   printf '%s\n' "$backup_dir" | write_state "$STATE_DIR/backup-dir" 0644
   printf '%s\n' "$image" | write_state "$STATE_DIR/backup-server-image" 0600

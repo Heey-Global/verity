@@ -1,3 +1,4 @@
+import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
@@ -554,4 +555,13 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.runtime.close).toHaveBeenCalledOnce();
     expect(h.signing.revokeProject).toHaveBeenCalledWith('p1');
   });
+});
+
+it('requires the host fence before issuing capabilities or opening relay listeners', async () => {
+  const h = harness();
+  const egress = new ProjectEgressLifecycle(async () => {
+    throw new Error('host unavailable');
+  }, {});
+  await expect(h.lifecycle.start({ ...binding, egress })).rejects.toThrow('host unavailable');
+  expect(h.calls).toEqual([]);
 });

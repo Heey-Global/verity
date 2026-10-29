@@ -1,3 +1,4 @@
+import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
   auditOperationListSchema,
@@ -3231,6 +3232,25 @@ export class VerityClient {
     }
   }
 
+  async buildDiagnostic(operationId: string) {
+    const res = await this.request(
+      `/audit/operations/${encodeURIComponent(operationId)}/diagnostics`,
+      { method: 'GET' },
+    );
+    return buildDiagnosticResponseSchema.parse(await res.json());
+  }
+
+  async systemLogs(query: {
+    source: 'server' | 'host';
+    since: string;
+    until: string;
+    level?: 'all' | 'error' | 'warning' | 'info';
+  }) {
+    const params = new URLSearchParams(query);
+    const res = await this.request(`/diagnostics/logs?${params.toString()}`, { method: 'GET' });
+    return systemLogResponseSchema.parse(await res.json());
+  }
+
   async auditOperation(operationId: string): Promise<AuditOperationDetail> {
     const res = await this.request(`/audit/operations/${encodeURIComponent(operationId)}`, {
       method: 'GET',
@@ -5627,6 +5647,135 @@ export class VerityClient {
       { method: 'GET' },
     );
     return res.arrayBuffer();
+  }
+
+  async qaApprovals(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/qa-approvals`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        proposals: z.array(
+          z.object({
+            id: z.string(),
+            project_id: z.string(),
+            owner: z.string(),
+            repo: z.string(),
+            resource: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json());
+  }
+  async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposalId, allow }),
+    });
+  }
+  async qaSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/qa',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
+      .parse(await res.json());
+  }
+
+  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/repairs`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        qaEnabled: z.boolean().optional(),
+        mandate: z
+          .object({
+            mode: z.enum(['off', 'monitor', 'automatic']),
+            health: z.string(),
+            checked_at: z.string().nullable(),
+          })
+          .nullable(),
+        incidents: z
+          .array(
+            z.object({
+              id: z.string(),
+              resource: z.string(),
+              revision: z.string(),
+              state: z.string(),
+              owner_session_id: z.string().nullable(),
+              last_session_id: z.string().nullable(),
+              attempts: z.number(),
+              evidence: z.string(),
+            }),
+          )
+          .optional(),
+      })
+      .parse(await res.json());
+  }
+  /** The Verity assistant: one Verity Control session plus per-project grants. */
+  async assistantSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/assistant',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({
+        enabled: z.boolean(),
+        sessionId: z.string().nullable(),
+        grants: z.array(
+          z.object({ projectId: z.string(), mode: z.enum(['off', 'tasks', 'delegate']) }),
+        ),
+      })
+      .parse(await res.json());
+  }
+
+  async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/assistant`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantEnabled: z.boolean().optional(),
+        mode: z.enum(['off', 'tasks', 'delegate']),
+      })
+      .parse(await res.json());
+  }
+
+  async retryRepair(projectId: string, incidentId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ incidentId }),
+    });
   }
 
   async vulnerabilitySettings(patch?: Partial<VulnerabilitySettings>) {

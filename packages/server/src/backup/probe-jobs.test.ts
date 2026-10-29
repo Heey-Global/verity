@@ -1,6 +1,7 @@
+import { format } from 'node:util';
 import * as repositoryIO from './repository.js';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -269,6 +270,54 @@ it('still cleans up and refuses verification when saving the cleanup phase fails
     expect(f.verified).not.toHaveBeenCalled();
     expect(f.manager.status()!.status).toBe('failed');
   } finally {
+    await f.remove();
+  }
+});
+
+it('keeps synthetic keys out of all job files and captured logs across success, failure, cancellation and restart', async () => {
+  const f = await fixture();
+  const secret = 'synthetic-recovery-' + randomUUID();
+  const logs: string[] = [];
+  const spies = [vi.spyOn(console, 'error'), vi.spyOn(console, 'log'), vi.spyOn(console, 'warn')];
+  for (const spy of spies)
+    spy.mockImplementation((...args: unknown[]) => {
+      logs.push(format(...args));
+    });
+  async function scan(path: string): Promise<void> {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const file = join(path, entry.name);
+      if (entry.isDirectory()) await scan(file);
+      else expect((await readFile(file)).includes(Buffer.from(secret)), file).toBe(false);
+    }
+  }
+  try {
+    for (const outcome of ['success', 'failure', 'cancel'] as const) {
+      const started = deferred();
+      f.execute.mockImplementationOnce(async (_job, key, signal) => {
+        expect(key).toBe(secret);
+        started.resolve();
+        if (outcome === 'cancel')
+          await new Promise<void>((resolve) =>
+            signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+        if (outcome !== 'success') throw new Error('sensitive dependency failure: ' + key);
+        return f.result;
+      });
+      const job = await f.manager.start(secret);
+      await started.promise;
+      if (outcome === 'cancel') await f.manager.cancel(job.id);
+      await f.idle();
+      await scan(f.root);
+      const reopened = await BackupProbeJobs.open(f.deps);
+      expect(reopened.status()?.status).toBe(
+        outcome === 'success' ? 'succeeded' : outcome === 'failure' ? 'failed' : 'cancelled',
+      );
+      expect(JSON.stringify(reopened.status())).not.toContain(secret);
+    }
+    expect(JSON.stringify(logs)).not.toContain(secret);
+    expect((await readFile('/proc/self/cmdline')).includes(Buffer.from(secret))).toBe(false);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
     await f.remove();
   }
 });

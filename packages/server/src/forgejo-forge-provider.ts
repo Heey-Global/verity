@@ -184,12 +184,14 @@ export function createForgejoForgeProvider(options: {
     );
     return entry.value;
   };
-  const service = (repoDir: string): ForgePrService => {
+  const service = (repoDir: string, boundRef?: ForgeRepoRef): ForgePrService => {
+    const read = <T>(key: string, load: () => Promise<T>): Promise<T> =>
+      boundRef ? load() : cached(key, load);
     const lookup = async (branch: string) => {
       try {
-        const ref = await options.identityFor(repoDir)();
+        const ref = boundRef ?? (await options.identityFor(repoDir)());
         if (!ref) return null;
-        const pulls = await cached(`pulls:${coordinate(ref)}`, () =>
+        const pulls = await read(`pulls:${coordinate(ref)}`, () =>
           pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
         );
         const pull = pulls
@@ -204,7 +206,7 @@ export function createForgejoForgeProvider(options: {
               (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
           )[0];
         return pull
-          ? await cached(
+          ? await read(
               `status:${coordinate(ref)}:${pull.number}:${pull.head.sha}:${pull.updated_at ?? ''}`,
               () => status(ref, pull),
             )
@@ -232,7 +234,7 @@ export function createForgejoForgeProvider(options: {
       },
       mergePr: async (number, expectedHeadSha) => {
         try {
-          const ref = await options.identityFor(repoDir)();
+          const ref = boundRef ?? (await options.identityFor(repoDir)());
           if (!ref) return false;
           const pull = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls/${number}`);
           if (pull?.base?.ref) {
@@ -286,6 +288,24 @@ export function createForgejoForgeProvider(options: {
     identityFor: options.identityFor,
     mintProjectToken: options.token,
     prServiceFor: service,
+    repositoryPrService: (ref) => service('', ref),
+    async discover(ref, page) {
+      const pulls = await transport.json<ForgejoPull[]>(
+        `${coordinate(ref)}/pulls?state=open&limit=30&page=${page}`,
+      );
+      if (!Array.isArray(pulls)) throw new Error('Invalid Forgejo discovery response');
+      return {
+        pulls: pulls.map((p) => ({
+          number: p.number,
+          branch: p.head.ref,
+          sha: p.head.sha,
+          fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+        })),
+        runs: [],
+        nextPage: pulls.length === 30 ? page + 1 : null,
+        workflowsSupported: false,
+      };
+    },
     openPullRequest: async (ref, _token, pull) => {
       const row = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls`, 'POST', pull);
       return { number: row.number, url: row.html_url };

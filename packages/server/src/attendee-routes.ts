@@ -65,7 +65,13 @@ export function registerAttendeeRoutes(
     )
       throw new Error('Enter a Google Meet, Teams or Zoom HTTPS meeting link.');
     try {
-      return await service.start(id, body.meetingUrl, body.listenForVerity, body.title);
+      return await service.start(id, body.meetingUrl, body.listenForVerity, body.title, {
+        requestId: request.id,
+        emit: (entry) => {
+          if (entry.event === 'failed') request.log.warn(entry, 'Online meeting start failed');
+          else request.log.info(entry, 'Online meeting start progress');
+        },
+      });
     } catch (error) {
       if (error instanceof OnlineMeetingStartError)
         return reply.code(503).send({ error: error.message });

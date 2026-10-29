@@ -14,7 +14,6 @@ import {
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
-import * as Application from 'expo-application';
 import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
@@ -24,16 +23,12 @@ import {
   SettingsListPanel,
   SettingsMessage,
   SettingsNavRow,
-  SettingsPanel,
-  SettingsSaveState,
   SettingsScaffold,
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
-import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
-import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
 import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
@@ -43,11 +38,6 @@ import {
   useLoadVeritySettings,
   useVeritySettings,
 } from '../../lib/settingsStore';
-
-// The one operator-facing app version names the JavaScript bundle that is actually
-// running. Embedded bundles use the native `.0` marketing version; an OTA carries
-// its own stamped patch version and therefore replaces the displayed value.
-const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVersion);
 
 // Where each unfinished setup step is actually fixed. Exhaustive over the id
 // union by type, so a checklist item added in `@verity/mobile` cannot ship
@@ -83,7 +73,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   // without first opening the connection that needs it.
   const githubPermission = useGithubPermission(client, githubConnected);
   const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
-  const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const appStoreVersion = useAppStoreUpdateVersion(true);
@@ -133,21 +122,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
     }, [client, keyConfigured]),
   );
 
-  const checkForManualUpdate = useCallback(() => {
-    if (checkingForUpdate) return;
-    setCheckingForUpdate(true);
-    void checkForAppUpdate()
-      .then((result) => {
-        if (result === 'current') Alert.alert('Verity is up to date', APP_VERSION_LABEL);
-        if (result === 'busy') Alert.alert('Update check in progress');
-        if (result === 'disabled') Alert.alert('Updates unavailable', 'EAS Update is disabled.');
-        if (typeof result === 'object' && result.status === 'failed') {
-          Alert.alert('Update failed', result.message);
-        }
-      })
-      .finally(() => setCheckingForUpdate(false));
-  }, [checkingForUpdate]);
-
   const checklist = settingsChecklist({ settings, secretStatus, failed });
 
   return (
@@ -195,6 +169,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
+            icon="user"
+            title="Assistant"
+            subtitle="Voice notes, mail and calendar, project tasks"
+            onPress={() => router.push('/settings/assistant')}
+          />
+          <SettingsNavRow
+            icon="activity"
+            title="QA · CI supervision"
+            subtitle="Project monitoring and repair ownership"
+            onPress={() => router.push('/settings/repairs')}
+          />
+          <SettingsNavRow
             icon="link"
             title="Connections"
             subtitle="AI, code, documents and other services"
@@ -202,29 +188,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
             }
             onPress={() => router.push('/settings/services')}
-          />
-          <SettingsNavRow
-            icon="zap"
-            signature
-            title="Verity Premium"
-            subtitle="Online sharing, remote access"
-            status={
-              !settings?.uplinkSubscriptionKeyConfigured
-                ? { intent: 'optional', label: 'Not active' }
-                : uplinkState === 'rejected'
-                  ? { intent: 'needsSetup', label: 'Key rejected' }
-                  : uplinkState === 'active'
-                    ? { intent: 'ready', label: 'Active' }
-                    : { intent: 'optional', label: 'Configured' }
-            }
-            onPress={() => router.push('/settings/premium')}
-          />
-
-          <SettingsNavRow
-            icon="shield"
-            title="Vulnerability scan"
-            subtitle="Known vulnerabilities in code projects"
-            onPress={() => router.push('/settings/vulnerability-scan')}
           />
           <SettingsNavRow
             icon="check-square"
@@ -242,14 +205,31 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             title="Meeting transcription"
             onPress={() => router.push('/settings/transcription')}
           />
-        </SettingsListPanel>
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>Verity Control</Text>
-          <Text style={styles.reproSubtitle}>
-            Show an internal Verity Control workspace for server administration sessions.
-          </Text>
+          <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Known vulnerabilities in code projects"
+            onPress={() => router.push('/settings/vulnerability-scan')}
+          />
+          <SettingsNavRow
+            icon="zap"
+            signature
+            title="Verity Premium"
+            subtitle="Online sharing, remote access"
+            status={
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkState === 'rejected'
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
+            }
+            onPress={() => router.push('/settings/premium')}
+          />
           <SettingsToggleRow
-            label="Advanced mode"
+            label="Verity Control"
+            subtitle="Advanced mode for server administration sessions"
             value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
             disabled={loading || settings === null || pendingAdvancedMode !== undefined}
             onValueChange={(value) => {
@@ -259,7 +239,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               );
             }}
           />
-        </SettingsPanel>
+        </SettingsListPanel>
       </SettingsGroup>
 
       <SettingsGroup title="App & Server">
@@ -283,26 +263,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/server-update')}
           />
-          {auditHealth !== null ? (
-            <SettingsNavRow
-              icon="file-text"
-              title="Audit logs"
-              subtitle="Image builds and project deletions"
-              status={
-                auditHealth.status === 'degraded'
-                  ? { intent: 'needsSetup', label: 'Needs review' }
-                  : undefined
-              }
-              onPress={() => router.push('/settings/audit-logs' as Href)}
-            />
-          ) : null}
-          <SettingsNavRow
-            icon="monitor"
-            title="Devices & Web Browsers"
-            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage devices and web browsers"
-          />
           <SettingsNavRow
             icon="server"
             title="Server address"
@@ -316,6 +276,26 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }}
             accessibilityLabel="Change server address"
           />
+          <SettingsNavRow
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
+          />
+          {auditHealth !== null ? (
+            <SettingsNavRow
+              icon="file-text"
+              title="Logs"
+              subtitle="Audit history and system output"
+              status={
+                auditHealth.status === 'degraded'
+                  ? { intent: 'needsSetup', label: 'Needs review' }
+                  : undefined
+              }
+              onPress={() => router.push('/settings/audit-logs' as Href)}
+            />
+          ) : null}
         </SettingsListPanel>
       </SettingsGroup>
 
@@ -364,22 +344,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           ) : null}
         </SettingsListPanel>
       </SettingsGroup>
-
-      <View style={styles.settingsGroup}>
-        <SettingsSaveState />
-        {/* The exact JS bundle version currently running. Long-pressing performs
-            an immediate, serialized EAS Update check. */}
-        <Pressable
-          onLongPress={checkForManualUpdate}
-          delayLongPress={600}
-          disabled={checkingForUpdate}
-          accessibilityRole="button"
-          accessibilityLabel={`Version ${APP_VERSION_LABEL}`}
-          accessibilityHint="Long press to check for an update"
-        >
-          <Text style={styles.versionFootnote}>{APP_VERSION_LABEL}</Text>
-        </Pressable>
-      </View>
     </SettingsScaffold>
   );
 }

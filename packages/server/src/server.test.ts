@@ -9142,6 +9142,40 @@ describe('GET /sessions/:id/branches', () => {
     },
   );
 
+  it.each(['monitor', 'automatic', 'off'] as const)(
+    'does not run a second session poller for a supervised project in %s mode',
+    async (mode) => {
+      await createExistingSession('s1');
+      await ctx.store.upsertProject({
+        id: 'supervised',
+        owner: 'team',
+        repo: 'app',
+        containerName: 'app',
+        state: 'active',
+      });
+      await ctx.store.setSessionProject('s1', 'supervised');
+      await ctx.store.repairs.configure('supervised', 'user', mode);
+      const mandates = vi.spyOn(ctx.store.repairs, 'mandates');
+      const branchPrStatus = vi.fn(() => Promise.resolve(null));
+      const backgroundApp = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus,
+        pullRequestRepairPollMs: 20,
+      });
+      try {
+        await backgroundApp.ready();
+        await vi.waitFor(() => expect(mandates).toHaveBeenCalled());
+      } finally {
+        await backgroundApp.close();
+        mandates.mockRestore();
+      }
+      expect(branchPrStatus).not.toHaveBeenCalled();
+      expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
+    },
+  );
   // Nobody asks for a repair turn, so without an initiator an authenticated server refuses
   // every gateway call the agent makes while fixing the PR.
   it('runs a background repair for the session user who wrote last', async () => {

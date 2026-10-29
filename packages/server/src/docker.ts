@@ -99,7 +99,11 @@ export interface DockerClient {
   /** Wait until a container exits and return its process exit code. */
   waitContainer?(id: string): Promise<number>;
   /** Read a bounded tail of stdout/stderr for diagnostics. */
-  containerLogs?(id: string, tail: number): Promise<string>;
+  containerLogs?(
+    id: string,
+    tail: number,
+    window?: { since: string; until: string },
+  ): Promise<string>;
   /** Stop a running container (Engine `/containers/{id}/stop`) — gracefully SIGTERM
    *  with the timeout from the daemon default (10s). 404 → `ContainerNotFound`
    *  so deprovision is best-effort idempotent. */
@@ -167,6 +171,8 @@ export interface DockerClient {
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create-only generation bridge. Conflicts must never adopt an existing network. */
+  createEgressNetwork?(name: string, bridge: string): Promise<{ id: string }>;
   /** Create a named local volume if absent (Engine `POST /volumes/create`) and
    *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
    *  create for an existing name with that volume, labels untouched. Optional so
@@ -595,16 +601,7 @@ export interface DockerClientOptions {
   registryAuth?: string;
 }
 
-/** KNOWN GAP, recorded rather than quietly changed: `[truncated]` is added HERE, so it
- *  only ever reaches MULTIPLEXED output. Plain (unframed) logs leave through the early
- *  return below, before any marker — which means a read cut short by `containerLogs`'
- *  byte budget comes back indistinguishable from a complete one, at exactly the moment
- *  an operator is reading logs because something failed. The bound itself is right and
- *  should stay; what is missing is saying so. The likely fix is to append the sentinel
- *  where the budget is applied (`boundedResponseBytes`) rather than here, so it does not
- *  depend on which log format the Engine happened to serve. Both affected paths are
- *  pinned as they behave, under names carrying `unmarked`, in docker.test.ts — fixing
- *  this will fail those two tests, which is the point. */
+/** Decode multiplexed Docker output; plain TTY logs pass through as text. */
 function decodeDockerLogFrames(bytes: Buffer): string {
   const parts: Buffer[] = [];
   let offset = 0;
@@ -1738,11 +1735,16 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       }
       return json.StatusCode;
     },
-    containerLogs: async (id, tail) => {
+    containerLogs: async (id, tail, window) => {
       if (!Number.isSafeInteger(tail) || tail < 1 || tail > 1000) {
         throw new TypeError('container log tail must be between 1 and 1000');
       }
       const query = new URLSearchParams({ stdout: '1', stderr: '1', tail: String(tail) });
+      if (window !== undefined) {
+        query.set('since', window.since);
+        query.set('until', window.until);
+        query.set('timestamps', '1');
+      }
       const res = await callDocker(
         doFetch,
         `${base}/containers/${id}/logs?${query.toString()}`,
@@ -1752,7 +1754,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res, id);
       // Reserve room for the decoder's explicit truncation marker.
       const body = await boundedResponseBytes(res, 64 * 1024 - 32);
-      return decodeDockerLogFrames(body);
+      const decoded = decodeDockerLogFrames(body);
+      return body.length >= 64 * 1024 - 32 && !decoded.includes('[truncated]')
+        ? `${decoded}\n[truncated]\n`
+        : decoded;
     },
     stopContainer: async (id) => {
       const res = await callDocker(doFetch, `${base}/containers/${id}/stop`, 'POST', timeoutMs);
@@ -2328,6 +2333,25 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    createEgressNetwork: async (name, bridge) => {
+      if (!/^verity-egress-[a-f0-9]{32}$/u.test(name) || !/^vep[a-f0-9]{12}$/u.test(bridge))
+        throw new Error('Invalid generation network');
+      const digest = name.slice('verity-egress-'.length);
+      const subnet = `fd${digest.slice(0, 2)}:${digest.slice(2, 6)}:${digest.slice(6, 10)}:${digest.slice(10, 14)}::/64`;
+      const res = await callDocker(doFetch, `${base}/networks/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'bridge',
+        CheckDuplicate: true,
+        EnableIPv6: true,
+        IPAM: { Config: [{ Subnet: subnet }] },
+        Options: { 'com.docker.network.bridge.name': bridge },
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Id?: unknown };
+      if (typeof json.Id !== 'string' || !/^[a-f0-9]{64}$/u.test(json.Id))
+        throw new Error('Invalid generation network identity');
+      return { id: json.Id };
     },
     ensureVolume: async (name, opts) => {
       const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {

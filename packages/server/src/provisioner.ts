@@ -1,5 +1,7 @@
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
+import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { connectDocumentCode } from './document-code.js';
 import { migrateLocalDocuments } from './document-migration.js';
@@ -762,6 +764,8 @@ export interface LinkCloneToGitHubResult {
 }
 
 export interface ProvisionerOptions {
+  /** Experimental deny-only fixture injection; no production activation. */
+  projectEgress?: ProjectEgressLifecycle;
   /** EventStore the provisioner drives `projects.state` through. */
   store: EventStore;
   /** Raw kysely handle (used for the `SELECT … FOR UPDATE` lock tx — the
@@ -989,6 +993,7 @@ export interface ProvisionerOptions {
   /** Durable audit trail for project image builds (ADR 0028). When wired, a build
    *  whose intent cannot be recorded is refused. */
   audit?: AuditRecorder | undefined;
+  buildDiagnostics?: BuildDiagnosticStore | undefined;
   /** Mints a short-lived ghcr.io token (GitHub App installation token, `packages:read`)
    *  used to authenticate the devcontainer build so it can resolve the PRIVATE
    *  `verity-sandbox-toolkit` Feature and pull the base image as the App. Absent (or
@@ -2757,6 +2762,16 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   constructor(private readonly opts: ProvisionerOptions) {
+    if (
+      opts.projectEgress !== undefined &&
+      (opts.sandboxRuntime !== PROJECT_RUNSC_RUNTIME ||
+        opts.sandboxCapAdd?.length ||
+        opts.sandboxAllowPrivilegeEscalation === true)
+    ) {
+      throw new Error(
+        'Experimental egress requires the isolated gVisor runtime without added privileges',
+      );
+    }
     if (opts.docker.ensureNetwork === undefined) {
       throw new ProvisioningError('project relay provisioning requires Docker network creation');
     }
@@ -3592,7 +3607,13 @@ export class ProvisionerImpl implements Provisioner {
                 });
               }
             }
-            await this.opts.docker.startContainer(inspect.id);
+            if (this.opts.projectEgress !== undefined) {
+              await this.opts.projectEgress.start(
+                { projectId: project.id, containerGeneration: generation },
+                'sandbox',
+                inspect.id,
+              );
+            } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
             await this.opts.onContainerStarted?.(project);
@@ -3792,7 +3813,11 @@ export class ProvisionerImpl implements Provisioner {
     const input = {
       inspect,
       projectId: project.id,
-      projectNetwork: projectNetworkName(project.id),
+      projectNetwork:
+        this.opts.projectEgress === undefined
+          ? projectNetworkName(project.id)
+          : ((await this.opts.projectEgress.current(project.id))?.networkName ??
+            'unregistered-egress-generation'),
       relayHealthy: await this.isRelayHealthy(project, containerGenerationOf(inspect)),
       considerEnvDrift: this.opts.recreateEnvDriftedSandboxes !== false,
     };
@@ -3908,6 +3933,15 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  private async retireEgressGeneration(projectId: string): Promise<void> {
+    const egress = this.opts.projectEgress;
+    if (egress === undefined) return;
+    const binding = await egress.current(projectId);
+    if (binding !== undefined)
+      await egress.retire({ projectId, containerGeneration: binding.generation });
+    await this.opts.projectRelay.stop(projectId);
+  }
+
   private relayBinding(project: ProjectRecord, containerGeneration: string): ProjectRelayBinding {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
@@ -3917,6 +3951,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      ...(this.opts.projectEgress === undefined ? {} : { egress: this.opts.projectEgress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
       repo: project.repo,
@@ -4491,6 +4526,7 @@ export class ProvisionerImpl implements Provisioner {
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
+      await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
       this.sandboxReplacementGenerations.set(
@@ -5064,19 +5100,31 @@ export class ProvisionerImpl implements Provisioner {
     );
     const canonicalClaudeGatewayUrl = claudeGateway.href;
     const canonicalCodexGatewayUrl = codexGateway.href;
-    const sandboxNetwork = projectNetworkName(project.id);
-    await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-      labels: { 'verity.project-id': project.id },
-    });
-    // Before the running Sandbox is removed (see ensureSandboxRuntime).
     await this.ensureSandboxRuntime(project);
+    const generation = randomUUID();
+    let sandboxNetwork: string;
+    if (this.opts.projectEgress !== undefined) {
+      await this.retireEgressGeneration(project.id);
+      sandboxNetwork = (
+        await this.opts.projectEgress.create({
+          projectId: project.id,
+          containerGeneration: generation,
+        })
+      ).networkName;
+    } else {
+      sandboxNetwork = projectNetworkName(project.id);
+      await this.opts.docker.ensureNetwork!(sandboxNetwork, {
+        labels: { 'verity.project-id': project.id },
+      });
+    }
+
     // Capabilities are currently one-row-per-project, so two generations cannot
     // authenticate concurrently. Fail closed: retire the old Sandbox before
     // revoking its relay, then construct the complete replacement generation.
     if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     await this.opts.projectRelay.stop(project.id);
     const relayActivation = await this.opts.projectRelay.start(
-      this.relayBinding(project, randomUUID()),
+      this.relayBinding(project, generation),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -5714,7 +5762,7 @@ export class ProvisionerImpl implements Provisioner {
             ),
           }
         : {}),
-      restartPolicy: 'unless-stopped',
+      restartPolicy: this.opts.projectEgress === undefined ? 'unless-stopped' : 'no',
       // Public traffic reaches project dev servers through the preview connector.
       // Keep those workloads behind gVisor's userspace-kernel boundary rather than
       // exposing a runc workload to arbitrary internet input. The root filesystem
@@ -5808,9 +5856,16 @@ export class ProvisionerImpl implements Provisioner {
         }
       }
       try {
-        await this.opts.docker.startContainer(containerId);
+        if (this.opts.projectEgress !== undefined) {
+          await this.opts.projectEgress.start(relayActivation.identity, 'sandbox', containerId);
+        } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
-        if (!reusedExisting || !isStaleGvisorFilestore(cause)) throw cause;
+        if (
+          this.opts.projectEgress !== undefined ||
+          !reusedExisting ||
+          !isStaleGvisorFilestore(cause)
+        )
+          throw cause;
         // Starting a retained container reuses its id, which gVisor also uses as
         // the sandbox id. A sandbox torn down without `runsc delete` (host memory
         // pressure, a killed shim, a daemon restart) leaves its rootfs filestore
@@ -6098,6 +6153,8 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     }
+    if (this.opts.projectEgress !== undefined)
+      throw new Error('Devcontainer builds are unavailable with experimental egress');
     if (build === undefined || dockerHost === undefined) {
       throw new Error(
         'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
@@ -6282,6 +6339,11 @@ export class ProvisionerImpl implements Provisioner {
         });
       } catch (cause) {
         // Best-effort: the build error, not an audit error, is what the caller reports.
+        if (audit !== undefined) {
+          await this.opts.buildDiagnostics
+            ?.save(audit.operationId, cause, registryToken === undefined ? [] : [registryToken])
+            .catch(() => undefined);
+        }
         await audit?.failed().catch(() => undefined);
         // The scoped registry token is not in process.env. Remove both forms
         // before diagnostics escape into persisted project state or request logs.

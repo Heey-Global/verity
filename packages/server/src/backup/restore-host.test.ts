@@ -11,7 +11,7 @@ import { publishRestoreHostState } from './restore-host-state.js';
 import { validateReadableIdentity } from './restore-identity.js';
 import type { RestoreJob } from './restore-job.js';
 
-it('preserves deployment keys and CA while issuing a new host leaf and installation credentials', async () => {
+it('preserves deployment keys and CA while reissuing the pinned host leaf and rotating installation credentials', async () => {
   const root = await mkdtemp(join(tmpdir(), 'restore-host-'));
   try {
     const { host } = await generateBackupKeys();
@@ -71,15 +71,14 @@ it('preserves deployment keys and CA while issuing a new host leaf and installat
     expect(files.get('tls-ca-cert.pem')).toEqual(
       await readFile(join(root, 'identity/tls-ca-cert.pem')),
     );
-    expect(files.get('tls-key.pem')).not.toEqual(
-      await readFile(join(root, 'identity/tls-key.pem')),
-    );
+    expect(files.get('tls-key.pem')).toEqual(await readFile(join(root, 'identity/tls-key.pem')));
     const certificate = new X509Certificate(files.get('tls-cert.pem')!);
     expect(certificate.checkIP('192.0.2.1')).toBe('192.0.2.1');
     expect(certificate.checkIP('2001:db8::1')).toBe('2001:db8::1');
     expect(certificate.checkHost('restored.example')).toBe('restored.example');
     expect(await readFile(join(destination, 'installation-id'), 'utf8')).toBe(job.installationId);
     expect((await stat(join(destination, 'tls-ca-key.pem'))).mode & 0o077).toBe(0);
+    expect((await stat(join(destination, 'tls-ca-cert.pem'))).mode & 0o777).toBe(0o644);
     const live = join(root, 'live');
     await mkdir(live);
     await publishRestoreHostState(destination, live);

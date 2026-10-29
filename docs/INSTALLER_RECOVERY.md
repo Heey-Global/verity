@@ -4,6 +4,8 @@ The recovery acceptance gate remains closed. This implementation must pass the
 complete v1 acceptance requirements in [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md)
 before backup setup and scheduling become available. A successful restore probe
 alone does not satisfy that gate.
+The [acceptance evidence matrix](BACKUP_RECOVERY_EVIDENCE.md) separates verified
+scenarios from remaining implementation and evidence gaps.
 
 Recovery requires the entire copied local backup directory, its recovery key,
 the master password current at capture time, Docker and a supported Linux host.
@@ -27,7 +29,8 @@ verity-install --restore /mnt/copied-backup \
 The default action is `trial`. Add `--new-identity` to the initial command when
 old paired devices must not reconnect. That choice creates new deployment keys
 and retains no old device credentials. The default preserves the deployment ID,
-pairing key and CA, issues new host credentials, and creates a new installation
+pairing key, CA and pinned TLS public key, reissues the leaf certificate for the
+new addresses, issues new host credentials, and creates a new installation
 ID. Do not run two hosts with the same deployment identity concurrently.
 
 The installer prompts privately for the recovery key. For unattended operation,
@@ -98,3 +101,82 @@ After activation, reconnect reviewed devices and unlock credentials with the
 master password. New identity recovery requires pairing again. Start projects
 explicitly. Verify settings, worktrees, knowledge and credentials before retiring
 any retained original installation or independent backup copy.
+
+## Replace a lost or exposed recovery key
+
+An administrator starts `POST /api/backups/key-replacement` with `reason` set to
+`lost` or `exposed`, saves the returned recovery key offline, then confirms it
+with `POST /api/backups/key-replacement/confirm` using the returned `id` and
+`recoveryKey`. Cancel an unconfirmed candidate with
+`POST /api/backups/key-replacement/cancel`; cancellation leaves the configured
+key and repository unchanged. These routes remain behind the closed backup
+acceptance gate.
+
+Confirmation records a durable replacement intent and publishes a new repository
+and key generation. Retry interrupted publication; a confirmed intent cannot be
+cancelled. Only public encryption recipients and host signing material enter
+that intent, never the recovery private key. Old snapshots remain encrypted for
+the old key, including after a lost-key replacement. Keep the old key if it is
+still available and retain complete revocation history for every generation.
+
+For exposure, the root helper durably retires the locally available old CA
+bundle before publishing the replacement and refuses requests that would
+republish that retired generation. This removes only the exact owned bundle;
+it does not erase copied backups or external identity material. Replacing the
+recovery key alone does not remove the identity from old snapshots. Rotate the
+live identity as well.
+
+## Rotate a compromised live identity
+
+Run on the installed host as root:
+
+```sh
+verity-install --rotate-identity
+```
+
+The installer exclusively locks identity publication, stops normal runtime and
+backup writers, prepares and validates replacement CA, TLS and Ed25519 pairing
+keys, records retirement, and revokes device credentials before publishing the
+replacement identity. The installation's sealed deployment ID stays unchanged.
+Failures leave runtime fenced; rerun the same command to resume the durable
+checkpoint. Keep `identity-rotation/` and `retired-identity-ca-sha256` in the
+root-owned installer state directory. Missing or malformed retirement history
+blocks preserved-identity recovery.
+
+A completed command is idempotent. For a later, separate compromise, explicitly
+start another rotation with:
+
+```sh
+verity-install --rotate-identity --restart-rotation
+```
+
+Read the short-lived replacement invitation with `sudo cat /etc/verity/pairing-uri`
+(use the configured installer state directory if different). Keep that invitation
+private. All devices must remove their saved server and pair again using it. After rotation, restore a pre-rotation snapshot only with
+`--new-identity`; its old device credentials must not be activated on this host.
+Offline devices still retain their old pin and identity until you reset them.
+Rotation does not invalidate external copies for those offline devices. Native
+device and pin-reset acceptance remains open until tested on actual devices.
+
+## Repairing backup prerequisites
+
+Re-running the installer at the configured destination preserves its installation
+ID, destination marker and dedicated database credential while repairing paired
+mounts and the privileged identity helper. An explicit `--backup-dir` that differs
+from persisted installer state is refused. It is not an archive migration command;
+the prerequisite helper rejects that mismatch before creating the new directory.
+Keep the original destination and repositories intact when repairing a host.
+
+Backend acceptance uses disposable Docker daemons and a locally built test image
+to exercise scheduled capture while the production recovery gate remains closed.
+That image is never published to an external registry. The fixture stops its Server
+and Updater, prepares its disposable deployment authority for the exact test digest,
+and runs the ordinary installer; it does not exercise a supported paired-image
+upgrade or bypass production upgrade checks. These test results do not
+authorize enabling the production gate or establish native-device trust reset.
+
+
+Private Git reconstruction covers both repositories with linked worktrees and
+ordinary repositories such as the built-in Control Plane checkout. Repair runs
+inside the validated staging checkout before user configuration is restored;
+live project repositories are not used as the repair working directory.

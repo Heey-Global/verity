@@ -19,6 +19,7 @@ import type {
   PreviewEdgeBinding,
   PreviewEdgeControl,
   PreviewEdgeCreate,
+  PreviewCreateObserver,
 } from './preview-share-manager.js';
 import {
   PreviewShareUpstreamError,
@@ -836,11 +837,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
     throw new Error('diagnostics_export_limit');
   }
 
-  async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
+  async create(
+    input: PreviewEdgeCreate,
+    observe?: PreviewCreateObserver,
+  ): Promise<PreviewEdgeBinding> {
+    // Diagnostics must never change sharing or cleanup behavior.
+    const report: PreviewCreateObserver = (entry) => {
+      try {
+        observe?.(entry);
+      } catch {
+        /* Logging is best effort. */
+      }
+    };
+    report({ phase: 'ensure_sharing', code: 'pending', shareCreateSent: false });
     this.shareOperations += 1;
     try {
       await this.ensureSharing();
-      const binding = await this.createConnected(input);
+      const binding = await this.createConnected(input, report);
       if (!this.isAvailable()) {
         await this.queueOrphanShare(binding.shareId);
         throw new Error('Sharing authority lost during creation');
@@ -853,9 +866,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
   }
 
-  private async createConnected(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
-    if (input.webhook && !this.webhookNegotiated)
+  private async createConnected(
+    input: PreviewEdgeCreate,
+    report: PreviewCreateObserver,
+  ): Promise<PreviewEdgeBinding> {
+    report({ phase: 'capability_check', code: 'pending', shareCreateSent: false });
+    if (input.webhook && !this.webhookNegotiated) {
+      report({ phase: 'capability_check', code: 'webhook_not_negotiated', shareCreateSent: false });
       throw new Error('Uplink webhook-v1 is unavailable');
+    }
     if (!this.isAvailable()) {
       this.options.log?.warn(
         { targetHost: new URL(this.options.url).host, control: this.diagnostics().control },
@@ -863,6 +882,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
       );
       throw new Error('public preview sharing is not enabled by the Uplink');
     }
+    // This marks a local send attempt, not acknowledgement by the Uplink.
+    report({ phase: 'share_create', code: 'pending', shareCreateSent: true });
     const response = await this.request('share.create', {
       ...(input.webhook ? { webhook: input.webhook } : {}),
       duration: input.durationSeconds,
@@ -870,6 +891,17 @@ export class UplinkControlClient implements PreviewEdgeControl {
     });
     if (response.type === 'share.error') {
       const code = optionalString(response.code, 'internal');
+      const safeCode = new Set([
+        'webhook_unsupported',
+        'limit_reached',
+        'not_entitled',
+        'unavailable',
+        'internal',
+        'invalid_request',
+      ]).has(code)
+        ? code
+        : 'share_rejected';
+      report({ phase: 'share_create', code: safeCode, shareCreateSent: true });
       throw new PreviewShareUpstreamError(
         `Uplink refused public preview: ${/^[a-z_]+$/u.test(code) ? code : 'unknown error'}`,
       );
@@ -894,7 +926,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       ) {
         throw new Error('invalid Uplink edge binding');
       }
-      return {
+      const binding = {
         shareId: rawShareId,
         publicOrigin: publicOrigin.origin,
         edgeUrl: edgeUrl.toString(),
@@ -902,6 +934,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         sessionSecret: stringField(response, 'sessionSecret'),
         expiresAt,
       };
+      report({ phase: 'share_ready', code: 'ready', shareCreateSent: true });
+      return binding;
     } catch (error) {
       this.options.log?.warn(
         { reason: error instanceof Error ? error.message : 'invalid binding' },

@@ -1,4 +1,4 @@
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import pg from 'pg';
@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { captureInstallation } from './capture.js';
 import { writeBackupIdentityFixture } from './testing.js';
 import { probeSnapshot, type BackupProbeOptions } from './probe.js';
-import { generateBackupKeys } from './crypto.js';
+import { decodeRecoveryKey, generateBackupKeys } from './crypto.js';
 import { BackupDestination } from './destination.js';
 import { BackupRepository, readSnapshot } from './repository.js';
 import { BackupLifecycleCoordinator } from './lifecycle.js';
@@ -64,6 +64,38 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
         { env },
       );
       await writeFile(join(project, '.env'), 'uncommitted private value');
+      // Preserve objects reachable only from the index, stash or reflog, not just HEAD.
+      await writeFile(join(project, 'stashed'), 'stash-only-content');
+      await exec('git', ['-C', project, 'add', 'stashed'], { env });
+      await exec('git', ['-C', project, 'stash', 'push', '-m', 'security fixture'], { env });
+      await writeFile(join(project, 'reflog-only'), 'reflog-only-content');
+      await exec('git', ['-C', project, 'add', 'reflog-only'], { env });
+      await exec('git', ['-C', project, 'commit', '-m', 'reflog-only'], { env });
+      const reflogCommit = (
+        await exec('git', ['-C', project, 'rev-parse', 'HEAD'], { env })
+      ).stdout.trim();
+      await exec('git', ['-C', project, 'reset', '--hard', 'HEAD~1'], { env });
+      await writeFile(join(project, 'index-only'), 'index-only-content');
+      await exec('git', ['-C', project, 'add', 'index-only'], { env });
+      await rm(join(project, 'index-only'));
+      const hostileMarker = join(root, 'hostile-git-executed');
+      await exec('git', ['-C', project, 'config', 'extensions.worktreeConfig', 'true'], { env });
+      const include = join(root, 'hostile-include');
+      await writeFile(include, '[invalid unterminated section\n');
+      const hostile = `[core]\nfsmonitor = touch ${hostileMarker}\n[include]\npath = ${include}\n[credential]\nhelper = !touch ${hostileMarker}\n`;
+      const originalConfig = await readFile(join(project, '.git/config'), 'utf8');
+      await writeFile(join(project, '.git/config'), originalConfig + hostile);
+      await writeFile(join(project, '.git/config.worktree'), hostile);
+      await writeFile(join(project, '.git/worktrees/session/config.worktree'), hostile);
+      for (const hooks of ['.git/hooks', '.git/worktrees/session/hooks']) {
+        await mkdir(join(project, hooks), { recursive: true });
+        await writeFile(
+          join(project, hooks, 'post-checkout'),
+          `#!/bin/sh\ntouch ${hostileMarker}\n`,
+          { mode: 0o755 },
+        );
+      }
+
       const { host, recoveryKey } = await generateBackupKeys();
       const identityFixture = join(root, 'identity-fixture');
       const installationId = randomUUID();
@@ -155,6 +187,30 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
         'durable knowledge',
       );
       expect(await prepareRestoredGit(restored, verified.capture!)).toEqual([]);
+      // Inspect the evidence before restoring safe config for our own ordinary Git queries.
+      await expect(readFile(hostileMarker)).rejects.toThrow();
+      const restoredProject = join(restored, 'workspaces/project');
+      expect(await readFile(join(restoredProject, '.git/config.worktree'), 'utf8')).toBe(hostile);
+      expect(
+        await readFile(join(restoredProject, '.git/worktrees/session/config.worktree'), 'utf8'),
+      ).toBe(hostile);
+      await writeFile(join(restoredProject, '.git/config'), originalConfig);
+      await rm(join(restoredProject, '.git/config.worktree'));
+      await rm(join(restoredProject, '.git/worktrees/session/config.worktree'));
+      await rm(join(restoredProject, '.git/hooks'), { recursive: true });
+      await rm(join(restoredProject, '.git/worktrees/session/hooks'), { recursive: true });
+      for (const [object, content] of [
+        [':index-only', 'index-only-content'],
+        ['stash@{0}:stashed', 'stash-only-content'],
+        [`${reflogCommit}:reflog-only`, 'reflog-only-content'],
+      ])
+        expect((await exec('git', ['-C', restoredProject, 'show', object!], { env })).stdout).toBe(
+          content,
+        );
+      expect(
+        (await exec('git', ['-C', restoredProject, 'reflog', 'show', '--all'], { env })).stdout,
+      ).toContain('reflog-only');
+
       const gitPointer = await readFile(join(restored, 'workspaces/project/session/.git'), 'utf8');
       expect(gitPointer).toContain(restored);
       expect(gitPointer).not.toContain(source);
@@ -170,7 +226,19 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
       const probeName = 'verity_probe_' + randomBytes(16).toString('hex');
       const probeUrl = new URL(adminUrl!);
       probeUrl.pathname = '/' + probeName;
+      async function assertNoRecoveryFiles(path = root): Promise<void> {
+        for (const entry of await readdir(path, { withFileTypes: true })) {
+          const file = join(path, entry.name);
+          if (entry.isDirectory()) await assertNoRecoveryFiles(file);
+          else if (entry.isFile()) {
+            const bytes = await readFile(file);
+            for (const secret of [recoveryKey, decodeRecoveryKey(recoveryKey).identity])
+              expect(bytes.includes(Buffer.from(secret)), file).toBe(false);
+          }
+        }
+      }
       const probeOptions: BackupProbeOptions = {
+        phase: async () => assertNoRecoveryFiles(),
         backupRoot: join(root, 'backup'),
         repository: repositoryName,
         sequence: manifest.sequence,
@@ -207,6 +275,7 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
       expect(report.deploymentId).toBe('deployment-fixture');
       expect(report.files).toBe(manifest.files.length);
       expect(report.warnings).toEqual([]);
+      await assertNoRecoveryFiles();
       const before = await readdir(join(root, 'staging'));
       await expect(
         probeSnapshot({
@@ -215,10 +284,12 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
         }),
       ).rejects.toThrow('unsupported image');
       expect(await readdir(join(root, 'staging'))).toEqual(before);
+      await assertNoRecoveryFiles();
       await expect(
         probeSnapshot({ ...probeOptions, withDatabase: () => Promise.resolve() }),
       ).rejects.toThrow('database import did not complete');
       expect(await readdir(join(root, 'staging'))).toEqual(before);
+      await assertNoRecoveryFiles();
     } finally {
       await destination?.close();
       await database.end();
@@ -228,3 +299,127 @@ describe.skipIf(!adminUrl)('integrated capture components with PostgreSQL', () =
     }
   });
 });
+
+it.skipIf(!adminUrl)(
+  'records the actual lifecycle barrier for a bounded Git dataset without reflinks',
+  async () => {
+    const parent = join(process.cwd(), '.cache');
+    await mkdir(parent, { recursive: true });
+    const root = await mkdtemp(join(parent, 'capture-measurement-'));
+    const name = 'verity_measure_' + randomBytes(12).toString('hex');
+    const admin = new pg.Pool({ connectionString: adminUrl!, max: 1 });
+    const url = new URL(adminUrl!);
+    url.pathname = '/' + name;
+    const database = new pg.Pool({ connectionString: url.toString(), max: 1 });
+    let destination: BackupDestination | undefined;
+    try {
+      await admin.query(`CREATE DATABASE "${name}"`);
+      await database.query(
+        'CREATE TABLE fixture(id integer PRIMARY KEY); INSERT INTO fixture VALUES (1)',
+      );
+      const source = join(root, 'source');
+      const project = join(source, 'workspaces/project');
+      await mkdir(project, { recursive: true });
+      for (const scope of ['sessions', 'knowledge']) await mkdir(join(source, scope));
+      // Incompressible content exercises a real Git object copy, not a sparse or reflink fixture.
+      await writeFile(
+        join(project, 'dataset'),
+        createHash('shake256', { outputLength: 16 * 1024 * 1024 })
+          .update('backup-freeze-measurement-v1')
+          .digest(),
+      );
+      await exec('git', ['init', project]);
+      await exec('git', ['-C', project, 'add', '.']);
+      await exec('git', [
+        '-C',
+        project,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'fixture',
+      ]);
+      const { host } = await generateBackupKeys();
+      const installationId = randomUUID();
+      const identity = join(root, 'identity-fixture');
+      await writeBackupIdentityFixture(identity, host, installationId);
+      const backup = join(root, 'backup');
+      await mkdir(backup);
+      const targetId = randomUUID();
+      await writeFile(join(backup, '.verity-backup-target'), targetId);
+      destination = await BackupDestination.open(backup, targetId);
+      const repository = new BackupRepository(
+        backup,
+        join(root, 'state'),
+        `${installationId}-r1`,
+        host,
+        destination,
+      );
+      await repository.initialize();
+      const started = performance.now();
+      const cpu = process.cpuUsage();
+      const manifest = await captureInstallation({
+        root: source,
+        identityRoot: join(identity, 'identity'),
+        caCiphertext: join(identity, 'ca.age'),
+        installationId,
+        keyGeneration: 1,
+        image: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+        release: 'measurement',
+        schema: '0001_fixture',
+        architecture: 'amd64',
+        kind: 'manual',
+        connect: () => database.connect(),
+        repository,
+        destination,
+        lifecycle: new BackupLifecycleCoordinator(),
+        signal: new AbortController().signal,
+        inventory: async () => ({
+          activeTurns: [],
+          projects: [
+            {
+              id: 'project',
+              state: 'active',
+              archived: false,
+              paths: ['workspaces/project'],
+              warnings: [],
+            },
+          ],
+        }),
+        repoKey: async () => installationId,
+      });
+      const elapsedMs = performance.now() - started;
+      const used = process.cpuUsage(cpu);
+      expect(manifest.capture!.git[0]!.status).toBe('validated');
+      expect(manifest.capture!.barrierMs).toBeGreaterThan(0);
+      expect(manifest.capture!.barrierMs).toBeLessThanOrEqual(elapsedMs);
+      expect(BigInt(manifest.capture!.projects[0]!.bytes)).toBeGreaterThanOrEqual(
+        16n * 1024n * 1024n,
+      );
+      const report = {
+        datasetBytes: 16 * 1024 * 1024,
+        gitRepositories: 1,
+        copyMethod:
+          'freezeGitDirectory streams through file descriptors; no reflink/copy_file_range',
+        barrierMs: manifest.capture!.barrierMs,
+        elapsedMs,
+        cpuMicros: used.user + used.system,
+        maxRssKiB: process.resourceUsage().maxRSS,
+        performanceAcceptance: false,
+      };
+      if (process.env.VERITY_BACKUP_FREEZE_REPORT)
+        await writeFile(
+          process.env.VERITY_BACKUP_FREEZE_REPORT,
+          JSON.stringify(report, null, 2) + '\n',
+        );
+    } finally {
+      await destination?.close();
+      await database.end();
+      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+      await admin.end();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

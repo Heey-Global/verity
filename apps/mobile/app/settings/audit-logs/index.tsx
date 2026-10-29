@@ -142,11 +142,22 @@ export function AuditLogsView({ client }: { client: VerityClient }) {
 
   const searching = query.trim().length > 0 || filter !== 'all';
   return (
-    <SettingsScaffold title="Audit logs" detail state={{ error, saving: false }} onRetry={load}>
+    <SettingsScaffold title="Logs" detail state={{ error, saving: false }} onRetry={load}>
       <SearchField
         value={search}
         onChangeText={setSearch}
         placeholder="Search image, project or ID"
+      />
+      <FilterChips
+        accessibilityLabel="Log view"
+        value="audit"
+        options={[
+          { value: 'audit', label: 'Audit' },
+          { value: 'system', label: 'System' },
+        ]}
+        onChange={(value) => {
+          if (value === 'system') router.replace('/settings/system-logs' as Href);
+        }}
       />
       <FilterChips
         options={FILTERS}
