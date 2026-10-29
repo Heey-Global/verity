@@ -4989,6 +4989,13 @@ export class VerityClient {
         );
       } catch (error) {
         if (error instanceof VerityApiError && error.status === 404) {
+          // The versioned route also returns 404 when the session itself is gone.
+          // Only an unavailable route should suggest updating Core.
+          if (error.message === `session ${id} not found`) {
+            throw new Error('This session no longer exists. Return to the session list.', {
+              cause: error,
+            });
+          }
           throw new Error(
             'Bounded history is unavailable. Update Core and check that this session still exists.',
             { cause: error },
