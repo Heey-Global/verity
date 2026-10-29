@@ -48,14 +48,38 @@ const dependencies = {
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: applyProjectFenceRules,
   inspectNetwork: inspectEgressHostNetwork,
-  inspectContainer: (
+  inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
     id: string,
     role: 'sandbox' | 'relay',
-  ) => inspectEgressHostContainer(binding, id, role, relayPolicy),
+  ) => {
+    try {
+      await inspectEgressHostContainer(binding, id, role, relayPolicy);
+    } catch (error) {
+      // This fixture contains no credentials; retain daemon facts before rollback removes them.
+      await writeFile(
+        `/evidence/inspect-${id}.json`,
+        JSON.stringify(
+          {
+            role,
+            error: String(error),
+            container: JSON.parse(await docker('inspect', id)),
+          },
+          null,
+          2,
+        ),
+      );
+      throw error;
+    }
+  },
   startContainer: async (id: string) => {
     starts.push(id);
-    await docker('start', id);
+    try {
+      await docker('start', id);
+    } catch (error) {
+      await writeFile(`/evidence/start-${id}.txt`, String(error));
+      throw error;
+    }
   },
   stopContainer: async (id: string) => {
     await docker('stop', '--time', '1', id);
