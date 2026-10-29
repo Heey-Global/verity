@@ -6557,13 +6557,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The assistant reads mail and voice notes, so it gets an allow-list rather than
         // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
         // Control later stays closed to it until it is listed here.
-        if (
-          !ASSISTANT_TOOLS.has(toolName) &&
-          (await deps.eventStore.assistant.settings()).session_id === sessionId
-        )
-          throw new ControlPlaneSessionAuthorityError(
-            'The assistant reaches projects only through verity_assistant and handoffs to granted projects.',
-          );
+        const assistant = await deps.eventStore.assistant.settings();
+        if (assistant.session_id === sessionId) {
+          if (!assistant.enabled && toolName !== 'verity_app_help')
+            throw new ControlPlaneSessionAuthorityError(
+              'The Verity assistant is disabled in system settings.',
+            );
+          if (!ASSISTANT_TOOLS.has(toolName))
+            throw new ControlPlaneSessionAuthorityError(
+              'The assistant reaches projects only through verity_assistant and handoffs to granted projects.',
+            );
+        }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
