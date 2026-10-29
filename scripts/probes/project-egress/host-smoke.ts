@@ -339,44 +339,6 @@ try {
     await chown(`${path}/${item.socket}`, 0, 65532);
     await chmod(`${path}/${item.socket}`, 0o660);
   }
-  const udsIdentity = { projectId: 'uds-open-negative', containerGeneration: 'gen1' };
-  const udsBinding = await lifecycle.create(udsIdentity);
-  extraNetworks.push(udsBinding.networkName);
-  const udsProbe = `const fs=require('node:fs');const p='/probe-broker/broker.sock';if(!fs.statSync(p).isSocket())process.exit(2);const s=require('node:net').connect(p,()=>process.exit(1));s.setTimeout(3000,()=>process.exit(3));s.on('error',()=>{console.log('sandbox-uds-open-denied');process.exit(0)});`;
-  const udsId = (
-    await docker(
-      'create',
-      '--runtime',
-      'runsc-project',
-      '--network',
-      udsBinding.networkName,
-      '--restart',
-      'no',
-      '--cap-drop',
-      'ALL',
-      '--security-opt',
-      'no-new-privileges=true',
-      '--memory',
-      '128m',
-      '--pids-limit',
-      '32',
-      '--user',
-      '65532:65532',
-      '--mount',
-      `type=volume,src=${volumeName},dst=/probe-broker,volume-subpath=${sockets[0]!.subpath},readonly`,
-      '--entrypoint',
-      '/nodejs/bin/node',
-      relayPolicy.image,
-      '-e',
-      udsProbe,
-    )
-  ).trim();
-  extraContainers.push(udsId);
-  await lifecycle.start(udsIdentity, 'sandbox', udsId);
-  assert.equal((await docker('wait', udsId)).trim(), '0', await docker('logs', udsId));
-  assert.ok((await docker('logs', udsId)).includes('sandbox-uds-open-denied'));
-  await lifecycle.retire(udsIdentity);
-  results.push('Sandbox can see an injected broker socket but cannot open it');
   const relayOptions = {
     docker: createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' }),
     image: relayPolicy.image,
@@ -525,6 +487,44 @@ try {
     const probe = `const s=require('node:net').connect(${port},'127.0.0.1',()=>s.write('probe'));s.setTimeout(3000,()=>s.destroy(new Error('timeout')));s.on('data',d=>{console.log(d.toString());s.destroy()});s.on('error',()=>process.exit(1));`;
     assert.ok((await docker('exec', relayId, '/nodejs/bin/node', '-e', probe)).includes(name));
   }
+  const udsIdentity = { projectId: 'uds-open-negative', containerGeneration: 'gen1' };
+  const udsBinding = await lifecycle.create(udsIdentity);
+  extraNetworks.push(udsBinding.networkName);
+  const udsProbe = `const fs=require('node:fs');const p='/probe-broker/broker.sock';if(!fs.statSync(p).isSocket())process.exit(2);const s=require('node:net').connect(p,()=>process.exit(1));s.setTimeout(3000,()=>process.exit(3));s.on('error',()=>{console.log('sandbox-uds-open-denied');process.exit(0)});`;
+  const udsId = (
+    await docker(
+      'create',
+      '--runtime',
+      'runsc-project',
+      '--network',
+      udsBinding.networkName,
+      '--restart',
+      'no',
+      '--cap-drop',
+      'ALL',
+      '--security-opt',
+      'no-new-privileges=true',
+      '--memory',
+      '128m',
+      '--pids-limit',
+      '32',
+      '--user',
+      '65532:65532',
+      '--mount',
+      `type=volume,src=${volumeName},dst=/probe-broker,volume-subpath=${sockets[0]!.subpath},readonly`,
+      '--entrypoint',
+      '/nodejs/bin/node',
+      relayPolicy.image,
+      '-e',
+      udsProbe,
+    )
+  ).trim();
+  extraContainers.push(udsId);
+  await lifecycle.start(udsIdentity, 'sandbox', udsId);
+  assert.equal((await docker('wait', udsId)).trim(), '0', await docker('logs', udsId));
+  assert.ok((await docker('logs', udsId)).includes('sandbox-uds-open-denied'));
+  await lifecycle.retire(udsIdentity);
+  results.push('Sandbox can see an injected broker socket but cannot open it');
   await docker('stop', '--time', '1', relayId);
   await startRelay({ ...context, resumeExisting: true });
   results.push('actual relay forwards broker and model sockets and survives mediated restart');
