@@ -14,10 +14,11 @@ jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboard
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('../components/premium/Confetti', () => ({ Confetti: () => null }));
+const mockSharingAvailable = jest.fn<Promise<boolean>, []>();
 const mockShareAsync = jest.fn<Promise<void>, [string, unknown]>();
 jest.mock('../lib/sessionFileUi', () => ({
   loadSharingModule: async () => ({
-    isAvailableAsync: async () => true,
+    isAvailableAsync: () => mockSharingAvailable(),
     shareAsync: (uri: string, options: unknown) => mockShareAsync(uri, options),
   }),
   loadPrintModule: async () => undefined,
@@ -61,6 +62,7 @@ import {
   mockCreateVerityClient,
   mockPush,
   resetSettingsHarness,
+  refocus,
 } from './support/settingsHarness';
 
 const KEY = 'verity-recovery-v1.sample-key';
@@ -115,6 +117,7 @@ function backupClient(overrides: Partial<Record<keyof VerityClient, jest.Mock>> 
 }
 
 beforeEach(() => {
+  mockSharingAvailable.mockReset().mockResolvedValue(true);
   mockShareAsync.mockReset().mockResolvedValue(undefined);
   mockFiles.clear();
 });
@@ -242,7 +245,31 @@ describe('backup setup', () => {
     expect(client.cancelBackupSetup).not.toHaveBeenCalled();
   });
 
+  it('does not write a key when sharing becomes available after leaving', async () => {
+    let finish!: (value: boolean) => void;
+    mockSharingAvailable.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+    });
+    const { unmount } = render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    fireEvent.press(await screen.findByText('Save'));
+    await waitFor(() => expect(finish).toBeDefined());
+    unmount();
+    await act(async () => finish(true));
+    expect(mockFiles.get('file:///cache/verity-recovery-key.txt')?.deleted).not.toBe(false);
+    expect(mockShareAsync).not.toHaveBeenCalled();
+  });
+
   it('saves the key through the share sheet and removes the file on leaving', async () => {
+    mockSharingAvailable.mockResolvedValue(true);
     backupClient({
       getBackupStatus: jest
         .fn()
@@ -318,6 +345,21 @@ describe('backup status', () => {
 });
 
 describe('restore test', () => {
+  it('picks up a newer server test after returning to a completed local test', async () => {
+    const client = backupClient({
+      startBackupProbe: jest.fn().mockResolvedValue(job({ status: 'succeeded' })),
+    });
+    render(<BackupTestScreen />);
+    fireEvent.changeText(await screen.findByPlaceholderText('Paste your recovery key'), KEY);
+    fireEvent.press(screen.getByText('Test restore'));
+    await waitFor(() => expect(client.startBackupProbe).toHaveBeenCalled());
+    const newer = job({ id: 'newer-job', startedAt: 2 });
+    client.getBackupStatus.mockResolvedValue(configured({ probe: newer }));
+    await act(async () => refocus());
+    fireEvent.press(await screen.findByText('Cancel test'));
+    await waitFor(() => expect(client.cancelBackupProbe).toHaveBeenCalledWith('newer-job'));
+  });
+
   it('sends the pasted key once, clears the field and can cancel the running test', async () => {
     const client = backupClient();
     render(<BackupTestScreen />);

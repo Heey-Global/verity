@@ -4,7 +4,7 @@
 // and no QR code: a second device is just another place to paste or save it.
 import * as Clipboard from 'expo-clipboard';
 import { File, Paths } from 'expo-file-system';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -14,12 +14,17 @@ import { Button, Card, SectionHeader, Text } from '../../ui';
 const FILE_NAME = 'verity-recovery-key.txt';
 
 export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
+  const active = useRef(true);
   const [copied, setCopied] = useState(false);
   // The app the key was shared to may still read the file, so it goes only
   // when the operator leaves this step — or, after a crash, on the next visit.
   useEffect(() => {
+    active.current = true;
     removeKeyFile();
-    return removeKeyFile;
+    return () => {
+      active.current = false;
+      removeKeyFile();
+    };
   }, []);
   const copy = (): void => {
     void Clipboard.setStringAsync(recoveryKey).then(() => {
@@ -57,7 +62,7 @@ export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
             variant="secondary"
             size="compact"
             fullWidth
-            onPress={() => void saveRecoveryKey(recoveryKey)}
+            onPress={() => void saveRecoveryKey(recoveryKey, () => active.current)}
           />
         </View>
         <View style={styles.action}>
@@ -80,9 +85,12 @@ export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
 }
 
 /** Through the share sheet, so "Save to Files" and password managers both work. */
-async function saveRecoveryKey(recoveryKey: string): Promise<void> {
+async function saveRecoveryKey(recoveryKey: string, isActive: () => boolean): Promise<void> {
   const sharing = await loadSharingModule();
-  if (sharing === undefined || !(await sharing.isAvailableAsync())) {
+  if (!isActive()) return;
+  const available = sharing !== undefined && (await sharing.isAvailableAsync());
+  if (!isActive()) return;
+  if (!available || sharing === undefined) {
     Alert.alert('Saving is not available', 'Copy the key instead.');
     return;
   }

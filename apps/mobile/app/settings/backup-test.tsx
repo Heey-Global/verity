@@ -46,7 +46,11 @@ function BackupTestView({ client }: { client: VerityClient }) {
 
   const status = state.kind === 'ready' && state.status.available ? state.status : undefined;
   // A test started elsewhere (or before leaving this screen) is picked up again.
-  const current = job ?? status?.probe ?? null;
+  const serverJob = status?.probe;
+  const current =
+    serverJob && (!job || (serverJob.id !== job.id && serverJob.startedAt >= job.startedAt))
+      ? serverJob
+      : (job ?? serverJob ?? null);
   const running = probeRunning(current);
 
   useEffect(() => {
