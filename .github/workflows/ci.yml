@@ -531,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/host/verity-backup-provision|deploy/host/verity-backup-provision.test.mjs|deploy/host/verity-backup-prerequisites|deploy/host/verity-backup-identity|deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-rotate-identity|deploy/bin/verity-rotate-identity.test.mjs|scripts/backup-restore-content.mjs|.github/scripts/backup-restore-device-trust.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
+                deploy/host/verity-backup-provision|deploy/bin/verity-backup-provision.test.mjs|deploy/host/verity-backup-prerequisites|deploy/host/verity-backup-identity|deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-rotate-identity|deploy/bin/verity-rotate-identity.test.mjs|scripts/backup-restore-content.mjs|.github/scripts/backup-restore-device-trust.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -1045,7 +1045,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs deploy/host/verity-backup-provision.test.mjs
+            node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs deploy/bin/verity-backup-provision.test.mjs
 
       - name: Clean installer test tools
         if: always()

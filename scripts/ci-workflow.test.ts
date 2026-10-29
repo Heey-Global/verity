@@ -2437,7 +2437,7 @@ describe('GitHub-hosted runner boundary', () => {
     expect(suite?.run).toContain('$VERITY_INSTALLER_SANDBOX');
     expect(suite?.run).toContain('--user "$(id -u):$(id -g)"');
     expect(suite?.run).toContain('--env CI=true');
-    expect(suite?.run).toContain('deploy/host/verity-backup-provision.test.mjs');
+    expect(suite?.run).toContain('deploy/bin/verity-backup-provision.test.mjs');
     expect(
       job?.steps?.some(
         (step) => step.run === 'node --test deploy/bin/verity-pairing-material.test.mjs',
