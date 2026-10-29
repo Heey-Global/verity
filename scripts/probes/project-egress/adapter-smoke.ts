@@ -41,22 +41,28 @@ async function observe(
   receiver = 've-receiver',
 ) {
   const marker = name.replace(/[^a-z0-9]/giu, '-');
-  await docker(
-    'exec',
-    project,
-    'python3',
-    '/probe/agent.py',
-    'send',
-    JSON.stringify({ host, kind, marker, port: 8080 }),
-  );
-  const logs = await docker('logs', receiver);
-  const observed = logs.split('\n').some((line) => {
-    try {
-      return (JSON.parse(line) as { marker?: unknown }).marker === marker;
-    } catch {
-      return false;
-    }
-  });
+  let observed = false;
+  // Refresh deliberately closes access while validating. Positive controls may
+  // retransmit across that gap; negative controls must never discard a receipt.
+  for (let attempt = 0; attempt < (expected ? 5 : 1); attempt++) {
+    await docker(
+      'exec',
+      project,
+      'python3',
+      '/probe/agent.py',
+      'send',
+      JSON.stringify({ host, kind, marker, port: 8080 }),
+    );
+    const logs = await docker('logs', receiver);
+    observed = logs.split('\n').some((line) => {
+      try {
+        return (JSON.parse(line) as { marker?: unknown }).marker === marker;
+      } catch {
+        return false;
+      }
+    });
+    if (observed) break;
+  }
   evidence.push({ case: name, expected, observed });
   assert.equal(observed, expected, name);
 }
