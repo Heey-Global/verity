@@ -10,7 +10,6 @@ export interface BackupRuntime {
 }
 export interface BackupRuntimeOptions {
   probe?: ProbeRuntimeOptions;
-  recoveryAccepted: boolean;
   root: string;
   databaseUrl: string;
   /** Resolve from the running container, never a floating release channel. */
@@ -25,11 +24,10 @@ export interface BackupRuntimeOptions {
 
 /** Own the dedicated read-only pool and service together; backup failure never prevents normal boot. */
 export async function openBackupRuntime(options: BackupRuntimeOptions): Promise<BackupRuntime> {
-  const unavailable = (reason: BackupRuntime['unavailableReason']): BackupRuntime => ({
-    ...(reason ? { unavailableReason: reason } : {}),
+  const unavailable = (reason: NonNullable<BackupRuntime['unavailableReason']>): BackupRuntime => ({
+    unavailableReason: reason,
     close: () => Promise.resolve(),
   });
-  if (!options.recoveryAccepted) return unavailable(undefined);
   const paths = options.paths ?? {
     pairing: '/run/verity-pairing',
     destination: '/run/verity-backups',

@@ -1,7 +1,8 @@
 # Backup recovery-key replacement
 
-Recovery-key replacement is an administrator-only backend operation, behind the same
-closed recovery acceptance gate as backup setup. It does not rotate the installation's
+Recovery-key replacement is an administrator-only operation. The app's "Create new
+recovery key" always uses `lost`; `exposed` stays an API-only path for an
+administrator who also rotates the identity. It does not rotate the installation's
 TLS or pairing identity; use the installer identity rotation procedure for that purpose.
 
 1. `POST /api/backups/key-replacement` with `{"reason":"lost"}` or

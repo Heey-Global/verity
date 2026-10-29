@@ -1,9 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { BackupService } from './service.js';
+import { BackupSetupExpiredError } from './setup.js';
 
-/** Enable only after the pinned-image, original-host-free acceptance suite passes. */
-export const BACKUP_RECOVERY_ACCEPTED = false;
 type BackupApi = Pick<
   BackupService,
   | 'status'
@@ -21,7 +20,6 @@ type BackupApi = Pick<
 export interface BackupRouteDependencies {
   userId: (request: FastifyRequest) => string | null;
   isAdministrator: (userId: string) => Promise<boolean>;
-  recoveryAccepted: () => boolean;
   service?: BackupApi | undefined;
   unavailableReason?: () => 'installer-required' | 'runtime-unavailable';
 }
@@ -46,10 +44,7 @@ export function registerBackupRoutes(app: FastifyInstance, deps: BackupRouteDepe
       if (!userId) return reply.code(404).send({ error: 'not found' });
       if (!(await deps.isAdministrator(userId)))
         return reply.code(403).send({ error: 'administrator required' });
-      if (
-        request.routeOptions.url !== '/api/backups/status' &&
-        (!deps.recoveryAccepted() || !deps.service)
-      )
+      if (request.routeOptions.url !== '/api/backups/status' && !deps.service)
         return reply.code(503).send({ error: 'backups unavailable' });
     });
     const execute = async <T>(
@@ -58,14 +53,18 @@ export function registerBackupRoutes(app: FastifyInstance, deps: BackupRouteDepe
     ): Promise<T | { error: string }> => {
       try {
         return await action();
-      } catch {
+      } catch (error) {
+        // An expired offer is the one failure a client must handle differently: retrying
+        // cannot work, a new key is needed.
+        if (error instanceof BackupSetupExpiredError) {
+          reply.code(410);
+          return { error: 'backup key offer expired' };
+        }
         reply.code(409);
         return { error: 'backup operation failed' };
       }
     };
     app.get('/api/backups/status', async (_request, reply) => {
-      if (!deps.recoveryAccepted())
-        return { available: false, reason: 'recovery-validation-pending' };
       if (!deps.service)
         return { available: false, reason: deps.unavailableReason?.() ?? 'installer-required' };
       return execute(reply, async () => ({ available: true, ...(await deps.service!.status()) }));
