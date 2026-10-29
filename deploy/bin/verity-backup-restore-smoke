@@ -255,8 +255,10 @@ install_test_image() {
   local target=$1 status=0
   # Fixture-only offline preparation: paired installations correctly reject arbitrary image repair.
   # Stop writers and bind the isolated authority to the exact unpublished test digest.
-  mapfile -t test_writers < <(inner ps -q --filter label=com.docker.compose.service=verity-managed-updater)
-  if (( ${#test_writers[@]} )); then inner stop "${test_writers[@]}" >/dev/null; fi
+  mapfile -t test_writers < <(inner ps -q --filter label=com.docker.compose.service=verity-updater)
+  [[ ${#test_writers[@]} = 1 ]]
+  inner stop "${test_writers[@]}" >/dev/null
+  [[ $(inner inspect --format '{{.State.Running}}' "${test_writers[0]}") = false ]]
   inner rm -f verity-managed-server >/dev/null
   inner run --rm --user 0:0 --mount type=volume,src=verity-managed-deployment,dst=/authority \
     --entrypoint node "$digest" --input-type=module -e '
