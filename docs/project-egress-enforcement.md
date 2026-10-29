@@ -46,9 +46,10 @@ gVisor project containers send markers to independent receivers; synthetic publi
 addresses exist only inside this isolated host. Controls cover dual-stack TCP/UDP,
 A-only admission, B denial, lease expiry, explicit revocation and same-bridge
 receipt/denial. Deleting the actual tables must restore receipt, detecting a
-fixture whose network is broken independently of the tested fence. Positive controls
-allow up to five attempts because deny-first renewal can drop packets; negative
-controls never retry away an observed receipt. This is reachability evidence,
+fixture whose network is broken independently of the tested fence. Admission probes run after acknowledged renewal, avoiding the intentional
+deny-first gap. Positive controls allow up to five attempts; negative controls
+never retry away an observed receipt. Expiry and revocation probes do not renew
+leases. This is reachability evidence,
 not a loss-free availability guarantee.
 
 `adapter-result.json`, receiver logs and the host ruleset form its evidence. This

@@ -23,6 +23,7 @@ const nets = [
   ['ve-fr', '11.77.3.0/24', '2001:4860:feed:3::/64'],
 ];
 const bindings: ProjectFenceBinding[] = [];
+let renewProjects: number[] = [];
 let revision = 0;
 const fence = new ProjectEgressFence({
   inspect: inspectProjectFenceAttachment,
@@ -42,9 +43,11 @@ async function observe(
 ) {
   const marker = name.replace(/[^a-z0-9]/giu, '-');
   let observed = false;
-  // Refresh deliberately closes access while validating. Positive controls may
-  // retransmit across that gap; negative controls must never discard a receipt.
+  // Probe an acknowledged lease instead of racing the deliberate deny-first gap.
+  // Expiry/revocation phases leave renewProjects empty.
   for (let attempt = 0; attempt < (expected ? 5 : 1); attempt++) {
+    for (const index of renewProjects)
+      await fence.refresh({ binding: bindings[index]!, revision, grants: grants() });
     await docker(
       'exec',
       project,
@@ -83,23 +86,14 @@ function grants() {
   );
 }
 async function renewed(projects: number[], action: () => Promise<void>) {
-  let stopped = false;
-  const loop = (async () => {
-    while (!stopped) {
-      for (const index of projects)
-        await fence.refresh({ binding: bindings[index]!, revision, grants: grants() });
-      await delay(100);
-    }
-  })();
-  void loop.catch(() => undefined);
+  renewProjects = projects;
   try {
-    await delay(300);
     await action();
   } finally {
-    stopped = true;
-    await loop;
+    renewProjects = [];
   }
 }
+
 try {
   for (const [name, subnet, subnet6] of nets)
     await docker(
