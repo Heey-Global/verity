@@ -179,18 +179,30 @@ export async function assertRestoredFiles(root, expected) {
   }
 }
 
-/** @param {Pick<import('pg').Pool, 'query'>} database @param {string} liveRoot @param {ExpectedContent} expected */
-export async function assertRestoredDatabaseContent(database, liveRoot, expected) {
+/** @param {Pick<import('pg').Pool, 'query'>} database @param {string} liveRoot @param {ExpectedContent} expected @param {{runtimeProjectId?:string}} options */
+export async function assertRestoredDatabaseContent(database, liveRoot, expected, options = {}) {
+  const runtimeId = options.runtimeProjectId ?? null;
+  if (runtimeId !== null)
+    assert.deepEqual(
+      (await database.query('SELECT id,state,kind FROM projects WHERE id=$1', [runtimeId])).rows,
+      [{ id: runtimeId, state: 'active', kind: 'control_plane' }],
+    );
   assert.deepEqual(
     (
       await database.query(
-        'SELECT id,archived,(hidden_at IS NOT NULL) AS hidden FROM projects ORDER BY id',
+        'SELECT id,archived,(hidden_at IS NOT NULL) AS hidden FROM projects WHERE ($1::text IS NULL OR id <> $1) ORDER BY id',
+        [runtimeId],
       )
     ).rows,
     [...expected.projects].sort((a, b) => a.id.localeCompare(b.id)),
   );
   const states = /** @type {{n:number}[]} */ (
-    (await database.query("SELECT count(*)::int AS n FROM projects WHERE state <> 'absent'")).rows
+    (
+      await database.query(
+        "SELECT count(*)::int AS n FROM projects WHERE state <> 'absent' AND ($1::text IS NULL OR id <> $1)",
+        [runtimeId],
+      )
+    ).rows
   );
   assert.equal(states[0]?.n, 0);
   assert.deepEqual(

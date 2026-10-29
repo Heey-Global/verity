@@ -4170,7 +4170,7 @@ describe('managed installer CI acceptance', () => {
     expect(assignment).toBeDefined();
     const workTemplate = source.match(/^work=\$\(mktemp -d "(.+)"\)$/m)?.[1];
     expect(workTemplate).toBeDefined();
-    const paths = ['original', 'fresh'].map((host) =>
+    const paths = ['original', 'fresh', 'second'].map((host) =>
       execFileSync(
         'bash',
         [
@@ -4182,7 +4182,7 @@ describe('managed installer CI acceptance', () => {
         { encoding: 'utf8' },
       ),
     );
-    expect(new Set(paths).size).toBe(2);
+    expect(new Set(paths).size).toBe(3);
     // Linux sockaddr_un reserves one of its 108 bytes for the terminating NUL.
     for (const path of paths) expect(Buffer.byteLength(path)).toBeLessThanOrEqual(107);
   });

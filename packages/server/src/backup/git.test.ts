@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, access } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, writeFile, readFile, rm, symlink, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureFrozenGit, freezeGitDirectory, sanitizedGitConfig } from './git.js';
+import { captureFrozenGit, freezeGitDirectory, runBackupGit, sanitizedGitConfig } from './git.js';
 const exec = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
@@ -34,6 +34,16 @@ async function fixture() {
   return { root, project, staging, env };
 }
 describe('private Git backup freeze', () => {
+  it('repairs a private staged repository that has no linked worktrees', async () => {
+    const { project, staging } = await fixture();
+    const frozen = await freezeGitDirectory(project, '.git', staging);
+    expect(frozen.status).toBe('validated');
+    const work = join(staging, 'restored');
+    await mkdir(work);
+    await cp(frozen.git, join(work, '.git'), { recursive: true });
+    expect(await runBackupGit(join(work, '.git'), staging, 'repair', work)).toBe(true);
+  });
+
   it('checks self-contained objects without executing original configuration, includes or hooks', async () => {
     const { root, project, staging } = await fixture();
     const marker = join(root, 'executed');
