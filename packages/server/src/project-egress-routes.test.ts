@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { EventStore } from '@verity/store';
 import { createTestDb } from '@verity/store/testing';
+import { evaluateProjectEgress } from './project-egress-policy.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 const admin = '00000000-0000-4000-8000-000000000001';
@@ -107,4 +108,27 @@ it('requires a distinct settings operation for permanent grants and supports rev
     payload: { grantId: grant.id, revision: revision + 1 },
   });
   expect(revoked.statusCode).toBe(200);
+});
+
+it('retains denial through the real JSONB persistence roundtrip', async () => {
+  const store = new EventStore(ctx.db).projectEgress;
+  const target = { host: 'denied.example.com', protocol: 'tcp' as const, port: 443 };
+  const request = await store.request('a', admin, target);
+  if ('covered' in request) throw new Error('unexpected coverage');
+  await store.decide('a', admin, request.id, request.revision, false);
+  const policy = await store.read('a', admin);
+  expect(
+    evaluateProjectEgress(
+      {
+        projectId: 'a',
+        policyProjectId: 'a',
+        identityCurrent: true,
+        sponsorAuthorized: true,
+        route: 'direct',
+      },
+      policy,
+      target,
+      Date.now(),
+    ).decision,
+  ).toBe('deny');
 });

@@ -140,7 +140,14 @@ export class ProjectEgressStore {
         tx,
       );
       const state = result.rows[0]!.state;
-      const value = operation(state, this.now());
+      const now = this.now();
+      // Only live grants consume capacity; the current request retains its decision.
+      if (write)
+        state.grants = state.grants.filter(
+          (grant) =>
+            grant.revokedAt === undefined && (grant.expiresAt === null || grant.expiresAt > now),
+        );
+      const value = operation(state, now);
       if (write)
         await sql`update project_egress_policy set state = ${JSON.stringify(state)}::jsonb where project_id = ${projectId}`.execute(
           tx,

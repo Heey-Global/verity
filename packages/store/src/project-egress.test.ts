@@ -78,7 +78,8 @@ it('serializes duplicate requests, rechecks authority and keeps project scope', 
 it('rejects stale cards after revocation and requires explicit reopening after denial', async () => {
   const policy = await store.read('a', admin);
   const pending = await store.reopen('a', admin, target, policy.revision);
-  await store.revoke('a', admin, policy.grants[0]!.id, pending.revision);
+  const live = await store.setPermanent('a', admin, target, pending.revision);
+  await store.revoke('a', admin, live.id, pending.revision + 1);
   await expect(store.decide('a', admin, pending.id, pending.revision, true)).rejects.toMatchObject({
     code: 'stale',
   });
@@ -108,4 +109,23 @@ it('rejects disabled managers and persists across store recreation', async () =>
   await expect(
     restored.decide('a', admin, pending.id, pending.revision, true),
   ).rejects.toMatchObject({ code: 'forbidden' });
+});
+
+it('recovers approval capacity after grant expiry', async () => {
+  const seeded = {
+    revision: 0,
+    requests: {},
+    grants: Array.from({ length: 1000 }, (_, i) => ({
+      id: String(i),
+      target,
+      approvedBy: admin,
+      approvedAt: 0,
+      expiresAt: 1,
+    })),
+  };
+  await sql`insert into project_egress_policy(project_id, state) values ('b', ${JSON.stringify(seeded)}::jsonb) on conflict(project_id) do update set state = excluded.state`.execute(
+    ctx.db,
+  );
+  const grant = await store.setPermanent('b', admin, target, 0);
+  expect((await store.read('b', admin)).grants).toEqual([grant]);
 });

@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import {
   canonicalEgressTarget,
   egressGrantCovers,
+  egressTargetKey,
   type EgressPolicy,
   type EgressTarget,
 } from '@verity/store';
@@ -49,7 +50,7 @@ export function evaluateProjectEgress(
   if (!isPublicEgressTarget(target)) return { route: 'blocked', decision: 'deny' };
   if (egressGrantCovers(policy, target, now)) return { route: 'direct', decision: 'covered' };
   const request = Object.values(policy.requests).find(
-    (r) => JSON.stringify(r.target) === JSON.stringify(canonicalEgressTarget(target)),
+    (r) => egressTargetKey(r.target) === egressTargetKey(target),
   );
   return {
     route: 'direct',
