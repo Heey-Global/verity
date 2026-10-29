@@ -207,6 +207,24 @@ describe('backup setup', () => {
     expect(client.cancelBackupSetup).not.toHaveBeenCalled();
   });
 
+  it('never claims a key another device superseded', async () => {
+    const client = backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+      confirmBackupSetup: jest
+        .fn()
+        .mockRejectedValue(new VerityApiError(410, 'backup key offer expired')),
+    });
+    render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    await screen.findByText(KEY);
+    client.getBackupStatus.mockResolvedValue(configured());
+    fireEvent.press(screen.getByText('I saved it, turn on backup'));
+    expect(await screen.findByText(/set up from another device/)).toBeOnTheScreen();
+    expect(screen.queryByText('Backup activated')).toBeNull();
+  });
+
   it('treats a lost reply as success when the server already turned backups on', async () => {
     const client = backupClient({
       getBackupStatus: jest

@@ -82,6 +82,13 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
       .confirmBackupKeyReplacement(current)
       .then(() => setDone(true))
       .catch(async (failure: unknown) => {
+        if (failure instanceof VerityApiError && failure.status === 410) {
+          // This key was never used: it expired, or another device replaced the key.
+          setOffer(null);
+          setError('The new key was not used. Retry to get another one.');
+          return;
+        }
+        // Any other failure may be a reply lost after the server committed.
         const after = await client.getBackupStatus().catch(() => undefined);
         if (
           after?.available === true &&
@@ -90,12 +97,6 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
           after.keyGeneration > generation.current
         ) {
           setDone(true);
-          return;
-        }
-        if (failure instanceof VerityApiError && failure.status === 410) {
-          // The server has already dropped an expired key; the current key stays.
-          setOffer(null);
-          setError('The new key expired before it was confirmed. Retry to get another one.');
           return;
         }
         pending.current = current;

@@ -14,7 +14,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Confetti } from '../../components/premium/Confetti';
-import { RecoveryKeyStep } from '../../components/settings/backup/RecoveryKeyStep';
+import { RecoveryKeyStep, removeKeyFile } from '../../components/settings/backup/RecoveryKeyStep';
 import {
   backupAlertText,
   backupStatusRows,
@@ -78,6 +78,7 @@ function BackupView({ client }: { client: VerityClient }) {
   const left = useRef(false);
   useEffect(() => {
     left.current = false;
+    removeKeyFile();
     return () => {
       left.current = true;
       if (pending.current !== null) void client.cancelBackupSetup().catch(() => undefined);
@@ -113,17 +114,23 @@ function BackupView({ client }: { client: VerityClient }) {
         void reload();
       })
       .catch(async (failure: unknown) => {
-        // A reply lost after the server committed still means backups are on.
         const after = await client.getBackupStatus().catch(() => undefined);
-        if (after?.available === true && after.configured) {
-          setStep({ kind: 'success' });
+        const on = after?.available === true && after.configured;
+        if (failure instanceof VerityApiError && failure.status === 410) {
+          // This key was never used: it expired, or another device set up backups.
+          setStep({ kind: 'status' });
           void reload();
+          setError(
+            on
+              ? 'Backup was set up from another device. The key shown here was not used.'
+              : 'The key expired before it was confirmed. Set up again to get a new key.',
+          );
           return;
         }
-        if (failure instanceof VerityApiError && failure.status === 410) {
-          // The server has already dropped an expired key; only a new one can work.
-          setStep({ kind: 'status' });
-          setError('The key expired before it was confirmed. Set up again to get a new key.');
+        // Any other failure may be a reply lost after the server committed.
+        if (on) {
+          setStep({ kind: 'success' });
+          void reload();
           return;
         }
         pending.current = offer;

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { BackupService, type BackupServiceOptions } from './service.js';
+import { BackupSetupExpiredError } from './setup.js';
 import * as identityRequest from './identity-request.js';
 import { generateBackupKeys } from './crypto.js';
 import { sealCaIdentityReceipt } from './identity-receipt.js';
@@ -89,6 +90,11 @@ it('commits only after identity confirmation, skips abandoned repositories and s
     await expect(service!.tick()).resolves.toBeUndefined();
     expect(idle).not.toHaveBeenCalled();
     expect(await service!.status()).toEqual({ configured: false, alerts: [] });
+    // A stale offer reaches the routes as the distinct expiry error, not a wrapped one.
+    const stale = await service!.beginSetup();
+    await expect(service!.confirmSetup(randomUUID(), stale.recoveryKey)).rejects.toBeInstanceOf(
+      BackupSetupExpiredError,
+    );
     const candidate = await service!.beginSetup();
     helper.mockRejectedValueOnce(new Error('Helper unavailable'));
     await expect(service!.confirmSetup(candidate.id, candidate.recoveryKey)).rejects.toThrow(

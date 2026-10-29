@@ -16,8 +16,11 @@ const FILE_NAME = 'verity-recovery-key.txt';
 export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
   const [copied, setCopied] = useState(false);
   // The app the key was shared to may still read the file, so it goes only
-  // when the operator leaves this step.
-  useEffect(() => removeKeyFile, []);
+  // when the operator leaves this step — or, after a crash, on the next visit.
+  useEffect(() => {
+    removeKeyFile();
+    return removeKeyFile;
+  }, []);
   const copy = (): void => {
     void Clipboard.setStringAsync(recoveryKey).then(() => {
       setCopied(true);
@@ -96,7 +99,8 @@ async function saveRecoveryKey(recoveryKey: string): Promise<void> {
   }
 }
 
-function removeKeyFile(): void {
+/** Remove a saved key left behind, e.g. when the app was killed in the share sheet. */
+export function removeKeyFile(): void {
   try {
     const file = new File(Paths.cache, FILE_NAME);
     if (file.exists) file.delete();
