@@ -90,10 +90,14 @@ verity_rotate_identity() {
     deployment=$(read_state "$ID_PATH")
     [[ $project =~ ^[a-z0-9][a-z0-9_-]{0,127}$ && $deployment =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$ ]] || die 'rotation requires an existing installed deployment'
     # Save immutable container IDs, never names that another install could reuse.
-    containers=$({ docker ps -q --filter "label=com.docker.compose.project=$project" --filter 'label!=com.docker.compose.service=postgres'; docker ps -q --filter "label=verity.managed-deployment-id=$deployment"; } | sort -u | jq -Rsc 'split("\n")|map(select(length>0))')
-    jq -e 'length>0 and all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'no installed runtime found for identity rotation'
-    postgres=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=postgres')
+    postgres=$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter 'label=com.docker.compose.service=postgres') || die 'cannot inspect PostgreSQL runtime'
     [[ $postgres =~ ^[a-f0-9]{12,64}$ ]] || die 'rotation requires exactly one running PostgreSQL container'
+    local initial_compose initial_managed
+    initial_compose=$(docker ps -q --filter "label=com.docker.compose.project=$project") || die 'cannot inspect Compose runtime'
+    initial_managed=$(docker ps -q --filter "label=verity.managed-deployment-id=$deployment") || die 'cannot inspect managed runtime'
+    # docker ps supports positive label filters only. Exclude the database locally.
+    containers=$(printf '%s\n%s\n' "$initial_compose" "$initial_managed" | sort -u | jq -Rsc --arg postgres "$postgres" 'split("\n")|map(select(length>0 and . != $postgres))')
+    jq -e 'length>0 and all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'no installed runtime found for identity rotation'
     [[ -f $STATE_DIR/tls-ca-cert.pem && ! -L $STATE_DIR/tls-ca-cert.pem ]] || die 'rotation requires the existing CA'
     old_ca=$(openssl x509 -in "$STATE_DIR/tls-ca-cert.pem" -outform DER | sha256sum | cut -d ' ' -f1)
     if [[ -d ${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system} ]] && command -v systemctl >/dev/null; then
@@ -126,12 +130,12 @@ verity_rotate_identity() {
   # Retain stopped checkpoint members on retries, but never act on IDs proven removed.
   local fresh_compose fresh_managed existing
   # Also discover a replacement left by an interrupted published-phase attempt.
-  fresh_compose=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")" --filter 'label!=com.docker.compose.service=postgres') || die 'cannot refresh Compose runtime inventory'
+  fresh_compose=$(docker ps -q --filter "label=com.docker.compose.project=$(jq -r .project "$checkpoint")") || die 'cannot refresh Compose runtime inventory'
   fresh_managed=$(docker ps -q --filter "label=verity.managed-deployment-id=$(jq -r .deployment "$checkpoint")") || die 'cannot refresh managed runtime inventory'
   existing=$(docker ps -aq) || die 'cannot reconcile runtime inventory; Docker did not confirm container existence'
   existing=$(printf '%s\n' "$existing" | jq -Rsc 'split("\n")|map(select(length>0))')
   jq -e 'all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$existing" >/dev/null || die 'invalid existing container inventory'
-  containers=$({ jq -r '.containers[]' "$checkpoint"; printf '%s\n%s\n' "$fresh_compose" "$fresh_managed"; } | sort -u | jq -Rsc --argjson existing "$existing" 'split("\n")|map(select(length>0))|map(select(. as $id | $existing | index($id) != null))')
+  containers=$({ jq -r '.containers[]' "$checkpoint"; printf '%s\n%s\n' "$fresh_compose" "$fresh_managed"; } | sort -u | jq -Rsc --arg postgres "$(jq -r .postgres "$checkpoint")" --argjson existing "$existing" 'split("\n")|map(select(length>0 and . != $postgres))|map(select(. as $id | $existing | index($id) != null))')
   jq -e 'length>0 and all(.[];test("^[a-f0-9]{12,64}$"))' <<<"$containers" >/dev/null || die 'no checkpointed runtime remains for identity rotation'
   _verity_rotation_policies "$containers" "$(jq -c .policies "$checkpoint")"
   policies=$(jq --argjson containers "$containers" 'with_entries(select(.key as $id | $containers | index($id) != null))' <<<"$policies")

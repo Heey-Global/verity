@@ -63,6 +63,7 @@ read_state() { cat "$1"; }
 docker() {
  printf '%s\\n' "$*" >>"$ROTATION_LOG"
  if [[ $1 = ps ]]; then
+   if [[ $* = *label!=* ]]; then printf 'invalid filter label!\\n' >&2; return 1; fi
    if [[ $2 = -q && $* = *service=verity-updater* && \${FAIL_PHASE:-} = updater-inventory ]]; then return 8; fi
    if [[ $2 = -aq && $* != *--filter* && \${FAIL_PHASE:-} = inventory ]]; then return 9; fi
    if [[ ( \${RACE_REPLACE:-0} = 1 || \${RACE_RESTART:-0} = 1 ) && -f $ROTATION_RACE_FILE ]]; then
@@ -73,7 +74,7 @@ docker() {
    fi
    if [[ $* = *label=com.docker.compose.service=postgres* ]]; then printf '${postgres}\\n';
    elif [[ $* = *service=verity-updater* ]]; then printf '${updater}\\n';
-   else printf '${server}\\n${updater}\\n'; fi
+   else printf '${server}\\n${updater}\\n${postgres}\\n'; fi
  elif [[ ( \${RACE_REPLACE:-0} = 1 || \${RACE_RESTART:-0} = 1 ) && -f $ROTATION_RACE_FILE && $* = *${server}* ]]; then return 44
  elif [[ $1 = stop && $* = *${updater}* && \${RACE_REPLACE:-0} = 1 ]]; then touch "$ROTATION_RACE_FILE"
  elif [[ $1 = start && $* = *${updater}* ]]; then
@@ -526,6 +527,21 @@ test('published retry discovers a Server replaced by an earlier updater restart 
     const log = await readFile(join(f.root, 'log'), 'utf8');
     assert.equal(log.split('DELETE FROM auth_tokens;').length - 1, 1);
     assert.ok(log.includes(`start ${replacement}`));
+  } finally {
+    await f.clean();
+  }
+});
+
+test('rotation uses supported Docker filters and never fences PostgreSQL', async () => {
+  const f = await fixture();
+  try {
+    const result = await f.run();
+    assert.equal(result.code, 0, result.output);
+    const log = await readFile(join(f.root, 'log'), 'utf8');
+    assert.ok(!log.includes('label!='), log);
+    assert.ok(!log.includes(`stop --time 60 ${postgres}`), log);
+    assert.ok(!log.includes(`update --restart=no ${postgres}`), log);
+    assert.ok(log.includes(`exec -i ${postgres} psql`), log);
   } finally {
     await f.clean();
   }
