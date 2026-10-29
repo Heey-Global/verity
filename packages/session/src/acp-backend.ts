@@ -139,6 +139,8 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
+  /** The agent enforces {@link RunTurnOptions.gatewayToolsOnly} through `sessionMeta`. */
+  readonly enforcesGatewayToolsOnly?: boolean | undefined;
   /** An answered `session/load` error that, besides `resourceNotFound`, names a
    *  conversation the agent does not have — for an adapter that reports it some
    *  other way. Only for answers that are about the conversation itself. */
@@ -581,6 +583,9 @@ export async function runAcpTurn(
   if (opts.toolless === true && profile.enforcesToolless !== true) {
     throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
   }
+  if (opts.gatewayToolsOnly === true && profile.enforcesGatewayToolsOnly !== true) {
+    throw new Error(`${profile.telemetryBackend} cannot run a turn limited to Verity tools`);
+  }
   const spawn = (): SpawnedProcess =>
     spawner(opts.command ?? profile.defaultCommand, args, {
       cwd: opts.cwd,
@@ -930,12 +935,15 @@ export async function runAcpTurn(
                           headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
                         },
                       ]),
-                  ...(opts.mcpServers ?? []).map((server) => ({
-                    type: 'http' as const,
-                    name: server.name,
-                    url: server.url,
-                    headers: server.headers.map((header) => ({ ...header })),
-                  })),
+                  // Limited to Verity tools: the operator's own MCP connections stay out.
+                  ...(opts.gatewayToolsOnly === true ? [] : (opts.mcpServers ?? [])).map(
+                    (server) => ({
+                      type: 'http' as const,
+                      name: server.name,
+                      url: server.url,
+                      headers: server.headers.map((header) => ({ ...header })),
+                    }),
+                  ),
                 ]
               : [];
           // A bearer was minted but no server was offered, so tell the turn through the

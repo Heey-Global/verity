@@ -81,7 +81,7 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     : [];
   const logs: ReturnType<typeof compactLog>[] = [];
   const report = {
-    schema: 7,
+    schema: 8,
     runtimeDiagnostics: exportRuntimeDiagnostics(),
     commit: BUILD_COMMIT,
     sessionSwitchTimings: exportSessionSwitchTimings(),
@@ -115,21 +115,36 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     },
     logs,
   };
-  // Transport metadata also counts against the report ceiling. Preserve the
-  // latest gesture and leave half the byte budget for update/recovery logs.
+  // Repetitive scheduling and background history must not evict the selections
+  // being investigated. Keep summaries, the runtime baseline/latest sample,
+  // and the newest switch; all omissions still count against their own stream.
+  const switchRequestIds = new Set(
+    report.sessionSwitchTimings.flatMap((trace) =>
+      trace.transportRequests.map((request) => request.requestId),
+    ),
+  );
   while (utf8Bytes(JSON.stringify(report, null, 2)) > MAX_REPORT_BYTES / 2) {
-    if (report.sessionSwitchTimings.length > 1) {
+    const schedulingIndex = report.gestureDiagnostics.events.findIndex(
+      (event) => event.source === 'scheduling',
+    );
+    const unrelatedNativeIndex = report.nativeTransportTimings.records.findIndex(
+      (record) => !switchRequestIds.has(String(record.requestId)),
+    );
+    if (schedulingIndex >= 0) {
+      report.gestureDiagnostics.events.splice(schedulingIndex, 1);
+      report.gestureDiagnostics.dropped++;
+    } else if (report.runtimeDiagnostics.samples.length > 1) {
+      report.runtimeDiagnostics.samples.shift();
+      report.runtimeDiagnostics.dropped++;
+    } else if (unrelatedNativeIndex >= 0 || report.nativeTransportTimings.records.length > 0) {
+      report.nativeTransportTimings.records.splice(Math.max(0, unrelatedNativeIndex), 1);
+      report.nativeTransportTimings.omitted++;
+    } else if (report.sessionSwitchTimings.length > 1) {
       report.sessionSwitchTimings.shift();
       report.captureSummary.omittedSwitches++;
     } else if (report.gestureDiagnostics.events.length > 0) {
       report.gestureDiagnostics.events.shift();
       report.gestureDiagnostics.dropped++;
-    } else if (report.runtimeDiagnostics.samples.length > 1) {
-      report.runtimeDiagnostics.samples.shift();
-      report.runtimeDiagnostics.dropped++;
-    } else if (report.nativeTransportTimings.records.length > 0) {
-      report.nativeTransportTimings.records.shift();
-      report.nativeTransportTimings.omitted++;
     } else {
       break;
     }

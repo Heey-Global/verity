@@ -4954,3 +4954,34 @@ migrations['0174_qa_recovery'] = {
     await sql`drop table qa_dispatches`.execute(db);
   },
 };
+
+migrations['0175_running_turn_settlement'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns add column marker_id text, add column settled boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns drop column marker_id, drop column settled`.execute(db);
+  },
+};
+
+migrations['0176_assistant'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_settings (
+      id integer primary key check (id = 1), enabled boolean not null default false,
+      revision integer not null default 0, sponsor_user_id text, session_id text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table assistant_project_grants (
+      project_id text primary key references projects(id) on delete cascade,
+      mode text not null check (mode in ('off', 'tasks', 'delegate')),
+      sponsor_user_id text not null, revision integer not null default 1,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_project_grants`.execute(db);
+    await sql`drop table assistant_settings`.execute(db);
+  },
+};

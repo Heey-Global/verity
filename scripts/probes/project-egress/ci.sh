@@ -10,6 +10,8 @@ name="verity-egress-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 runtime_image="$name-runtime:local"
 host_image="$name-host:local"
 fixture_image="$name-fixture:local"
+runner_image="$name-runner:local"
+relay_image="$name-relay:local"
 export DOCKER_HOST=unix:///var/run/docker.sock
 export DOCKER_CONFIG="$work/docker-config"
 unset DOCKER_CONTEXT BUILDKIT_HOST BUILDX_BUILDER
@@ -24,7 +26,7 @@ cleanup() {
     docker exec "$name" docker logs "pe-$receiver" > "$PROBE_EVIDENCE/$receiver-exit.jsonl" 2>&1
   done
   docker rm --force --volumes "$name" >/dev/null 2>&1
-  docker image rm "$host_image" "$runtime_image" "$fixture_image" >/dev/null 2>&1
+  docker image rm "$host_image" "$runtime_image" "$fixture_image" "$runner_image" "$relay_image" >/dev/null 2>&1
   rm -rf -- "$work"
   exit "$status"
 }
@@ -58,7 +60,9 @@ cp deploy/gvisor/versions.env "$PROBE_EVIDENCE/runtime-pins.env"
 docker build -f deploy/gvisor-ci.Dockerfile -t "$runtime_image" . > "$PROBE_EVIDENCE/runtime-build.txt" 2>&1
 docker build -f "$probe_dir/Host.Dockerfile" --build-arg "RUNSC_SOURCE_IMAGE=$runtime_image" -t "$host_image" . > "$PROBE_EVIDENCE/host-build.txt" 2>&1
 docker build -f "$probe_dir/Fixture.Dockerfile" -t "$fixture_image" . > "$PROBE_EVIDENCE/fixture-build.txt" 2>&1
-docker image inspect "$runtime_image" "$host_image" "$fixture_image" --format '{{.Id}} {{json .RepoDigests}}' > "$PROBE_EVIDENCE/images.txt"
+docker build -f deploy/verity-sandbox.Dockerfile -t "$runner_image" . > "$PROBE_EVIDENCE/runner-build.txt" 2>&1
+docker build -f deploy/project-relay.Dockerfile -t "$relay_image" . > "$PROBE_EVIDENCE/relay-build.txt" 2>&1
+docker image inspect "$runner_image" "$relay_image" "$runtime_image" "$host_image" "$fixture_image" --format '{{.Id}} {{json .RepoDigests}}' > "$PROBE_EVIDENCE/images.txt"
 docker run -d --privileged --name "$name" --memory "$memory_bytes" --memory-swap "$memory_bytes" --cpus 1 --pids-limit 2048 \
   --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.all.forwarding=1 \
   --sysctl net.ipv4.ip_unprivileged_port_start=0 \
@@ -75,7 +79,10 @@ ready() {
 ready
 docker save "$fixture_image" | docker exec -i "$name" docker load > "$PROBE_EVIDENCE/image-load.txt"
 docker exec "$name" docker tag "$fixture_image" project-egress-fixture:local
-timeout 120 docker exec "$name" node /probe/host-smoke.mjs > "$PROBE_EVIDENCE/host-smoke.txt" 2>&1
+docker save "$runner_image" "$relay_image" | docker exec -i "$name" docker load >> "$PROBE_EVIDENCE/image-load.txt"
+docker exec "$name" docker tag "$runner_image" project-egress-runner:local
+docker exec "$name" docker tag "$relay_image" project-egress-relay:local
+timeout 240 docker exec "$name" node /probe/host-smoke.mjs > "$PROBE_EVIDENCE/host-smoke.txt" 2>&1
 timeout 240 docker exec "$name" node /probe/adapter-smoke.mjs > "$PROBE_EVIDENCE/adapter-smoke.txt" 2>&1
 # No project probe receives the outer/inner Docker socket or evidence mount.
 timeout 600 docker exec "$name" python3 /probe/probe.py before-restart > "$PROBE_EVIDENCE/before-restart.txt" 2>&1

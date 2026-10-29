@@ -1,3 +1,4 @@
+import { createServerLogSource } from './server-log-source.js';
 import {
   selectBranchStatus,
   createForgeStatusCache,
@@ -2083,6 +2084,8 @@ export async function buildEmbeddedServer(
             'verity_session_handoff',
             'verity_session_progress',
             'verity_recent_session_messages',
+            // Advertised to every Control session; only the assistant session may call it.
+            'verity_assistant',
           ]
         : [],
     authorizationSnapshot: async ({ projectId, toolName }) => {
@@ -4766,7 +4769,7 @@ export async function buildEmbeddedServer(
     runtimeDiagnostics: createRuntimeDiagnostics({
       dockerBaseUrl: config.dockerBaseUrl,
       dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId,
+      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
       builderAdmissionDirectory: '/run/verity-buildkit',
@@ -5064,15 +5067,7 @@ export async function buildEmbeddedServer(
       recorder: auditRecorder,
       log: auditLog,
       buildDiagnostics,
-      serverLogs:
-        runtimeDocker?.containerLogs === undefined
-          ? undefined
-          : (window) =>
-              runtimeDocker.containerLogs!(
-                config.diagnosticServerContainerId ?? hostname(),
-                1000,
-                window,
-              ),
+      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
     },
     ...(projectDocker === undefined
       ? {}

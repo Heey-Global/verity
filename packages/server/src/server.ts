@@ -1,6 +1,14 @@
 import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
+import { registerAssistantRoutes } from './assistant-routes.js';
+import {
+  assistantToolRefusal,
+  executeAssistantTool,
+  requireAssistantGrant,
+  requireAssistantSession,
+  type AssistantToolDeps,
+} from './assistant-tool.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
@@ -3818,6 +3826,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     )?.event;
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
   };
+  // The assistant acts for the user behind its running turn, and only in granted projects.
+  // Reading and filing tasks follow the project routes, where administrators count as
+  // readers. Handing off starts a turn, so it needs the same execute permission as
+  // `canExecuteAs`, which every later tool call of that turn is checked against.
+  const assistantToolDeps: AssistantToolDeps = {
+    eventStore: deps.eventStore,
+    initiator: runningTurnInitiator,
+    permitted: async (userId, projectId, permission) => {
+      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
+      if (permission === 'execute') return canExecuteAs(userId, projectId);
+      return (
+        (await deps.eventStore.isActiveAdministrator(userId)) ||
+        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
+      );
+    },
+  };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
       try {
@@ -6119,6 +6143,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
+      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
+      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
+        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
+        await requireAssistantGrant(
+          assistantToolDeps,
+          { sessionId, turnId, projectId },
+          'delegate',
+        );
+      },
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -6506,6 +6539,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           throw new ControlPlaneSessionAuthorityError(
             'QA uses server-validated decisions, not executable tools.',
           );
+        // The assistant reads mail and voice notes, so it gets an allow-list rather than
+        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
+        // Control later stays closed to it until it is listed here.
+        const assistantRefusal = assistantToolRefusal(
+          await deps.eventStore.assistant.settings(),
+          sessionId,
+          toolName,
+        );
+        if (assistantRefusal !== undefined)
+          throw new ControlPlaneSessionAuthorityError(assistantRefusal);
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -6696,6 +6739,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_assistant') {
+          await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+          await requireAssistantSession(deps.eventStore, sessionId);
+          return;
+        }
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -6773,6 +6821,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return (
             matrixRequestSchema.parse(request).action !== 'send' &&
             (await deps.eventStore.getSession(sessionId))?.projectId === projectId
+          );
+        }
+        // The project grant is the user's consent; the executor re-checks it on every call.
+        if (toolName === 'verity_assistant') {
+          const session = await deps.eventStore.getSession(sessionId);
+          return (
+            session?.projectId === projectId &&
+            (await deps.eventStore.assistant.settings()).session_id === sessionId
           );
         }
         // The tasks tool writes only to the calling session's own list and cannot
@@ -7050,6 +7106,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_assistant')
+          return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
@@ -10015,6 +10073,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
+  // callers share one attempt, so two requests never spawn the same session id twice.
+  let ensuringAssistant: Promise<string> | undefined;
+  const ensureAssistantSession = async (): Promise<string> => {
+    let id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
+    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    const project = await ensureVerityControlProject();
+    const result = await sessionCreate.spawn(
+      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
+      app.log,
+    );
+    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+    return id;
+  };
+  registerAssistantRoutes(app, deps.eventStore, {
+    ensureSession: () =>
+      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
+        ensuringAssistant = undefined;
+      })),
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    cancel: (id) => conductor.cancelTurn(id),
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();

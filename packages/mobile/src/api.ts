@@ -1,6 +1,7 @@
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
+  auditEventListSchema,
   auditOperationListSchema,
   auditOperationResponseSchema,
   type AuditHealth,
@@ -3255,6 +3256,8 @@ export class VerityClient {
     // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
     // dropped parameters before, which would silently unfilter the list.
     const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
     if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
       params.push(['q', query.search.trim()]);
@@ -3267,6 +3270,30 @@ export class VerityClient {
     try {
       const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
       return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditEvents(query: AuditOperationQuery = {}) {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/events${suffix}`, { method: 'GET' });
+      return auditEventListSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
@@ -5102,6 +5129,13 @@ export class VerityClient {
         );
       } catch (error) {
         if (error instanceof VerityApiError && error.status === 404) {
+          // The versioned route also returns 404 when the session itself is gone.
+          // Only an unavailable route should suggest updating Core.
+          if (error.message === `session ${id} not found`) {
+            throw new Error('This session no longer exists. Return to the session list.', {
+              cause: error,
+            });
+          }
           throw new Error(
             'Bounded history is unavailable. Update Core and check that this session still exists.',
             { cause: error },
@@ -5841,6 +5875,48 @@ export class VerityClient {
       })
       .parse(await res.json());
   }
+  /** The Verity assistant: one Verity Control session plus per-project grants. */
+  async assistantSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/assistant',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({
+        enabled: z.boolean(),
+        sessionId: z.string().nullable(),
+        grants: z.array(
+          z.object({ projectId: z.string(), mode: z.enum(['off', 'tasks', 'delegate']) }),
+        ),
+      })
+      .parse(await res.json());
+  }
+
+  async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/assistant`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantEnabled: z.boolean().optional(),
+        mode: z.enum(['off', 'tasks', 'delegate']),
+      })
+      .parse(await res.json());
+  }
+
   async retryRepair(projectId: string, incidentId: string): Promise<void> {
     await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
       method: 'POST',

@@ -216,6 +216,7 @@ export type ClientOverrides = {
   listPairedDevices?: jest.Mock;
   auditHealth?: jest.Mock;
   getBackupStatus?: jest.Mock;
+  auditEvents?: jest.Mock;
   auditOperations?: jest.Mock;
   auditOperation?: jest.Mock;
   buildDiagnostic?: jest.Mock;
@@ -315,6 +316,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     getBackupStatus:
       opts.getBackupStatus ??
       jest.fn().mockResolvedValue({ available: false, reason: 'installer-required' }),
+    auditEvents: opts.auditEvents ?? jest.fn().mockResolvedValue(null),
     auditOperations: opts.auditOperations ?? jest.fn().mockResolvedValue(null),
     auditOperation: opts.auditOperation ?? jest.fn(notImplemented('auditOperation')),
     buildDiagnostic: opts.buildDiagnostic ?? jest.fn(notImplemented('buildDiagnostic')),

@@ -163,6 +163,37 @@ export class ProjectEgressHost {
         await this.deps.apply(projectEgressStartupRules(record.binding));
     });
   }
+  /** Docker is available here; boot-time restore remains independent of the daemon. */
+  revalidate(): Promise<void> {
+    return this.serialize(async () => {
+      const failures: unknown[] = [];
+      for (const record of this.state.records) {
+        if (record.retired) continue;
+        for (const role of ['sandbox', 'relay'] as const) {
+          const id = record.containers[role];
+          if (!id) continue;
+          try {
+            await this.deps.inspectContainer(record.binding, id, role);
+            await this.deps.inspectNetwork(record.binding, containerIds(record));
+          } catch (error) {
+            failures.push(error);
+            try {
+              await this.deps.stopContainer(id);
+            } catch (stopError) {
+              failures.push(stopError);
+            }
+          }
+        }
+      }
+      if (failures.length) {
+        this.healthy = false;
+        throw new AggregateError(
+          failures,
+          'Restored container binding mismatch; containment attempted',
+        );
+      }
+    });
+  }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
     return this.serialize(async () => {
