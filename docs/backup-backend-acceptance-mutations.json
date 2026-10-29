@@ -235,6 +235,24 @@
       "originalSourceSha256": "b22ef29300508bac30a3c9dbdd8f2c419927bda7f68cfa246570e33a97a0cdd4",
       "test": "scripts/backup-restore-content.test.ts",
       "testSha256": "d26dc1a36b43eb001bd04dbe80242bd3b591a20142f4a4585afba21228af7f4a"
+    },
+    {
+      "id": "repair-preserves-ca-receipt",
+      "file": "packages/server/src/backup/testing.ts",
+      "before": "'3650'",
+      "after": "'1'",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "packages/server/src/backup/identity-receipt.test.ts"
+      ],
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "6247ce51524e1cb23bdc8ef1c2da8d84662aca86a06884cda7fa995b6717365d",
+      "test": "packages/server/src/backup/identity-receipt.test.ts",
+      "testSha256": "9568d5bd9e9b5a674a79d71120b490834ab2a8207574a605d93da9d07b28ba56"
     }
   ],
   "environmentRequirements": {
