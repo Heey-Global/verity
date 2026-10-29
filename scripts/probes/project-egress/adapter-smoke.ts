@@ -144,6 +144,12 @@ try {
       'ALL',
       '--security-opt',
       'no-new-privileges=true',
+      '--sysctl',
+      'net.ipv4.ip_unprivileged_port_start=0',
+      '-e',
+      'DNS_ADDRESSES=' + JSON.stringify([addresses, addresses]),
+      '-e',
+      'REDIRECT_TARGET=' + addresses[0],
       'project-egress-fixture:local',
       'receiver',
     );
@@ -208,6 +214,11 @@ try {
       break;
     await delay(100);
   }
+  assert.ok(
+    (await docker('logs', 've-receiver')).includes('"ready": true'),
+    'External receiver not ready',
+  );
+  assert.ok((await docker('logs', 've-peer')).includes('"ready": true'), 'Peer receiver not ready');
   // Demonstrate the same-bridge receiver is reachable before applying its fence.
   await observe('ve-a', '172.30.101.3', 'tcp', true, 'peer-positive', 've-peer');
   for (const binding of bindings) await fence.prepare(binding);
