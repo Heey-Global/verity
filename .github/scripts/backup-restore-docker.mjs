@@ -32,6 +32,7 @@ import {
   createSealableSecretCipher,
 } from '/app/packages/store/dist/index.js';
 import { createDockerClient } from '/app/packages/server/dist/docker.js';
+import { CONTROL_PLANE_PROJECT_ID } from '/app/packages/server/dist/control-plane-project.js';
 import { captureInstallation } from '/app/packages/server/dist/backup/capture.js';
 import { readCaptureInventory } from '/app/packages/server/dist/backup/inventory.js';
 import { writeBackupIdentityFixture } from '/app/packages/server/dist/backup/testing.js';
@@ -1073,7 +1074,7 @@ async function restore() {
       }
       assert.equal(databases.length, 1);
       const checks = [
-        "SELECT count(*) FROM projects WHERE state <> 'absent'",
+        `SELECT count(*) FROM projects WHERE state <> 'absent' AND id <> '${CONTROL_PLANE_PROJECT_ID}'`,
         'SELECT count(*) FROM running_turns',
         ...RESTORE_EPHEMERAL_TABLES.map((table) => `SELECT count(*) FROM "${table}"`),
       ];
@@ -1096,6 +1097,8 @@ async function restore() {
         .trim()
         .split('\n');
       assert.equal(counts.length, checks.length);
+      if (counts.some((value) => value !== '0'))
+        console.log('Restored activation counts:', JSON.stringify(counts));
       assert.ok(
         counts.every((value) => value === '0'),
         'normal startup must not reactivate restored work or capabilities',
