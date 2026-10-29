@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.65.0](https://github.com/Heey-Global/verity/compare/v4.64.0...v4.65.0) (2026-10-29)
+
+
+### Features
+
+* **egress:** add draft project policy management ([#2033](https://github.com/Heey-Global/verity/issues/2033)) ([6c0c4f3](https://github.com/Heey-Global/verity/commit/6c0c4f3d51f338eae6a8350dc5934d3c397c14e0))
+* **logs:** link build diagnostics with audit and system logs ([#2031](https://github.com/Heey-Global/verity/issues/2031)) ([8f3a05e](https://github.com/Heey-Global/verity/commit/8f3a05ea6a93ed4036ce20eae7a34f7156d7a5be))
+
+
+### Bug Fixes
+
+* **backup:** validate frozen Git after GC and dropping alternates ([#2020](https://github.com/Heey-Global/verity/issues/2020)) ([56cb87a](https://github.com/Heey-Global/verity/commit/56cb87a00fb758d0713935794877fb68962410a1))
+* **meetings:** add safe correlated online start diagnostics ([#2019](https://github.com/Heey-Global/verity/issues/2019)) ([455057e](https://github.com/Heey-Global/verity/commit/455057efe37b69faa18916d15af2c73efcd8b6c6))
+* **meetings:** add safe correlated online start diagnostics ([#2019](https://github.com/Heey-Global/verity/issues/2019)) ([cb7ad49](https://github.com/Heey-Global/verity/commit/cb7ad490cac23a2bada5df2c4e118e6e6dd47108))
+
 ## [4.64.0](https://github.com/Heey-Global/verity/compare/v4.63.0...v4.64.0) (2026-10-28)
 
 
