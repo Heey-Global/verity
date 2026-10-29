@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
+import {
+  seedRestoreContent,
+  assertRestoredFiles,
+  assertRestoredDatabaseContent,
+} from './backup-restore-content.mjs';
+import { certificatePin, pinnedApi, verifyPairingProof } from './backup-restore-device-trust.mjs';
 import { formatRestoreFailure, formatRestoreLog } from './backup-restore-diagnostics.mjs';
 import { execFile } from 'node:child_process';
 import {
   createHash,
+  createPublicKey,
   generateKeyPairSync,
   randomBytes,
   randomUUID,
@@ -10,7 +17,6 @@ import {
   verify,
 } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,9 +28,11 @@ import {
   deriveKeyFromPassword,
   createKeyVerifier,
   createSecretCipher,
+  createSealableSecretCipher,
 } from '/app/packages/store/dist/index.js';
 import { createDockerClient } from '/app/packages/server/dist/docker.js';
 import { captureInstallation } from '/app/packages/server/dist/backup/capture.js';
+import { readCaptureInventory } from '/app/packages/server/dist/backup/inventory.js';
 import { writeBackupIdentityFixture } from '/app/packages/server/dist/backup/testing.js';
 import { generateBackupKeys, recoverHostKeys } from '/app/packages/server/dist/backup/crypto.js';
 import { BackupDestination } from '/app/packages/server/dist/backup/destination.js';
@@ -89,30 +97,15 @@ async function capture() {
   const schema = (await pool.query('SELECT name FROM kysely_migration ORDER BY name DESC LIMIT 1'))
     .rows[0].name;
   const source = join(root, 'original');
-  const project = join(source, 'workspaces/project');
-  const worktree = join(source, 'sessions/project/session');
-  await mkdir(project, { recursive: true });
-  await mkdir(join(source, 'sessions/project'), { recursive: true });
-  await mkdir(join(source, 'knowledge'), { recursive: true });
-  await writeFile(join(project, 'tracked'), 'recovered Git history');
-  const env = {
-    ...process.env,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_AUTHOR_NAME: 'Recovery acceptance',
-    GIT_COMMITTER_NAME: 'Recovery acceptance',
-    GIT_AUTHOR_EMAIL: 'recovery@example.invalid',
-    GIT_COMMITTER_EMAIL: 'recovery@example.invalid',
-  };
-  await exec('git', ['init', project], { env });
-  await exec('git', ['-C', project, 'add', '.'], { env });
-  await exec('git', ['-C', project, 'commit', '-m', 'Recovery fixture'], { env });
-  await exec('git', ['-C', project, 'worktree', 'add', '-b', 'session', worktree], { env });
-  await writeFile(join(project, '.env'), 'synthetic private worktree data');
-  await writeFile(join(worktree, 'uncommitted'), 'session worktree data');
-  await writeFile(join(source, 'knowledge/insight.md'), 'durable recovery knowledge');
+  const expectedContent = await seedRestoreContent(source, pool);
   const masterPassword = randomBytes(32).toString('base64url');
   const token = randomBytes(32).toString('base64url');
+  const deniedTokens = Object.fromEntries(
+    ['outbox-device', 'late-device', 'reviewed-late-device', 'unreviewed-device'].map((id) => [
+      id,
+      randomBytes(32).toString('base64url'),
+    ]),
+  );
   const salt = generateSalt();
   const key = await deriveKeyFromPassword(masterPassword, salt);
   await pool.query("INSERT INTO secret_key_meta(id,salt,verifier) VALUES ('global',$1,$2)", [
@@ -120,16 +113,15 @@ async function capture() {
     createKeyVerifier(key),
   ]);
   await pool.query(
-    "INSERT INTO projects(id,owner,repo,container_name,state,kind) VALUES ('recovery-project','fixture','project','old-project','active','local')",
-  );
-  await pool.query(
-    "INSERT INTO sessions(session_id,worktree,model,project_id) VALUES ('recovery-session',$1,'fixture','recovery-project')",
-    [worktree],
-  );
-  await pool.query(
     "INSERT INTO auth_tokens(id,token_hash) VALUES ('keep-device',$1),('outbox-device','outbox-hash'),('late-device','late-hash'),('reviewed-late-device','reviewed-late-hash')",
     [createHash('sha256').update(token).digest('hex')],
   );
+  for (const [id, credential] of Object.entries(deniedTokens)) {
+    await pool.query(
+      'INSERT INTO auth_tokens(id,token_hash) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET token_hash=excluded.token_hash',
+      [id, createHash('sha256').update(credential).digest('hex')],
+    );
+  }
   await pool.query(
     "INSERT INTO backup_revocation_outbox(id,device_id) VALUES ('before-capture','outbox-device'); INSERT INTO running_turns(session_id,prompt_seq) VALUES ('recovery-session',1)",
   );
@@ -140,6 +132,22 @@ async function capture() {
   const keys = await generateBackupKeys();
   const installationId = randomUUID();
   await writeBackupIdentityFixture(join(root, 'original-identity'), keys.host, installationId);
+  const originalIdentityKey = createPublicKey(
+    await readFile(join(root, 'original-identity/identity/pairing-identity.pem')),
+  )
+    .export({ format: 'der', type: 'spki' })
+    .toString('base64url');
+  const originalTrust = {
+    pin: certificatePin(await readFile(join(root, 'original-identity/identity/tls-cert.pem'))),
+    identityKey: originalIdentityKey,
+    serverId:
+      'srv_' +
+      createHash('sha256')
+        .update('verity.device-pairing.v1.server-id\0' + originalIdentityKey)
+        .digest()
+        .subarray(0, 16)
+        .toString('base64url'),
+  };
   const targetId = randomUUID();
   await mkdir(join(root, 'backup'));
   await writeFile(join(root, 'backup/.verity-backup-target'), targetId);
@@ -171,24 +179,28 @@ async function capture() {
     destination,
     lifecycle: new BackupLifecycleCoordinator(),
     signal,
-    inventory: async () => ({
-      activeTurns: ['recovery-session'],
-      projects: [
-        {
-          id: 'recovery-project',
-          state: 'active',
-          archived: false,
-          paths: ['workspaces/project', 'sessions/project/session'],
-          warnings: [],
-        },
-      ],
-    }),
+    inventory: (client) => readCaptureInventory(client, source, schema),
     repoKey: async (_project, path) => {
       if (!repoKeys.has(path)) repoKeys.set(path, randomUUID());
       return repoKeys.get(path);
     },
   };
-  const manifest = await captureInstallation(captureOptions);
+  // A fresh process has no unlocked master cipher or recovery key in its inputs.
+  const restartState = {
+    url,
+    source,
+    targetId,
+    repository,
+    host: keys.host,
+    installationId,
+    schema,
+  };
+  assert.equal('masterPassword' in restartState || 'recoveryKey' in restartState, false);
+  await writeFile(join(root, 'sealed-capture-state'), JSON.stringify(restartState), {
+    mode: 0o600,
+  });
+  await exec(process.execPath, [process.argv[1], 'capture-sealed']);
+  const manifest = JSON.parse(await readFile(join(root, 'sealed-capture-result'), 'utf8'));
   // A real second image lacks recovery capability but has valid signed release evidence.
   const unsupportedTag = 'ghcr.io/heey-global/verity/verity-server:restore-unsupported';
   const dockerfile = join(root, 'Unsupported.Dockerfile');
@@ -253,9 +265,12 @@ async function capture() {
   await writeFile(
     join(root, 'input'),
     JSON.stringify({
+      expectedContent,
       recoveryKey: keys.recoveryKey,
       masterPassword,
       token,
+      deniedTokens,
+      originalTrust,
       installationId,
       repository,
       sequence: manifest.sequence,
@@ -275,6 +290,54 @@ async function capture() {
   await pool.end();
   await destination.close();
   console.log('Actual capture fixture and post-capture revocation published.');
+}
+
+async function captureSealed() {
+  const state = JSON.parse(await readFile(join(root, 'sealed-capture-state'), 'utf8'));
+  assert.equal('recoveryKey' in state || 'masterPassword' in state, false);
+  const sealed = createSealableSecretCipher();
+  assert.equal(sealed.isSealed(), true);
+  const pool = new pg.Pool({ connectionString: state.url, max: 1 });
+  const destination = await BackupDestination.open(join(root, 'backup'), state.targetId);
+  try {
+    const settings = (await pool.query('SELECT transcribe_api_key FROM verity_settings')).rows[0];
+    assert.throws(() => sealed.decrypt(settings.transcribe_api_key));
+    const repository = new BackupRepository(
+      destination.path,
+      join(root, 'original-index'),
+      state.repository,
+      state.host,
+      destination,
+    );
+    const repoKeys = new Map();
+    const manifest = await captureInstallation({
+      root: state.source,
+      identityRoot: join(root, 'original-identity/identity'),
+      caCiphertext: join(root, 'original-identity/ca.age'),
+      installationId: state.installationId,
+      keyGeneration: 1,
+      image,
+      release: '99.0.0',
+      schema: state.schema,
+      architecture: 'amd64',
+      kind: 'manual',
+      connect: () => pool.connect(),
+      repository,
+      destination,
+      lifecycle: new BackupLifecycleCoordinator(),
+      signal,
+      inventory: (client) => readCaptureInventory(client, state.source, state.schema),
+      repoKey: async (_project, path) => {
+        if (!repoKeys.has(path)) repoKeys.set(path, randomUUID());
+        return repoKeys.get(path);
+      },
+    });
+    assert.equal(sealed.isSealed(), true);
+    await writeFile(join(root, 'sealed-capture-result'), JSON.stringify(manifest), { mode: 0o600 });
+  } finally {
+    await pool.end();
+    await destination.close();
+  }
 }
 
 async function restore() {
@@ -475,6 +538,20 @@ async function restore() {
   ) {
     await assert.rejects(manager.advance(job.id, input.recoveryKey, signal));
     assert.equal((await manager.status()).phase, 'verifying');
+  } else if (action === 'retired-identity') {
+    job = await manager.begin({
+      source: join(root, 'backup'),
+      repository: input.repository,
+      sequence: input.sequence,
+      kind: 'manual',
+      newIdentity: false,
+    });
+    await assert.rejects(
+      manager.advance(job.id, input.recoveryKey, signal),
+      /identity was retired/,
+    );
+    assert.equal((await manager.status()).phase, 'verifying');
+    await manager.abort(job.id, signal);
   } else if (action === 'advance') job = await manager.advance(job.id, input.recoveryKey, signal);
   else if (action === 'abort') job = await manager.abort(job.id, signal);
   else if (action === 'wrong-key')
@@ -483,7 +560,20 @@ async function restore() {
     await assert.rejects(
       reviewRestoreDevices({ root: stateRoot, jobId: job.id, masterPassword: 'wrong' }),
     );
-  else if (action === 'review')
+  else if (action === 'inspect-missing-history') {
+    const inventory = await reviewRestoreDevices({
+      root: stateRoot,
+      jobId: job.id,
+      masterPassword: input.masterPassword,
+    });
+    assert.ok(inventory.findings.includes('revocation-journal-missing'));
+    const review = JSON.parse(
+      await readFile(join(stateRoot, job.id, 'trial/device-review'), 'utf8'),
+    );
+    assert.equal(review.status, 'pending');
+    assert.deepEqual(review.keptIds, []);
+    assert.ok(review.devices.includes('keep-device'));
+  } else if (action === 'review')
     await reviewRestoreDevices({
       root: stateRoot,
       jobId: job.id,
@@ -492,26 +582,7 @@ async function restore() {
     });
   else if (action === 'assert-restored') {
     assert.equal(job.phase, 'promoted');
-    assert.equal(
-      await readFile('/restore-live/workspaces/project/.env', 'utf8'),
-      'synthetic private worktree data',
-    );
-    assert.equal(
-      await readFile('/restore-live/sessions/project/session/uncommitted', 'utf8'),
-      'session worktree data',
-    );
-    assert.equal(
-      await readFile('/restore-live/knowledge/insight.md', 'utf8'),
-      'durable recovery knowledge',
-    );
-    await exec('git', [
-      '-c',
-      'safe.directory=*',
-      '-C',
-      '/srv/verity/sessions/project/session',
-      'status',
-      '--porcelain',
-    ]);
+    await assertRestoredFiles('/srv/verity', input.expectedContent);
     const ca = await readFile(join(hostRoot, 'tls-ca-cert.pem'));
     assert.equal(ca.equals(Buffer.from(input.ca, 'base64')), !job.selection.newIdentity);
     assert.notEqual(
@@ -521,6 +592,7 @@ async function restore() {
     await withCanonicalRestoreClient(
       { docker, root: stateRoot, job, network: restoreDatabaseResources(job).prefix, signal },
       async (client) => {
+        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
         assert.deepEqual(
           (await client.query('SELECT id FROM auth_tokens ORDER BY id')).rows.map((row) => row.id),
           job.selection.newIdentity ? [] : ['keep-device'],
@@ -570,7 +642,7 @@ async function restore() {
     }
     for (const container of previous.containers)
       assert.equal((await docker.inspectContainer(container.id)).running, container.running);
-  } else if (action === 'verify-api') {
+  } else if (action === 'verify-api' || action === 'verify-rotated-api') {
     const previous = JSON.parse(
       await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),
     ).previous;
@@ -592,48 +664,73 @@ async function restore() {
       .map((network) => network.ipAddress)
       .find(Boolean);
     const ca = await readFile(join(hostRoot, 'tls-ca-cert.pem'));
-    const api = (path, body, token = input.token) =>
-      new Promise((resolve, reject) => {
-        const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-        const req = httpsRequest(
-          {
-            hostname: address,
-            port: 8082,
-            servername: 'localhost',
-            ca,
-            path,
-            method: bytes ? 'POST' : 'GET',
-            timeout: 30000,
-            headers: {
-              Authorization: 'Bearer ' + token,
-              ...(bytes
-                ? { 'Content-Type': 'application/json', 'Content-Length': bytes.length }
-                : {}),
-            },
-          },
-          (response) => {
-            const chunks = [];
-            response.on('data', (chunk) => chunks.push(chunk));
-            response.on('error', reject);
-            response.on('end', () => {
-              try {
-                resolve({
-                  status: response.statusCode,
-                  body: JSON.parse(Buffer.concat(chunks).toString()),
-                });
-              } catch (error) {
-                reject(error);
-              }
-            });
-          },
-        );
-        req.on('error', reject);
-        req.on('timeout', () => req.destroy(new Error('API timeout')));
-        req.end(bytes);
-      });
-    assert.equal((await api('/secret/status')).body.status, 'sealed');
-    if (job.selection.newIdentity) assert.equal((await api('/settings')).status, 401);
+    const pin = certificatePin(await readFile(join(hostRoot, 'tls-cert.pem')));
+    const changedIdentity = job.selection.newIdentity || action === 'verify-rotated-api';
+    assert.equal(
+      pin === input.originalTrust.pin,
+      !changedIdentity,
+      'preserved identity must retain the mobile TLS pin',
+    );
+    const transport = pinnedApi({ address, ca, pin });
+    const api = (path, body, token = input.token, headers) => transport(path, body, token, headers);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        assert.equal((await transport('/health')).status, 200);
+        break;
+      } catch (error) {
+        if (attempt === 120) throw error;
+        await delay(250);
+      }
+    }
+    if (!changedIdentity) await verifyPairingProof(transport, input.originalTrust);
     else {
+      await assert.rejects(
+        pinnedApi({ address, ca, pin: input.originalTrust.pin })(
+          '/pair/identity?challenge=' + randomBytes(32).toString('base64url'),
+        ),
+        /TLS pin mismatch/,
+      );
+      const identityKey = createPublicKey(await readFile(join(hostRoot, 'pairing-identity.pem')))
+        .export({ format: 'der', type: 'spki' })
+        .toString('base64url');
+      assert.notEqual(identityKey, input.originalTrust.identityKey);
+      await verifyPairingProof(transport, {
+        identityKey,
+        serverId:
+          'srv_' +
+          createHash('sha256')
+            .update('verity.device-pairing.v1.server-id\0' + identityKey)
+            .digest()
+            .subarray(0, 16)
+            .toString('base64url'),
+      });
+    }
+    for (const denied of Object.values(input.deniedTokens))
+      assert.equal((await api('/auth/session', undefined, denied)).status, 401);
+    assert.equal((await api('/secret/status')).body.status, 'sealed');
+    if (changedIdentity) {
+      assert.equal((await api('/settings')).status, 401);
+      // Emulate explicit installer issuance only after acceptance; startup's expired code grants nothing.
+      const code = randomBytes(32).toString('hex');
+      await writeFile(join(hostRoot, 'pairing-code'), code, { mode: 0o600 });
+      await writeFile(
+        join(hostRoot, 'pairing-expires-at'),
+        new Date(Date.now() + 300000).toISOString(),
+        { mode: 0o600 },
+      );
+      const redeemed = await transport('/pair/redeem', { code });
+      assert.equal(redeemed.status, 200);
+      const unlocked = await transport(
+        '/secret/unlock',
+        { password: input.masterPassword, deviceLabel: 'New identity acceptance' },
+        undefined,
+        { 'x-verity-pairing': redeemed.body.bootstrapToken },
+      );
+      assert.equal(unlocked.status, 200);
+      assert.equal(typeof unlocked.body.token, 'string');
+      assert.equal((await transport('/settings', undefined, unlocked.body.token)).status, 200);
+      assert.equal((await transport('/auth/session', undefined, input.token)).status, 401);
+    } else {
       const unlocked = await api('/secret/unlock', {
         password: input.masterPassword,
         deviceLabel: 'Restored device acceptance',
@@ -725,6 +822,7 @@ try {
   if (action === 'monitor-activation') await monitorActivation();
   else if (action === 'diagnose-activation') await diagnoseActivation();
   else if (action === 'capture') await capture();
+  else if (action === 'capture-sealed') await captureSealed();
   else await restore();
 } catch (error) {
   if (action === 'verify-api') await diagnoseActivation().catch(() => {});

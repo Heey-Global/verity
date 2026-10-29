@@ -126,6 +126,7 @@ export default tseslint.config(
       '.github/scripts/backup-docker-smoke.mjs',
       '.github/scripts/backup-restore-docker.mjs',
       '.github/scripts/backup-restore-diagnostics.mjs',
+      '.github/scripts/backup-restore-device-trust.mjs',
     ],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
