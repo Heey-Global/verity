@@ -66,7 +66,8 @@ export function RecoveryKeyStep({ recoveryKey }: { recoveryKey: string }) {
         </View>
       </View>
       <Text variant="footnote" tone="faint">
-        If you leave before confirming, this key is discarded and you get a new one next time.
+        Confirm within 10 minutes. If you leave before confirming, this key is discarded and you get
+        a new one next time.
       </Text>
     </View>
   );

@@ -184,6 +184,23 @@ describe('backup setup', () => {
     expect(client.cancelBackupSetup).not.toHaveBeenCalled();
   });
 
+  it('starts over when the key expired before confirmation', async () => {
+    const client = backupClient({
+      getBackupStatus: jest
+        .fn()
+        .mockResolvedValue({ available: true, configured: false, alerts: [] }),
+      beginBackupSetup: jest.fn().mockResolvedValue({ ...OFFER, expiresAt: Date.now() - 1 }),
+      confirmBackupSetup: jest.fn().mockRejectedValue(new Error('backup operation failed')),
+    });
+    render(<BackupScreen />);
+    fireEvent.press(await screen.findByText('Set up backup'));
+    fireEvent.press(await screen.findByText('I saved it, turn on backup'));
+    expect(await screen.findByText(/key expired before it was confirmed/)).toBeOnTheScreen();
+    expect(await screen.findByText('Set up backup')).toBeOnTheScreen();
+    expect(screen.queryByText(KEY)).toBeNull();
+    expect(client.cancelBackupSetup).not.toHaveBeenCalled();
+  });
+
   it('saves the key through the share sheet and removes the temporary file', async () => {
     backupClient({
       getBackupStatus: jest

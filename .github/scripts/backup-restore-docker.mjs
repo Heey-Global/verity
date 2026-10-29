@@ -1115,13 +1115,17 @@ async function restore() {
       const deadline = Date.now() + 180000;
       let state;
       while (Date.now() < deadline) {
-        state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
-        if (state.schedule.lastSuccess !== null) break;
+        try {
+          state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+          if (state.schedule.lastSuccess !== null) break;
+        } catch {
+          // The server replaces the state file atomically; retry a read that raced it.
+        }
         await delay(500);
       }
-      if (!(state.schedule.lastSuccess > 0))
-        console.log('Restored schedule state:', JSON.stringify(state.schedule));
-      assert.ok(state.schedule.lastSuccess > 0, 'restored host must capture on its own');
+      if (!(state?.schedule.lastSuccess > 0))
+        console.log('Restored schedule state:', JSON.stringify(state?.schedule));
+      assert.ok(state?.schedule.lastSuccess > 0, 'restored host must capture on its own');
       assert.notDeepEqual(
         await readdir(
           join(

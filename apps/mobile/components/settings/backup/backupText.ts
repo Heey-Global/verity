@@ -9,7 +9,11 @@ type Available = Extract<BackupStatus, { available: true }>;
 
 /** "Today 14:00", "Yesterday 08:00", "Tomorrow 02:00" or "21 Oct, 14:00" in the
  *  device's locale. Days are calendar days, so a DST change does not shift them. */
-export function formatBackupTime(timestamp: number, now: number = Date.now()): string {
+export function formatBackupTime(
+  timestamp: number,
+  now: number = Date.now(),
+  { inline = false }: { inline?: boolean } = {},
+): string {
   const date = new Date(timestamp);
   const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const day = (offset: number): number => {
@@ -18,9 +22,11 @@ export function formatBackupTime(timestamp: number, now: number = Date.now()): s
     start.setDate(start.getDate() + offset);
     return start.getTime();
   };
-  if (timestamp >= day(1) && timestamp < day(2)) return `Tomorrow ${time}`;
-  if (timestamp >= day(0) && timestamp < day(1)) return `Today ${time}`;
-  if (timestamp >= day(-1) && timestamp < day(0)) return `Yesterday ${time}`;
+  // Inside a sentence ("Last backup today 14:00") only the relative word is lowered.
+  const relative = (word: string): string => `${inline ? word.toLowerCase() : word} ${time}`;
+  if (timestamp >= day(1) && timestamp < day(2)) return relative('Tomorrow');
+  if (timestamp >= day(0) && timestamp < day(1)) return relative('Today');
+  if (timestamp >= day(-1) && timestamp < day(0)) return relative('Yesterday');
   const label = date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   return `${label}, ${time}`;
 }
@@ -94,7 +100,7 @@ export function backupRowSummary(
     return { subtitle: 'Not set up', status: { intent: 'needsSetup', label: 'Set up' } };
   const subtitle =
     status.lastSuccess != null
-      ? `Last backup ${lowerFirst(formatBackupTime(status.lastSuccess, now))}`
+      ? `Last backup ${formatBackupTime(status.lastSuccess, now, { inline: true })}`
       : status.capturing === true
         ? 'First backup running'
         : 'First backup starts shortly';
@@ -126,7 +132,7 @@ export function backupStatusRows(
         ? 'Running now'
         : status.lastSuccess == null || status.lastSuccess + interval <= now
           ? 'Shortly'
-          : `About ${lowerFirst(formatBackupTime(status.lastSuccess + interval, now))}`;
+          : `About ${formatBackupTime(status.lastSuccess + interval, now, { inline: true })}`;
   const test: { value: string; intent: StatusIntent } = probeRunning(status.probe)
     ? { value: 'Running', intent: 'transient' }
     : status.lastProbe != null
@@ -187,8 +193,4 @@ export function probeFailureText(job: BackupProbeJob): { title: string; message:
 
 export function probeRunning(job: BackupProbeJob | null | undefined): boolean {
   return job?.status === 'running' || job?.status === 'cancelling';
-}
-
-function lowerFirst(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1);
 }

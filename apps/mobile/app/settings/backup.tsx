@@ -57,8 +57,14 @@ export default function BackupScreen() {
 
 function BackupView({ client }: { client: VerityClient }) {
   const [step, setStep] = useState<Step>({ kind: 'status' });
+  const [watching, setWatching] = useState(false);
   // The success step watches the first capture start and finish.
-  const { state, reload } = useBackupStatus(client, { poll: step.kind === 'success' });
+  const { state, reload } = useBackupStatus(client, { poll: watching });
+  const firstDone =
+    state.kind === 'ready' && state.status.available && state.status.lastSuccess != null;
+  useEffect(() => {
+    setWatching(step.kind === 'success' && !firstDone);
+  }, [step.kind, firstDone]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   // An offered key that was never confirmed is discarded on the server when the
@@ -102,6 +108,12 @@ function BackupView({ client }: { client: VerityClient }) {
         void reload();
       })
       .catch(() => {
+        if (Date.now() >= offer.expiresAt) {
+          // The server has already dropped an expired key; only a new one can work.
+          setStep({ kind: 'status' });
+          setError('The key expired before it was confirmed. Set up again to get a new key.');
+          return;
+        }
         pending.current = offer;
         setError('Could not turn on backup. Try again.');
       })
@@ -339,7 +351,7 @@ function ProblemCard({ status }: { status: Available }) {
         title="Backup"
         subtitle={
           status.lastSuccess != null
-            ? `Last backup ${formatBackupTime(status.lastSuccess)}`
+            ? `Last backup ${formatBackupTime(status.lastSuccess, Date.now(), { inline: true })}`
             : 'No backup yet'
         }
         trailing={<StatusTag intent="needsSetup" label="Needs attention" />}

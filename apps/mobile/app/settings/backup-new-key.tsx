@@ -74,6 +74,12 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
       .confirmBackupKeyReplacement(current)
       .then(() => setDone(true))
       .catch(() => {
+        if (Date.now() >= current.expiresAt) {
+          // The server has already dropped an expired key; the current key stays.
+          setOffer(null);
+          setError('The new key expired before it was confirmed. Retry to get another one.');
+          return;
+        }
         pending.current = current;
         setError('Could not switch to the new key. Try again.');
       })
