@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { gatewayToolNameSchema } from '@verity/secret-contracts';
 import {
+  ASSISTANT_TOOLS,
+  assistantToolRefusal,
   executeAssistantTool,
   requireAssistantGrant,
   type AssistantToolDeps,
@@ -115,5 +118,35 @@ describe('assistant handoff grant', () => {
     await expect(check(deps({ a: ['read', 'execute'] }))).resolves.toMatchObject({
       projectName: 'team/a',
     });
+  });
+});
+
+describe('assistant tool policy', () => {
+  const on = { enabled: true, revision: 1, sponsor_user_id: ADMIN, session_id: 'assistant' };
+  it('closes every gateway tool not listed, including ones added later', () => {
+    // Derived from the gateway's own tool list, so a new Control tool is checked here
+    // without anyone remembering to add it.
+    for (const tool of gatewayToolNameSchema.options) {
+      const refusal = assistantToolRefusal(on, 'assistant', tool);
+      expect(refusal === undefined).toBe(ASSISTANT_TOOLS.has(tool));
+    }
+    for (const tool of [
+      'verity_diagnostics',
+      'verity_list_sessions',
+      'verity_recent_session_messages',
+      'verity_secret_run',
+      'verity_http_request',
+      'verity_knowledge',
+      'verity_google_drive',
+      'verity_google_docs',
+    ])
+      expect(assistantToolRefusal(on, 'assistant', tool)).toMatch(/only through/);
+  });
+
+  it('leaves only app help while switched off and never restricts other sessions', () => {
+    const off = { ...on, enabled: false };
+    expect(assistantToolRefusal(off, 'assistant', 'verity_gmail')).toMatch(/disabled/);
+    expect(assistantToolRefusal(off, 'assistant', 'verity_app_help')).toBeUndefined();
+    expect(assistantToolRefusal(on, 'control', 'verity_diagnostics')).toBeUndefined();
   });
 });

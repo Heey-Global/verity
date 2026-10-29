@@ -49,9 +49,9 @@ Verity Control itself can never be granted.
   Verity Control sessions are unchanged.
 - Because it processes mail and voice notes, the assistant session may only call
   an allow-list of tools: `verity_assistant`, `verity_session_handoff`, its own
-  tasks, app help, the Google tools and the planning tools. Knowledge operations
-  are refused too: they only write, and a mail must not be able to publish
-  shared knowledge. Control's fleet-wide reads (`verity_diagnostics`,
+  tasks, app help, Gmail, Calendar, Contacts and the planning tools. Drive, Docs,
+  Sheets, Slides and knowledge operations are refused too: they write or share
+  documents, and a mail must not be able to copy content into them. Control's fleet-wide reads (`verity_diagnostics`,
   `verity_list_sessions`, `verity_session_progress`,
   `verity_recent_session_messages`), secrets and brokered HTTP are refused. To hand
   off, it targets a project or a new session.

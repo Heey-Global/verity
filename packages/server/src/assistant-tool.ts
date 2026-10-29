@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { assistantRequestSchema } from '@verity/events';
-import type { AssistantMode, EventStore } from '@verity/store';
+import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
 import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
 
 export interface AssistantToolDeps {
@@ -13,6 +13,38 @@ export interface AssistantToolDeps {
     projectId: string,
     permission: 'read' | 'execute',
   ): Promise<boolean>;
+}
+
+/** Every gateway tool the assistant session may call (docs/assistant.md). It reads untrusted
+ *  mail and voice notes, so tools that write documents, publish knowledge, reach secrets or
+ *  HTTP, or observe the fleet stay closed; a tool added to Control later is closed until it
+ *  is listed here. */
+export const ASSISTANT_TOOLS: ReadonlySet<string> = new Set([
+  'verity_assistant',
+  'verity_session_handoff',
+  'verity_tasks',
+  'verity_app_help',
+  'verity_gmail',
+  'verity_google_calendar',
+  'verity_google_contacts',
+  'verity_start_planning',
+  'verity_present_plan',
+  'verity_end_planning',
+]);
+
+/** Why the gateway refuses `toolName` for `sessionId`, or undefined when this policy does
+ *  not object. Only the assistant session is restricted; switched off, it keeps app help. */
+export function assistantToolRefusal(
+  settings: AssistantSettings,
+  sessionId: string,
+  toolName: string,
+): string | undefined {
+  if (settings.session_id !== sessionId) return undefined;
+  if (!settings.enabled && toolName !== 'verity_app_help')
+    return 'The Verity assistant is disabled in system settings.';
+  if (!ASSISTANT_TOOLS.has(toolName))
+    return 'The assistant reaches projects only through verity_assistant and handoffs to granted projects.';
+  return undefined;
 }
 
 /** Refuses every caller except the enabled assistant session. Role identity is the stored
