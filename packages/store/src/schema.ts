@@ -1653,6 +1653,7 @@ export interface Database {
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
+  project_egress_policy: ProjectEgressPolicyTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
@@ -1772,4 +1773,9 @@ interface LiveMeetingResultsTable {
   model: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface ProjectEgressPolicyTable {
+  project_id: string;
+  state: import('./project-egress.js').EgressPolicy;
 }

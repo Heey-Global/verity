@@ -4692,18 +4692,6 @@ migrations['0169_live_meeting_results'] = {
   },
 };
 
-migrations['0171_project_egress_policy'] = {
-  async up(db: Kysely<unknown>): Promise<void> {
-    await sql`create table project_egress_policy (
-      project_id text primary key references projects(id) on delete cascade,
-      state jsonb not null
-    )`.execute(db);
-  },
-  async down(db: Kysely<unknown>): Promise<void> {
-    await sql`drop table project_egress_policy`.execute(db);
-  },
-};
-
 migrations['0170_backup_foundation'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
@@ -4726,6 +4714,18 @@ migrations['0170_backup_foundation'] = {
     await sql`drop table backup_git_repositories`.execute(db);
     await sql`drop table backup_revocation_outbox`.execute(db);
     await sql`drop table backup_policy`.execute(db);
+  },
+};
+
+migrations['0171_project_egress_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_egress_policy (
+      project_id text primary key references projects(id) on delete cascade,
+      state jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_egress_policy`.execute(db);
   },
 };
 
