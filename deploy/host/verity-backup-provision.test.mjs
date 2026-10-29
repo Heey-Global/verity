@@ -100,3 +100,17 @@ test(
     }
   },
 );
+
+test('the runtime image installs the checkpoint parser used by provisioning', () => {
+  const helper = readFileSync(script, 'utf8');
+  assert.match(helper, /\bjq -e/);
+  const runtime = readFileSync(resolve('deploy/Dockerfile'), 'utf8').split(
+    /FROM[^\n]+ AS runtime\n/,
+  )[1];
+  assert.ok(runtime, 'runtime stage must be present');
+  const packages = runtime.match(/apt-get install[^;]+/)?.[0].split(/\s+/) ?? [];
+  assert.ok(
+    packages.includes('jq'),
+    'restore and rotation checkpoints require jq in the runtime stage',
+  );
+});
