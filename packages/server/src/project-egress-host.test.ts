@@ -180,7 +180,9 @@ it('validates daemon identities, restart policy and network membership rather th
         Runtime: 'runsc-project',
         Privileged: false,
         RestartPolicy: { Name: 'no' },
-        CapAdd: null,
+        CapAdd: null as string[] | null,
+        CapDrop: ['ALL'],
+        SecurityOpt: ['no-new-privileges=true'],
       },
       NetworkSettings: { Networks: { [binding.networkName]: { NetworkID: '' } } },
     },
@@ -190,6 +192,22 @@ it('validates daemon identities, restart policy and network membership rather th
   expect(() =>
     verifyEgressHostNetwork(binding, [{ ...network[0], Containers: { foreign: {} } }], []),
   ).toThrow();
+  const config = container[0]!.HostConfig;
+  config.CapAdd = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'];
+  expect(() => verifyEgressHostContainer(binding, id, container, 'sandbox')).not.toThrow();
+  expect(() => verifyEgressHostContainer(binding, id, container, 'relay')).toThrow();
+  for (const extra of ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN']) {
+    config.CapAdd.push(extra);
+    expect(() => verifyEgressHostContainer(binding, id, container, 'sandbox')).toThrow();
+    config.CapAdd.pop();
+  }
+  config.SecurityOpt = [];
+  expect(() => verifyEgressHostContainer(binding, id, container, 'sandbox')).toThrow();
+  config.SecurityOpt = ['no-new-privileges=true'];
+  config.CapDrop = [];
+  expect(() => verifyEgressHostContainer(binding, id, container, 'sandbox')).toThrow();
+  config.CapDrop = ['ALL'];
+  config.CapAdd = null;
   container[0]!.HostConfig.Runtime = 'runc';
   expect(() => verifyEgressHostContainer(binding, id, container)).toThrow();
   container[0]!.HostConfig.Runtime = 'runsc-project';
@@ -305,4 +323,36 @@ it('rejects a named gVisor runtime configured for host networking or overriding 
     expect(() =>
       verifyEgressHostRuntime({ 'runsc-project': { ...runtime, runtimeArgs } }),
     ).toThrow();
+});
+
+it('recovers current authority without inspecting labels, mutating rules or leaking mutable state', async () => {
+  const first = fixture();
+  const query = { operation: 'current', projectId: binding.projectId };
+  expect(await first.host.execute(query)).toEqual({
+    state: 'current',
+    projectId: binding.projectId,
+    binding: null,
+  });
+  await first.host.execute({ operation: 'register', binding });
+  const restarted = fixture(first.saved());
+  const result = await restarted.host.execute(query);
+  expect(result).toEqual({ state: 'current', projectId: binding.projectId, binding });
+  if (result.state !== 'current' || result.binding === null) throw new Error('missing binding');
+  result.binding.generation = 'forged';
+  expect(await restarted.host.execute(query)).toEqual({
+    state: 'current',
+    projectId: binding.projectId,
+    binding,
+  });
+  expect(restarted.calls).toEqual([]);
+  await restarted.host.execute({
+    operation: 'retire',
+    projectId: binding.projectId,
+    generation: binding.generation,
+  });
+  expect(await restarted.host.execute(query)).toEqual({
+    state: 'current',
+    projectId: binding.projectId,
+    binding: null,
+  });
 });
