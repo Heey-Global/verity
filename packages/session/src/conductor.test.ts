@@ -4799,6 +4799,35 @@ async function waitFor(cond: () => boolean): Promise<void> {
 }
 
 describe('Conductor.startSession', () => {
+  it('admits QA after initial-session marker cleanup fails', async () => {
+    const cleanup = vi
+      .spyOn(ctx.store, 'clearRunningTurn')
+      .mockRejectedValueOnce(new Error('cleanup unavailable'));
+    const fake = scriptedBackend({ sessionId: 'initial-qa', model: 'sonnet', text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/new', prompt: 'start' });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(cleanup).toHaveBeenCalled();
+    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession(sessionId);
+    const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(
+      await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        'review',
+        {},
+        { durableDispatchId: dispatch },
+      ),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(fake.calls).toHaveLength(2);
+  });
+
   it('spawns a fresh agent run, resolves the minted id, and persists the session', async () => {
     const fake = scriptedBackend({ sessionId: 'claude-xyz', model: 'sonnet', text: 'hi' });
     const conductor = new Conductor({

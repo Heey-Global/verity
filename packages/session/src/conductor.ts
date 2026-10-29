@@ -4988,6 +4988,7 @@ export class Conductor {
                 markerSeq = seq;
                 handle.markerSeq = seq;
                 await this.markTurnRunning(publicSessionId, seq);
+                handle.markerTurnId = turnId;
                 await this.bindTurnIdentity(publicSessionId, turnId, startCommandId);
               })
               .then(() =>
@@ -5122,9 +5123,12 @@ export class Conductor {
                 this.reportTurnError(id, error);
               }
             }
-            await this.clearRunningTurn(id, markerSeq).catch((clearError: unknown) => {
-              this.reportTurnError(id, clearError);
-            });
+            await this.confirmTurnSettled(id, handle);
+            await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
+              (clearError: unknown) => {
+                this.reportTurnError(id, clearError);
+              },
+            );
             this.turns.delete(id);
             this.clearPermissions(id);
             this.releaseInFlight(id);
@@ -5149,9 +5153,11 @@ export class Conductor {
             await this.reportBackgroundTurnFailure(id, err).catch((reportError: unknown) => {
               this.reportTurnError(id, reportError);
             });
-            await this.clearRunningTurn(id, markerSeq).catch((clearError: unknown) => {
-              this.reportTurnError(id, clearError);
-            });
+            await this.clearRunningTurn(id, markerSeq, handle.markerId).catch(
+              (clearError: unknown) => {
+                this.reportTurnError(id, clearError);
+              },
+            );
             this.turns.delete(id);
             this.clearPermissions(id);
             this.releaseInFlight(id);
