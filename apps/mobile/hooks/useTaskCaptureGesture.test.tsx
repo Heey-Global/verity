@@ -1,5 +1,8 @@
+import type { GestureResponderEvent } from 'react-native';
 import { renderHook } from '@testing-library/react-native';
 import { useTaskCaptureGesture } from './useTaskCaptureGesture';
+
+const touch = { nativeEvent: { identifier: 0 } } as unknown as GestureResponderEvent;
 
 function setup() {
   const capture = jest.fn();
@@ -12,7 +15,7 @@ function setup() {
 it('records on a tap, allowing slight finger movement', () => {
   const { result, capture, openTasks } = setup();
   expect(result.current.claimDrag(3, 4)).toBe(false);
-  result.current.onPress();
+  result.current.onPress(touch);
   expect(capture).toHaveBeenCalledTimes(1);
   expect(openTasks).not.toHaveBeenCalled();
 });
@@ -20,7 +23,7 @@ it('records on a tap, allowing slight finger movement', () => {
 it('opens tasks on a stationary hold without recording on release', () => {
   const { result, capture, openTasks } = setup();
   result.current.onLongPress();
-  result.current.onPress();
+  result.current.onPress(touch);
   expect(openTasks).toHaveBeenCalledTimes(1);
   expect(capture).not.toHaveBeenCalled();
 });
@@ -28,7 +31,7 @@ it('opens tasks on a stationary hold without recording on release', () => {
 it('does not record when a quick drag ends before the long press delay', () => {
   const { result, capture, openTasks } = setup();
   result.current.claimDrag(20, 0);
-  result.current.onPress();
+  result.current.onPress(touch);
   expect(capture).not.toHaveBeenCalled();
   expect(openTasks).not.toHaveBeenCalled();
 });
@@ -44,11 +47,11 @@ it.each([
   // Returning to the starting point does not turn a drag back into a tap.
   result.current.claimDrag(0, 0);
   result.current.onLongPress();
-  result.current.onPress();
+  result.current.onPress(touch);
   expect(capture).not.toHaveBeenCalled();
   expect(openTasks).not.toHaveBeenCalled();
   result.current.onPressIn();
-  result.current.onPress();
+  result.current.onPress(touch);
   expect(capture).toHaveBeenCalledTimes(1);
 });
 
@@ -58,4 +61,14 @@ it('allows repeated accessibility activation without press-in events', () => {
   result.current.onPress();
   expect(capture).toHaveBeenCalledTimes(2);
   expect(openTasks).not.toHaveBeenCalled();
+});
+
+it.each(['drag', 'hold'])('allows accessibility activation after a completed %s', (gesture) => {
+  const { result, capture } = setup();
+  if (gesture === 'drag') result.current.claimDrag(20, 0);
+  else result.current.onLongPress();
+  const click = { nativeEvent: {} } as unknown as GestureResponderEvent;
+  result.current.onPress(click);
+  result.current.onPress(click);
+  expect(capture).toHaveBeenCalledTimes(2);
 });

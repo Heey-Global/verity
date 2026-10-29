@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import type { GestureResponderEvent } from 'react-native';
 
 /** A drag or a completed hold must never turn into a recording on release. */
 export function useTaskCaptureGesture(onCapture: () => void, onOpenTasks: () => void) {
@@ -14,8 +15,13 @@ export function useTaskCaptureGesture(onCapture: () => void, onOpenTasks: () => 
     onPressIn: () => {
       consumed.current = false;
     },
-    onPress: () => {
-      if (consumed.current) return;
+    onPress: (event?: GestureResponderEvent) => {
+      // Accessibility clicks have no touch identifier or pointer type and must
+      // remain available after a completed drag or hold.
+      const nativeEvent = event?.nativeEvent;
+      const isPointer =
+        nativeEvent && ('identifier' in nativeEvent || 'pointerType' in nativeEvent);
+      if (consumed.current && isPointer) return;
       onCapture();
     },
     onLongPress: () => {
