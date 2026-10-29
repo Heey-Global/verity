@@ -16,7 +16,7 @@ import {
   sign,
   verify,
 } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -646,6 +646,13 @@ async function restore() {
   } else if (action === 'prepare-exposure-original' || action === 'prepare-exposure') {
     const current = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
     if (action === 'prepare-exposure-original') {
+      const certificate = await stat(join(hostRoot, 'tls-ca-cert.pem'));
+      assert.equal(
+        certificate.uid,
+        0,
+        'the privileged helper requires a root-owned CA certificate',
+      );
+      assert.equal(certificate.mode & 0o777, 0o644);
       await mkdir(join(root, 'identity-requests'), { recursive: true, mode: 0o700 });
       await writeFile(
         join(root, 'identity-requests/recipient.json'),

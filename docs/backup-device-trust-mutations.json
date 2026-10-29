@@ -7,7 +7,7 @@
       "file": "packages/server/src/backup/restore-host.ts",
       "replace": "if (job.selection.newIdentity) {\n      const leaf",
       "with": "if (true) {\n      const leaf",
-      "originalSourceSha256": "0249fd7c24cd3373d7f1641c82c46b0d8e494276e7b94344efdac5e97b16dcd2",
+      "originalSourceSha256": "302091a7d01554041c57c997655c28f57f3fa61763a6e97dddbe29b4c43c3083",
       "command": [
         "npx",
         "vitest",
@@ -126,6 +126,27 @@
         "AssertionError: promise resolved \"undefined\" instead of rejecting",
         "Tests  1 failed (1)"
       ]
+    },
+    {
+      "id": "root-ca-public-read-mode",
+      "file": "packages/server/src/backup/restore-host.ts",
+      "replace": "await chmod(join(root, 'tls-ca-cert.pem'), 0o644);",
+      "with": "// mutation: omit public CA access mode",
+      "originalSourceSha256": "302091a7d01554041c57c997655c28f57f3fa61763a6e97dddbe29b4c43c3083",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-host.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  packages/server/src/backup/restore-host.test.ts > preserves deployment keys and CA while reissuing the pinned host leaf and rotating installation credentials",
+        "AssertionError: expected 384 to be 420 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
     }
   ],
   "testFileSha256": [
@@ -135,7 +156,7 @@
     },
     {
       "path": "packages/server/src/backup/restore-host.test.ts",
-      "sha256": "4ca2c47cc886d7e664ee4507ada45ef8f2ff941dd85eac87ab2b6f2a2a6c0d38"
+      "sha256": "47adae65d929bdac3d02be6c2bba6d498a5c47845e6d2fb302a78c26067bd056"
     },
     {
       "path": "packages/server/src/backup/restore-identity-history.test.ts",
@@ -150,5 +171,5 @@
       "sha256": "b50a7819e7b83f3fd87e48b361a8a5e961de7fbdcb2123490578686a5bc048a7"
     }
   ],
-  "restoration": "All six deliberate changes rejected by the named tests and restored byte-for-byte; positive TLS baseline and final restored checks passed. Actual installer SQL also passed against the migrated PostgreSQL schema."
+  "restoration": "All seven deliberate changes rejected by the named tests and restored byte-for-byte; positive TLS baseline and final restored checks passed. Actual installer SQL also passed against the migrated PostgreSQL schema."
 }

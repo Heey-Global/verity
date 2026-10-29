@@ -192,10 +192,11 @@ export function createRestoreHost(options: {
       'pairing-expires-at',
       'tls-key.pem',
       'tls-cert.pem',
-      'tls-ca-cert.pem',
       'deployment-id',
     ])
       if (process.getuid?.() === 0) await chown(join(root, name), uid, gid);
+    // The root helper trusts this public certificate; the Server only needs read access.
+    await chmod(join(root, 'tls-ca-cert.pem'), 0o644);
     await chmod(root, 0o711);
     signal?.throwIfAborted();
   };

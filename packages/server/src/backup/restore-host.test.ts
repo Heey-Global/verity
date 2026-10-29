@@ -78,6 +78,7 @@ it('preserves deployment keys and CA while reissuing the pinned host leaf and ro
     expect(certificate.checkHost('restored.example')).toBe('restored.example');
     expect(await readFile(join(destination, 'installation-id'), 'utf8')).toBe(job.installationId);
     expect((await stat(join(destination, 'tls-ca-key.pem'))).mode & 0o077).toBe(0);
+    expect((await stat(join(destination, 'tls-ca-cert.pem'))).mode & 0o777).toBe(0o644);
     const live = join(root, 'live');
     await mkdir(live);
     await publishRestoreHostState(destination, live);
