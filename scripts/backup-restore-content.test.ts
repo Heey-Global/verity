@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
-import { createPostgresDb, migrateToLatest } from '@verity/store';
+import { createPostgresDb, migrateToLatest } from '../packages/store/src/db.js';
 import { sanitizeRestoredDatabase } from '../packages/server/src/backup/restore-database.js';
 import { readCaptureInventory } from '../packages/server/src/backup/inventory.js';
 import {

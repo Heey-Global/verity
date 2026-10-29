@@ -7,7 +7,7 @@
     "--maxWorkers=1"
   ],
   "sourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7",
-  "testSha256": "67f99098c0874f3ac29c56fcf2bbe21bd3d90b7526eb0cea9e4c236a32306f7f",
+  "testSha256": "2cd71f72b40378438f4dae1859057110cec876ac6a9516f470051a49589d5af6",
   "cases": [
     {
       "id": "linked-worktree-file-digest",
@@ -16,9 +16,10 @@
       "with": "for (const file of expected.files.slice(0, 0))",
       "exitCode": 1,
       "evidence": [
-        "Tests  1 failed (1)",
         "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
-        "AssertionError: promise resolved \"undefined\" instead of rejecting"
+        " FAIL  scripts/backup-restore-content.test.ts > separate-daemon recovery content fixture > seeds real inventory and detects missing worktree bytes, old revisions and attachment corruption",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "      Tests  1 failed (1)"
       ],
       "originalSourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7"
     },
@@ -29,9 +30,10 @@
       "with": "(await database.query('SELECT id,document_id,body_markdown FROM knowledge_document_revisions ORDER BY id')).rows",
       "exitCode": 1,
       "evidence": [
-        "Tests  1 failed (1)",
         "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
-        "AssertionError: promise resolved \"undefined\" instead of rejecting"
+        " FAIL  scripts/backup-restore-content.test.ts > separate-daemon recovery content fixture > seeds real inventory and detects missing worktree bytes, old revisions and attachment corruption",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "      Tests  1 failed (1)"
       ],
       "originalSourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7"
     },
@@ -63,7 +65,7 @@
   "testFileSha256": [
     {
       "path": "scripts/backup-restore-content.test.ts",
-      "sha256": "67f99098c0874f3ac29c56fcf2bbe21bd3d90b7526eb0cea9e4c236a32306f7f"
+      "sha256": "2cd71f72b40378438f4dae1859057110cec876ac6a9516f470051a49589d5af6"
     },
     {
       "path": "packages/server/src/backup/fixture.test.ts",
