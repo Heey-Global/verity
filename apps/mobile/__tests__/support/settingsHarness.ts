@@ -215,6 +215,7 @@ export type ClientOverrides = {
   settings?: VeritySettings;
   listPairedDevices?: jest.Mock;
   auditHealth?: jest.Mock;
+  getBackupStatus?: jest.Mock;
   auditOperations?: jest.Mock;
   auditOperation?: jest.Mock;
   buildDiagnostic?: jest.Mock;
@@ -310,6 +311,10 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     listPairedDevices: opts.listPairedDevices ?? jest.fn().mockResolvedValue([]),
     // Audit logs are administrator-only; by default this device is not one.
     auditHealth: opts.auditHealth ?? jest.fn().mockResolvedValue(null),
+    // A Server without installer backup resources, so the Backup row stays hidden.
+    getBackupStatus:
+      opts.getBackupStatus ??
+      jest.fn().mockResolvedValue({ available: false, reason: 'installer-required' }),
     auditOperations: opts.auditOperations ?? jest.fn().mockResolvedValue(null),
     auditOperation: opts.auditOperation ?? jest.fn(notImplemented('auditOperation')),
     buildDiagnostic: opts.buildDiagnostic ?? jest.fn(notImplemented('buildDiagnostic')),

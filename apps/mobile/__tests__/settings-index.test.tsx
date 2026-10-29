@@ -182,6 +182,42 @@ describe('settings index — destinations', () => {
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');
   });
 
+  // Backup is reachable only where the Server can back up and this device is an
+  // administrator; before setup it says so, after setup it reports the last run.
+  it('shows Backup only when the Server offers it and reports its state', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    const { unmount } = render(<SettingsIndexScreen />);
+    await screen.findByLabelText(/^Updates(,|$)/);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(rowLabel('Backup'))).toBeNull();
+    unmount();
+
+    const getBackupStatus = jest
+      .fn()
+      .mockResolvedValue({ available: true, configured: false, alerts: [] });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getBackupStatus }));
+    const { unmount: unmountSetup } = render(<SettingsIndexScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Backup, Not set up, Set up/));
+    expect(mockPush).toHaveBeenCalledWith('/settings/backup');
+    unmountSetup();
+
+    getBackupStatus.mockResolvedValue({
+      available: true,
+      configured: true,
+      paused: false,
+      intervalMs: 21600000,
+      lastSuccess: null,
+      capturing: false,
+      lastProbe: null,
+      probe: null,
+      alerts: ['insufficient-space'],
+    });
+    render(<SettingsIndexScreen />);
+    expect(
+      await screen.findByLabelText(/^Backup, First backup starts shortly, Needs attention/),
+    ).toBeOnTheScreen();
+  });
+
   it('keeps update channel preferences inside server update', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);

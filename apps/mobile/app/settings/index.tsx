@@ -11,6 +11,7 @@ import {
   settingsChecklist,
   settingsChecklistHeadline,
   type AuditHealth,
+  type BackupStatus,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
@@ -27,6 +28,7 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
+import { backupRowSummary } from '../../components/settings/backup/backupText';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
@@ -82,6 +84,9 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   // `null` until the Server says this device may read audit logs; members and
   // Servers without the trail never show the row.
   const [auditHealth, setAuditHealth] = useState<AuditHealth | null>(null);
+  // `null` while this Server cannot back up or this device may not manage it
+  // (members get 403), so the row appears only where it leads somewhere.
+  const [backup, setBackup] = useState<Extract<BackupStatus, { available: true }> | null>(null);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -97,6 +102,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         .auditHealth()
         .then((health) => active && setAuditHealth(health))
         .catch(() => undefined);
+      client
+        .getBackupStatus()
+        .then((status) => active && setBackup(status.available ? status : null))
+        .catch(() => active && setBackup(null));
       // A stored key is not an active subscription: Uplink may have refused it.
       // Keep the last known state while re-reading so the row does not flicker.
       if (keyConfigured) {
@@ -257,6 +266,14 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/server-update')}
           />
+          {backup !== null ? (
+            <SettingsNavRow
+              icon="hard-drive"
+              title="Backup"
+              {...backupRowSummary(backup)}
+              onPress={() => router.push('/settings/backup' as Href)}
+            />
+          ) : null}
           <SettingsNavRow
             icon="server"
             title="Server address"

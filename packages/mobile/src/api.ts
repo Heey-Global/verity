@@ -1166,6 +1166,53 @@ export const secretStatusSchema = z.object({
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
 
+/** A restore probe as the server reports it. The server keeps no key in it. */
+export const backupProbeJobSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(['running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'interrupted']),
+  phase: z.enum([
+    'selecting',
+    'release',
+    'staging',
+    'identity',
+    'git',
+    'database',
+    'revocations',
+    'cleanup',
+  ]),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  snapshot: z.object({ repository: z.string(), sequence: z.number() }).nullable(),
+  error: z.string().nullable(),
+});
+export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
+
+/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
+ *  older servers report reasons this app does not know. */
+export const backupStatusSchema = z.discriminatedUnion('available', [
+  z.object({ available: z.literal(false), reason: z.string() }),
+  z.object({
+    available: z.literal(true),
+    configured: z.boolean(),
+    paused: z.boolean().optional(),
+    intervalMs: z.number().optional(),
+    lastSuccess: z.number().nullable().optional(),
+    capturing: z.boolean().optional(),
+    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
+    probe: backupProbeJobSchema.nullable().optional(),
+    alerts: z.array(z.string()),
+  }),
+]);
+export type BackupStatus = z.infer<typeof backupStatusSchema>;
+
+/** A newly generated recovery key, shown once. It becomes active on confirmation. */
+const backupKeyOfferSchema = z.object({
+  id: z.string().uuid(),
+  recoveryKey: z.string().min(1),
+  expiresAt: z.number(),
+});
+export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
+
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
  *  dev/PR/local builds). `version` is OPTIONAL for back-compat: an older server
@@ -3829,6 +3876,70 @@ export class VerityClient {
   async getSecretStatus(): Promise<SecretStatus> {
     const res = await this.request('/secret/status', { method: 'GET' });
     return secretStatusSchema.parse(await res.json()).status;
+  }
+
+  async getBackupStatus(): Promise<BackupStatus> {
+    const res = await this.request('/api/backups/status', { method: 'GET' });
+    return backupStatusSchema.parse(await res.json());
+  }
+  async beginBackupSetup(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(await this.backupPost('/api/backups/setup'));
+  }
+  /** Sends back the key the app was given; Verity keeps no copy of it. */
+  async confirmBackupSetup(offer: BackupKeyOffer): Promise<void> {
+    await this.backupPost('/api/backups/setup/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupSetup(): Promise<void> {
+    await this.backupPost('/api/backups/setup/cancel');
+  }
+  /** Always the "lost" replacement: older snapshots stay readable with the old key. */
+  async beginBackupKeyReplacement(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(
+      await this.backupPost('/api/backups/key-replacement', { reason: 'lost' }),
+    );
+  }
+  async confirmBackupKeyReplacement(offer: BackupKeyOffer): Promise<void> {
+    await this.backupPost('/api/backups/key-replacement/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupKeyReplacement(): Promise<void> {
+    await this.backupPost('/api/backups/key-replacement/cancel');
+  }
+  async setBackupPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
+    await this.request('/api/backups/policy', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(policy),
+    });
+  }
+  async startBackupProbe(recoveryKey: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost('/api/backups/probes', { recoveryKey }),
+    );
+  }
+  async getBackupProbe(id: string): Promise<BackupProbeJob> {
+    const res = await this.request(`/api/backups/probes/${encodeURIComponent(id)}`, {
+      method: 'GET',
+    });
+    return backupProbeJobSchema.parse(await res.json());
+  }
+  async cancelBackupProbe(id: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost(`/api/backups/probes/${encodeURIComponent(id)}/cancel`),
+    );
+  }
+  private async backupPost(path: string, body: object = {}): Promise<unknown> {
+    const res = await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json();
   }
 
   /** Pre-auth liveness probe carrying the server's own release version — used to

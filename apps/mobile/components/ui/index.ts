@@ -7,6 +7,7 @@ export { SearchField } from './SearchField';
 export { SectionHeader } from './SectionHeader';
 export { ConfirmSheet, Sheet, useConfirm } from './Sheet';
 export { StatusDot, StatusTag } from './Status';
+export { StepIntro, SuccessHero } from './StepHero';
 export { Text } from './Text';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
