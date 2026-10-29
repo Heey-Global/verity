@@ -382,6 +382,16 @@ the quiesced final pre-update snapshot and the two Updater changes it needs;
 database segmentation; further destinations; several recovery keys; per-project
 exclusions; Premium minimum retention.
 
+## Installer recovery implementation
+
+The [installer recovery guide](../INSTALLER_RECOVERY.md) describes explicit
+selection, isolated trial, administrator device review, durable publication,
+acceptance and abort. The recovery-capability image label advertises protocol
+support; it does not open the global v1 acceptance gate. The separate-daemon
+Docker CI harness captures through the production path and destroys the original
+host before recovery. Passing that harness is necessary alongside the remaining
+v1 acceptance requirements below.
+
 ## Verification requirements
 
 Prove fresh-host recovery with only the copied directory, the recovery key and

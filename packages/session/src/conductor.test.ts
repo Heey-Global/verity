@@ -2367,6 +2367,24 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('stamps the initiator on a server-awaited turn', async () => {
+    // Save to project awaits its turn through sendTurn; without the initiator on the prompt,
+    // an authenticated server refuses every gateway call in that turn.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(Promise.resolve()).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'save it', {}, 'Save to project', {
+      initiatedBy: { userId: 'alice' },
+    });
+    expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject({
+      text: 'Save to project',
+      initiatedBy: { userId: 'alice' },
+    });
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });

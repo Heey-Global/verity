@@ -37,7 +37,15 @@ it.each([
   } finally {
     process.env.NODE_ENV = previous;
   }
-  if (name === 'ui/Image.tsx') {
+  if (name === 'ui/TextPrompt.tsx') {
+    // This hook composes styled UI components and imports only native APIs.
+    // Adding a native view must restore the style-transform requirement.
+    expect(readFileSync(filename, 'utf8').match(/import[^;]*?from ['"]react-native['"]/g)).toEqual([
+      "import { Alert, Platform } from 'react-native'",
+    ]);
+    expect(output?.code).toContain('require("./Sheet")');
+    expect(output?.code).toContain('require("./TextField")');
+  } else if (name === 'ui/Image.tsx') {
     // This adapter has no native JSX to rewrite. Its binding must survive the
     // production transform or Expo Image silently loses web dimensions again.
     expect(output?.code).toMatch(/\.withUnistyles\)\([^)]*\.Image\)/);

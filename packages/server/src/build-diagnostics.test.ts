@@ -85,4 +85,20 @@ describe('build diagnostic files', () => {
     });
     expect((await store.read(id))?.truncated).toBe(true);
   });
+  it.each(['single-line', 'multi-line'])(
+    'preserves complete large %s output across repeated reads',
+    async (kind) => {
+      const root = await directory();
+      const store = createBuildDiagnosticStore(root);
+      const id = randomUUID();
+      const output =
+        'x'.repeat(70_000) + (kind === 'multi-line' ? '\ncompiler failure\nlast line' : '');
+      await store.save(id, { stderr: output });
+      for (let read = 0; read < 2; read += 1) {
+        const result = await store.read(id);
+        expect(result?.text).toBe(output);
+        expect(result?.truncated).toBe(false);
+      }
+    },
+  );
 });

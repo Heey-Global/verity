@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Sourced by verity-install after its preflight and while its installer lock is held.
+setup_backup_prerequisites() {
+  local backup_dir=$1 image=$2 installation_id backup_password request_dir server_uid server_gid canonical directory marker_tmp
+  server_uid="${VERITY_SERVER_UID:-1000}"
+  server_gid="${VERITY_SERVER_GID:-1000}"
+  request_dir="${VERITY_BACKUP_IDENTITY_DIR:-/var/lib/verity/backup-identity}"
+  [[ $server_uid =~ ^[0-9]+$ && $server_gid =~ ^[0-9]+$ ]] || die 'invalid Server uid or gid for backup prerequisites'
+  [[ $(readlink -m -- "$backup_dir") = "$backup_dir" ]] || die 'backup directory must have no symlinked parents or dot segments'
+  [[ $backup_dir =~ ^/[A-Za-z0-9/_.-]+$ && $backup_dir != / && $backup_dir != "$STATE_DIR" && $STATE_DIR != "$backup_dir/"* ]] || die 'backup directory must be a dedicated absolute path'
+  [[ $STATE_DIR =~ ^/[A-Za-z0-9/_.-]+$ ]] || die 'backup helper requires a normalized installer state path'
+  if [[ -e $backup_dir || -L $backup_dir ]]; then
+    [[ -d $backup_dir && ! -L $backup_dir ]] || die 'backup destination must be a directory, not a symlink'
+  else
+    mkdir -p -- "$backup_dir"
+    chown "$server_uid:$server_gid" "$backup_dir"
+    chmod 0700 "$backup_dir"
+  fi
+  canonical=$(readlink -f -- "$backup_dir")
+  [[ $canonical = "$backup_dir" ]] || die 'backup directory must have no symlinked parents or dot segments'
+  installation_id=$(read_state "$STATE_DIR/installation-id")
+  if [[ -z $installation_id ]]; then installation_id=$(cat /proc/sys/kernel/random/uuid); fi
+  [[ $installation_id =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || die 'invalid persisted installation id'
+  backup_password=$(read_state "$STATE_DIR/backup-postgres-password")
+  if [[ -z $backup_password ]]; then backup_password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); fi
+  [[ $backup_password =~ ^[a-f0-9]{64}$ ]] || die 'invalid persisted backup PostgreSQL credential'
+  # Never silently adopt another destination or move an existing backup archive.
+  local previous
+  previous=$(read_state "$STATE_DIR/backup-dir")
+  [[ -z $previous || $previous = "$backup_dir" ]] || die 'backup directory differs from installer state; moving backup repositories requires an explicit migration'
+  printf '%s\n' "$installation_id" | write_state "$STATE_DIR/installation-id" 0644
+  printf '%s\n' "$backup_dir" | write_state "$STATE_DIR/backup-dir" 0644
+  printf '%s\n' "$image" | write_state "$STATE_DIR/backup-server-image" 0600
+  printf '%s\n' "$backup_password" | write_state "$STATE_DIR/backup-postgres-password" 0600
+  chown "$server_uid:$server_gid" "$STATE_DIR/backup-postgres-password"
+  # A marker identifies the destination, not the installation: restores may create sibling repositories.
+  if [[ ! -e $backup_dir/.verity-backup-target && ! -L $backup_dir/.verity-backup-target ]]; then
+    marker_tmp=$(mktemp "$backup_dir/.target.XXXXXXXX")
+    printf '%s\n' "$(cat /proc/sys/kernel/random/uuid)" > "$marker_tmp"
+    chmod 0644 "$marker_tmp"
+    mv -T -- "$marker_tmp" "$backup_dir/.verity-backup-target"
+  fi
+  [[ -f $backup_dir/.verity-backup-target && ! -L $backup_dir/.verity-backup-target ]] || die 'invalid backup destination marker'
+  # Only the recipient request is writable by the Server; helper code/configuration remain root-owned.
+  for directory in "$request_dir" "$backup_dir/identity"; do
+    [[ ! -L $directory ]] || die 'backup helper directories must not be symlinks'
+    if [[ -e $directory ]]; then
+      [[ -d $directory && $(stat -c %u "$directory") = 0 ]] || die 'backup helper directories must be root-owned'
+    fi
+  done
+  install -d -o root -g "$server_gid" -m 0770 "$request_dir"
+  install -d -o root -g root -m 0755 "$backup_dir/identity"
+  local libexec unit_dir run_dir
+  libexec="${VERITY_HOST_RUNTIME_LIBEXEC:-/usr/local/libexec/verity}"
+  unit_dir="${VERITY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+  run_dir="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+  install -d -m 0755 -o root -g root "$libexec"
+  install -o root -g root -m 0755 "$repo_root/deploy/host/verity-backup-identity" "$libexec/verity-backup-identity"
+  if command -v systemctl >/dev/null 2>&1 && [[ -d $run_dir ]]; then
+    install -d -m 0755 -o root -g root "$unit_dir"
+    cat > "$unit_dir/verity-backup-identity.service" <<UNIT
+[Unit]
+Description=Encrypt Verity backup CA identity
+After=docker.service
+ConditionPathExists=$request_dir/recipient.json
+[Service]
+Type=oneshot
+Environment=VERITY_STATE_DIR=$STATE_DIR
+Environment=VERITY_BACKUP_IDENTITY_DIR=$request_dir
+ExecStart=$libexec/verity-backup-identity
+NoNewPrivileges=yes
+PrivateTmp=yes
+UNIT
+    cat > "$unit_dir/verity-backup-identity.path" <<UNIT
+[Unit]
+Description=Watch Verity backup recipient and CA identity
+[Path]
+PathChanged=$request_dir/recipient.json
+PathChanged=$STATE_DIR/tls-ca-key.pem
+Unit=verity-backup-identity.service
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now verity-backup-identity.path
+  else
+    note 'Automatic backup identity capture requires systemd; the installed helper can be run manually.'
+  fi
+  # Communicated only inside the installer process; no secret is placed in arguments or logs.
+  VERITY_BACKUP_DIR="$backup_dir"
+  VERITY_BACKUP_IDENTITY_DIR="$request_dir"
+  VERITY_BACKUP_POSTGRES_PASSWORD="$backup_password"
+}
+
+configure_backup_database_role() {
+  local postgres_container=$1 password=$2
+  # Hex-only generated credential, supplied to psql over stdin rather than process arguments.
+  [[ $password =~ ^[a-f0-9]{64}$ ]] || die 'invalid backup database credential'
+  docker exec --interactive "$postgres_container" psql -v ON_ERROR_STOP=1 -U verity -d verity >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'verity_backup') THEN
+    CREATE ROLE verity_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  END IF;
+END \$\$;
+ALTER ROLE verity_backup WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$password';
+ALTER ROLE verity_backup SET default_transaction_read_only = on;
+GRANT CONNECT ON DATABASE verity TO verity_backup;
+GRANT USAGE ON SCHEMA public TO verity_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO verity_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO verity_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE verity IN SCHEMA public GRANT SELECT ON TABLES TO verity_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE verity IN SCHEMA public GRANT SELECT ON SEQUENCES TO verity_backup;
+SQL
+}

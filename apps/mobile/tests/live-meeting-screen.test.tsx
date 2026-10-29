@@ -21,6 +21,8 @@ import {
   loadDraftNote,
   finalizeNote,
   saveNote,
+  updateNote,
+  updateMeetingTitle,
   type MeetingNote,
   type MeetingRecord,
 } from '../lib/liveMeetingStore';
@@ -68,6 +70,8 @@ jest.mock('../lib/liveMeetingStore', () => ({
   listNotes: jest.fn().mockResolvedValue([]),
   loadDraftNote: jest.fn().mockResolvedValue(null),
   saveNote: jest.fn().mockResolvedValue(undefined),
+  updateNote: jest.fn().mockResolvedValue(undefined),
+  updateMeetingTitle: jest.fn().mockResolvedValue(undefined),
   finalizeNote: jest.fn().mockResolvedValue(true),
 }));
 jest.mock('../lib/liveMeetingSync', () => ({
@@ -145,7 +149,7 @@ it('shows a listening state before speech and numbered voices as they are recogn
     return jest.fn();
   });
   render(<MeetingScreen />);
-  expect(await screen.findByText('Listening for voices…')).toBeOnTheScreen();
+  expect(await screen.findByText('No one has spoken yet.')).toBeOnTheScreen();
   act(() =>
     publish({
       ...meeting,
@@ -2264,4 +2268,52 @@ it('preserves the note draft when returning after sending an Ask', async () => {
   );
   fireEvent.press(screen.getByLabelText('Switch to note'));
   expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Keep my note');
+});
+
+it('edits the ended title and a personal note, then searches the transcript', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const ended: MeetingRecord = {
+    id: 'result-edits',
+    sessionId: 'session-1',
+    engine: 'apple-speech',
+    startedAt: 100,
+    endedAt: 200,
+    state: 'ended',
+    transcript: 'Release in Paris. Budget in London.',
+    error: null,
+    ownerToken: 'owner',
+    title: 'Release',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 1 },
+      { speaker: 1, start: 1, end: 2 },
+    ],
+    timedWords: [
+      { text: 'Release in Paris.', start: 0, end: 0.8 },
+      { text: 'Budget in London.', start: 1, end: 1.8 },
+    ],
+    speakerNames: { '0': 'Anna', '1': 'Ben' },
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: ended.id });
+  jest.mocked(listMeetings).mockResolvedValue([ended]);
+  const note = { id: 'personal', meetingId: ended.id, atSeconds: 1, text: 'Check tickets' };
+  jest.mocked(listNotes).mockResolvedValue([note]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Edit meeting title'));
+  const titleReply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof titleReply === 'function') act(() => titleReply('Trip planning'));
+  await waitFor(() => expect(updateMeetingTitle).toHaveBeenCalledWith(ended.id, 'Trip planning'));
+  fireEvent.press(screen.getByLabelText('Edit note: Check tickets'));
+  const noteReply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof noteReply === 'function') act(() => noteReply('Book tickets'));
+  await waitFor(() => expect(updateNote).toHaveBeenCalledWith(note, 'Book tickets'));
+  fireEvent.press(screen.getByLabelText('Open full transcript'));
+  fireEvent.changeText(screen.getByLabelText('Search transcript'), 'Anna');
+  expect(screen.getByText(/Release in Paris/)).toBeOnTheScreen();
+  expect(screen.queryByText(/Budget in London/)).toBeNull();
+  fireEvent.changeText(screen.getByLabelText('Search transcript'), 'London');
+  expect(screen.getByText(/Budget in London/)).toBeOnTheScreen();
+  expect(screen.queryByText(/Release in Paris/)).toBeNull();
+  prompt.mockRestore();
 });

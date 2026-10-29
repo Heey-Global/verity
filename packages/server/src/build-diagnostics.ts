@@ -27,7 +27,11 @@ interface BuildDiagnostic {
 }
 
 /** Redact complete input before bounding it: a cut must not expose a credential prefix. */
-export function sanitizeDiagnostic(text: string, secrets: string[] = []): string {
+export function sanitizeDiagnostic(
+  text: string,
+  secrets: string[] = [],
+  startsAtLineBoundary = false,
+): string {
   let safe = stripVTControlCharacters(text);
   for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) {
     safe = safe.split(secret).join('[REDACTED]');
@@ -35,7 +39,7 @@ export function sanitizeDiagnostic(text: string, secrets: string[] = []): string
       .split(Buffer.from(`x-access-token:${secret}`).toString('base64'))
       .join('[REDACTED]');
   }
-  return redactProcessStderr(safe, process.env);
+  return redactProcessStderr(safe, process.env, { startsAtLineBoundary });
 }
 
 export interface BuildDiagnosticStore {
@@ -105,7 +109,7 @@ export function createBuildDiagnosticStore(
         const raw =
           output ||
           (cause instanceof Error ? cause.message : 'Build failed without captured output');
-        const safe = sanitizeDiagnostic(raw, secrets);
+        const safe = sanitizeDiagnostic(raw, secrets, true);
         const diagnostic: BuildDiagnostic = {
           operationId,
           recordedAt: new Date(now()).toISOString(),
@@ -143,7 +147,7 @@ export function createBuildDiagnosticStore(
           if (info.size > entryBytes) throw new Error('Diagnostic file exceeds limit');
           const record = storedSchema.parse(JSON.parse(await readFile(file, 'utf8')));
           if (record.operationId !== operationId) throw new Error('Diagnostic operation mismatch');
-          return { ...record, text: sanitizeDiagnostic(record.text) };
+          return { ...record, text: sanitizeDiagnostic(record.text, [], true) };
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
           throw error;

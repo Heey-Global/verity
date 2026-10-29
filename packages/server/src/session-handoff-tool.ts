@@ -240,12 +240,18 @@ export interface ControlPlaneSessionToolDeps {
    *  rather than inside it, so it does not inherit that executor's at-most-once fence. The
    *  key is built from the calling turn and the gateway's `invocationId`: the same JSON-RPC
    *  call retried keys the same, a different briefing keys differently, and a deliberate
-   *  repeat from a later turn keys differently too. */
+   *  repeat from a later turn keys differently too.
+   *
+   *  `caller` is the Control turn that sends the briefing. A turn the delivery starts runs for
+   *  that turn's initiating user, so the target's gateway checks judge the person behind the
+   *  handoff; without an initiator an authenticated server refuses every gateway call in it.
+   *  A briefing folded into a running turn is judged as part of that turn. */
   dispatchTurn(input: {
     sessionId: string;
     prompt: string;
     displayPrompt: string;
     idempotencyKey: string;
+    caller: { sessionId: string; turnId: string };
   }): Promise<{ queued: boolean }>;
   /** Create one session in the already-resolved active project. The returned id is the exact
    * target that receives the first turn; no second resolution by name is permitted. */
@@ -738,8 +744,8 @@ export function createControlPlaneSessionTools(
 
       // The envelope leads and nothing caller-controlled precedes it: title and briefing are
       // both agent-written, so both sit inside what it frames. Nothing here carries a
-      // capability or an environment — this is a message, and the target runs it with exactly
-      // the authority it already had.
+      // capability or an environment — this is a message. A turn it starts runs for the user
+      // behind the calling Control turn, whose rights in the target project the gateway checks.
       const prompt = [SESSION_HANDOFF_ENVELOPE, `Title: ${request.title}`, request.briefing].join(
         '\n\n',
       );
@@ -757,6 +763,7 @@ export function createControlPlaneSessionTools(
         // replies key into — the memo is the TARGET session's, and its other writer is a
         // client reply id from the app.
         idempotencyKey: `handoff:${input.turnId}:${input.invocationId}`,
+        caller: { sessionId: input.sessionId, turnId: input.turnId },
         // Same three parts, labelled for a reader instead of for a model: the transcript must
         // not show this as something the operator typed.
         displayPrompt: [

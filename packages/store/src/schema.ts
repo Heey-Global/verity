@@ -638,6 +638,24 @@ export interface SecretKeyMetaTable {
  * NOT a secret column — validated while the store is SEALED, like
  * {@link SecretKeyMetaTable}. `id` is an opaque public handle for revocation.
  */
+interface BackupGitRepositoriesTable {
+  project_id: string;
+  path: string;
+  repo_key: string;
+}
+interface BackupUnassignedGitRepositoriesTable {
+  path: string;
+  repo_key: string;
+}
+interface BackupPolicyTable {
+  id: number;
+  journal_enabled: boolean;
+}
+interface BackupRevocationOutboxTable {
+  id: string;
+  device_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
 export interface AuthTokenTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null | undefined>;
   id: string;
@@ -1582,6 +1600,7 @@ export interface Database {
   attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
+  live_meeting_results: LiveMeetingResultsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;
   live_meeting_commands: LiveMeetingCommandsTable;
@@ -1637,6 +1656,10 @@ export interface Database {
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
+  backup_policy: BackupPolicyTable;
+  backup_revocation_outbox: BackupRevocationOutboxTable;
+  backup_git_repositories: BackupGitRepositoriesTable;
+  backup_unassigned_git_repositories: BackupUnassignedGitRepositoriesTable;
   device_push_tokens: DevicePushTokensTable;
   push_receipts: PushReceiptsTable;
   session_backend_state: SessionBackendStateTable;
@@ -1734,4 +1757,19 @@ interface LiveMeetingInsightsTable {
   evidence_b: string | null;
   source_path: string | null;
   created_at: number;
+}
+
+interface LiveMeetingResultsTable {
+  filed_revision: number | null;
+  meeting_id: string;
+  revision: number;
+  status: 'working' | 'ready' | 'failed';
+  title: string | null;
+  summary: string | null;
+  decisions_json: string;
+  tasks_json: string;
+  open_questions_json: string;
+  model: string | null;
+  created_at: number;
+  updated_at: number;
 }

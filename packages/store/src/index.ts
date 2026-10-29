@@ -220,3 +220,9 @@ export { redactSecrets, redactProcessStderr } from './redact.js';
 export * from './google-accounts.js';
 
 export * from './vulnerability-scan.js';
+
+export type {
+  LiveMeetingResult,
+  LiveMeetingResultItem,
+  LiveMeetingResultTask,
+} from './live-meetings.js';

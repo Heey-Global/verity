@@ -1,7 +1,7 @@
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { Conductor } from '@verity/session';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
@@ -101,6 +101,66 @@ describe('paired device management', () => {
   });
   afterAll(async () => ctx.close());
   beforeEach(async () => truncateAll(ctx.db));
+
+  it('keeps backup setup behind paired-device administrator authority and recovery acceptance', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('backup administrator');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    const headers = { authorization: `Bearer ${device.token}` };
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/api/backups/status',
+            headers: { 'x-user': 'admin' },
+          })
+        ).statusCode,
+      ).toBe(401);
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).json(),
+      ).toEqual({ available: false, reason: 'recovery-validation-pending' });
+      expect(
+        (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
+      ).toBe(503);
+      const probeRoutes = [
+        { method: 'POST' as const, url: '/api/backups/probes' },
+        { method: 'GET' as const, url: `/api/backups/probes/${randomUUID()}` },
+        { method: 'POST' as const, url: `/api/backups/probes/${randomUUID()}/cancel` },
+      ];
+      for (const route of probeRoutes) {
+        expect((await app.inject(route)).statusCode).toBe(401);
+        expect((await app.inject({ ...route, headers })).statusCode).toBe(503);
+      }
+      const admin = vi.spyOn(store, 'isActiveAdministrator').mockResolvedValue(false);
+      try {
+        expect(
+          (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).statusCode,
+        ).toBe(403);
+        expect(
+          (await app.inject({ method: 'POST', url: '/api/backups/setup', headers })).statusCode,
+        ).toBe(403);
+        for (const route of probeRoutes)
+          expect((await app.inject({ ...route, headers })).statusCode).toBe(403);
+      } finally {
+        admin.mockRestore();
+      }
+      for (const route of probeRoutes)
+        expect((await app.inject({ ...route, headers })).statusCode).toBe(503);
+      await registry.revoke(device.id);
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/backups/status', headers })).statusCode,
+      ).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
 
   it('serves the remote descriptor only to a paired device', async () => {
     const store = new EventStore(ctx.db);

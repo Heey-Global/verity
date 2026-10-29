@@ -28,11 +28,15 @@ jest.mock('../lib/automaticUpdates', () =>
 
 import SettingsIndexScreen from '../app/settings/index';
 import {
+  SettingsGroup,
+  SettingsNavRow,
+  SettingsToggleRow,
+} from '../components/settings/SettingsChrome';
+import {
   VERITY_BASE_URL,
   expectPatchClearsNothing,
   makeClient,
   makeSettings,
-  mockCheckForAppUpdate,
   mockCreateVerityClient,
   mockPush,
   mockReplace,
@@ -51,6 +55,43 @@ afterEach(() => {
 });
 
 describe('settings index — destinations', () => {
+  it('groups server access and feature controls under their respective categories', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        auditHealth: jest.fn().mockResolvedValue({ status: 'healthy', pendingFailedWrites: 0 }),
+      }),
+    );
+    const { UNSAFE_getAllByType } = render(<SettingsIndexScreen />);
+    await screen.findByText('Logs');
+
+    const groups = UNSAFE_getAllByType(SettingsGroup);
+    expect(groups.map((group) => group.props.title)).toEqual([
+      'Features',
+      'App & Server',
+      'This app',
+    ]);
+    const expectedRows = [
+      [
+        'Connections',
+        'Tasks',
+        'Meeting transcription',
+        'Vulnerability scan',
+        'Verity Premium',
+        'Verity Control',
+      ],
+      ['Updates', 'Server address', 'Devices & Web Browsers', 'Logs'],
+      ['Show welcome tour again', 'Diagnostics', 'Try demo'],
+    ];
+    groups.forEach((group, index) => {
+      const rows = group.findAll(
+        (node) => node.type === SettingsNavRow || node.type === SettingsToggleRow,
+      );
+      expect(rows.map((row) => row.props.title ?? row.props.label)).toEqual(expectedRows[index]);
+    });
+    expect(screen.queryByText('All changes saved')).toBeNull();
+    expect(screen.queryByLabelText(/^Version /)).toBeNull();
+  });
+
   it('keeps destinations usable while settings are pending', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -60,7 +101,7 @@ describe('settings index — destinations', () => {
     render(<SettingsIndexScreen />);
     fireEvent.press(screen.getByLabelText(/^Manage devices and web browsers(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/devices');
-    expect(screen.getByLabelText(/^Advanced mode(,|$)/)).toBeDisabled();
+    expect(screen.getByLabelText(/^Verity Control(,|$)/)).toBeDisabled();
     expect(screen.queryByText('Needs setup')).toBeNull();
     await act(async () => undefined);
   });
@@ -121,7 +162,7 @@ describe('settings index — destinations', () => {
 
   // Members' devices and Servers without the trail must not see a dead entry; a
   // trail that is losing writes must be visible without opening it.
-  it('shows Audit logs only to administrators and flags lost writes', async () => {
+  it('shows Logs only to administrators and flags lost writes', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     const { unmount } = render(<SettingsIndexScreen />);
     await act(async () => undefined);
@@ -323,7 +364,7 @@ describe('settings index — app-level controls', () => {
     );
     render(<SettingsIndexScreen />);
 
-    fireEvent.press(await screen.findByLabelText(/^Advanced mode(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Verity Control(,|$)/));
 
     await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
     const patch = updateVeritySettings.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -346,7 +387,7 @@ describe('settings index — app-level controls', () => {
     );
     render(<SettingsIndexScreen />);
 
-    const toggle = await screen.findByLabelText(/^Advanced mode(,|$)/);
+    const toggle = await screen.findByLabelText(/^Verity Control(,|$)/);
     fireEvent.press(toggle);
     fireEvent.press(toggle);
 
@@ -354,40 +395,6 @@ describe('settings index — app-level controls', () => {
     expect(toggle).toBeDisabled();
     resolveSave({ ...initial, advancedModeEnabled: true });
     await waitFor(() => expect(toggle).toBeEnabled());
-  });
-
-  it('shows the OTA failure details returned by the update checker', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    const message = 'Update download failed.\n\nNetwork lost\n\nTry again later.';
-    mockCheckForAppUpdate.mockResolvedValue({
-      status: 'failed',
-      phase: 'download',
-      timedOut: false,
-      message,
-    });
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    render(<SettingsIndexScreen />);
-
-    fireEvent(await screen.findByLabelText(/^Version /), 'longPress');
-
-    await waitFor(() => expect(alert).toHaveBeenCalledWith('Update failed', message));
-  });
-
-  it('checks EAS Update when the version is long-pressed', async () => {
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-    mockCheckForAppUpdate.mockResolvedValue('current');
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    render(<SettingsIndexScreen />);
-
-    const version = await screen.findByLabelText(/^Version /);
-    const releaseVersion = String(version.props.accessibilityLabel).replace('Version ', '');
-    fireEvent(version, 'longPress');
-
-    await waitFor(() => expect(mockCheckForAppUpdate).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(alert).toHaveBeenCalledWith('Verity is up to date', releaseVersion));
-    // Only the running app version is in the footer; server diagnostics do not
-    // compete with the release number.
-    expect(screen.queryByText(/Server 9\.9\.9/)).toBeNull();
   });
 });
 

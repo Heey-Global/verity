@@ -1,11 +1,13 @@
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
+});
+beforeEach(async () => {
   await ctx.store.upsertProject({
     id: 'project-1',
     owner: 'acme',
@@ -40,5 +42,25 @@ describe('brokered HTTP consumption store', () => {
     await expect(
       ctx.db.selectFrom('brokered_http_consumptions').select('call_id').execute(),
     ).resolves.toEqual([]);
+  });
+  it('has one concurrent winner and retains the fence across store recreation', async () => {
+    const input = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      requestHash: 'a'.repeat(64),
+    };
+    const stores = [
+      createBrokeredHttpConsumptionStore(ctx.db),
+      createBrokeredHttpConsumptionStore(ctx.db),
+    ];
+    const results = await Promise.all(stores.map((store) => store.consume(input)));
+    expect(results.sort()).toEqual([false, true]);
+    const reopened = createBrokeredHttpConsumptionStore(ctx.db);
+    await expect(reopened.consume(input)).resolves.toBe(false);
+    // Editing an already consumed call cannot turn its identity into fresh permission.
+    await expect(reopened.consume({ ...input, requestHash: 'b'.repeat(64) })).resolves.toBe(false);
+    await expect(reopened.consume({ ...input, callId: 'call-2' })).resolves.toBe(true);
   });
 });
