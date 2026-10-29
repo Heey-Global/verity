@@ -83,7 +83,7 @@ describe('QA admission and durable inbox', () => {
     await coordinator.tick();
     expect(deps.delegate).toHaveBeenCalledWith('a', incident.id, 'sha');
     await coordinator.tick();
-    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+    expect(deps.dispatch).toHaveBeenCalledTimes(2);
     expect(deps.delegate).toHaveBeenCalledTimes(1);
   });
   it('offers a permission card for monitor-only repairs without changing the mandate', async () => {
@@ -184,4 +184,25 @@ describe('QA admission and durable inbox', () => {
       parseQADecision('```qa:decision\n{"summary":"ok","assignments":[],"merge":true}\n```'),
     ).toBeUndefined();
   });
+});
+
+it('reconsiders an assignment after temporary admission failure', async () => {
+  const incident = await enroll();
+  const { deps, coordinator } = harness();
+  await coordinator.tick();
+  await answer(incident);
+  await coordinator.tick();
+  expect(await ctx.store.repairs.qaPending()).toHaveLength(1);
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+});
+it('releases a review claim when session creation fails before dispatch', async () => {
+  await enroll();
+  const { deps, coordinator } = harness();
+  vi.mocked(deps.ensureSession).mockRejectedValueOnce(new Error('provisioning unavailable'));
+  await coordinator.tick();
+  expect((await ctx.store.repairs.qa()).active_dispatch).toBeNull();
+  expect(deps.dispatch).not.toHaveBeenCalled();
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
 });

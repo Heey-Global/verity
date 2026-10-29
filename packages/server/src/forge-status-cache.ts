@@ -113,3 +113,13 @@ export function createForgeStatusCache(now: () => number = Date.now) {
     },
   };
 }
+
+export function selectBranchStatus(
+  values: readonly (PullRequestStatus | null)[],
+  forge: 'github' | 'forgejo',
+): PullRequestStatus | null {
+  const open = values
+    .filter((value): value is PullRequestStatus => value?.phase === 'open')
+    .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0];
+  return open ?? (forge === 'forgejo' ? values.find((value) => value !== null) : values[0]) ?? null;
+}

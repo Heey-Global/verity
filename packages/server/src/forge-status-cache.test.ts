@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createForgeStatusCache } from './forge-status-cache.js';
+import { createForgeStatusCache, selectBranchStatus } from './forge-status-cache.js';
 import type { PullRequestStatus } from './forge-provider.js';
 const id = { authority: 'connection:v1', owner: 'team', repo: 'app' };
 const status: PullRequestStatus = {
@@ -64,4 +64,11 @@ it('disowns a pending response after a repository mutation', async () => {
   const load = vi.fn(() => Promise.resolve(status));
   expect(await cache.read(id, 'x', load)).toMatchObject({ headSha: 'new' });
   expect(load).not.toHaveBeenCalled();
+});
+
+it('preserves the forge-specific fallback when the first branch has no PR', () => {
+  const merged: PullRequestStatus = { ...status, phase: 'merged' };
+  expect(selectBranchStatus([null, merged], 'forgejo')).toBe(merged);
+  expect(selectBranchStatus([null, merged], 'github')).toBeNull();
+  expect(selectBranchStatus([merged, status], 'forgejo')).toBe(status);
 });

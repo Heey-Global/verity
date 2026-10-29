@@ -1,4 +1,8 @@
-import { createForgeStatusCache, type ForgeStatusIdentity } from './forge-status-cache.js';
+import {
+  selectBranchStatus,
+  createForgeStatusCache,
+  type ForgeStatusIdentity,
+} from './forge-status-cache.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
@@ -4765,13 +4769,7 @@ export async function buildEmbeddedServer(
     branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
       const values = [];
       for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
-      return (
-        values
-          .filter((value) => value?.phase === 'open')
-          .sort((a, b) => (b?.updatedAt ?? '').localeCompare(a?.updatedAt ?? ''))[0] ??
-        values[0] ??
-        null
-      );
+      return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
     },
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);

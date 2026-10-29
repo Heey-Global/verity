@@ -1,6 +1,18 @@
+import type { AgentEvent } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import type { EventStore, ProjectRecord, RepairIncident, RepairMandate } from '@verity/store';
 import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
+
+export function repairTurnTerminated(events: readonly { event: AgentEvent }[]): boolean {
+  const latest = [...events]
+    .reverse()
+    .map((row) => row.event)
+    .find((event) => event.t === 'status' || event.t === 'prompt' || event.t === 'interrupted');
+  return (
+    latest?.t === 'interrupted' ||
+    (latest?.t === 'status' && (latest.state === 'completed' || latest.state === 'crashed'))
+  );
+}
 
 export interface RepairDiscovery {
   page: ForgeDiscoveryPage;

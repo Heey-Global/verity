@@ -1,5 +1,5 @@
 import { createQACoordinator } from './qa-coordinator.js';
-import { createRepairSupervisor } from './repair-supervisor.js';
+import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import {
@@ -9996,13 +9996,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
       terminated: async (id) => {
         const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
-        const status = events
-          .map((row) => row.event)
-          .reverse()
-          .find((event) => event.t === 'status' || event.t === 'prompt');
-        return (
-          status?.t === 'status' && (status.state === 'completed' || status.state === 'crashed')
-        );
+        return repairTurnTerminated(events);
       },
       spawn: async (projectId, sessionId) => {
         if (await deps.eventStore.getSession(sessionId)) return;

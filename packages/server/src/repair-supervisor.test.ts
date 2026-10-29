@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import {
   createRepairSupervisor,
+  repairTurnTerminated,
   type RepairDiscovery,
   type RepairSupervisorDeps,
 } from './repair-supervisor.js';
@@ -203,4 +204,30 @@ it('retains ownership after uncertain dispatch even without a local busy marker'
   await supervisor.sweep();
   expect(deps.dispatch).toHaveBeenCalledTimes(1);
   expect((await ctx.store.repairs.incidents('a'))[0]?.owner_session_id).toBeTruthy();
+});
+
+it('recognizes cancellation without mistaking a previous interruption for the current turn', () => {
+  expect(repairTurnTerminated([{ event: { t: 'interrupted' } }])).toBe(true);
+  expect(
+    repairTurnTerminated([
+      { event: { t: 'interrupted' } },
+      { event: { t: 'status', state: 'running' } },
+    ]),
+  ).toBe(false);
+});
+
+it('releases the worker claim on a persisted interruption', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { deps } = harness();
+  deps.terminated = async (id) =>
+    repairTurnTerminated(await ctx.store.listRecentSessionProjectionEvents(id, 20));
+  const supervisor = createRepairSupervisor(deps);
+  await supervisor.sweep();
+  const owned = (await ctx.store.repairs.incidents('a'))[0]!;
+  expect(owned.owner_session_id).toBeTruthy();
+  await ctx.store.appendEvent(owned.owner_session_id!, { t: 'interrupted' });
+  await supervisor.sweep();
+  const finished = (await ctx.store.repairs.incidents('a'))[0]!;
+  expect(finished.owner_session_id).toBeNull();
+  expect(finished.state).toBe('verifying');
 });
