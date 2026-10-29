@@ -102,6 +102,20 @@ describe.skipIf(!adminUrl)('separate-daemon recovery content fixture', () => {
       ]);
       await assertRestoredFiles(root, expected);
       await assertRestoredDatabaseContent(pool, root, expected);
+      await pool.query(
+        "INSERT INTO projects(id,owner,repo,clone_dir,container_name,state,kind) VALUES ('verity-control','verity','control','control','verity-control','active','control_plane')",
+      );
+      await expect(assertRestoredDatabaseContent(pool, root, expected)).rejects.toThrow();
+      const runtime = { runtimeProjectId: 'verity-control' };
+      await assertRestoredDatabaseContent(pool, root, expected, runtime);
+      await pool.query("UPDATE projects SET state='active' WHERE id=$1", [
+        expected.projects[0]!.id,
+      ]);
+      await expect(assertRestoredDatabaseContent(pool, root, expected, runtime)).rejects.toThrow();
+      await pool.query("UPDATE projects SET state='absent' WHERE id=$1", [
+        expected.projects[0]!.id,
+      ]);
+      await assertRestoredDatabaseContent(pool, root, expected, runtime);
     } finally {
       await database.destroy();
       await pool.end();

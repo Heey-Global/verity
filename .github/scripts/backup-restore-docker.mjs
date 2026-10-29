@@ -751,7 +751,9 @@ async function restore() {
     await withCanonicalRestoreClient(
       { docker, root: stateRoot, job, network: restoreDatabaseResources(job).prefix, signal },
       async (client) => {
-        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
+        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent, {
+          runtimeProjectId: CONTROL_PLANE_PROJECT_ID,
+        });
         assert.deepEqual(
           (await client.query('SELECT id FROM auth_tokens ORDER BY id')).rows.map((row) => row.id),
           job.selection.newIdentity ? [] : ['keep-device'],
@@ -1221,7 +1223,9 @@ async function restore() {
         withDatabase: (candidate, bytes, run) =>
           withDatabase(candidate, bytes, async (client) => {
             await run(client);
-            await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
+            await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent, {
+              runtimeProjectId: CONTROL_PLANE_PROJECT_ID,
+            });
             const meta = (await client.query("SELECT salt FROM secret_key_meta WHERE id='global'"))
               .rows[0];
             const stored = (await client.query('SELECT transcribe_api_key FROM verity_settings'))
