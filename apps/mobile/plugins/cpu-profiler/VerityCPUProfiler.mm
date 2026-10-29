@@ -6,8 +6,6 @@
 #include <time.h>
 #include <pthread.h>
 
-using namespace facebook;
-
 // The watchdog and lifecycle stop run on this queue, independently of JS. Never
 // access a jsi::Runtime here: only the process-wide, thread-safe sampler API.
 @interface VerityCPUProfiler : NSObject <RCTBridgeModule, RCTInvalidating>
@@ -67,7 +65,7 @@ RCT_EXPORT_MODULE(VerityCPUProfiler)
   _stopReason = reason;
   _stoppedAt = @([NSDate.date timeIntervalSince1970] * 1000);
   if (_watchdog) { dispatch_source_cancel(_watchdog); _watchdog = nil; }
-  auto *api = jsi::castInterface<hermes::IHermesRootAPI>(hermes::makeHermesRootAPI());
+  auto *api = facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
   if (!api) { _failure = @"Hermes sampling API is unavailable."; return; }
   // Disable before serializing: a delayed JS callback cannot extend sampling.
   api->disableSamplingProfiler();
@@ -109,7 +107,7 @@ RCT_EXPORT_METHOD(start:(NSString *)jsThreadID resolver:(RCTPromiseResolveBlock)
   _startedAt = @([NSDate.date timeIntervalSince1970] * 1000);
   _startedMonotonicUs = @(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000);
   _stoppedMonotonicUs = nil;
-  auto *api = jsi::castInterface<hermes::IHermesRootAPI>(hermes::makeHermesRootAPI());
+  auto *api = facebook::jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
   if (!api) { _failure = @"Hermes sampling API is unavailable."; reject(@"sampler", _failure, nil); return; }
   try { api->enableSamplingProfiler(100); }
   catch (...) { _failure = @"Hermes sampling is unavailable."; reject(@"sampler", _failure, nil); return; }

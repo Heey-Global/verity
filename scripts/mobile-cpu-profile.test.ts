@@ -120,6 +120,29 @@ describe('optimized CPU capture', () => {
     expect(build.profiling.developmentClient).not.toBe(true);
     expect(build.profiling.env.VERITY_CPU_PROFILING).toBe('1');
   });
+  it('compiles the sampler namespace expressions with both namespaces from the pinned Hermes API', () => {
+    const source = readFileSync('apps/mobile/plugins/cpu-profiler/VerityCPUProfiler.mm', 'utf8');
+    const calls = source.match(/auto \*api = .+;/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    // hermes.h declares both namespaces. Compile the actual expressions, not a
+    // copied expression that would keep passing when the native source regresses.
+    const declarations = `namespace hermes {}
+namespace facebook {
+namespace jsi { template<class T> T *castInterface(void *); }
+namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
+}
+`;
+    const imports = (source.match(/^using namespace .+;/gm) ?? []).join('\n');
+    execFileSync('c++', ['-std=c++20', '-fsyntax-only', '-x', 'c++', '-'], {
+      input:
+        declarations +
+        imports +
+        '\nvoid check() {\n' +
+        calls.map((call) => `{ ${call} }`).join('\n') +
+        '\n}',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  });
   it('runs the generated map phase and refreshes its identity on repeated prebuilds', () => {
     const plugin = createRequire(import.meta.url)(
       resolve('apps/mobile/plugins/withCPUProfiling.js'),
