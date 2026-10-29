@@ -4670,51 +4670,6 @@ migrations['0168_audit_events'] = {
   },
 };
 
-migrations['0172_repair_supervision'] = {
-  async up(db: Kysely<unknown>): Promise<void> {
-    await sql`create table repair_mandates (
-      project_id text primary key references projects(id) on delete cascade,
-      sponsor_user_id text not null,
-      mode text not null check (mode in ('off', 'monitor', 'automatic')),
-      revision integer not null default 1,
-      cursor text, health text not null default 'pending', checked_at timestamptz
-    )`.execute(db);
-    await sql`create table repair_incidents (
-      id text primary key, project_id text not null references projects(id) on delete cascade,
-      resource text not null, revision text not null, evidence text not null,
-      state text not null default 'open' check (state in ('open', 'working', 'verifying', 'awaiting_merge', 'resolved', 'superseded', 'blocked')),
-      owner_session_id text, last_session_id text, attempts integer not null default 0,
-      dispatch_id text, updated_at timestamptz not null default now(),
-      unique (project_id, resource, revision)
-    )`.execute(db);
-    await sql`create table repair_workflow_heads (
-      project_id text not null references projects(id) on delete cascade,
-      workflow text not null, run_id bigint not null, primary key (project_id, workflow)
-    )`.execute(db);
-    await sql`create table repair_attempts (
-      dispatch_id text primary key, incident_id text not null references repair_incidents(id) on delete cascade,
-      session_id text not null, started_at timestamptz not null default now(),
-      ended_at timestamptz, outcome text, start_seq bigint
-    )`.execute(db);
-    await sql`create unique index repair_project_owner on repair_incidents(project_id) where owner_session_id is not null`.execute(
-      db,
-    );
-    await sql`create table repair_session_history (
-      project_id text not null references projects(id) on delete cascade,
-      resource text not null, session_id text not null,
-      created_at timestamptz not null default now(),
-      primary key (project_id, resource, session_id)
-    )`.execute(db);
-  },
-  async down(db: Kysely<unknown>): Promise<void> {
-    await sql`drop table repair_session_history`.execute(db);
-    await sql`drop table repair_workflow_heads`.execute(db);
-    await sql`drop table repair_attempts`.execute(db);
-    await sql`drop table repair_incidents`.execute(db);
-    await sql`drop table repair_mandates`.execute(db);
-  },
-};
-
 migrations['0169_live_meeting_results'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table live_meeting_results (
@@ -4883,6 +4838,51 @@ export async function executedSchemaGeneration(db: Kysely<Database>): Promise<st
   const executed = await getExecutedMigrations(db);
   return executed.sort().at(-1) ?? null;
 }
+
+migrations['0172_repair_supervision'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table repair_mandates (
+      project_id text primary key references projects(id) on delete cascade,
+      sponsor_user_id text not null,
+      mode text not null check (mode in ('off', 'monitor', 'automatic')),
+      revision integer not null default 1,
+      cursor text, health text not null default 'pending', checked_at timestamptz
+    )`.execute(db);
+    await sql`create table repair_incidents (
+      id text primary key, project_id text not null references projects(id) on delete cascade,
+      resource text not null, revision text not null, evidence text not null,
+      state text not null default 'open' check (state in ('open', 'working', 'verifying', 'awaiting_merge', 'resolved', 'superseded', 'blocked')),
+      owner_session_id text, last_session_id text, attempts integer not null default 0,
+      dispatch_id text, updated_at timestamptz not null default now(),
+      unique (project_id, resource, revision)
+    )`.execute(db);
+    await sql`create table repair_workflow_heads (
+      project_id text not null references projects(id) on delete cascade,
+      workflow text not null, run_id bigint not null, primary key (project_id, workflow)
+    )`.execute(db);
+    await sql`create table repair_attempts (
+      dispatch_id text primary key, incident_id text not null references repair_incidents(id) on delete cascade,
+      session_id text not null, started_at timestamptz not null default now(),
+      ended_at timestamptz, outcome text, start_seq bigint
+    )`.execute(db);
+    await sql`create unique index repair_project_owner on repair_incidents(project_id) where owner_session_id is not null`.execute(
+      db,
+    );
+    await sql`create table repair_session_history (
+      project_id text not null references projects(id) on delete cascade,
+      resource text not null, session_id text not null,
+      created_at timestamptz not null default now(),
+      primary key (project_id, resource, session_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table repair_session_history`.execute(db);
+    await sql`drop table repair_workflow_heads`.execute(db);
+    await sql`drop table repair_attempts`.execute(db);
+    await sql`drop table repair_incidents`.execute(db);
+    await sql`drop table repair_mandates`.execute(db);
+  },
+};
 
 migrations['0173_qa_coordinator'] = {
   async up(db: Kysely<unknown>): Promise<void> {
