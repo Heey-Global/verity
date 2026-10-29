@@ -196,7 +196,16 @@ export class ProjectEgressHost {
         record.retired = true;
         await this.save();
         // A failed stop leaves a permanent deny fence and cannot reactivate.
-        for (const id of containerIds(record)) await this.deps.stopContainer(id);
+        const stopped = await Promise.allSettled(
+          containerIds(record).map((id) =>
+            Promise.resolve().then(() => this.deps.stopContainer(id)),
+          ),
+        );
+        const failures = stopped.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason as unknown] : [],
+        );
+        if (failures.length)
+          throw new AggregateError(failures, 'Generation retired; container stop failed');
         return { state: 'retired', generation: record.binding.generation };
       }
       if (record.retired) throw new Error('Retired generation');
@@ -238,6 +247,7 @@ export class ProjectEgressHost {
             ),
           ],
           'Host start failed; containment attempted',
+          { cause: error },
         );
       }
       return { state: 'started-denied', generation: record.binding.generation };

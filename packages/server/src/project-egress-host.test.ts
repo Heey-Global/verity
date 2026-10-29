@@ -266,3 +266,22 @@ it('still stops a mismatched started container when restoring the firewall also 
   await expect(host.execute(start)).rejects.toThrow('containment attempted');
   expect(deps.stopContainer).toHaveBeenCalledWith(id);
 });
+
+it('attempts every registered stop even when one container has disappeared', async () => {
+  const { host, deps } = fixture();
+  await host.execute({ operation: 'register', binding });
+  await host.execute(start);
+  const relay = 'c'.repeat(64);
+  await host.execute({ ...start, role: 'relay', containerId: relay });
+  deps.stopContainer.mockRejectedValueOnce(new Error('container missing'));
+  await expect(
+    host.execute({
+      operation: 'retire',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).rejects.toThrow('container stop failed');
+  expect(deps.stopContainer).toHaveBeenCalledWith(id);
+  expect(deps.stopContainer).toHaveBeenCalledWith(relay);
+  await expect(host.execute(start)).rejects.toThrow('Retired');
+});
