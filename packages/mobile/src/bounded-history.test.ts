@@ -34,6 +34,28 @@ describe('bounded history contract', () => {
     await expect(client.getBoundedHistory('s')).rejects.toThrow('Update Core');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it('reports a missing session without suggesting a Core update', async () => {
+    const { client, fetch } = clientFor({ error: 'session s not found' }, 404);
+    await expect(client.getBoundedHistory('s')).rejects.toThrow(
+      'This session no longer exists. Return to the session list.',
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([401, 403, 503])('preserves HTTP %i errors', async (status) => {
+    const { client, fetch } = clientFor({ error: 'server rejected history' }, status);
+    await expect(client.getBoundedHistory('s')).rejects.toMatchObject({
+      status,
+      message: 'server rejected history',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('preserves network failures', async () => {
+    const failure = new TypeError('Network request failed');
+    const { client, fetch } = clientFor(page);
+    fetch.mockRejectedValueOnce(failure);
+    await expect(client.getBoundedHistory('s')).rejects.toBe(failure);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('rejects a response without explicit contract support', async () => {
     const { client } = clientFor({ events: page.events, hasMore: false });
     await expect(client.getBoundedHistory('s')).rejects.toThrow();
