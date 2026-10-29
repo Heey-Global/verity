@@ -1,16 +1,23 @@
+import { request } from 'node:http';
 import assert from 'node:assert/strict';
+import {
+  seedRestoreContent,
+  assertRestoredFiles,
+  assertRestoredDatabaseContent,
+} from './backup-restore-content.mjs';
+import { certificatePin, pinnedApi, verifyPairingProof } from './backup-restore-device-trust.mjs';
 import { formatRestoreFailure, formatRestoreLog } from './backup-restore-diagnostics.mjs';
 import { execFile } from 'node:child_process';
 import {
   createHash,
+  createPublicKey,
   generateKeyPairSync,
   randomBytes,
   randomUUID,
   sign,
   verify,
 } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { request as httpsRequest } from 'node:https';
+import { appendFile, cp, mkdir, readFile, writeFile, stat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,13 +29,23 @@ import {
   deriveKeyFromPassword,
   createKeyVerifier,
   createSecretCipher,
+  createSealableSecretCipher,
 } from '/app/packages/store/dist/index.js';
 import { createDockerClient } from '/app/packages/server/dist/docker.js';
+import { CONTROL_PLANE_PROJECT_ID } from '/app/packages/server/dist/control-plane-project.js';
 import { captureInstallation } from '/app/packages/server/dist/backup/capture.js';
+import { readCaptureInventory } from '/app/packages/server/dist/backup/inventory.js';
 import { writeBackupIdentityFixture } from '/app/packages/server/dist/backup/testing.js';
 import { generateBackupKeys, recoverHostKeys } from '/app/packages/server/dist/backup/crypto.js';
 import { BackupDestination } from '/app/packages/server/dist/backup/destination.js';
-import { BackupRepository } from '/app/packages/server/dist/backup/repository.js';
+import { openCaIdentityReceipt } from '/app/packages/server/dist/backup/identity-receipt.js';
+import { BackupRepository, readSnapshot } from '/app/packages/server/dist/backup/repository.js';
+import { maintainBackupGenerations } from '/app/packages/server/dist/backup/generation-maintenance.js';
+import { RESTORE_EPHEMERAL_TABLES } from '/app/packages/server/dist/backup/restore-database.js';
+import { probeSnapshot } from '/app/packages/server/dist/backup/probe.js';
+import { createProbeDatabase } from '/app/packages/server/dist/backup/probe-database.js';
+import { stageSnapshot } from '/app/packages/server/dist/backup/staging.js';
+import { prepareRestoredGit } from '/app/packages/server/dist/backup/restore-git.js';
 import { BackupLifecycleCoordinator } from '/app/packages/server/dist/backup/lifecycle.js';
 import { BackupRevocationJournal } from '/app/packages/server/dist/backup/revocations.js';
 import { InstallerRestoreJob } from '/app/packages/server/dist/backup/restore-job.js';
@@ -53,6 +70,51 @@ const stateRoot = join(hostRoot, 'restore');
 const action = process.argv[2];
 assert.equal(process.arch, 'x64');
 const signal = new AbortController().signal;
+
+async function activeServers() {
+  const result = [];
+  for (const container of await docker.listContainers())
+    if (
+      (container.labels?.['verity.managed-role'] === 'server' ||
+        container.labels?.['com.docker.compose.service'] === 'verity') &&
+      (await docker.inspectContainer(container.id)).running
+    )
+      result.push(container);
+  return result;
+}
+
+async function destinationFull() {
+  // The shell harness supplies a private 4 MiB tmpfs. Never exhaust host storage.
+  const destinationRoot = join(root, 'enospc');
+  const { host } = await generateBackupKeys();
+  const repository = new BackupRepository(
+    destinationRoot,
+    join(destinationRoot, 'state'),
+    `${randomUUID()}-r1`,
+    host,
+  );
+  await repository.initialize();
+  let failed = false;
+  try {
+    await repository.capture(
+      (async function* () {
+        yield {
+          path: 'workspace/payload',
+          mode: 0o600,
+          source: (async function* () {
+            for (let i = 0; i < 16; i++) yield randomBytes(512 * 1024);
+          })(),
+        };
+      })(),
+      { release: 'acceptance', schema: 1, capturedAt: new Date().toISOString() },
+    );
+  } catch (error) {
+    assert.equal(error.code, 'ENOSPC');
+    failed = true;
+  }
+  assert.equal(failed, true, 'private destination must actually report ENOSPC');
+  assert.deepEqual(await readdir(join(repository.root, 'snapshots')), []);
+}
 
 async function capture() {
   const labels = await docker.inspectImageLabels(image);
@@ -89,30 +151,15 @@ async function capture() {
   const schema = (await pool.query('SELECT name FROM kysely_migration ORDER BY name DESC LIMIT 1'))
     .rows[0].name;
   const source = join(root, 'original');
-  const project = join(source, 'workspaces/project');
-  const worktree = join(source, 'sessions/project/session');
-  await mkdir(project, { recursive: true });
-  await mkdir(join(source, 'sessions/project'), { recursive: true });
-  await mkdir(join(source, 'knowledge'), { recursive: true });
-  await writeFile(join(project, 'tracked'), 'recovered Git history');
-  const env = {
-    ...process.env,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_AUTHOR_NAME: 'Recovery acceptance',
-    GIT_COMMITTER_NAME: 'Recovery acceptance',
-    GIT_AUTHOR_EMAIL: 'recovery@example.invalid',
-    GIT_COMMITTER_EMAIL: 'recovery@example.invalid',
-  };
-  await exec('git', ['init', project], { env });
-  await exec('git', ['-C', project, 'add', '.'], { env });
-  await exec('git', ['-C', project, 'commit', '-m', 'Recovery fixture'], { env });
-  await exec('git', ['-C', project, 'worktree', 'add', '-b', 'session', worktree], { env });
-  await writeFile(join(project, '.env'), 'synthetic private worktree data');
-  await writeFile(join(worktree, 'uncommitted'), 'session worktree data');
-  await writeFile(join(source, 'knowledge/insight.md'), 'durable recovery knowledge');
+  const expectedContent = await seedRestoreContent(source, pool);
   const masterPassword = randomBytes(32).toString('base64url');
   const token = randomBytes(32).toString('base64url');
+  const deniedTokens = Object.fromEntries(
+    ['outbox-device', 'late-device', 'reviewed-late-device', 'unreviewed-device'].map((id) => [
+      id,
+      randomBytes(32).toString('base64url'),
+    ]),
+  );
   const salt = generateSalt();
   const key = await deriveKeyFromPassword(masterPassword, salt);
   await pool.query("INSERT INTO secret_key_meta(id,salt,verifier) VALUES ('global',$1,$2)", [
@@ -120,16 +167,15 @@ async function capture() {
     createKeyVerifier(key),
   ]);
   await pool.query(
-    "INSERT INTO projects(id,owner,repo,container_name,state,kind) VALUES ('recovery-project','fixture','project','old-project','active','local')",
-  );
-  await pool.query(
-    "INSERT INTO sessions(session_id,worktree,model,project_id) VALUES ('recovery-session',$1,'fixture','recovery-project')",
-    [worktree],
-  );
-  await pool.query(
     "INSERT INTO auth_tokens(id,token_hash) VALUES ('keep-device',$1),('outbox-device','outbox-hash'),('late-device','late-hash'),('reviewed-late-device','reviewed-late-hash')",
     [createHash('sha256').update(token).digest('hex')],
   );
+  for (const [id, credential] of Object.entries(deniedTokens)) {
+    await pool.query(
+      'INSERT INTO auth_tokens(id,token_hash) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET token_hash=excluded.token_hash',
+      [id, createHash('sha256').update(credential).digest('hex')],
+    );
+  }
   await pool.query(
     "INSERT INTO backup_revocation_outbox(id,device_id) VALUES ('before-capture','outbox-device'); INSERT INTO running_turns(session_id,prompt_seq) VALUES ('recovery-session',1)",
   );
@@ -140,6 +186,22 @@ async function capture() {
   const keys = await generateBackupKeys();
   const installationId = randomUUID();
   await writeBackupIdentityFixture(join(root, 'original-identity'), keys.host, installationId);
+  const originalIdentityKey = createPublicKey(
+    await readFile(join(root, 'original-identity/identity/pairing-identity.pem')),
+  )
+    .export({ format: 'der', type: 'spki' })
+    .toString('base64url');
+  const originalTrust = {
+    pin: certificatePin(await readFile(join(root, 'original-identity/identity/tls-cert.pem'))),
+    identityKey: originalIdentityKey,
+    serverId:
+      'srv_' +
+      createHash('sha256')
+        .update('verity.device-pairing.v1.server-id\0' + originalIdentityKey)
+        .digest()
+        .subarray(0, 16)
+        .toString('base64url'),
+  };
   const targetId = randomUUID();
   await mkdir(join(root, 'backup'));
   await writeFile(join(root, 'backup/.verity-backup-target'), targetId);
@@ -171,24 +233,28 @@ async function capture() {
     destination,
     lifecycle: new BackupLifecycleCoordinator(),
     signal,
-    inventory: async () => ({
-      activeTurns: ['recovery-session'],
-      projects: [
-        {
-          id: 'recovery-project',
-          state: 'active',
-          archived: false,
-          paths: ['workspaces/project', 'sessions/project/session'],
-          warnings: [],
-        },
-      ],
-    }),
+    inventory: (client) => readCaptureInventory(client, source, schema),
     repoKey: async (_project, path) => {
       if (!repoKeys.has(path)) repoKeys.set(path, randomUUID());
       return repoKeys.get(path);
     },
   };
-  const manifest = await captureInstallation(captureOptions);
+  // A fresh process has no unlocked master cipher or recovery key in its inputs.
+  const restartState = {
+    url,
+    source,
+    targetId,
+    repository,
+    host: keys.host,
+    installationId,
+    schema,
+  };
+  assert.equal('masterPassword' in restartState || 'recoveryKey' in restartState, false);
+  await writeFile(join(root, 'sealed-capture-state'), JSON.stringify(restartState), {
+    mode: 0o600,
+  });
+  await exec(process.execPath, [process.argv[1], 'capture-sealed']);
+  const manifest = JSON.parse(await readFile(join(root, 'sealed-capture-result'), 'utf8'));
   // A real second image lacks recovery capability but has valid signed release evidence.
   const unsupportedTag = 'ghcr.io/heey-global/verity/verity-server:restore-unsupported';
   const dockerfile = join(root, 'Unsupported.Dockerfile');
@@ -253,9 +319,12 @@ async function capture() {
   await writeFile(
     join(root, 'input'),
     JSON.stringify({
+      expectedContent,
       recoveryKey: keys.recoveryKey,
       masterPassword,
       token,
+      deniedTokens,
+      originalTrust,
       installationId,
       repository,
       sequence: manifest.sequence,
@@ -275,6 +344,54 @@ async function capture() {
   await pool.end();
   await destination.close();
   console.log('Actual capture fixture and post-capture revocation published.');
+}
+
+async function captureSealed() {
+  const state = JSON.parse(await readFile(join(root, 'sealed-capture-state'), 'utf8'));
+  assert.equal('recoveryKey' in state || 'masterPassword' in state, false);
+  const sealed = createSealableSecretCipher();
+  assert.equal(sealed.isSealed(), true);
+  const pool = new pg.Pool({ connectionString: state.url, max: 1 });
+  const destination = await BackupDestination.open(join(root, 'backup'), state.targetId);
+  try {
+    const settings = (await pool.query('SELECT transcribe_api_key FROM verity_settings')).rows[0];
+    assert.throws(() => sealed.decrypt(settings.transcribe_api_key));
+    const repository = new BackupRepository(
+      destination.path,
+      join(root, 'original-index'),
+      state.repository,
+      state.host,
+      destination,
+    );
+    const repoKeys = new Map();
+    const manifest = await captureInstallation({
+      root: state.source,
+      identityRoot: join(root, 'original-identity/identity'),
+      caCiphertext: join(root, 'original-identity/ca.age'),
+      installationId: state.installationId,
+      keyGeneration: 1,
+      image,
+      release: '99.0.0',
+      schema: state.schema,
+      architecture: 'amd64',
+      kind: 'manual',
+      connect: () => pool.connect(),
+      repository,
+      destination,
+      lifecycle: new BackupLifecycleCoordinator(),
+      signal,
+      inventory: (client) => readCaptureInventory(client, state.source, state.schema),
+      repoKey: async (_project, path) => {
+        if (!repoKeys.has(path)) repoKeys.set(path, randomUUID());
+        return repoKeys.get(path);
+      },
+    });
+    assert.equal(sealed.isSealed(), true);
+    await writeFile(join(root, 'sealed-capture-result'), JSON.stringify(manifest), { mode: 0o600 });
+  } finally {
+    await pool.end();
+    await destination.close();
+  }
 }
 
 async function restore() {
@@ -475,6 +592,20 @@ async function restore() {
   ) {
     await assert.rejects(manager.advance(job.id, input.recoveryKey, signal));
     assert.equal((await manager.status()).phase, 'verifying');
+  } else if (action === 'retired-identity') {
+    job = await manager.begin({
+      source: join(root, 'backup'),
+      repository: input.repository,
+      sequence: input.sequence,
+      kind: 'manual',
+      newIdentity: false,
+    });
+    await assert.rejects(
+      manager.advance(job.id, input.recoveryKey, signal),
+      /identity was retired/,
+    );
+    assert.equal((await manager.status()).phase, 'verifying');
+    await manager.abort(job.id, signal);
   } else if (action === 'advance') job = await manager.advance(job.id, input.recoveryKey, signal);
   else if (action === 'abort') job = await manager.abort(job.id, signal);
   else if (action === 'wrong-key')
@@ -483,7 +614,126 @@ async function restore() {
     await assert.rejects(
       reviewRestoreDevices({ root: stateRoot, jobId: job.id, masterPassword: 'wrong' }),
     );
-  else if (action === 'review')
+  else if (action === 'inspect-missing-history') {
+    const inventory = await reviewRestoreDevices({
+      root: stateRoot,
+      jobId: job.id,
+      masterPassword: input.masterPassword,
+    });
+    assert.ok(inventory.findings.includes('revocation-journal-missing'));
+    const review = JSON.parse(
+      await readFile(join(stateRoot, job.id, 'trial/device-review'), 'utf8'),
+    );
+    assert.equal(review.status, 'pending');
+    assert.deepEqual(review.keptIds, []);
+    assert.ok(review.devices.includes('keep-device'));
+  } else if (action === 'assert-prerequisites') {
+    const state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+    const marker = (await readFile(join(root, 'new-backups/.verity-backup-target'), 'utf8')).trim();
+    const installationId = (await readFile(join(hostRoot, 'installation-id'), 'utf8')).trim();
+    assert.equal(state.installationId, installationId);
+    assert.equal(state.targetId, marker);
+    const credentialHash = createHash('sha256')
+      .update(await readFile(join(hostRoot, 'backup-postgres-password')))
+      .digest('hex');
+    const active = await activeServers();
+    assert.equal(active.length, 1);
+    const raw = JSON.parse((await exec('docker', ['inspect', active[0].id])).stdout)[0];
+    for (const path of ['/run/verity-backups', '/run/verity-backup-identity']) {
+      const mount = raw.Mounts.find((mount) => mount.Destination === path);
+      assert.ok(mount?.RW, 'paired writable backup mounts required');
+    }
+    const current = { marker, installationId, credentialHash };
+    const path = join(root, 'prerequisites-baseline');
+    if (await exists(path)) assert.deepEqual(current, JSON.parse(await readFile(path, 'utf8')));
+    else await writeFile(path, JSON.stringify(current), { mode: 0o600 });
+  } else if (action === 'trial-surfaces') {
+    assert.equal(job.phase, 'trial');
+    const socketPath = join(stateRoot, job.id, 'trial/trial.sock');
+    const call = (path, body, token) =>
+      new Promise((resolve, reject) => {
+        const req = request(
+          {
+            socketPath,
+            path,
+            method: body === undefined ? 'GET' : 'POST',
+            timeout: 5000,
+            headers: {
+              'content-type': 'application/json',
+              ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+          },
+          (response) => {
+            const chunks = [];
+            let size = 0;
+            response.on('data', (chunk) => {
+              size += chunk.length;
+              if (size > 16384) req.destroy(new Error('oversized trial response'));
+              else chunks.push(chunk);
+            });
+            response.on('error', reject);
+            response.on('end', () =>
+              resolve({
+                status: response.statusCode,
+                body: JSON.parse(Buffer.concat(chunks).toString()),
+              }),
+            );
+          },
+        );
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error('trial request timeout')));
+        req.end(body === undefined ? undefined : JSON.stringify(body));
+      });
+    assert.equal((await call('/health')).status, 200);
+    assert.equal((await call('/recovery/devices')).status, 401);
+    const authenticated = await call('/recovery/authenticate', { password: input.masterPassword });
+    assert.equal(authenticated.status, 200);
+    const token = authenticated.body.token;
+    assert.equal(typeof token, 'string');
+    assert.equal((await call('/recovery/devices', undefined, token)).status, 200);
+    for (const path of [
+      '/projects',
+      '/projects/recovery-project/wake',
+      '/sessions/session-active/turns',
+      '/pair/enroll',
+      '/devices/pairing-invitations',
+      '/server/updates',
+      '/api/backups/setup',
+      '/preview/stale-capability',
+      '/internal/jobs',
+      '/live/ticket',
+    ]) {
+      for (const body of [undefined, {}]) assert.equal((await call(path, body, token)).status, 404);
+    }
+    assert.equal((await call('/health')).status, 200);
+    const trial = (await docker.listContainers()).find(
+      (container) =>
+        container.labels?.['verity.restore-job'] === job.id &&
+        container.labels?.['verity.restore-role'] === 'trial',
+    );
+    // Find by command as well: an absent restricted process must never count as a denied request.
+    const all = JSON.parse(
+      (
+        await exec('docker', [
+          'inspect',
+          ...(await docker.listContainers())
+            .filter((container) => container.labels?.['verity.restore-job'] === job.id)
+            .map((container) => container.id),
+        ])
+      ).stdout,
+    );
+    const runtime = all.find((container) => container.Config.Cmd?.includes('backup-restore-trial'));
+    assert.ok(runtime ?? trial, 'live restricted trial process required');
+    assert.equal(runtime.HostConfig.ReadonlyRootfs, true);
+    assert.deepEqual(runtime.HostConfig.PortBindings ?? {}, {});
+    assert.ok(runtime.HostConfig.CapDrop.includes('ALL'));
+    assert.equal(
+      runtime.Mounts.some((mount) =>
+        /docker.sock|verity-backups|backup-identity/.test(mount.Destination),
+      ),
+      false,
+    );
+  } else if (action === 'review')
     await reviewRestoreDevices({
       root: stateRoot,
       jobId: job.id,
@@ -492,26 +742,7 @@ async function restore() {
     });
   else if (action === 'assert-restored') {
     assert.equal(job.phase, 'promoted');
-    assert.equal(
-      await readFile('/restore-live/workspaces/project/.env', 'utf8'),
-      'synthetic private worktree data',
-    );
-    assert.equal(
-      await readFile('/restore-live/sessions/project/session/uncommitted', 'utf8'),
-      'session worktree data',
-    );
-    assert.equal(
-      await readFile('/restore-live/knowledge/insight.md', 'utf8'),
-      'durable recovery knowledge',
-    );
-    await exec('git', [
-      '-c',
-      'safe.directory=*',
-      '-C',
-      '/srv/verity/sessions/project/session',
-      'status',
-      '--porcelain',
-    ]);
+    await assertRestoredFiles('/srv/verity', input.expectedContent);
     const ca = await readFile(join(hostRoot, 'tls-ca-cert.pem'));
     assert.equal(ca.equals(Buffer.from(input.ca, 'base64')), !job.selection.newIdentity);
     assert.notEqual(
@@ -521,6 +752,7 @@ async function restore() {
     await withCanonicalRestoreClient(
       { docker, root: stateRoot, job, network: restoreDatabaseResources(job).prefix, signal },
       async (client) => {
+        await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent);
         assert.deepEqual(
           (await client.query('SELECT id FROM auth_tokens ORDER BY id')).rows.map((row) => row.id),
           job.selection.newIdentity ? [] : ['keep-device'],
@@ -570,7 +802,204 @@ async function restore() {
     }
     for (const container of previous.containers)
       assert.equal((await docker.inspectContainer(container.id)).running, container.running);
-  } else if (action === 'verify-api') {
+  } else if (action === 'prepare-exposure-original' || action === 'prepare-exposure') {
+    const current = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+    if (action === 'prepare-exposure-original') {
+      const certificate = await stat(join(hostRoot, 'tls-ca-cert.pem'));
+      assert.equal(
+        certificate.uid,
+        0,
+        'the privileged helper requires a root-owned CA certificate',
+      );
+      assert.equal(certificate.mode & 0o777, 0o644);
+      await mkdir(join(root, 'identity-requests'), { recursive: true, mode: 0o700 });
+      await writeFile(
+        join(root, 'identity-requests/recipient.json'),
+        JSON.stringify({
+          recipient: current.host.recipient,
+          keyGeneration: current.keyGeneration,
+        }),
+        { mode: 0o600 },
+      );
+      return;
+    }
+    openCaIdentityReceipt(
+      await readFile(
+        join(
+          root,
+          'new-backups/identity',
+          `${current.installationId}-ca-key-k${current.keyGeneration}`,
+        ),
+      ),
+      await readFile(join(hostRoot, 'tls-ca-cert.pem')),
+      current.installationId,
+      current.keyGeneration,
+      current.host.recipient,
+    );
+    const replacement = await generateBackupKeys();
+    await mkdir(join(root, 'identity-requests'), { recursive: true, mode: 0o700 });
+    const request = {
+      recipient: replacement.host.recipient,
+      keyGeneration: current.keyGeneration + 1,
+      retireGeneration: current.keyGeneration,
+    };
+    await writeFile(join(root, 'identity-requests/recipient.json'), JSON.stringify(request), {
+      mode: 0o600,
+    });
+    await writeFile(
+      join(root, 'exposure-public-state'),
+      JSON.stringify({ installationId: current.installationId, request }),
+      { mode: 0o600 },
+    );
+    await writeFile(join(root, 'new-backups/identity/unrelated-sentinel'), 'preserve-unrelated');
+  } else if (action === 'assert-exposure') {
+    const exposure = JSON.parse(await readFile(join(root, 'exposure-public-state'), 'utf8'));
+    const directory = join(root, 'new-backups/identity');
+    assert.equal(
+      await exists(
+        join(directory, `${exposure.installationId}-ca-key-k${exposure.request.retireGeneration}`),
+      ),
+      false,
+    );
+    assert.equal(
+      await readFile(join(directory, 'unrelated-sentinel'), 'utf8'),
+      'preserve-unrelated',
+    );
+    assert.ok(
+      (
+        await readFile(
+          join(
+            directory,
+            `${exposure.installationId}-ca-retired-k${exposure.request.retireGeneration}`,
+          ),
+        )
+      ).length > 0,
+    );
+    const receipt = await readFile(
+      join(directory, `${exposure.installationId}-ca-key-k${exposure.request.keyGeneration}`),
+    );
+    openCaIdentityReceipt(
+      receipt,
+      await readFile(join(hostRoot, 'tls-ca-cert.pem')),
+      exposure.installationId,
+      exposure.request.keyGeneration,
+      exposure.request.recipient,
+    );
+  } else if (action === 'owned-maintenance' || action === 'verify-owned-unchanged') {
+    const digestTree = async (directory) => {
+      const hash = createHash('sha256');
+      const visit = async (path, relative = '') => {
+        for (const name of (await readdir(path)).sort()) {
+          const child = join(path, name);
+          const info = await stat(child);
+          hash.update(relative + '/' + name + '\0');
+          if (info.isDirectory()) await visit(child, relative + '/' + name);
+          else hash.update(await readFile(child));
+        }
+      };
+      await visit(directory);
+      return hash.digest('hex');
+    };
+    const backup = join(root, 'new-backups');
+    if (action === 'verify-owned-unchanged') {
+      const previous = JSON.parse(await readFile(join(root, 'ownership-result'), 'utf8'));
+      assert.equal(await digestTree(backup), previous.destinationDigest);
+      assert.equal(await digestTree(join(root, 'backup')), previous.sourceDigest);
+      await assertRestoredFiles('/srv/verity', input.expectedContent);
+      return;
+    }
+    const state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+    assert.notEqual(state.installationId, input.installationId);
+    const sourceDigest = await digestTree(join(root, 'backup'));
+    // Foreign generations share the destination, so an over-broad collector can damage them.
+    const foreign = new Map();
+    for (const directory of [join(root, 'backup/repositories'), join(root, 'peer-repositories')]) {
+      if (!(await exists(directory))) continue;
+      for (const name of await readdir(directory)) {
+        assert.ok(!name.startsWith(state.installationId + '-r'));
+        const target = join(backup, 'repositories', name);
+        if (foreign.has(target)) {
+          assert.equal(await digestTree(join(directory, name)), foreign.get(target));
+          continue;
+        }
+        await cp(join(directory, name), target, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        });
+        foreign.set(target, await digestTree(target));
+      }
+    }
+    assert.ok(foreign.size > 0);
+    const destination = await BackupDestination.open(backup, state.targetId);
+    try {
+      const repository = new BackupRepository(
+        backup,
+        '/srv/verity/backup-state',
+        `${state.installationId}-r${state.repositoryNumber}`,
+        state.host,
+        destination,
+      );
+      for (let index = 0; index < 12; index++) {
+        await repository.capture(
+          (async function* () {
+            yield {
+              path: 'workspace/ownership',
+              mode: 0o600,
+              source: (async function* () {
+                yield Buffer.from(state.installationId + '/' + index);
+              })(),
+            };
+          })(),
+          {
+            release: 'ownership-acceptance',
+            schema: 1,
+            capturedAt: new Date(Date.UTC(2025, index, 1)).toISOString(),
+          },
+        );
+      }
+      const before = await readdir(join(repository.root, 'snapshots'));
+      const beforeObjects = (await readdir(join(repository.root, 'objects'))).length;
+      const maintenanceNow = Date.now();
+      await maintainBackupGenerations(
+        '/srv/verity/backup-state',
+        destination,
+        state,
+        maintenanceNow,
+      );
+      await maintainBackupGenerations(
+        '/srv/verity/backup-state',
+        destination,
+        state,
+        maintenanceNow + 2 * 24 * 3600_000,
+      );
+      const after = await readdir(join(repository.root, 'snapshots'));
+      assert.ok(after.length > 0 && after.length < before.length, 'retention must actually prune');
+      assert.ok(
+        (await readdir(join(repository.root, 'objects'))).length < beforeObjects,
+        'GC must actually collect unreferenced objects after grace',
+      );
+      for (const [directory, digest] of foreign) assert.equal(await digestTree(directory), digest);
+      assert.equal(await digestTree(join(root, 'backup')), sourceDigest);
+      await assertRestoredFiles('/srv/verity', input.expectedContent);
+      await writeFile(
+        join(root, 'ownership-result'),
+        JSON.stringify({
+          installationId: state.installationId,
+          repository: `${state.installationId}-r${state.repositoryNumber}`,
+          sourceDigest,
+          destinationDigest: await digestTree(backup),
+        }),
+        { mode: 0o600 },
+      );
+    } finally {
+      await destination.close();
+    }
+  } else if (
+    ['verify-api', 'verify-rotated-api', 'verify-backup-gate', 'verify-enabled-restart'].includes(
+      action,
+    )
+  ) {
     const previous = JSON.parse(
       await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),
     ).previous;
@@ -592,48 +1021,359 @@ async function restore() {
       .map((network) => network.ipAddress)
       .find(Boolean);
     const ca = await readFile(join(hostRoot, 'tls-ca-cert.pem'));
-    const api = (path, body, token = input.token) =>
-      new Promise((resolve, reject) => {
-        const bytes = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-        const req = httpsRequest(
-          {
-            hostname: address,
-            port: 8082,
-            servername: 'localhost',
-            ca,
-            path,
-            method: bytes ? 'POST' : 'GET',
-            timeout: 30000,
-            headers: {
-              Authorization: 'Bearer ' + token,
-              ...(bytes
-                ? { 'Content-Type': 'application/json', 'Content-Length': bytes.length }
-                : {}),
-            },
-          },
-          (response) => {
-            const chunks = [];
-            response.on('data', (chunk) => chunks.push(chunk));
-            response.on('error', reject);
-            response.on('end', () => {
-              try {
-                resolve({
-                  status: response.statusCode,
-                  body: JSON.parse(Buffer.concat(chunks).toString()),
-                });
-              } catch (error) {
-                reject(error);
-              }
-            });
-          },
-        );
-        req.on('error', reject);
-        req.on('timeout', () => req.destroy(new Error('API timeout')));
-        req.end(bytes);
-      });
-    assert.equal((await api('/secret/status')).body.status, 'sealed');
-    if (job.selection.newIdentity) assert.equal((await api('/settings')).status, 401);
+    const pin = certificatePin(await readFile(join(hostRoot, 'tls-cert.pem')));
+    const changedIdentity = job.selection.newIdentity || action === 'verify-rotated-api';
+    assert.equal(
+      pin === input.originalTrust.pin,
+      !changedIdentity,
+      'preserved identity must retain the mobile TLS pin',
+    );
+    const transport = pinnedApi({ address, ca, pin });
+    const api = (path, body, token = input.token, headers) => transport(path, body, token, headers);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        assert.equal((await transport('/healthz')).status, 200);
+        break;
+      } catch (error) {
+        if (attempt === 120) throw error;
+        await delay(250);
+      }
+    }
+    if (!changedIdentity) await verifyPairingProof(transport, input.originalTrust);
     else {
+      await assert.rejects(
+        pinnedApi({ address, ca, pin: input.originalTrust.pin })(
+          '/pair/identity?challenge=' + randomBytes(32).toString('base64url'),
+        ),
+        /TLS pin mismatch/,
+      );
+      const identityKey = createPublicKey(await readFile(join(hostRoot, 'pairing-identity.pem')))
+        .export({ format: 'der', type: 'spki' })
+        .toString('base64url');
+      assert.notEqual(identityKey, input.originalTrust.identityKey);
+      await verifyPairingProof(transport, {
+        identityKey,
+        serverId:
+          'srv_' +
+          createHash('sha256')
+            .update('verity.device-pairing.v1.server-id\0' + identityKey)
+            .digest()
+            .subarray(0, 16)
+            .toString('base64url'),
+      });
+    }
+    for (const denied of Object.values(input.deniedTokens))
+      assert.equal((await api('/auth/session', undefined, denied)).status, 401);
+    if (action === 'verify-backup-gate') {
+      const databases = [];
+      for (const container of await docker.listContainers()) {
+        const role =
+          container.labels?.['verity.managed-role'] ??
+          container.labels?.['com.docker.compose.service'];
+        if (role === 'postgres' && (await docker.inspectContainer(container.id)).running)
+          databases.push(container);
+      }
+      assert.equal(databases.length, 1);
+      const checks = [
+        `SELECT count(*) FROM projects WHERE state <> 'absent' AND id <> '${CONTROL_PLANE_PROJECT_ID}'`,
+        'SELECT count(*) FROM running_turns',
+        ...RESTORE_EPHEMERAL_TABLES.map((table) => `SELECT count(*) FROM "${table}"`),
+      ];
+      const counts = (
+        await exec('docker', [
+          'exec',
+          databases[0].id,
+          'psql',
+          '-U',
+          'verity',
+          '-d',
+          'verity',
+          '-At',
+          '-v',
+          'ON_ERROR_STOP=1',
+          '-c',
+          checks.join(';'),
+        ])
+      ).stdout
+        .trim()
+        .split('\n');
+      assert.equal(counts.length, checks.length);
+      if (counts.some((value) => value !== '0'))
+        console.log('Restored activation counts:', JSON.stringify(counts));
+      assert.ok(
+        counts.every((value) => value === '0'),
+        'normal startup must not reactivate restored work or capabilities',
+      );
+
+      assert.deepEqual((await api('/api/backups/status')).body, {
+        available: false,
+        reason: 'recovery-validation-pending',
+      });
+      const state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+      assert.equal(state.schedule.lastAttempt, null);
+      assert.deepEqual(
+        await readdir(
+          join(
+            root,
+            'new-backups/repositories',
+            `${state.installationId}-r${state.repositoryNumber}`,
+            'snapshots',
+          ),
+        ),
+        [],
+      );
+      return;
+    }
+    if (action === 'verify-enabled-restart') {
+      const servers = await activeServers();
+      assert.equal(servers.length, 1);
+      const server = servers[0];
+      assert.ok(server, 'running normal server required');
+      try {
+        const receiptCheck = await exec('docker', [
+          'exec',
+          '--user',
+          '1000:1000',
+          server.id,
+          'node',
+          '--input-type=module',
+          '-e',
+          `
+          import {readFile} from 'node:fs/promises';
+          import {openCaIdentityReceipt} from '/app/packages/server/dist/backup/identity-receipt.js';
+          try {
+            const state=JSON.parse(await readFile('/srv/verity/backup-state/state','utf8'));
+            const receipt=await readFile('/run/verity-backups/identity/'+state.installationId+'-ca-key-k'+state.keyGeneration);
+            openCaIdentityReceipt(receipt,await readFile('/run/verity-pairing/tls-ca-cert.pem'),state.installationId,state.keyGeneration,state.host.recipient);
+            console.log('BACKUP_ACCEPTANCE_RECEIPT authenticated with Server uid');
+          } catch(error) {
+            console.log('BACKUP_ACCEPTANCE_RECEIPT '+JSON.stringify({name:error.name,code:error.code,
+              mismatch:error.message==='Identity helper receipt does not match this capture'}));
+            process.exitCode=1;
+          }
+        `,
+        ]);
+        console.log(receiptCheck.stdout.trim());
+      } catch (error) {
+        for (const line of (error.stdout ?? '').split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_RECEIPT ')) console.log(line);
+        throw error;
+      }
+      console.log('BACKUP_ACCEPTANCE_RESTART receipt verified; fencing updater');
+      const updaters = [];
+      for (const container of await docker.listContainers())
+        if (
+          container.labels?.['com.docker.compose.service'] === 'verity-updater' &&
+          (await docker.inspectContainer(container.id)).running
+        )
+          updaters.push(container);
+      assert.equal(updaters.length, 1);
+      await exec('docker', ['stop', '--time', '30', updaters[0].id]);
+      assert.equal((await docker.inspectContainer(updaters[0].id)).running, false);
+      await exec('docker', ['stop', '--time', '30', server.id]);
+      assert.equal((await docker.inspectContainer(server.id)).running, false);
+      const before = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+      // Force exactly one overdue run while the normal server is stopped, without a master key.
+      before.schedule = {
+        ...before.schedule,
+        paused: false,
+        lastSuccess: null,
+        lastAttempt: null,
+        failures: 0,
+      };
+      await writeFile('/srv/verity/backup-state/state', JSON.stringify(before), { mode: 0o600 });
+      await exec('docker', ['start', server.id]);
+      console.log('BACKUP_ACCEPTANCE_RESTART exact Server restarted; awaiting capture');
+      const deadline = Date.now() + 180000;
+      let state;
+      while (Date.now() < deadline) {
+        state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+        if (state.schedule.lastSuccess !== null) break;
+        await delay(500);
+      }
+      if (!(state.schedule.lastSuccess > 0)) {
+        console.log('Scheduled restart state:', JSON.stringify(state.schedule));
+        const status = await api('/api/backups/status');
+        console.log(
+          'Scheduled restart availability:',
+          JSON.stringify({
+            status: status.status,
+            available: status.body.available,
+            reason: status.body.reason,
+            configured: status.body.configured,
+            alerts: status.body.alerts,
+          }),
+        );
+        const logs = await exec('docker', ['logs', server.id]);
+        for (const line of (logs.stdout + logs.stderr).split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_')) console.log(line);
+      }
+      assert.ok(state.schedule.lastSuccess > 0, 'normal server must complete overdue capture');
+      console.log('BACKUP_ACCEPTANCE_RESTART scheduled capture committed');
+      assert.equal(state.schedule.failures, 0);
+      assert.deepEqual(
+        (await activeServers()).map((container) => container.id),
+        [server.id],
+      );
+      // A committed startup capture does not establish gateway/HTTP readiness.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          assert.equal((await transport('/healthz')).status, 200);
+          break;
+        } catch (error) {
+          if (attempt === 120) throw error;
+          await delay(250);
+        }
+      }
+      console.log('BACKUP_ACCEPTANCE_RESTART pinned health ready');
+      assert.equal((await api('/secret/status')).body.status, 'sealed');
+      const available = await api('/api/backups/status');
+      assert.equal(available.status, 200);
+      assert.equal(available.body.available, true);
+      const repository = `${state.installationId}-r${state.repositoryNumber}`;
+      const names = (
+        await readdir(join(root, 'new-backups/repositories', repository, 'snapshots'))
+      ).filter((name) => name.endsWith('-scheduled'));
+      assert.ok(names.length > 0);
+      const sequence = Math.max(...names.map((name) => Number(name.split('-')[0])));
+      const manifest = await readSnapshot(
+        join(root, 'new-backups/repositories'),
+        repository,
+        sequence,
+        input.recoveryKey,
+        'scheduled',
+      );
+      assert.equal(manifest.kind, 'scheduled');
+      console.log('BACKUP_ACCEPTANCE_RESTART sealed API and scheduled manifest verified');
+      const restored = await stageSnapshot(
+        root,
+        join(root, 'new-backups/repositories'),
+        manifest,
+        input.recoveryKey,
+      );
+      const gitWarnings = await prepareRestoredGit(restored, manifest.capture, restored, signal);
+      if (gitWarnings.length) {
+        console.log(
+          'BACKUP_ACCEPTANCE_GIT ' +
+            JSON.stringify({
+              warnings: gitWarnings.length,
+              repositories: manifest.capture.git.map((entry) => ({
+                fixtureProject: input.expectedContent.projects.findIndex(
+                  (project) => project.id === entry.projectId,
+                ),
+                status: ['validated', 'not-validated', 'unstable', 'alternates-dropped'].includes(
+                  entry.status,
+                )
+                  ? entry.status
+                  : 'other',
+                connectivity: entry.findings.includes('connectivity'),
+                changed: entry.findings.includes('changed-during-freeze'),
+                unsafePointer: entry.findings.some((finding) =>
+                  finding.startsWith('unsafe-pointer:'),
+                ),
+              })),
+            }),
+        );
+        const logs = await exec('docker', ['logs', server.id]);
+        for (const line of (logs.stdout + logs.stderr).split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_')) console.log(line);
+      }
+      assert.deepEqual(gitWarnings, []);
+      await assertRestoredFiles(restored, input.expectedContent);
+      assert.ok(manifest.files.some((file) => file.path.startsWith('database/tables/')));
+      console.log('BACKUP_ACCEPTANCE_RESTART authenticated filesystem restored');
+      const network = 'verity-sealed-scheduled-probe';
+      await docker.ensureNetwork(network);
+      // The fixture caller uses the daemon host network; migration workers use private Docker DNS.
+      const probeNames = new Map();
+      const probeDocker = {
+        ...docker,
+        createContainer: async (options) => {
+          const container = await docker.createContainer(options);
+          if (options.name?.startsWith('verity-probe-postgres-'))
+            probeNames.set(container.id, options.name);
+          return container;
+        },
+        startContainer: async (id) => {
+          await docker.startContainer(id);
+          const name = probeNames.get(id);
+          if (name) {
+            const address = (await docker.inspectContainer(id)).networks[network]?.ipAddress;
+            assert.ok(address);
+            await appendFile('/etc/hosts', `\n${address} ${name}\n`);
+          }
+        },
+      };
+      const withDatabase = createProbeDatabase({
+        docker: probeDocker,
+        network,
+        architecture: 'amd64',
+        signal,
+      });
+      await probeSnapshot({
+        backupRoot: join(root, 'new-backups'),
+        repository,
+        sequence,
+        kind: 'scheduled',
+        recoveryKey: input.recoveryKey,
+        stagingParent: root,
+        architecture: 'amd64',
+        signal,
+        // The enabled derivative has no published release. Bind this test adapter to its exact local digest.
+        checkRelease: async (candidate) => {
+          assert.equal(candidate.capture.image, process.env.VERITY_RESTORE_ENABLED_IMAGE);
+          assert.equal(candidate.capture.architecture, 'amd64');
+        },
+        withDatabase: (candidate, bytes, run) =>
+          withDatabase(candidate, bytes, async (client) => {
+            await run(client);
+            await assertRestoredDatabaseContent(client, '/srv/verity', input.expectedContent, {
+              runtimeProjectId: CONTROL_PLANE_PROJECT_ID,
+            });
+            const meta = (await client.query("SELECT salt FROM secret_key_meta WHERE id='global'"))
+              .rows[0];
+            const stored = (await client.query('SELECT transcribe_api_key FROM verity_settings'))
+              .rows[0].transcribe_api_key;
+            assert.equal(
+              createSecretCipher(
+                await deriveKeyFromPassword(input.masterPassword, meta.salt),
+              ).decrypt(stored),
+              'recovered-synthetic-credential',
+            );
+          }),
+      });
+
+      assert.equal((await api('/secret/status')).body.status, 'sealed');
+      await exec('docker', ['start', updaters[0].id]);
+      console.log(
+        'Normal-server sealed restart, scheduled capture and isolated pinned database/content restore passed.',
+      );
+      return;
+    }
+    assert.equal((await api('/secret/status')).body.status, 'sealed');
+    if (changedIdentity) {
+      assert.equal((await api('/settings')).status, 401);
+      // Emulate explicit installer issuance only after acceptance; startup's expired code grants nothing.
+      const code = randomBytes(32).toString('hex');
+      await writeFile(join(hostRoot, 'pairing-code'), code, { mode: 0o600 });
+      await writeFile(
+        join(hostRoot, 'pairing-expires-at'),
+        new Date(Date.now() + 300000).toISOString(),
+        { mode: 0o600 },
+      );
+      const redeemed = await transport('/pair/redeem', { code });
+      assert.equal(redeemed.status, 200);
+      const unlocked = await transport(
+        '/secret/unlock',
+        { password: input.masterPassword, deviceLabel: 'New identity acceptance' },
+        undefined,
+        { 'x-verity-pairing': redeemed.body.bootstrapToken },
+      );
+      assert.equal(unlocked.status, 200);
+      assert.equal(typeof unlocked.body.token, 'string');
+      assert.equal((await transport('/settings', undefined, unlocked.body.token)).status, 200);
+      assert.equal((await transport('/auth/session', undefined, input.token)).status, 401);
+    } else {
       const unlocked = await api('/secret/unlock', {
         password: input.masterPassword,
         deviceLabel: 'Restored device acceptance',
@@ -724,7 +1464,9 @@ async function monitorActivation() {
 try {
   if (action === 'monitor-activation') await monitorActivation();
   else if (action === 'diagnose-activation') await diagnoseActivation();
+  else if (action === 'destination-full') await destinationFull();
   else if (action === 'capture') await capture();
+  else if (action === 'capture-sealed') await captureSealed();
   else await restore();
 } catch (error) {
   if (action === 'verify-api') await diagnoseActivation().catch(() => {});

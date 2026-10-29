@@ -1,3 +1,4 @@
+import { QAApprovalCard } from '../../components/QAApprovalCard';
 import {
   managedServerApproval,
   confirmManagedServerApproval,
@@ -4785,6 +4786,7 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar

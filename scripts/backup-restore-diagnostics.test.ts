@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { DockerError } from '../packages/server/src/docker.js';
 import {
   formatRestoreFailure,
   formatRestoreLog,
@@ -64,4 +65,31 @@ it('locates fixture assertions and reports numeric statuses without private comp
   expect(
     formatRestoreFailure({ ...error, actual: 'private-token', expected: 'private-key' }),
   ).not.toContain('private-');
+});
+
+it('preserves Docker failure categories without exposing daemon messages or identifiers', () => {
+  const secret = 'private-container-and-recovery-token';
+  for (const payload of [
+    { kind: 'other' as const, status: 500, message: secret },
+    { kind: 'conflict' as const, message: secret },
+    { kind: 'container_not_found' as const, id: secret },
+    { kind: 'network' as const, cause: new Error(secret) },
+  ]) {
+    const result = formatRestoreFailure(new DockerError(payload));
+    expect(result).toContain(`"dockerKind":"${payload.kind}"`);
+    expect(result).not.toContain(secret);
+    if (payload.kind === 'other') expect(result).toContain('"dockerStatus":500');
+    else expect(result).not.toContain('dockerStatus');
+  }
+  expect(formatRestoreFailure({ name: 'DockerError', kind: secret, status: secret })).not.toContain(
+    secret,
+  );
+  for (const status of [NaN, Infinity, 500.5, 399, 600, '500']) {
+    expect(formatRestoreFailure({ name: 'DockerError', kind: 'other', status })).not.toContain(
+      'dockerStatus',
+    );
+  }
+  expect(formatRestoreFailure({ name: 'Error', kind: 'conflict', status: 500 })).not.toContain(
+    'dockerKind',
+  );
 });

@@ -137,8 +137,14 @@ export class RestorePreviousRuntime {
         maximumRetryCount: container.maximumRetryCount,
       });
     }
-    // Restore every canonical name before an updater can recreate a still-archived container.
-    for (const container of previous.containers) {
+    // An updater may immediately replace the Server. Finish every other container first.
+    const isUpdater = (id: string) =>
+      current.find((candidate) => candidate.id === id)?.labels?.['com.docker.compose.service'] ===
+      'verity-updater';
+    const startOrder = [...previous.containers].sort(
+      (left, right) => Number(isUpdater(left.id)) - Number(isUpdater(right.id)),
+    );
+    for (const container of startOrder) {
       signal?.throwIfAborted();
       if (container.running && !(await docker.inspectContainer(container.id)).running)
         await docker.startContainer(container.id);

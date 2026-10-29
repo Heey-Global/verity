@@ -167,32 +167,163 @@ instrumentation or repository-wide test configuration was changed. A fresh
 Docker CI run, native device acceptance and a host-wide secret audit remain
 outside these local results.
 
+## Backend restore and identity follow-up
+
+The preceding baseline remains historical. PR #2020 at `5d81be207` passed
+[CI 40766249168](https://github.com/Heey-Global/verity/actions/runs/40766249168)
+and CodeQL before being merged. The following additions extend the assertions;
+their separate-daemon and live rotation execution passed at `7a3c3ff07c42ba83d22c413880433ef5c1d77b21`
+in [CI 40860474386](https://github.com/Heey-Global/verity/actions/runs/40860474386),
+published in [PR #2032](https://github.com/Heey-Global/verity/pull/2032).
+The executed Compose, Managed, CodeQL and amd64/arm64 jobs passed; coverage and
+contract jobs were skipped by workflow conditions. This evidence applies to that
+commit and those assertions, not the remaining global acceptance requirements.
+
+Local verification on the integrated main base used real PostgreSQL 15 and one
+test worker: 269 tests in 80 affected backup/authentication/pairing and TLS/content
+files passed. All 203 workflow tests passed in a separate rerun after a timeout
+under concurrent verification. The repository metadata follow-up passed nine
+repository/service/key-replacement tests and a detected/restored substitution
+mutation. The separate root rotation suite passed 20 tests and the unchanged
+pairing helper suite passed 12 tests. Coverage includes replaced container inventory,
+stale invitations and updater restart ordering. Server build, changed-file ESLint,
+formatting, script syntax and restored mutation-source/test digests passed.
+PostgreSQL cleanup
+used the documented teardown-only formatting workaround. Docker execution is established by the commit-specific CI above. Native device
+execution remains outside this evidence.
+
+- **A05/A12/A19/A20:** [content fixtures](../scripts/backup-restore-content.mjs)
+  cover active, sleeping, paused (visible/absent), and retained deprovisioned
+  (archived/absent) projects, twelve Git repositories/worktrees, eight sessions
+  and attachments, filesystem knowledge, eight document revisions and original
+  binary bodies. Expected file digests, Git heads and database projections are
+  saved independently before capture. PostgreSQL-backed
+  [content tests](../scripts/backup-restore-content.test.ts) reject changed or
+  missing linked files, revisions, originals and attachments. The Docker driver
+  removes the original host/index and captures in a fresh sealed worker with no
+  master password or recovery private key; this is not a normal-server reboot test.
+- **A21/A22/A23/A24:** [TLS trust checks](../.github/scripts/backup-restore-device-trust.mjs)
+  use normal hostname/CA verification plus the mobile P-256 point pin and a fresh
+  Ed25519 pairing challenge. Preserved restore now keeps the TLS key while
+  reissuing the leaf certificate, fixing a silent pin change. Local real TLS
+  tests reject a wrong pin before HTTP dispatch and a changed identity proof.
+  The Docker driver individually denies outbox-revoked, post-capture-revoked,
+  late-revoked and unreviewed tokens, then proves new pairing after new identity.
+  These backend checks do not establish native-device acceptance.
+- **A06/A18:** [key replacement](BACKUP_KEY_REPLACEMENT.md) adds administrator
+  confirmation, cancellation before confirmation, new repositories, durable
+  publication retry, exposed-generation CA retirement and replay refusal.
+  Revocations fan out to every catalogued key generation before acknowledgement.
+  Route tests repeat administrator/member/agent denial for the new routes.
+  Docker acceptance also creates a real helper-signed original receipt, retires
+  that exact generation through the privileged helper, preserves an unrelated
+  file and verifies the replacement receipt against the current CA.
+- **A07/A24:** the root-only installer now implements `--rotate-identity` with
+  exclusive installer/helper locks, durable checkpoints, disabled container
+  restart policies during publication, certificate/key validation, transactional
+  credential revocation and publication retry. [Installer tests](../deploy/bin/verity-rotate-identity.test.mjs)
+  use actual OpenSSL with simulated Docker/root effects;
+  [database tests](../packages/server/src/backup/identity-rotation-database.test.ts)
+  execute the actual installer SQL against the migrated PostgreSQL schema.
+  [Rotation history](../packages/server/src/backup/restore-identity-history.test.ts)
+  rejects retired CAs and missing/corrupt history before preserved restore;
+  explicit `--new-identity` remains available. Docker acceptance invokes the
+  real privileged rotation, rejects the old pin/tokens, pairs again and rejects
+  preserved restore of the retired snapshot. Offline pins and external copies
+  are not invalidated remotely; native pin reset remains open.
+- **A11/A40:** the committed public
+  [v1 installation fixture](../packages/server/src/backup/fixtures/v1-installation.json)
+  is unpacked without regeneration and passed through `probeSnapshot`, actual
+  extraction, identity verification and PostgreSQL import. Format 1 is the only
+  supported format. The historical fixture uses its fixed minimal schema and a
+  test release-verification adapter; pinned release migration/provenance remain
+  covered separately by existing production adapter tests and Docker acceptance.
+- **A33/A34:** existing trial/router/runtime and populated sanitizer tests remain
+  required; these additions do not turn their remaining activation/native gaps
+  into completed evidence.
+
+Additional detected mutations are archived in
+[content](backup-content-mutations.json),
+[key replacement](backup-key-replacement-mutations.json),
+[identity rotation](backup-identity-rotation-mutations.json), and
+[TLS/history](backup-device-trust-mutations.json) ledgers. Each retains restored
+source/test digests. Full historical A41 coverage remains open.
+
+## Plain-repository restore regression
+
+The installed-server acceptance exposed a Git repair defect in the automatically
+created Control Plane repository. Unlike the four content fixture repositories,
+it has no linked worktrees. Git's `worktree repair` resolves its main checkout
+from the process working directory even when `GIT_WORK_TREE` is set. Running
+from the sibling scratch directory therefore returned failure for intact data.
+
+Repair now runs from the validated private staging worktree; connectivity checks
+retain the separate scratch directory. A real plain-repository regression and
+the full PostgreSQL capture/restore/recapture fixture, including the Control
+Plane repository, pass. Reverting the working-directory fix fails both cases.
+The current backend ledger contains 16 detected and restored scoped mutations.
+
+The installed-server run at `700c14b28`
+([CI 40912710402](https://github.com/Heey-Global/verity/actions/runs/40912710402))
+independently demonstrated receipt authentication, exact Server stop/start,
+successful scheduled capture while sealed, pinned health and authenticated
+manifest reading before exposing that repair defect. It was not a passing full
+acceptance run. Complete Compose/Managed results are the
+[PR #2039 checks](https://github.com/Heey-Global/verity/pull/2039/checks); a failed
+or incomplete run never establishes the remaining Docker results.
+
+## Remaining backend acceptance map
+
+The baseline for this package is the demonstrated PR #2032 commit above.
+Content/TLS/key replacement/rotation results are retained; they do not establish
+native pin reset, normal-server reboot, app management or the global gate.
+
+| Requirement | Executable evidence | Required result |
+| --- | --- | --- |
+| A05, O01: sealed normal-server restart | Docker driver `verify-backup-gate`, `verify-enabled-restart` | Unchanged image exposes closed gate and no scheduler attempt; isolated enabled derivative restarts the normal server, captures while sealed and extracts authenticated content. |
+| A02: repair and destination safety | Docker `assert-prerequisites`, `installer-destination.test.ts` | Repair preserves installation/target/credential and paired mounts; unsupported relocation fails before creating the new directory. |
+| A14: read-only snapshot | `database-prerequisites.test.ts`, `database.test.ts` | Actual installer SQL grants deny writes, preserve ordered COPY/sequences and encrypted bytes, and isolate concurrent changes. |
+| A11, A40: pinned import | Existing `fixture.test.ts`, `probe-migrate-postgres.test.ts`, Docker restore | Immutable sole-supported format passes actual extraction/import; current pinned migration succeeds only into an empty database. |
+| A33, A34: activation boundaries | Docker `trial-surfaces`, existing trial/runtime, startup and sanitizer suites | Live health and authenticated recovery succeed while ordinary routes deny access; trial has no published ports, Docker socket or backup mounts. Sanitized runtime state and late revocations remain enforced. |
+| A37: separate accepted installations | Docker `owned-maintenance`, `verify-owned-unchanged` on two fresh daemons | Distinct installation/repository IDs, actual capture/prune/GC, independently unchanged source and peer content. First host is parked to bound resources. |
+| O03, O05: retention and alerts | `retention.test.ts`, `operational-alerts.test.ts`, `alert-notifier.test.ts`, existing service/scheduler tests | Exact independently enumerated set including UTC/rollback/generations; all fixed alert codes retry, deduplicate, survive reopen, clear and target current administrators. |
+| A13, A35, A36: bounded measurements | `incremental-measurement.test.ts`, `capture.test.ts`, Docker `destination-full` | Actual new/retained local object bytes; lifecycle barrier and process resource observations without reflinks; real ENOSPC confined to a private tmpfs with no committed snapshot. |
+| A41: mutation evidence | `backup-backend-acceptance-mutations.json` | Each recorded mutation fails its guard and original source is restored; no historical/global mutation coverage inferred. |
+
+Docker additions require a new commit-specific execution before their rows can
+be called demonstrated. The 16 MiB Git fixture is a bounded measurement, not a
+large-installation performance acceptance or an agreed latency budget. Local
+object writes do not establish off-host network transfer. Native device reset,
+app warning/display/deletion/partial restore, update backup coordination and
+same-host snapshot rollback remain outside this backend package. The production
+`BACKUP_RECOVERY_ACCEPTED` constant remains false.
+
 ## 1a: Capture, recovery and prerequisites
 
 | ID | Requirement | Status | Evidence and remaining proof |
 | --- | --- | --- | --- |
 | A01 | Local host destination, marker before writes, capacity check and fail-safe replaced mount | Test-covered | E07; E02 also uses an actually constrained staging filesystem. Physical backup-disk exhaustion is not that staging-space test. |
-| A02 | Installer installs paired mounts, helper, installation ID and read-only DB role; repairs existing hosts | Partial | E09 and [managed bootstrap tests](../packages/server/src/self-update/managed-bootstrap.test.ts) cover prerequisites/mount repair; E02 covers clean installation. Complete existing-host repair and destination relocation acceptance remains to map. |
+| A02 | Installer installs paired mounts, helper, installation ID and read-only DB role; repairs existing hosts | Test-covered | Installer repair checks preserve paired mounts, installation ID, marker and credential; actual Managed repair/prerequisite checks executed before the later Git failure in CI 40912710402. The destination regression rejects unsupported relocation before creating directories. This does not introduce archive migration. |
 | A03 | Product explains local-disk protection and coordinated off-host copying | Partial | ADR and E22 document copied-directory recovery. Phone setup/help does not yet expose the full explanation. |
 | A04 | Recovery key checksum, paste-back confirmation, abandoned setup disposal; no master-password decryption alternative | Test-covered | E05/E09 exercise full-key confirmation, wrong keys, cancellation and non-decrypting host state. Copy/save/print UI remains absent. |
-| A05 | Host stores recipient/signing/fingerprint state outside snapshots; sealed/unattended capture works | Partial | E03/E05/E09 cover state separation and capture without exporting a secret-store key. Add explicit end-to-end sealed restart capture assertion. |
-| A06 | Replacing recovery key starts a new repository; exposed key immediately retires old CA material | Missing evidence | Generation retention is tested (E11), but no complete exposed-key replacement flow was located in the inspected service/installer. Do not equate ordinary generation retirement with exposure response. |
-| A07 | `--rotate-identity` invalidates identity from every old snapshot/copy and revokes all devices | Not implemented | No corresponding flag/path found in inspected installer/backup code (E22). Requires actual live-host CA/TLS/pairing rotation and old-identity rejection evidence. |
+| A05 | Host stores recipient/signing/fingerprint state outside snapshots; sealed/unattended capture works | Demonstrated | CI 40912710402 at 700c14b28 proves exact normal-server stop/start, successful overdue scheduled capture, authenticated receipt/manifest and a sealed API in an unpublished enabled derivative. The unchanged image retains the closed gate; full scheduled snapshot probe is a separate result. |
+| A06 | Replacing recovery key starts a new repository; exposed key immediately retires old CA material | Test-covered | Confirmed replacement, cancellation, failure/restart, separate generations, retirement ordering and replay refusal are covered by the backend follow-up above. The actual privileged helper retirement passed CI 40860474386, including preservation of an unrelated file. |
+| A07 | `--rotate-identity` replaces live identity and revokes devices; historical identity requires explicit trust reset | Partial | Implemented with durable root checkpoints, transactional revocation, restart fencing and retired-snapshot guards. Real-host Managed rotation, fresh pairing and old-pin/token denial passed CI 40860474386. External copies and offline saved trust cannot be invalidated remotely; native reset acceptance remains open. |
 | A08 | Signed, encrypted manifest covers object IDs/digests/lengths, repository, sequence and format before use | Test-covered | E05/E06 verify authenticated parsing, replay/path rejection and metadata corruption. Dedicated encrypted-but-unsigned adversarial envelope remains A26. |
 | A09 | Encrypted host-key bundle recoverable without local index; host keys cannot decrypt snapshots | Test-covered | E05 includes `restores host keys from the encrypted repository bundle without a local index`; E06 destination-only restore. |
 | A10 | Streaming authenticated encryption detects missing/reordered data and bounds parsing | Test-covered | E05 truncates frames, reorders authenticated payload bytes and checks metadata bounds. This is not a semantic reordered-manifest fixture. |
-| A11 | Every format has a committed fixture; unknown formats fail safely | Partial | E05 reads committed v1 fixture; format parser rejects other versions. The new local verifier test rejects an authenticated future format; full probe against each format fixture remains missing. |
-| A12 | Complete database, workspaces, sessions, knowledge, scope/release/schema/lifecycle metadata | Partial | E01/E03/E04 cover a real subset and inventory ownership including hidden/orphan data. Knowledge originals/revisions and full multi-project/state diversity are not proven by the Docker fixture. |
+| A11 | Every format has a committed fixture; unknown formats fail safely | Partial | E05 reads committed v1 fixture; format parser rejects other versions. The new local verifier test rejects an authenticated future format; the follow-up committed v1 installation fixture now runs through actual probe/extraction/import with a fixed historical schema. Full pinned release migration is a separate adapter/CI assertion. |
+| A12 | Complete database, workspaces, sessions, knowledge, scope/release/schema/lifecycle metadata | Partial | E01/E03/E04 cover a real subset and inventory ownership including hidden/orphan data. The follow-up Docker fixture adds four project states, all linked worktrees and knowledge originals/revisions with independent PostgreSQL content tests; Expanded original-host-free content assertions passed CI 40860474386. |
 | A13 | Fixed exclusions with sizes; project sizes, >2 GB and unsupported-layer/mount/provider-state warnings | Partial | E03 checks dependency exclusions and filesystem inventory. Complete warning/size assertions and product presentation remain to verify. |
-| A14 | Read-only per-table ordered COPY in repeatable-read transaction; preserve encrypted secret metadata | Partial | E04 and E16 test export/import and metadata preservation. Audit every production export/role invariant separately before treating the whole contract as demonstrated. |
+| A14 | Read-only per-table ordered COPY in repeatable-read transaction; preserve encrypted secret metadata | Test-covered | Actual installer SQL grants are exercised against PostgreSQL, including denied writes after overriding the session read-only default, repeatable-read isolation under concurrent changes, ordered COPY/sequences and encrypted credential preservation. The complete migrated schema captures through the restricted role. |
 | A15 | Content-defined incremental objects, fresh encryption, manifest-last publication and reserved sequence | Test-covered | E05/E06 cover chunk resynchronization, random ciphertext, failed-run nonpublication and sequence nonreuse. Small-edit byte measurements remain A35. |
 | A16 | Lifecycle snapshot/freeze coordination, live change detection, no global drain or wakeup | Partial | E03 tests leases and changing-source retries. Large-installation freeze duration and explicit no-wakeup surface assertions remain. |
 | A17 | Root helper encrypts CA to confirmed recipient; receipt authenticates CA and recipient | Test-covered | E09/E14 include receipt recipient substitution and actual OpenSSL key/certificate checks. Production policy-gateway restrictions are outside this raw-Docker-socket implementation. |
 | A18 | Signed revocation journal, queued writes, sequence gaps and retirement floors survive retries | Test-covered | E13/E11 exercise unavailable destinations, missing/replayed entries and interrupted retirement. Full lost-off-host-history scenario still needs Docker evidence. |
-| A19 | Original host/index absent: copied directory plus recovery key/master password restores content | Demonstrated | E01/E02 use a separate fresh daemon and reject original host data/index. Scope is one project, linked worktree, insight, setting and encrypted credential. |
-| A20 | Active, sleeping and paused projects; all worktrees and knowledge originals/revisions restore | Partial | E01 seeds one active project/linked worktree; E03 adds paused/active capture coverage. Complete original-host-free content matrix remains missing. |
+| A19 | Original host/index absent: copied directory plus recovery key/master password restores content | Demonstrated | E01/E02 use a separate fresh daemon and reject original host data/index. That historical run covers one project, linked worktree, insight, setting and credential; the expanded four-state fixture passed CI 40860474386. |
+| A20 | Active, sleeping and paused projects; all worktrees and knowledge originals/revisions restore | Partial | E01 seeds one active project/linked worktree; E03 adds paused/active capture coverage. The expanded matrix passed original-host-free Docker execution in CI 40860474386. CI 40912710402 additionally proves normal-server sealed restart capture; full scheduled probe remains a separate execution result. |
 | A21 | Preserved identity permits reviewed devices to reconnect without pairing | Partial | E01 `verify-api` unlocks secrets and accesses `/settings` with the original retained token. Native TLS/device reconnection is not exercised. |
-| A22 | New identity rejects all old credentials and requires new pairing | Partial | E01/E02 assert zero retained device tokens and old-token HTTP 401. Successful new pairing has not been demonstrated. |
+| A22 | New identity rejects all old credentials and requires new pairing | Partial | E01/E02 assert zero retained device tokens and old-token HTTP 401. The follow-up driver now tests successful installer-code redemption and password-based device enrollment over pinned TLS; its Docker execution passed CI 40860474386. Native-device acceptance remains separate. |
 | A23 | Revoked-after-snapshot devices remain revoked; unknown-history devices blocked until explicit keep | Partial | E13 verifies review rules and final journal/outbox recheck; E01 seeds post-capture revocations. Individual actual API denials, same-host rollback and copied-journal-loss matrix remain open. |
 | A24 | Wrong CA private key/certificate or TLS leaf/key mismatch is refused | Test-covered | E14 real OpenSSL fixture rejects mismatches and does not leave a raw CA file. Separate-daemon negative case and pairing-key binding negative proof are not present. |
 | A25 | Wrong key, damaged/truncated objects and unsafe paths fail without replacing last good snapshot | Test-covered | E05/E06/E07 and E02 cover these across distinct scopes. Preserve failure-specific coverage when adding new formats. |
@@ -203,15 +334,15 @@ outside these local results.
 | A30 | Staged-only blobs, stash and reflog survive self-contained restore | Test-covered | Additional actual capture/source-free restore reads an index-only blob after its working file was removed, stash content and a reset-away reflog commit; omission mutations detect lost index/stash/log content. |
 | A31 | Concurrent sandbox `git gc` is detected and retried | Test-covered | Additional GC test synchronizes real repacking/removal after stat, observes two freezes and verifies the captured committed object. This covers that deterministic race, not every possible GC interleaving. |
 | A32 | Only administrators may setup/run/restore/probe/delete; no agent/project authority | Partial | E20 checks every registered backup route, including actor denials after availability opens; local restore requires root plus recovery factors (E22/E17). Delete/partial-restore routes and full agent/project denial matrix are not implemented/proven. |
-| A33 | Trial blocks ordinary APIs, pairing, work, updates, scheduler and helper | Partial | E17 isolates the Unix socket; strengthened runtime tests restrict authority-bearing mounts/environment and trial tests reject normal operations with a valid recovery token. E02 runs real trial. Explicit assertions for every forbidden runtime surface remain to map. |
-| A34 | No preview/capability/enrollment recovery/queued work revival; secret store stays sealed | Partial | E16 sanitizes ephemeral state and E01 asserts no running work. Additional preview/capability/grant/job fixtures prove nonempty reset independently of the reset list; there is no separate enrollment-recovery table in the current migrated schema. Every current reset table is seeded, and generation/meeting resets are asserted; full activation-surface coverage and future schema semantics remain distinct limits. |
-| A35 | Small edits share objects; transferred and retained bytes measured | Missing evidence | E06 repeats identical input and proves ciphertext reuse. It does not measure storage/transfer after a small edit. |
-| A36 | Large-installation lifecycle lock duration measured without reflinks | Missing evidence | No recorded benchmark/harness located. Record dataset, filesystem, disabled-reflink method, lock duration, bytes and resource usage. |
-| A37 | Two restored hosts use distinct repositories and never prune each other | Partial | E19 preserves source repository; E11 tests ownership refusal. No two-restored-host lifecycle/pruning acceptance found. |
+| A33 | Trial blocks ordinary APIs, pairing, work, updates, scheduler and helper | Test-covered | Actual trial health and authenticated recovery positive controls accompany ordinary-route denials; runtime tests restrict ports, Docker/backup mounts and authority-bearing environment. CI 40912710402 executes the live trial controls before its later Git failure. Native-device acceptance remains separate. |
+| A34 | No preview/capability/enrollment recovery/queued work revival; secret store stays sealed | Test-covered | Every current reset table has independent nonempty data; generation/meeting and ephemeral capability/job/runtime resets are checked. The first normal-start driver requires ordinary projects/turns to remain inactive and secrets sealed, allowing only the explicitly validated built-in Control Plane project. Future schema semantics require fresh coverage. |
+| A35 | Small edits share objects; transferred and retained bytes measured | Test-covered locally | The bounded 8 MiB measurement records actual newly written object/destination bytes and retained bytes for full, unchanged and 32-byte-edit runs; see `backup-backend-measurements.json`. This is local destination I/O, not off-host network transfer. |
+| A36 | Large-installation lifecycle lock duration measured without reflinks | Partial | The bounded 16 MiB Git capture records the actual lifecycle barrier, total duration, process CPU and peak RSS. `freezeGitDirectory` streams file descriptors without reflinks. See `backup-backend-measurements.json`; large-installation scaling and a performance budget remain unaccepted. |
+| A37 | Two restored hosts use distinct repositories and never prune each other | Test-covered | The Docker owned-maintenance driver restores and accepts two independent daemons, compares distinct installation/repository IDs, performs capture/prune/GC and checks source/peer digests including foreign repositories on the same destination. Complete execution requires passing PR #2039 checks; E11 separately tests ownership refusal. |
 | A38 | Isolated staging, durable trial/accept/abort, previous installation startable after failure | Demonstrated | E02 kills actual workers across preparation/publication/acceptance/abort, checks previous-volume sentinels and retries rollback; E18 covers collision/restart details. Scope excludes pre-update same-host rollback. |
 | A39 | Acceptance publishes authenticated CA material before enabling new backup repository | Test-covered | E19 tests ordering, partial retry/idempotency, source preservation and unrelated-state refusal; E02 exercises bundled installer acceptance. |
-| A40 | Probe verifies all objects, imports DB and checks Git without changing live installation | Partial | E20 plus [probe runtime tests](../packages/server/src/backup/probe-runtime.test.ts) cover isolated execution and verification state. Full production fixture coverage of every supported format and app initiation remains. |
-| A41 | Each guard is deliberately broken before it is trusted | Partial | The local ledger archives 23 detected mutations for this security package, source digests and restoration checks. Historical guards still lack a complete per-guard ledger; see mutation evidence below. |
+| A40 | Probe verifies all objects, imports DB and checks Git without changing live installation | Partial | E20 plus [probe runtime tests](../packages/server/src/backup/probe-runtime.test.ts) cover isolated execution and verification state. The immutable format1 installation fixture now exercises probe/extraction/import. Pinned historical migration and app initiation remain separate evidence boundaries. |
+| A41 | Each guard is deliberately broken before it is trusted | Partial | The historical security ledger archives 23 cases; the backend follow-up adds 16 detected/restored scoped mutations with current source/test digests. Historical guards still lack a complete per-guard ledger; see mutation evidence below. |
 
 ## Operations, 1b and 1c
 
@@ -219,7 +350,7 @@ outside these local results.
 | --- | --- | --- | --- |
 | O01 | Six-hour default, hourly-to-daily policy, one catch-up, no overlap, bounded timeout and backoff | Test-covered | E10 tests reservation, restart backoff, pause races and six-hour abort; E20 validates policy inputs. Pre-update one-hour/initial-full-run behavior is B02. |
 | O02 | Recover only owned stale staging; low CPU/IO priority without renicing the Server | Test-covered | E10 includes a killed kernel-lock holder and worker/subprocess priority assertions. Large-installation load measurement remains A36. |
-| O03 | Retention: 48 hours, 7 daily, 4 weekly, 6 monthly and last two pre-update snapshots | Partial | E11 uses 240 days but checks selected membership and a loose count, not the exact expected six-month set. Add complete boundary/set assertions. |
+| O03 | Retention: 48 hours, 7 daily, 4 weekly, 6 monthly and last two pre-update snapshots | Test-covered | The independent exact-set test in `retention.test.ts` now covers all tiers, UTC day/week/month boundaries, multiple generations, shuffled input and sequence-ordered clock rollback. Five policy mutations were detected and restored. |
 | O04 | GC honors retained references, leases/grace; missing ownership/references fail closed | Test-covered | E11/E06 check reference corruption, shared objects, grace, concurrent publication, ownership and replaced-directory rejection. |
 | O05 | Alert conditions fire/clear: stale snapshot, failures, destination, identity, old probe | Partial | E12/E07/E09/E10 test service conditions, sanitized persistence, clear/retry and administrator targeting. Full phone display and every condition end-to-end remain absent. |
 | B01 | Snapshot after preflight and before creating-standby while old Server serves | Not implemented | E21 currently advances directly to `creating-standby`; no backup request in that transition. |
@@ -261,14 +392,17 @@ must be local and restored before further changes or publication.
 
 ## Remaining work in dependency order
 
-1. Extend the remaining content/runtime evidence: all project/knowledge states,
-   device connection/pairing, the full format-probe matrix, identity rotation; preserve the new scoped security evidence.
+1. Preserve the passing source-free Docker content/TLS/pairing/rotation evidence
+   at `7a3c3ff07`; preserve the additional normal-server restart and trial-surface
+   tests, complete their commit-specific Docker execution, and perform native
+   device/pin-reset acceptance. Preserve scoped mutation evidence.
 2. Implement pre-update coordination and its default hold, administrator override,
    history and automatic-update restrictions (B01–B05).
 3. Implement the distinct same-host snapshot rollback with backup-state preservation,
    revocations, update hold and downgrade/architecture preflight (B06–B10).
-4. Add reproducible small-edit storage/transfer and no-reflink freeze measurements,
-   exact retention-set tests and two-restored-host ownership acceptance.
+4. Extend bounded local-write/no-reflink measurements to large-installation and
+   off-host network scenarios with an agreed performance budget. Preserve exact
+   retention-set tests and independently verified two-host ownership acceptance.
 5. Implement backup app/management and partial restore, including negative authority
    tests and disk/log secret instrumentation (C01–C08).
 6. Reconcile every row and its mutation evidence on one release candidate, run the

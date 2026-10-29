@@ -69,3 +69,28 @@ describe('parseMarkdownBlocks', () => {
     expect(blocks[1]).toEqual({ type: 'lines', lines: [''] });
   });
 });
+
+it('hides complete and streaming QA decision contracts while preserving prose', () => {
+  for (const suffix of ['', '\n```']) {
+    const blocks = parseMarkdownBlocks(
+      'Repair needs review.\n```qa:decision\n{"assignments":[]}' + suffix,
+    );
+    expect(JSON.stringify(blocks)).toContain('Repair needs review.');
+    expect(JSON.stringify(blocks)).not.toContain('assignments');
+  }
+});
+
+it('preserves prose around multiple QA contracts and incomplete headers', () => {
+  expect(
+    parseMarkdownBlocks('before\n```qa:decision\n{}\n```\nmiddle\n```qa:decision\n{}\n```\nafter'),
+  ).toEqual([{ type: 'lines', lines: ['before', '', 'middle', '', 'after'] }]);
+  expect(parseMarkdownBlocks('```qa:decision')).toEqual([
+    { type: 'lines', lines: ['```qa:decision'] },
+  ]);
+});
+it('handles repeated unterminated QA headers without quadratic scanning', () => {
+  const input = '```qa:decision'.repeat(50_000);
+  const started = performance.now();
+  expect(parseMarkdownBlocks(input)).toEqual([{ type: 'lines', lines: [input] }]);
+  expect(performance.now() - started).toBeLessThan(1000);
+});

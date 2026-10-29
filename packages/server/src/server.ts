@@ -1,3 +1,16 @@
+import { createQACoordinator } from './qa-coordinator.js';
+import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
+import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
+import { registerAssistantRoutes } from './assistant-routes.js';
+import {
+  assistantToolRefusal,
+  executeAssistantTool,
+  requireAssistantGrant,
+  requireAssistantSession,
+  type AssistantToolDeps,
+} from './assistant-tool.js';
+import type { RepairDiscovery } from './repair-supervisor.js';
+import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import { registerLogRoutes, type LogRouteDeps } from './log-routes.js';
 import {
@@ -1346,6 +1359,12 @@ export interface ServerDeps {
   branchPr?: (branch: string, worktree: string) => Promise<number | null>;
   /** Live compact PR status for the current branch: title, URL, check counts and
    * whether the Merge button should be enabled. Absent → older token-less behavior. */
+  invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
    * Live compact PR status for a session spanning SEVERAL branches — the most-
@@ -3807,6 +3826,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     )?.event;
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
   };
+  // The assistant acts for the user behind its running turn, and only in granted projects.
+  // Reading and filing tasks follow the project routes, where administrators count as
+  // readers. Handing off starts a turn, so it needs the same execute permission as
+  // `canExecuteAs`, which every later tool call of that turn is checked against.
+  const assistantToolDeps: AssistantToolDeps = {
+    eventStore: deps.eventStore,
+    initiator: runningTurnInitiator,
+    permitted: async (userId, projectId, permission) => {
+      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
+      if (permission === 'execute') return canExecuteAs(userId, projectId);
+      return (
+        (await deps.eventStore.isActiveAdministrator(userId)) ||
+        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
+      );
+    },
+  };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
       try {
@@ -4150,6 +4185,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     repair: PullRequestRepairKind,
   ): Promise<void> => {
     if (!repair.applies(pr)) return;
+    if (session.projectId !== null) {
+      const mandate = await deps.eventStore.repairs.mandate(session.projectId);
+      if (mandate) {
+        await deps.eventStore.repairs.associate(
+          session.projectId,
+          `pr:${pr.number}`,
+          session.sessionId,
+        );
+        return;
+      }
+    }
     const { sessionId } = session;
     const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
@@ -5090,12 +5136,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prRepairSweep = (async () => {
       if (deps.secretCipher?.isSealed() === true) return;
       const sessions = await deps.eventStore.listSessions();
+      const supervisedProjects = new Set(
+        (await deps.eventStore.repairs.mandates()).map((m) => m.project_id),
+      );
       const live = new Set(sessions.map((session) => session.worktree));
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
+        if (session.projectId && supervisedProjects.has(session.projectId)) continue;
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         try {
@@ -5208,12 +5258,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const applyPrSummaryAction = (session: SessionRecord, pr: SessionPrSummary | null): void => {
     const { worktree } = session;
     sessionPrCache.invalidate(worktree);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
   const invalidatePrSummaryAction = (session: SessionRecord): void => {
     const { worktree } = session;
     sessionPrCache.invalidate(worktree);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.delete(worktree);
   };
@@ -6094,6 +6146,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
+      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
+      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
+        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
+        await requireAssistantGrant(
+          assistantToolDeps,
+          { sessionId, turnId, projectId },
+          'delegate',
+        );
+      },
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -6477,6 +6538,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if ((await deps.eventStore.repairs.qa()).session_id === sessionId)
+          throw new ControlPlaneSessionAuthorityError(
+            'QA uses server-validated decisions, not executable tools.',
+          );
+        // The assistant reads mail and voice notes, so it gets an allow-list rather than
+        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
+        // Control later stays closed to it until it is listed here.
+        const assistantRefusal = assistantToolRefusal(
+          await deps.eventStore.assistant.settings(),
+          sessionId,
+          toolName,
+        );
+        if (assistantRefusal !== undefined)
+          throw new ControlPlaneSessionAuthorityError(assistantRefusal);
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -6514,6 +6589,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // static catalog, and explaining Verity is as much a part of planning.
         if (
           toolName !== 'verity_tasks' &&
+          toolName !== 'verity_repairs' &&
           toolName !== 'verity_app_help' &&
           ((await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
             conductor.isPlanningTurn?.(sessionId))
@@ -6666,6 +6742,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_assistant') {
+          await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+          await requireAssistantSession(deps.eventStore, sessionId);
+          return;
+        }
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -6745,12 +6826,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             (await deps.eventStore.getSession(sessionId))?.projectId === projectId
           );
         }
+        // The project grant is the user's consent; the executor re-checks it on every call.
+        if (toolName === 'verity_assistant') {
+          const session = await deps.eventStore.getSession(sessionId);
+          return (
+            session?.projectId === projectId &&
+            (await deps.eventStore.assistant.settings()).session_id === sessionId
+          );
+        }
         // The tasks tool writes only to the calling session's own list and cannot
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.
         if (
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
+          toolName === 'verity_repairs' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -6933,6 +7023,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (input.toolName === 'verity_app_help') {
           return answerAppHelp(appHelpRequestSchema.parse(input.request));
         }
+        if (input.toolName === 'verity_repairs') {
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (!session?.projectId || session.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return {
+            mandate: (await deps.eventStore.repairs.mandate(session.projectId)) ?? null,
+            incidents: await deps.eventStore.repairs.incidents(session.projectId),
+          };
+        }
         if (input.toolName === 'verity_tasks') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session === undefined || session.projectId !== input.projectId)
@@ -7010,6 +7109,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_assistant')
+          return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
@@ -7512,6 +7613,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);
@@ -9971,6 +10073,180 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
+
+  registerRepairRoutes(app, deps.eventStore);
+  registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
+  // callers share one attempt, so two requests never spawn the same session id twice.
+  let ensuringAssistant: Promise<string> | undefined;
+  const ensureAssistantSession = async (): Promise<string> => {
+    let id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
+    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    const project = await ensureVerityControlProject();
+    const result = await sessionCreate.spawn(
+      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
+      app.log,
+    );
+    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+    return id;
+  };
+  registerAssistantRoutes(app, deps.eventStore, {
+    ensureSession: () =>
+      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
+        ensuringAssistant = undefined;
+      })),
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    cancel: (id) => conductor.cancelTurn(id),
+  });
+  if (deps.repairDiscovery) {
+    const qaEnabled = async () => {
+      const state = await deps.eventStore.repairs.qa();
+      return (
+        state.enabled &&
+        !!state.sponsor &&
+        (await deps.eventStore.isActiveAdministrator(state.sponsor))
+      );
+    };
+    const preparingDispatches = new Set<string>();
+    const supervisor = createRepairSupervisor({
+      preparingDispatches,
+      enabled: qaEnabled,
+      coordinate: true,
+      store: deps.eventStore,
+      discover: deps.repairDiscovery,
+      ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
+      changed: (projectId) => {
+        resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
+        void deps.eventStore.repairs
+          .incidents(projectId)
+          .then((incidents) => {
+            for (const incident of incidents)
+              if (incident.last_session_id)
+                liveHub.notify({
+                  sessionId: incident.last_session_id,
+                  projectId,
+                  topics: ['status'],
+                });
+          })
+          .catch(() => undefined);
+      },
+      authorized: (userId, projectId) => canExecuteAs(userId, projectId),
+      busy: (id) => conductor.isBusy(id),
+      result: async (sessionId) => {
+        const session = await deps.eventStore.getSession(sessionId);
+        return session ? sessionPrStatus(session) : null;
+      },
+      target: async (projectId, branch) => {
+        let match: string | undefined;
+        for (const session of await deps.eventStore.listSessions()) {
+          if (session.projectId !== projectId || !(await worktreeExists(session.worktree)))
+            continue;
+          const branches = await branchesForSession(session);
+          if (!branches || (await branches.current(session.worktree)) !== branch) continue;
+          if (
+            match ||
+            conductor.isBusy(session.sessionId) ||
+            session.planning === 'active' ||
+            (await branches.isDirty(session.worktree))
+          )
+            return { blocked: true };
+          match = session.sessionId;
+        }
+        return match ? { sessionId: match, blocked: false } : { blocked: false };
+      },
+      terminated: async (id, dispatchId) => {
+        const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
+        const boundary =
+          receipt?.prompt_seq == null
+            ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
+            : Number(receipt.prompt_seq);
+        if (boundary === undefined) return false;
+        const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
+        return repairTurnTerminated(events.filter((row) => row.seq > boundary));
+      },
+      spawn: async (projectId, sessionId) => {
+        if (await deps.eventStore.getSession(sessionId)) return;
+        const result = await sessionCreate.spawn(
+          { projectId, sessionId, name: 'QA · CI repair' },
+          app.log,
+        );
+        if (result.statusCode >= 300) throw new Error('Repair session could not be created');
+      },
+      dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
+        if ((await deps.eventStore.repairs.dispatchReceipt(dispatchId))?.state === 'admitted')
+          return true;
+        const result = await conductor.dispatchTurnWhenIdle(
+          sessionId,
+          prompt,
+          {},
+          {
+            displayPrompt: 'QA: investigate assigned CI failure',
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId: sponsorUserId },
+            validateSession: async (session) => {
+              if (session.projectId !== projectId || !(await validate())) return false;
+              const mandate = await deps.eventStore.repairs.mandate(session.projectId);
+              return (
+                mandate?.mode === 'automatic' &&
+                (await canExecuteAs(mandate.sponsor_user_id, session.projectId))
+              );
+            },
+          },
+        );
+        return result.accepted;
+      },
+    });
+    const qa = createQACoordinator({
+      preparingDispatches,
+      store: deps.eventStore,
+      authorized: canExecuteAs,
+      administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+      busy: (id) => conductor.isBusy(id),
+      ensureSession: async (id) => {
+        if (await deps.eventStore.getSession(id)) return;
+        const project = await ensureVerityControlProject();
+        const result = await sessionCreate.spawn(
+          { projectId: project.id, sessionId: id, name: 'Verity · QA' },
+          app.log,
+        );
+        if (result.statusCode >= 300) throw new Error('QA session could not be created');
+      },
+      dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
+        const result = await conductor.dispatchTurnWhenIdle(
+          id,
+          prompt,
+          { timeoutMs: 180_000 },
+          {
+            displayPrompt: 'QA: review changes in CI supervision',
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId: sponsor },
+            validateSession: validate,
+          },
+        );
+        return result.accepted;
+      },
+      delegate: supervisor.delegate,
+    });
+    let timer: ReturnType<typeof setInterval> | undefined;
+    app.addHook('onReady', () => {
+      timer = setInterval(() => {
+        void supervisor
+          .sweep()
+          .then(() => qa.tick())
+          .catch((error) => app.log.warn({ error }, 'repair supervision failed'));
+      }, 120_000);
+      timer.unref();
+    });
+    app.addHook('onClose', async () => {
+      if (timer) clearInterval(timer);
+      await qa.stop();
+      await supervisor.stop();
+    });
+  }
 
   // First-run welcome session in the starter project (see welcome-session.ts).
   // Created through the same spawn path as POST /sessions; the session-route

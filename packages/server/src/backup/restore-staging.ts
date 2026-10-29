@@ -8,6 +8,7 @@ import { readBounded, readSnapshot, writeDurable } from './repository.js';
 import { stageSnapshot } from './staging.js';
 import { prepareRestoredGit } from './restore-git.js';
 import { verifyRestoredIdentity } from './restore-identity.js';
+import { assertRestorableIdentity } from './restore-identity-history.js';
 import { readRevocations } from './revocations.js';
 import { importDatabaseExport, type BackupDatabaseCatalog } from './database.js';
 import { openBackupPath } from './git.js';
@@ -18,6 +19,7 @@ import type { RestoreJob } from './restore-job.js';
 export interface RestoreStagingDependencies {
   root: string;
   liveRoot: string;
+  identityHistoryRoot?: string;
   /** Uses the authenticated historical release evidence, never a moving channel. */
   checkRelease(manifest: BackupManifest, architecture: 'amd64' | 'arm64'): Promise<void>;
   /** Pull only after release verification, then inspect this exact digest's recovery capability. */
@@ -93,6 +95,12 @@ export class InstallerRestoreStaging {
       signal,
     );
     try {
+      if (this.deps.identityHistoryRoot)
+        await assertRestorableIdentity(
+          this.deps.identityHistoryRoot,
+          tree,
+          job.selection.newIdentity,
+        );
       const identity = await verifyRestoredIdentity(tree, key, signal);
       try {
         return {
@@ -138,6 +146,12 @@ export class InstallerRestoreStaging {
       signal?.throwIfAborted();
       const warnings = await prepareRestoredGit(tree, manifest.capture, this.deps.liveRoot, signal);
       if (warnings.length) throw new Error('Restore Git verification failed');
+      if (this.deps.identityHistoryRoot)
+        await assertRestorableIdentity(
+          this.deps.identityHistoryRoot,
+          tree,
+          job.selection.newIdentity,
+        );
       const identity = await verifyRestoredIdentity(tree, key, signal);
       try {
         if (identity.deploymentId !== job.verified.deploymentId)

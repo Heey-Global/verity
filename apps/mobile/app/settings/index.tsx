@@ -169,6 +169,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
+            icon="user"
+            title="Assistant"
+            subtitle="Voice notes, mail and calendar, project tasks"
+            onPress={() => router.push('/settings/assistant')}
+          />
+          <SettingsNavRow
+            icon="activity"
+            title="QA · CI supervision"
+            subtitle="Project monitoring and repair ownership"
+            onPress={() => router.push('/settings/repairs')}
+          />
+          <SettingsNavRow
             icon="link"
             title="Connections"
             subtitle="AI, code, documents and other services"

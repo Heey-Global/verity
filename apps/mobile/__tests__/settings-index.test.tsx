@@ -72,6 +72,8 @@ describe('settings index — destinations', () => {
     ]);
     const expectedRows = [
       [
+        'Assistant',
+        'QA · CI supervision',
         'Connections',
         'Tasks',
         'Meeting transcription',
