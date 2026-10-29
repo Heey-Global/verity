@@ -3,15 +3,14 @@
 set -euo pipefail
 exts=('*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.mts' '*.cts')
 # No --cache here either; unchanged consumers must be checked against current types.
-eslint_opts=(--no-warn-ignored)
-batch=64
+batch=16
 lint_batched() {
   local label="$1"; shift
   local -a all=("$@")
   local i part=1
   for ((i = 0; i < ${#all[@]}; i += batch)); do
     echo "::group::eslint $label ($part)"
-    npx eslint "${eslint_opts[@]}" -- "${all[@]:i:batch}"
+    node scripts/lint-files.mjs -- "${all[@]:i:batch}"
     echo "::endgroup::"
     part=$((part + 1))
   done

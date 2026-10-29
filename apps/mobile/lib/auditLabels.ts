@@ -5,7 +5,6 @@
 import type { AuditInitiator, AuditOperationSummary } from '@verity/mobile';
 
 import type { StatusIntent } from '../components/ui/Status';
-import type { IconName } from '../components/Icon';
 
 const SYSTEM_TRIGGERS: Record<string, string> = {
   sandbox_wake: 'Sandbox wake',
@@ -43,23 +42,6 @@ export function auditTitle(operation: AuditOperationSummary): string {
   }
 }
 
-export function auditIcon(operation: AuditOperationSummary): {
-  icon: IconName;
-  intent?: StatusIntent;
-} {
-  switch (operation.kind) {
-    case 'build':
-      return { icon: 'package' };
-    case 'image_removed':
-      return { icon: 'trash-2' };
-    case 'project_deleted':
-      return { icon: 'folder-minus' };
-    case 'write_gap':
-      // The only red tile: a problem with the trail itself.
-      return { icon: 'alert-triangle', intent: 'needsSetup' };
-  }
-}
-
 /** Only deviations carry a word; a completed normal outcome shows none. */
 export function auditStatus(
   operation: AuditOperationSummary,
@@ -80,20 +62,21 @@ export function auditTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+/** A log record's local time to the second, so neighbouring records stay distinguishable. */
+export function logTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
 export function auditDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
   });
-}
-
-export function auditSubtitle(operation: AuditOperationSummary): string {
-  const time = auditTime(operation.startedAt);
-  if (operation.kind === 'write_gap') return `Audit storage was unavailable · ${time}`;
-  return [operation.project?.label, auditInitiatorLabel(operation.initiator), time]
-    .filter((part): part is string => typeof part === 'string' && part.length > 0)
-    .join(' · ');
 }
 
 function dayKey(date: Date): string {

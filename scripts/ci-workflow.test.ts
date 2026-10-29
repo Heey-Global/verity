@@ -3419,9 +3419,8 @@ describe('CI runner footprint', () => {
     // the next. Both halves are asserted because "add --cache, it is free" is the
     // obvious review comment and the flag costs one line to reintroduce.
     //
-    // `lint:changed` is deliberately NOT covered: the pre-push hook runs it on a
-    // single machine with stable mtimes, and it only ever lints the changed files,
-    // so it never claimed to see an unchanged consumer in the first place.
+    // The scoped command uses the same uncached runner. Its explicit targets
+    // still do not replace the full CI check of unchanged consumers.
     const scripts = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { scripts?: Record<string, string> }
     ).scripts;
@@ -3439,7 +3438,7 @@ describe('CI runner footprint', () => {
     const runner = scripts?.lint?.match(/^bash (scripts\/[A-Za-z0-9_-]+\.sh)$/)?.[1];
     expect(runner).toBeDefined();
     const source = readFileSync(runner!, 'utf8');
-    expect(source).toMatch(/^\s*npx eslint\s/m);
+    expect(source).toMatch(/^\s*node scripts\/lint-files\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
     expect(eslintStep?.run).toBe('npm run lint');

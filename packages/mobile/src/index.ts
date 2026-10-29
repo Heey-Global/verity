@@ -501,6 +501,11 @@ export {
   type ConnectionRecordingExport,
   returnPathStatusSchema,
   type ReturnPathStatus,
+  backupStatusSchema,
+  backupProbeJobSchema,
+  type BackupStatus,
+  type BackupProbeJob,
+  type BackupKeyOffer,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
@@ -667,6 +672,7 @@ export {
 
 export { liveMeetingResultSchema, type LiveMeetingResult } from './api.js';
 export type {
+  AuditEvent,
   AuditDomain,
   AuditHealth,
   AuditInitiator,

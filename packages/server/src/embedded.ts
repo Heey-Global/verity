@@ -1,3 +1,4 @@
+import { createServerLogSource } from './server-log-source.js';
 import {
   selectBranchStatus,
   createForgeStatusCache,
@@ -637,7 +638,6 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { openBackupRuntime } from './backup/runtime.js';
-import { BACKUP_RECOVERY_ACCEPTED } from './backup/routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -4573,7 +4573,6 @@ export async function buildEmbeddedServer(
   const backup =
     config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
       ? await openBackupRuntime({
-          recoveryAccepted: BACKUP_RECOVERY_ACCEPTED,
           probe: {
             docker: projectDocker,
             network: 'verity-net',
@@ -4770,7 +4769,7 @@ export async function buildEmbeddedServer(
     runtimeDiagnostics: createRuntimeDiagnostics({
       dockerBaseUrl: config.dockerBaseUrl,
       dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId,
+      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
       hostSnapshotPath: config.hostDiagnosticSnapshotPath,
       builderMigrationPath: '/run/verity-buildkit/migration-status.json',
       builderAdmissionDirectory: '/run/verity-buildkit',
@@ -5068,15 +5067,7 @@ export async function buildEmbeddedServer(
       recorder: auditRecorder,
       log: auditLog,
       buildDiagnostics,
-      serverLogs:
-        runtimeDocker?.containerLogs === undefined
-          ? undefined
-          : (window) =>
-              runtimeDocker.containerLogs!(
-                config.diagnosticServerContainerId ?? hostname(),
-                1000,
-                window,
-              ),
+      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
     },
     ...(projectDocker === undefined
       ? {}

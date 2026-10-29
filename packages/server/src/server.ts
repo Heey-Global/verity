@@ -384,7 +384,7 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
-import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import { registerBackupRoutes } from './backup/routes.js';
 import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
@@ -3239,7 +3239,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * fifty times ten seconds inside one request — the stall the bound exists to prevent,
    * arrived at by arithmetic.
    */
-  const deleteSessionEverywhere = async (
+  const deleteSessionEverywhereUnqueued = async (
     sessionId: string,
     budget?: SessionArtifactPurgeBudget,
   ): Promise<boolean> => {
@@ -3281,6 +3281,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return await deps.eventStore.deleteSession(sessionId);
     } finally {
       release?.();
+    }
+  };
+  // The preview fence is project-wide, even when deleting different sessions.
+  // Optimistic clients can send the next delete before the first cleanup settles.
+  const projectSessionDeletes = new Map<string, Promise<void>>();
+  const deleteSessionEverywhere = async (
+    sessionId: string,
+    budget?: SessionArtifactPurgeBudget,
+  ): Promise<boolean> => {
+    const session = await deps.eventStore.getSession(sessionId);
+    const projectId = session?.projectId;
+    if (!projectId || !deps.localPreviewManager)
+      return deleteSessionEverywhereUnqueued(sessionId, budget);
+    const previous = projectSessionDeletes.get(projectId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    projectSessionDeletes.set(projectId, current);
+    await previous;
+    try {
+      return await deleteSessionEverywhereUnqueued(sessionId, budget);
+    } finally {
+      release();
+      if (projectSessionDeletes.get(projectId) === current) projectSessionDeletes.delete(projectId);
     }
   };
   // Search projection is an eventually-consistent read model. Start/resume its
@@ -4612,18 +4637,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   if (deps.backup) {
     app.addHook('onClose', () => deps.backup!.close());
-    if (BACKUP_RECOVERY_ACCEPTED) {
-      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
-      app.addHook('onReady', (done) => {
-        deps.backup!.service?.start();
-        done();
-      });
-    }
+    deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+    app.addHook('onReady', (done) => {
+      deps.backup!.service?.start();
+      done();
+    });
   }
   registerBackupRoutes(app, {
     userId: (request) => request.localUserId,
     isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
-    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
     service: deps.backup?.service,
     unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
   });

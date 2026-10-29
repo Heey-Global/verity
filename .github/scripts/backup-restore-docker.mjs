@@ -996,9 +996,12 @@ async function restore() {
       await destination.close();
     }
   } else if (
-    ['verify-api', 'verify-rotated-api', 'verify-backup-gate', 'verify-enabled-restart'].includes(
-      action,
-    )
+    [
+      'verify-api',
+      'verify-rotated-api',
+      'verify-restored-schedule',
+      'verify-enabled-restart',
+    ].includes(action)
   ) {
     const previous = JSON.parse(
       await readFile(join(stateRoot, job.id, 'previous-runtime'), 'utf8'),
@@ -1064,7 +1067,7 @@ async function restore() {
     }
     for (const denied of Object.values(input.deniedTokens))
       assert.equal((await api('/auth/session', undefined, denied)).status, 401);
-    if (action === 'verify-backup-gate') {
+    if (action === 'verify-restored-schedule') {
       const databases = [];
       for (const container of await docker.listContainers()) {
         const role =
@@ -1105,13 +1108,32 @@ async function restore() {
         'normal startup must not reactivate restored work or capabilities',
       );
 
-      assert.deepEqual((await api('/api/backups/status')).body, {
-        available: false,
-        reason: 'recovery-validation-pending',
-      });
-      const state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
-      assert.equal(state.schedule.lastAttempt, null);
-      assert.deepEqual(
+      const status = (await api('/api/backups/status')).body;
+      assert.equal(status.available, true);
+      assert.equal(status.configured, true);
+      // A restored timestamp must not count as a capture by the new installation.
+      const activatedAfter = Number(
+        (await readFile(join(root, 'restored-schedule-start'), 'utf8')).trim(),
+      );
+      assert.ok(Number.isFinite(activatedAfter) && activatedAfter > 0);
+      const deadline = Date.now() + 180000;
+      let state;
+      while (Date.now() < deadline) {
+        try {
+          state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+          if (state.schedule.lastSuccess >= activatedAfter) break;
+        } catch {
+          // The server replaces the state file atomically; retry a read that raced it.
+        }
+        await delay(500);
+      }
+      if (!(state?.schedule.lastSuccess >= activatedAfter))
+        console.log('Restored schedule state:', JSON.stringify(state?.schedule));
+      assert.ok(
+        state?.schedule.lastSuccess >= activatedAfter,
+        'restored host must complete a new capture after activation',
+      );
+      assert.notDeepEqual(
         await readdir(
           join(
             root,

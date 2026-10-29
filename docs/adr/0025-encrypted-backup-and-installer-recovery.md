@@ -1,8 +1,9 @@
 # ADR 0025: Encrypted backups and installer recovery
 
-- Status: accepted (architecture decision; functionality not implemented)
+- Status: accepted (architecture decision; backend, installer recovery and first app release implemented)
 - Date: 2026-10-03
-- Amended: 2026-10-24 (simplified first release)
+- Amended: 2026-10-24 (simplified first release); 2026-10-29 (app setup without
+  QR code or paste-back confirmation; production gate removed)
 
 ## Context
 
@@ -68,9 +69,11 @@ The only credential that opens a backup is the user's recovery key: one encoded
 string with a checksum carrying the private half of an asymmetric recipient pair
 (X25519 in the style of `age`, or an equivalent reviewed scheme) and the public
 key that verifies manifest signatures. The user-facing term is "recovery key".
-It is shown once at setup, offered for copy, save and print with an optional QR
-code for another device, and confirmed by pasting it back before backups turn
-on. An abandoned setup discards the keys.
+It is shown once at setup and offered for copy, save and print. "I saved it"
+turns backups on; there is no QR code and no paste-back step, because pasting a
+just-copied key proves nothing. The restore test after the first backup, which
+needs the saved key, is what verifies the copy. An abandoned setup discards the
+keys.
 
 The host keeps the public recipient key (confidential host state, never written
 to a destination), the private signing key and a fingerprint key in
@@ -390,7 +393,9 @@ exclusions; Premium minimum retention.
 The [installer recovery guide](../INSTALLER_RECOVERY.md) describes explicit
 selection, isolated trial, administrator device review, durable publication,
 acceptance and abort. The recovery-capability image label advertises protocol
-support; it does not open the global v1 acceptance gate. The separate-daemon
+support. The production recovery gate was removed on 2026-10-29 by product
+decision, before the native-device, update-safeguard and same-host rollback
+requirements below were met; those remain open. The separate-daemon
 Docker CI harness captures through the production path and destroys the original
 host before recovery. Passing that harness is necessary alongside the remaining
 v1 acceptance requirements below.

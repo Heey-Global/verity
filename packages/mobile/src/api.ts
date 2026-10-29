@@ -1,6 +1,7 @@
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
+  auditEventListSchema,
   auditOperationListSchema,
   auditOperationResponseSchema,
   type AuditHealth,
@@ -1165,6 +1166,47 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
+
+/** A restore probe as the server reports it. The server keeps no key in it.
+ *  `status` and `phase` stay plain strings so a newer server's values do not
+ *  make the whole backup status unreadable. */
+export const backupProbeJobSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  phase: z.string(),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  snapshot: z.unknown(),
+  error: z.string().nullable(),
+});
+export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
+
+/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
+ *  older servers report reasons this app does not know. */
+export const backupStatusSchema = z.discriminatedUnion('available', [
+  z.object({ available: z.literal(false), reason: z.string() }),
+  z.object({
+    available: z.literal(true),
+    configured: z.boolean(),
+    paused: z.boolean().optional(),
+    intervalMs: z.number().optional(),
+    lastSuccess: z.number().nullable().optional(),
+    capturing: z.boolean().optional(),
+    keyGeneration: z.number().optional(),
+    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
+    probe: backupProbeJobSchema.nullable().optional(),
+    alerts: z.array(z.string()),
+  }),
+]);
+export type BackupStatus = z.infer<typeof backupStatusSchema>;
+
+/** A newly generated recovery key, shown once. It becomes active on confirmation. */
+const backupKeyOfferSchema = z.object({
+  id: z.string().uuid(),
+  recoveryKey: z.string().min(1),
+  expiresAt: z.number(),
+});
+export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -3214,6 +3256,8 @@ export class VerityClient {
     // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
     // dropped parameters before, which would silently unfilter the list.
     const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
     if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
       params.push(['q', query.search.trim()]);
@@ -3226,6 +3270,30 @@ export class VerityClient {
     try {
       const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
       return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditEvents(query: AuditOperationQuery = {}) {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/events${suffix}`, { method: 'GET' });
+      return auditEventListSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
@@ -3829,6 +3897,78 @@ export class VerityClient {
   async getSecretStatus(): Promise<SecretStatus> {
     const res = await this.request('/secret/status', { method: 'GET' });
     return secretStatusSchema.parse(await res.json()).status;
+  }
+
+  async getBackupStatus(): Promise<BackupStatus> {
+    const res = await this.request('/api/backups/status', { method: 'GET' });
+    return backupStatusSchema.parse(await res.json());
+  }
+  async beginBackupSetup(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(await this.backupPost('/api/backups/setup'));
+  }
+  /** Sends back the key the app was given; Verity keeps no copy of it. */
+  async confirmBackupSetup(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/setup/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupSetup(): Promise<void> {
+    await this.backupCommand('/api/backups/setup/cancel');
+  }
+  /** Always the "lost" replacement: older snapshots stay readable with the old key. */
+  async beginBackupKeyReplacement(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(
+      await this.backupPost('/api/backups/key-replacement', { reason: 'lost' }),
+    );
+  }
+  async confirmBackupKeyReplacement(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupKeyReplacement(): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/cancel');
+  }
+  async setBackupPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
+    await this.request('/api/backups/policy', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(policy),
+    });
+  }
+  async startBackupProbe(recoveryKey: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost('/api/backups/probes', { recoveryKey }),
+    );
+  }
+  async getBackupProbe(id: string): Promise<BackupProbeJob> {
+    const res = await this.request(`/api/backups/probes/${encodeURIComponent(id)}`, {
+      method: 'GET',
+    });
+    return backupProbeJobSchema.parse(await res.json());
+  }
+  async cancelBackupProbe(id: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost(`/api/backups/probes/${encodeURIComponent(id)}/cancel`),
+    );
+  }
+  /** Confirm and cancel ignore the reply, so an empty success body is fine. */
+  private async backupCommand(path: string, body: object = {}): Promise<void> {
+    await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  private async backupPost(path: string, body: object = {}): Promise<unknown> {
+    const res = await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json();
   }
 
   /** Pre-auth liveness probe carrying the server's own release version — used to
@@ -4989,6 +5129,13 @@ export class VerityClient {
         );
       } catch (error) {
         if (error instanceof VerityApiError && error.status === 404) {
+          // The versioned route also returns 404 when the session itself is gone.
+          // Only an unavailable route should suggest updating Core.
+          if (error.message === `session ${id} not found`) {
+            throw new Error('This session no longer exists. Return to the session list.', {
+              cause: error,
+            });
+          }
           throw new Error(
             'Bounded history is unavailable. Update Core and check that this session still exists.',
             { cause: error },
