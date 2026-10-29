@@ -57,18 +57,21 @@ const dependencies = {
       await inspectEgressHostContainer(binding, id, role, relayPolicy);
     } catch (error) {
       // This fixture contains no credentials; retain daemon facts before rollback removes them.
-      await writeFile(
-        `/evidence/inspect-${id}.json`,
-        JSON.stringify(
-          {
-            role,
-            error: String(error),
-            container: JSON.parse(await docker('inspect', id)),
-          },
-          null,
-          2,
-        ),
-      );
+      process.stderr.write(`Host inspection refused: ${String(error)}\n`);
+      await (async () => {
+        await writeFile(
+          `/evidence/inspect-${id}.json`,
+          JSON.stringify(
+            {
+              role,
+              error: String(error),
+              container: JSON.parse(await docker('inspect', id)) as unknown,
+            },
+            null,
+            2,
+          ),
+        );
+      })().catch(() => undefined);
       throw error;
     }
   },
@@ -77,7 +80,8 @@ const dependencies = {
     try {
       await docker('start', id);
     } catch (error) {
-      await writeFile(`/evidence/start-${id}.txt`, String(error));
+      process.stderr.write(`Host start failed: ${String(error)}\n`);
+      await writeFile(`/evidence/start-${id}.txt`, String(error)).catch(() => undefined);
       throw error;
     }
   },
