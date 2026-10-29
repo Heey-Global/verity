@@ -49,9 +49,25 @@ const dependencies = {
   inspectTransport: (
     binding: Parameters<typeof inspectEgressTransport>[0],
     ids: Parameters<typeof inspectEgressTransport>[1],
-  ) => inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined),
+  ) =>
+    inspectEgressTransport(binding, ids, relayPolicy?.codexSubpath !== undefined).catch(
+      async (error: unknown) => {
+        process.stderr.write(`Transport inspection failed: ${String(error)}\n`);
+        await writeFile('/evidence/transport-inspection-error.txt', String(error));
+        throw error;
+      },
+    ),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
-  apply: applyProjectFenceRules,
+  apply: async (script: string) => {
+    try {
+      await applyProjectFenceRules(script);
+    } catch (error) {
+      process.stderr.write(`Kernel transaction failed: ${String(error)}\n`);
+      await writeFile('/evidence/transport-kernel-error.txt', String(error));
+      await writeFile('/evidence/transport-kernel-error.nft', script);
+      throw error;
+    }
+  },
   inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: async (
     binding: Parameters<typeof inspectEgressHostContainer>[0],
