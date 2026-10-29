@@ -36,6 +36,8 @@ export interface ProjectFenceDependencies {
 const LEASE_MS = 1000;
 const tableName = (projectId: string): string =>
   'verity_egress_' + createHash('sha256').update(projectId).digest('hex').slice(0, 24);
+const generationKey = (binding: ProjectFenceBinding): string =>
+  binding.projectId + ':' + binding.generation;
 const hexId = /^[a-f0-9]{64}$/u;
 function validateBinding(binding: ProjectFenceBinding): void {
   if (
@@ -162,9 +164,10 @@ export class ProjectEgressFence {
     binding = { ...binding };
     return this.serialize(async () => {
       const key = bindingKey(binding);
-      if (this.retired.has(key)) throw new Error('Retired project fence generation');
+      if (this.retired.has(generationKey(binding)))
+        throw new Error('Retired project fence generation');
       const old = this.active.get(binding.projectId);
-      if (old && bindingKey(old.binding) !== key && !this.retired.has(bindingKey(old.binding)))
+      if (old && bindingKey(old.binding) !== key && !this.retired.has(generationKey(old.binding)))
         throw new Error('Retire the previous generation first');
       if (this.bridges.has(binding.bridge) && this.bridges.get(binding.bridge) !== key)
         throw new Error('Use a fresh bridge for a new generation');
@@ -197,7 +200,7 @@ export class ProjectEgressFence {
       if (
         !current ||
         bindingKey(current.binding) !== bindingKey(snapshot.binding) ||
-        this.retired.has(bindingKey(snapshot.binding))
+        this.retired.has(generationKey(snapshot.binding))
       )
         throw new Error('Inactive project fence generation');
       if (
@@ -254,7 +257,7 @@ export class ProjectEgressFence {
       if (!current || bindingKey(current.binding) !== bindingKey(binding))
         throw new Error('Inactive project fence generation');
       await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
-      this.retired.add(bindingKey(binding));
+      this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
     });
   }

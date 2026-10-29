@@ -66,6 +66,9 @@ it('rejects stale generations/revisions and bridge reuse after retirement', asyn
   await expect(fence.refresh({ binding, revision: 3, grants: [grant] })).rejects.toThrow(
     'Inactive',
   );
+  await expect(
+    fence.prepare({ ...binding, bridge: 've-a-fresh', endpointId: 'f'.repeat(64) }),
+  ).rejects.toThrow('Retired');
   await expect(fence.prepare({ ...binding, generation: 'g2' })).rejects.toThrow('fresh bridge');
   await fence.prepare({
     ...binding,
