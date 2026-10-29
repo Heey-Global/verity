@@ -670,12 +670,14 @@ export function createControlPlaneSessionTools(
             `target session ${sessionId} does not exist or is not a Verity project session`,
           );
         }
+        // Before the blockers: a refused caller must not learn the target's state.
+        await requireHandoffTarget(input, found.project.id);
         const blocker = handoffBlocker(found.facts, found.project);
         if (blocker !== undefined) throw new ControlPlaneSessionToolError(blocker);
-        await requireHandoffTarget(input, found.project.id);
         target = found;
       } else if ('newSession' in request.target) {
         const project = resolveProject(projects, request.target.newSession.project);
+        await requireHandoffTarget(input, project.id);
         await requireKnowledgeTarget(project.id);
         if (isControlPlaneTarget(project, deps.controlProjectId))
           throw new ControlPlaneSessionToolError(
@@ -683,7 +685,6 @@ export function createControlPlaneSessionTools(
           );
         const blockedProject = projectHandoffBlocker(project);
         if (blockedProject !== undefined) throw new ControlPlaneSessionToolError(blockedProject);
-        await requireHandoffTarget(input, project.id);
         if (deps.createSession === undefined) {
           throw new ControlPlaneSessionToolError('new-session handoff is not configured');
         }
@@ -721,6 +722,7 @@ export function createControlPlaneSessionTools(
         // — so the transcript of this session is where that trace lives. Address a
         // `sessionId` directly when the target has to be settled before the card.
         const project = resolveProject(projects, request.target.project);
+        await requireHandoffTarget(input, project.id);
         await requireKnowledgeTarget(project.id);
         if (isControlPlaneTarget(project, deps.controlProjectId))
           throw new ControlPlaneSessionToolError(
@@ -733,7 +735,6 @@ export function createControlPlaneSessionTools(
         // with the same sentence.
         const blockedProject = projectHandoffBlocker(project);
         if (blockedProject !== undefined) throw new ControlPlaneSessionToolError(blockedProject);
-        await requireHandoffTarget(input, project.id);
         // `requireResumable`, unlike the by-id branch above. There, dropping a dead target
         // before projection would cost the caller the precise "has no workspace left" message
         // in favour of "does not exist", and the narrow is one session anyway. Here it is a

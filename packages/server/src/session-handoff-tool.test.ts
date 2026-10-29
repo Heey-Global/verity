@@ -803,4 +803,20 @@ describe('control-plane session tools — handoff target authorization', () => {
     });
     expect(dispatchTurn).toHaveBeenCalledTimes(1);
   });
+
+  it('refuses before revealing why an ungranted target is blocked', async () => {
+    const authorizeHandoffTarget = vi.fn(async () => {
+      throw new ControlPlaneSessionAuthorityError('no grant');
+    });
+    const { tools, call } = harness({ authorizeHandoffTarget });
+    for (const target of [
+      { sessionId: 'sess-stopped' },
+      { project: 'stopped' },
+      { newSession: { project: 'stopped' } },
+    ]) {
+      await expect(tools.handoff(call({ target, title: 'Fix', briefing: 'Go' }))).rejects.toThrow(
+        'no grant',
+      );
+    }
+  });
 });
