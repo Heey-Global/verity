@@ -1128,6 +1128,36 @@ async function restore() {
       assert.equal(servers.length, 1);
       const server = servers[0];
       assert.ok(server, 'running normal server required');
+      try {
+        const receiptCheck = await exec('docker', [
+          'exec',
+          '--user',
+          '1000:1000',
+          server.id,
+          'node',
+          '--input-type=module',
+          '-e',
+          `
+          import {readFile} from 'node:fs/promises';
+          import {openCaIdentityReceipt} from '/app/packages/server/dist/backup/identity-receipt.js';
+          try {
+            const state=JSON.parse(await readFile('/srv/verity/backup-state/state','utf8'));
+            const receipt=await readFile('/run/verity-backups/identity/'+state.installationId+'-ca-key-k'+state.keyGeneration);
+            openCaIdentityReceipt(receipt,await readFile('/run/verity-pairing/tls-ca-cert.pem'),state.installationId,state.keyGeneration,state.host.recipient);
+            console.log('BACKUP_ACCEPTANCE_RECEIPT authenticated with Server uid');
+          } catch(error) {
+            console.log('BACKUP_ACCEPTANCE_RECEIPT '+JSON.stringify({name:error.name,code:error.code,
+              mismatch:error.message==='Identity helper receipt does not match this capture'}));
+            process.exitCode=1;
+          }
+        `,
+        ]);
+        console.log(receiptCheck.stdout.trim());
+      } catch (error) {
+        for (const line of (error.stdout ?? '').split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_RECEIPT ')) console.log(line);
+        throw error;
+      }
       const updaters = [];
       for (const container of await docker.listContainers())
         if (
@@ -1173,7 +1203,7 @@ async function restore() {
         );
         const logs = await exec('docker', ['logs', server.id]);
         for (const line of (logs.stdout + logs.stderr).split('\n'))
-          if (line.startsWith('BACKUP_ACCEPTANCE_FAILURE ')) console.log(line);
+          if (line.startsWith('BACKUP_ACCEPTANCE_')) console.log(line);
       }
       assert.ok(state.schedule.lastSuccess > 0, 'normal server must complete overdue capture');
       assert.equal(state.schedule.failures, 0);
