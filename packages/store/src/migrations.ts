@@ -4954,3 +4954,14 @@ migrations['0174_qa_recovery'] = {
     await sql`drop table qa_dispatches`.execute(db);
   },
 };
+
+migrations['0175_running_turn_settlement'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns add column marker_id text, add column settled boolean not null default false`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table running_turns drop column marker_id, drop column settled`.execute(db);
+  },
+};
