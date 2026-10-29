@@ -157,7 +157,9 @@ export async function runBackupGit(
         : ['worktree', 'repair', '--', ...worktrees]),
     ]);
     const child = spawn(commandPath, commandArgs, {
-      cwd: privateRoot,
+      // Git repair resolves the main worktree from cwd even with GIT_WORK_TREE set.
+      // Restore callers provide the validated private staging worktree here.
+      cwd: command === 'repair' ? work : privateRoot,
       env: {
         PATH: '/usr/bin:/bin',
         HOME: privateRoot,

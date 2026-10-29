@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,8 +57,41 @@ it.skipIf(!adminUrl)(
         client.release();
       }
       await pool.query(
-        "INSERT INTO projects(id,owner,repo,clone_dir,container_name,state,kind) VALUES ('verity-control','verity','control','control','verity-control','active','control_plane')",
+        "INSERT INTO projects(id,owner,repo,clone_dir,container_name,state,kind) VALUES ('verity-control','verity','control','verity-control','verity-control','active','control_plane')",
       );
+      const control = join(root, 'workspaces/verity-control');
+      const exec = promisify(execFile);
+      const gitEnv = {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_COUNT: '0',
+      };
+      await exec('/usr/bin/git', ['init', '-b', 'main', control], { env: gitEnv });
+      await exec(
+        '/usr/bin/git',
+        [
+          '-C',
+          control,
+          '-c',
+          'user.name=Verity',
+          '-c',
+          'user.email=verity@localhost',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'chore: initialize Verity Control',
+        ],
+        { env: gitEnv },
+      );
+      expected.git.push({
+        path: 'workspaces/verity-control',
+        head: (
+          await exec('/usr/bin/git', ['-C', control, 'rev-parse', 'HEAD'], { env: gitEnv })
+        ).stdout.trim(),
+      });
       const script = await readFile(
         new URL('../deploy/host/verity-backup-prerequisites', import.meta.url),
         'utf8',
