@@ -46,6 +46,13 @@ export type HttpFetch = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     body?: string;
+    /** Transport hint for long streaming responses (the Docker image-pull
+     *  progress stream): resolve as soon as the headers arrive and expose the
+     *  body incrementally as {@link HttpResponse.body}. The global `fetch`
+     *  always behaves this way and ignores the flag; the Docker unix-socket
+     *  transport otherwise buffers the whole body before resolving. A caller
+     *  that sets it must read the body to its end or cancel it. */
+    stream?: boolean;
   },
 ) => Promise<HttpResponse>;
 

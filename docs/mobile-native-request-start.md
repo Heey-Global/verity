@@ -83,3 +83,22 @@ for switch 17's first history request, followed by 70.5 ms native work and 551.7
 until JS return. Switch 10 has a 2402.9 ms native-ready-to-JS gap. These locate
 waiting intervals; the responsible workload and the new build's improvement remain
 unproven until device verification.
+
+### Selection scheduling probes
+
+With **Record interaction diagnostics** enabled, gesture events with source
+`scheduling` record sidebar/session layout and passive effects, followed by
+microtask and zero-delay timer callback waits (`waitMs`). These are scheduling
+boundaries, not measurements of continuous JS blockage or paint. The fixed
+Profiler boundaries also emit `*-react-profile` with React's durations and
+start/commit timestamps when the React build supports profiling. Standard
+production builds may emit no profiler callbacks; their absence is not zero
+render cost. Recording does not change the boundary tree or gesture behavior.
+
+Row touch-down/up/cancel events additionally carry `uiReceivedWallMs` captured
+in the UI worklet and `jsReceivedWallMs` at JS delivery. Their difference helps
+locate delayed bridge delivery. The UI timestamp is recognizer callback time,
+not hardware touch receipt; wall-clock adjustments can invalidate the difference.
+Native React touch timestamps in switch phases use a separate clock and must
+not be subtracted from these wall timestamps. Existing event limits, dropped
+counts, recording reset and export size limits apply to these probes.

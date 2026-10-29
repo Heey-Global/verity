@@ -87,8 +87,11 @@ off-host copy made before the compromise, with `--new-identity`, and replaces
 the key there. After a leak of the recovery key itself, the user replaces the
 key with the reason "exposed", which deletes the old generation's CA key file
 at once, and runs `verity-install --rotate-identity` on the live host, which
-issues a new CA, TLS and pairing identity and revokes every device token, so
-the identity in old snapshots and copies becomes worthless.
+issues a new CA, TLS and pairing identity and revokes every device token. Old
+snapshot credentials cannot authenticate to that rotated host, and local
+pre-rotation snapshots require `--new-identity` for recovery. Offline devices
+retain their saved old pin and identity until deliberately reset and paired
+again; rotation cannot erase or remotely invalidate external copies.
 
 Every manifest is signed; the signature covers the whole manifest including
 each object's ID, digest and length, the repository identity, format version and
@@ -381,6 +384,16 @@ rehydration; takeover of another installation's repository with fences;
 the quiesced final pre-update snapshot and the two Updater changes it needs;
 database segmentation; further destinations; several recovery keys; per-project
 exclusions; Premium minimum retention.
+
+## Installer recovery implementation
+
+The [installer recovery guide](../INSTALLER_RECOVERY.md) describes explicit
+selection, isolated trial, administrator device review, durable publication,
+acceptance and abort. The recovery-capability image label advertises protocol
+support; it does not open the global v1 acceptance gate. The separate-daemon
+Docker CI harness captures through the production path and destroys the original
+host before recovery. Passing that harness is necessary alongside the remaining
+v1 acceptance requirements below.
 
 ## Verification requirements
 

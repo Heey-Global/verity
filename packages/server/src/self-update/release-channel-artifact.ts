@@ -75,6 +75,8 @@ export type RegistryFetch = (
 export interface ReleaseChannelArtifactOptions {
   readonly architecture: ReleaseArchitecture;
   readonly channel?: ReleaseChannelName;
+  /** Historical publication tag; the envelope still requires independent signature verification. */
+  readonly tag?: string;
   readonly fetchRegistry?: RegistryFetch;
   readonly registry?: string;
   readonly repository?: string;
@@ -124,7 +126,9 @@ export function createReleaseChannelArtifactLoader(
   const fetchRegistry = options.fetchRegistry ?? registryFetch;
   const registry = options.registry ?? RELEASE_CHANNEL_REGISTRY;
   const repository = options.repository ?? RELEASE_CHANNEL_REPOSITORY;
-  const tag = releaseChannelTag(options.architecture, options.channel);
+  const tag = options.tag ?? releaseChannelTag(options.architecture, options.channel);
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag))
+    throw new Error('Invalid release artifact tag');
 
   return async (signal) => {
     const manifestResponse = await fetchRegistry(

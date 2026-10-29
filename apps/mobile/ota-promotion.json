@@ -1,21 +1,15 @@
 {
   "schema": 1,
-  "version": "1.79.1",
-  "runtime": "1.79.0",
+  "version": "1.80.2",
+  "runtime": "1.80.0",
   "channel": "production",
-  "commit": "9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
-  "tag": "mobile-v1.79.1",
-  "branch": "staging-mobile-v1.79.1-9b78e9f5f2b2aca6f56f70efa3ff1348654f8b3c",
-  "baseline": "mobile-v1.79.0",
-  "group": "39af6fdd-4131-4d34-9621-602fde9aab30",
+  "commit": "05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
+  "tag": "mobile-v1.80.2",
+  "branch": "staging-mobile-v1.80.2-05d5726cef342dcd66eadc1e4ee68312dcff7ddf",
+  "baseline": "mobile-v1.80.1",
+  "group": "2b46ddfd-aea3-4ede-8704-5ea3b395c72b",
   "notes": [
-    "publish session documents automatically without Git (#1841)",
-    "invalidate Google actions when leaving a chat (#1916)",
-    "restore connection provider icons and consistent statuses (#1915)",
-    "defer auxiliary session catalog requests (#1913)",
-    "preserve text field focus when showing focus shadow (#1914)",
-    "frame Google account choices as tappable rows (#1911)",
-    "restrict scroll reports to diagnostic recording (#1908)",
-    "respect credential permissions and prevent unsafe repair turns (#1900)"
+    "recover oversized events in bounded chunks (#2007)",
+    "group features and app administration settings (#2005)"
   ]
 }

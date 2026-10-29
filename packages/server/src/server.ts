@@ -2,6 +2,9 @@ import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
+import { registerProjectEgressRoutes } from './project-egress-routes.js';
+import { createBackupAlertNotifier } from './backup/alert-notifier.js';
+import { registerLogRoutes, type LogRouteDeps } from './log-routes.js';
 import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
@@ -373,6 +376,8 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
+import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
@@ -1156,6 +1161,8 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  /** Internal service; public operations remain gated on complete recovery acceptance. */
+  backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;
   matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   onMatrixConfigured?: (() => Promise<void>) | undefined;
@@ -1426,7 +1433,12 @@ export interface ServerDeps {
   /** Best-effort image cleanup after a successful project soft-delete. */
   onProjectHidden?: (projectId: string) => Promise<void>;
   /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
-  audit?: { recorder: AuditRecorder; log: AuditLog } | undefined;
+  audit?:
+    | ({ recorder: AuditRecorder; log: AuditLog } & Pick<
+        LogRouteDeps,
+        'buildDiagnostics' | 'serverLogs'
+      >)
+    | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -3787,6 +3799,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
     );
   };
+  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
+  // `undefined` when the turn is not the session's running one or has no initiator.
+  const runningTurnInitiator = async (
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> => {
+    const running = (await deps.eventStore.listRunningTurns()).find(
+      (t) => t.sessionId === sessionId,
+    );
+    if (running?.turnId !== turnId) return undefined;
+    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
+      (event) => event.seq === running.promptSeq,
+    )?.event;
+    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
+  };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
       try {
@@ -4171,12 +4198,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
           const fresh = await deps.eventStore.markSessionAutomation(sessionId, marker);
           if (!fresh) return;
+          // Nobody asked for this turn, so it runs for the session's most recent user;
+          // their project rights are still checked on every gateway call it makes.
+          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
             repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
+              ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
           if (!accepted) {
@@ -4551,6 +4582,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     done();
   });
 
+  if (deps.backup) {
+    app.addHook('onClose', () => deps.backup!.close());
+    if (BACKUP_RECOVERY_ACCEPTED) {
+      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+      app.addHook('onReady', (done) => {
+        deps.backup!.service?.start();
+        done();
+      });
+    }
+  }
+  registerBackupRoutes(app, {
+    userId: (request) => request.localUserId,
+    isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
+    service: deps.backup?.service,
+    unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
+  });
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,
@@ -4723,6 +4771,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerDiagnosticsMemoryRoute(app);
   if (deps.audit !== undefined) {
+    registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
     registerAuditRoutes(app, {
       ...deps.audit,
       sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
@@ -5886,6 +5935,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId: string,
         id: string,
         decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+        decidedBy?: { userId: string },
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
@@ -5931,6 +5981,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       message: string;
       invocationId: string;
       approvedByCard: boolean;
+      // The user the delivered turn runs for. Without one, an authenticated server
+      // refuses every gateway call in the peer's turn.
+      initiatedBy: { userId: string } | undefined;
     }): Promise<{ sessionId: string; queued: boolean }> => {
       const source = await deps.eventStore.getSession(input.sourceSessionId);
       const link = await linkedSessionTarget(input.sourceSessionId, input.targetSessionId);
@@ -5983,6 +6036,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             {
               displayPrompt: prompt,
               clientReplyId: `linked:${input.invocationId}`,
+              ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
               peer: {
                 sessionId: input.sourceSessionId,
                 projectId: source.projectId!,
@@ -6001,7 +6055,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       string,
       { behavior: 'allow' | 'deny'; promise: Promise<boolean> }
     >();
-    decidePendingLinkedMessage = (sessionId, id, decision) => {
+    decidePendingLinkedMessage = (sessionId, id, decision, decidedBy) => {
       const key = `${sessionId}\0${id}`;
       const existing = pendingLinkDecisions.get(key);
       if (existing) {
@@ -6026,6 +6080,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           message: pending.message,
           invocationId: pending.invocationId,
           approvedByCard: true,
+          // The sending turn has usually ended by now; the user who approved delivery is
+          // the one the message runs for.
+          initiatedBy: decidedBy,
         });
         // The original gateway call recorded a timeout refusal. Pair it with a
         // served record under the same call id when this saved approval delivers.
@@ -6142,13 +6199,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // the first delivery's answer without a second turn. That is the same trade ADR 0008 made
       // for every dispatch, and it is the safe direction — the failure is a briefing not sent
       // twice, and a caller that meant it can say it differently or send it from a new call.
-      dispatchTurn: ({ sessionId, prompt, displayPrompt, idempotencyKey }) =>
-        conductor.dispatchTurn(
+      dispatchTurn: async ({ sessionId, prompt, displayPrompt, idempotencyKey, caller }) => {
+        const initiatedBy = await runningTurnInitiator(caller.sessionId, caller.turnId);
+        return conductor.dispatchTurn(
           sessionId,
           prompt,
           {},
-          { displayPrompt, clientReplyId: idempotencyKey },
-        ),
+          {
+            displayPrompt,
+            clientReplyId: idempotencyKey,
+            ...(initiatedBy ? { initiatedBy } : {}),
+          },
+        );
+      },
       createSession: async ({ projectId, name, idempotencyKey }) => {
         const existing = controlHandoffSessionCreates.get(idempotencyKey);
         if (existing !== undefined) return existing;
@@ -6885,6 +6948,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               input.sessionId,
               planningRevision,
               planningConsents.get(input.request as object),
+              // Approved from the planning turn, so the implementation runs for its initiator.
+              await runningTurnInitiator(input.sessionId, input.turnId),
             ))
           )
             throw new ControlPlaneSessionAuthorityError(
@@ -6952,6 +7017,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             message: request.message,
             invocationId: input.invocationId,
             approvedByCard: input.approvedByCard === true,
+            initiatedBy: await runningTurnInitiator(input.sessionId, input.turnId),
           });
           await deps.eventStore.deletePendingSessionLinkMessage(input.sessionId, input.callId);
           return result;
@@ -7485,6 +7551,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);
@@ -9733,12 +9800,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
       // a long session with only its tail and fetch older turns on scroll-up, instead
       // of replaying the whole event log. Live updates still arrive over the WS stream.
-      boundedHistory: async (reply, id, beforeSeq, snapshotSeq) => {
+      boundedHistory: async (reply, id, beforeSeq, snapshotSeq, eventOffset) => {
         if (!(await deps.eventStore.getSession(id))) {
           reply.code(404);
           return { error: `session ${id} not found` };
         }
-        return deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq);
+        try {
+          return await deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq, eventOffset);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          reply.code(400);
+          return { error: 'invalid history offset' };
+        }
       },
       history: async (reply, id, limit, beforeSeq) => {
         const session = await deps.eventStore.getSession(id);
@@ -10477,6 +10550,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
 
     localSavesInFlight.add(id);
+    // The save and its follow-up turns run for the user who asked for it, so they keep
+    // gateway tool access under authentication.
+    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
+    const origin = initiatedBy ? { initiatedBy } : {};
     const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
     const prompt =
       "Save this session's work to the local project. Review the working tree and the branch changes. " +
@@ -10487,7 +10564,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
     void (async () => {
       try {
-        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project');
+        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project', origin);
         if (result.aborted || result.exitCode !== 0) return;
         let approvedTip: string;
         try {
@@ -10506,11 +10583,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
           return;
         }
-        const merged = await mergeLocalSession(id, () => undefined, approvedTip);
+        const merged = await mergeLocalSession(id, () => undefined, approvedTip, initiatedBy);
         if ('error' in merged) {
           await conductor.dispatchTurn(
             id,
@@ -10520,7 +10597,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               { error: merged.error },
             ),
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
         }
       } catch (error) {
@@ -10530,7 +10607,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           )
           .catch(() => undefined);
       } finally {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  agentGatewayUnavailableMessage,
   claudeEgressAgentEnv,
   claudeEgressRelayGeneration,
   claudeEgressRelayHealthy,
@@ -9,6 +10,47 @@ import {
   claudeTransportRefusal,
 } from './claude-egress-agent-env.js';
 import { CLAUDE_EGRESS_PLACEHOLDER } from './claude-egress-policy.js';
+import { ProvisioningError } from './provisioner.js';
+
+describe('agentGatewayUnavailableMessage', () => {
+  it('names the reason the automatic rebuild failed instead of only the identity symptom', () => {
+    const storage = new Error('Builder admission unavailable: build storage is paused');
+    const cause = new ProvisioningError(`container recreate failed: ${storage.message}`, storage);
+
+    const message = agentGatewayUnavailableMessage({ stage: 'rebuild', cause });
+
+    // The operator can act on the storage fault; the identity text alone sent
+    // them to "repair the project", which runs the same failing rebuild again.
+    expect(message).toContain(cause.message);
+    expect(message).toContain('automatic Sandbox rebuild failed');
+  });
+
+  it('names why a rebuilt Sandbox could not be verified', () => {
+    const cause = new Error('docker network: connect ECONNREFUSED');
+    expect(agentGatewayUnavailableMessage({ stage: 'verify', cause })).toContain(cause.message);
+  });
+
+  it('keeps operator-facing reasons to one bounded line', () => {
+    const cause = new Error(
+      `${'x'.repeat(1000)}\n    at secretFrame (/srv/verity/internal.js:1:1)`,
+    );
+    const message = agentGatewayUnavailableMessage({ stage: 'rebuild', cause });
+    expect(message).not.toContain('secretFrame');
+    expect(message).not.toContain('x'.repeat(301));
+  });
+
+  it('keeps one stable identity prefix whatever the repair outcome', () => {
+    const messages = [
+      agentGatewayUnavailableMessage(),
+      agentGatewayUnavailableMessage({ stage: 'still_unready' }),
+      agentGatewayUnavailableMessage({ stage: 'rebuild', cause: new Error('boom') }),
+      agentGatewayUnavailableMessage({ stage: 'verify', cause: 'boom' }),
+    ];
+    const prefix = 'Sandbox has no valid Agent Gateway identity';
+    for (const message of messages) expect(message.startsWith(prefix)).toBe(true);
+    expect(new Set(messages).size).toBe(messages.length);
+  });
+});
 
 describe('claudeTransportRefusal', () => {
   it('admits a Claude turn only on the ACP transport', () => {

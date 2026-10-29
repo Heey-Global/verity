@@ -4670,7 +4670,7 @@ migrations['0168_audit_events'] = {
   },
 };
 
-migrations['0170_repair_supervision'] = {
+migrations['0172_repair_supervision'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table repair_mandates (
       project_id text primary key references projects(id) on delete cascade,
@@ -4734,6 +4734,43 @@ migrations['0169_live_meeting_results'] = {
   },
   async down(db: Kysely<unknown>): Promise<void> {
     await db.schema.dropTable('live_meeting_results').execute();
+  },
+};
+
+migrations['0170_backup_foundation'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table backup_policy (id integer primary key check (id = 1), journal_enabled boolean not null default false)`.execute(
+      db,
+    );
+    await sql`insert into backup_policy(id) values (1)`.execute(db);
+    await sql`create table backup_revocation_outbox (
+      id text primary key, device_id text not null, created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create table backup_git_repositories (
+      project_id text not null references projects(id) on delete cascade,
+      path text not null, repo_key text not null unique, primary key (project_id, path)
+    )`.execute(db);
+    await sql`create table backup_unassigned_git_repositories (
+      path text primary key, repo_key text not null unique
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table backup_unassigned_git_repositories`.execute(db);
+    await sql`drop table backup_git_repositories`.execute(db);
+    await sql`drop table backup_revocation_outbox`.execute(db);
+    await sql`drop table backup_policy`.execute(db);
+  },
+};
+
+migrations['0171_project_egress_policy'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_egress_policy (
+      project_id text primary key references projects(id) on delete cascade,
+      state jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_egress_policy`.execute(db);
   },
 };
 
@@ -4847,7 +4884,7 @@ export async function executedSchemaGeneration(db: Kysely<Database>): Promise<st
   return executed.sort().at(-1) ?? null;
 }
 
-migrations['0171_qa_coordinator'] = {
+migrations['0173_qa_coordinator'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table qa_coordinator (
       id integer primary key check (id = 1), enabled boolean not null default false,

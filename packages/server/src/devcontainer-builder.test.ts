@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultDevcontainerBuildSpawner, devcontainerBuilderEndpoint } from './provisioner.js';
 import { BuildStorage, type BuildStorageLease } from './build-storage.js';
@@ -195,8 +195,15 @@ describe('production spawner remote reservation lifecycle', () => {
             namespace: 'previous-server',
           }),
         );
-        expect(() => storage.acquire()).toThrow('termination is unconfirmed');
-        expect(() => manager().acquire()).toThrow('termination is unconfirmed');
+        // The unconfirmed attempt keeps its record and reserves its estimate, but no
+        // longer refuses every later build on the host.
+        for (const next of [storage, manager()]) {
+          next.acquire().dispose();
+          expect(next.unresolvedAttempts()).toEqual([
+            expect.objectContaining({ attempt: basename(lease.directory) }),
+          ]);
+        }
+        expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
         expect(existsSync(config)).toBe(true);
       }
     },
@@ -257,6 +264,11 @@ if (${JSON.stringify(phase)} === 'build' || process.argv[2] === 'load') {
     await rejected;
     expect(lease.retainArtifacts).toBe(true);
     lease.dispose();
-    expect(() => storage.acquire()).toThrow('termination is unconfirmed');
+    // Kept as an unresolved reservation for reconciliation, not a host-wide block.
+    storage.acquire().dispose();
+    expect(existsSync(join(lease.directory, 'remote-operation.json'))).toBe(true);
+    expect(storage.unresolvedAttempts()).toEqual([
+      expect.objectContaining({ attempt: basename(lease.directory) }),
+    ]);
   },
 );

@@ -6,6 +6,63 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.65.0](https://github.com/Heey-Global/verity/compare/v4.64.0...v4.65.0) (2026-10-29)
+
+
+### Features
+
+* **egress:** add draft project policy management ([#2033](https://github.com/Heey-Global/verity/issues/2033)) ([6c0c4f3](https://github.com/Heey-Global/verity/commit/6c0c4f3d51f338eae6a8350dc5934d3c397c14e0))
+* **logs:** link build diagnostics with audit and system logs ([#2031](https://github.com/Heey-Global/verity/issues/2031)) ([8f3a05e](https://github.com/Heey-Global/verity/commit/8f3a05ea6a93ed4036ce20eae7a34f7156d7a5be))
+
+
+### Bug Fixes
+
+* **backup:** validate frozen Git after GC and dropping alternates ([#2020](https://github.com/Heey-Global/verity/issues/2020)) ([56cb87a](https://github.com/Heey-Global/verity/commit/56cb87a00fb758d0713935794877fb68962410a1))
+* **meetings:** add safe correlated online start diagnostics ([#2019](https://github.com/Heey-Global/verity/issues/2019)) ([455057e](https://github.com/Heey-Global/verity/commit/455057efe37b69faa18916d15af2c73efcd8b6c6))
+* **meetings:** add safe correlated online start diagnostics ([#2019](https://github.com/Heey-Global/verity/issues/2019)) ([cb7ad49](https://github.com/Heey-Global/verity/commit/cb7ad490cac23a2bada5df2c4e118e6e6dd47108))
+
+## [4.64.0](https://github.com/Heey-Global/verity/compare/v4.63.0...v4.64.0) (2026-10-28)
+
+
+### Features
+
+* **server:** queue devcontainer builds instead of refusing them as busy ([#2015](https://github.com/Heey-Global/verity/issues/2015)) ([0af2f28](https://github.com/Heey-Global/verity/commit/0af2f289f5eb5d3045ad7e4c335d73aaaf338f69))
+
+
+### Bug Fixes
+
+* **server:** bound image pulls by progress instead of a fixed 300 s budget ([#2013](https://github.com/Heey-Global/verity/issues/2013)) ([cd5269f](https://github.com/Heey-Global/verity/commit/cd5269f5054a2da54ea2d818dd2f1c284c1fd22d))
+* **server:** keep woken Sandboxes on a valid Agent Gateway identity ([#2014](https://github.com/Heey-Global/verity/issues/2014)) ([58326e4](https://github.com/Heey-Global/verity/commit/58326e40311d3df2ae9b1aa79f861a74c1548490))
+* **server:** stop one interrupted build from blocking every build on the host ([#2012](https://github.com/Heey-Global/verity/issues/2012)) ([a5a28b5](https://github.com/Heey-Global/verity/commit/a5a28b5b947e36774c06362915300db95a84f7ad))
+
+## [4.63.0](https://github.com/Heey-Global/verity/compare/v4.62.4...v4.63.0) (2026-10-28)
+
+
+### Features
+
+* **backup:** add encrypted local backups and installer recovery ([#1975](https://github.com/Heey-Global/verity/issues/1975)) ([6d5bc40](https://github.com/Heey-Global/verity/commit/6d5bc40184649e6eeb47f0d519a4ef1e36558379))
+
+
+### Bug Fixes
+
+* **code-review:** avoid nested Codex sandbox under gVisor ([#2010](https://github.com/Heey-Global/verity/issues/2010)) ([d83f18a](https://github.com/Heey-Global/verity/commit/d83f18a6de463b75c304871a95128378cb3c823f))
+* **history:** recover oversized events in bounded chunks ([#2007](https://github.com/Heey-Global/verity/issues/2007)) ([91411a7](https://github.com/Heey-Global/verity/commit/91411a70ccf61236f8171e092f29393717c2fa3b))
+
+## [4.62.4](https://github.com/Heey-Global/verity/compare/v4.62.3...v4.62.4) (2026-10-28)
+
+
+### Bug Fixes
+
+* **release:** recover a missing release PR two minutes after a lost push ([#2000](https://github.com/Heey-Global/verity/issues/2000)) ([20f5192](https://github.com/Heey-Global/verity/commit/20f51920f6afc964f53798c7ce43bfb97f9e287c))
+* **server:** size build storage admission from measured image size ([#2004](https://github.com/Heey-Global/verity/issues/2004)) ([ffeebe0](https://github.com/Heey-Global/verity/commit/ffeebe0227fd3053bc2327897dbd3002c283f976))
+
+## [4.62.3](https://github.com/Heey-Global/verity/compare/v4.62.2...v4.62.3) (2026-10-28)
+
+
+### Bug Fixes
+
+* **server:** run server-started turns for the user behind them ([#1998](https://github.com/Heey-Global/verity/issues/1998)) ([b5b0c16](https://github.com/Heey-Global/verity/commit/b5b0c1619120b176c81cd29f32fb062d48661e56))
+
 ## [4.62.2](https://github.com/Heey-Global/verity/compare/v4.62.1...v4.62.2) (2026-10-28)
 
 
