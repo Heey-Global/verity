@@ -165,7 +165,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           if (stopped || (deps.enabled && !(await deps.enabled()))) break;
           for (const { branch, status } of statuses) {
             const resource = `pr:${status.number}`;
-            if (status.pipeline === 'unknown')
+            if (status.pipeline !== 'failure')
               await store.invalidateObservation(project.id, resource);
             const sha = status.headSha;
             if (!sha) continue;
@@ -202,6 +202,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           for (const run of latestRuns.values()) {
             if (!(await store.acceptWorkflow(project.id, run.workflow, run.id))) continue;
             await store.supersede(project.id, `workflow:${run.workflow}`, run.sha);
+            if (!['failure', 'timed_out', 'action_required'].includes(run.conclusion ?? ''))
+              await store.invalidateObservation(project.id, `workflow:${run.workflow}`);
             // A run already represented by a PR head is one incident, not a second repair.
             if (
               page.pulls.some((p) => p.sha === run.sha) ||
@@ -261,12 +263,18 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
             if (incident.owner_session_id) await store.flagStalled(incident.id);
             if (
               incident.state === 'verifying' &&
-              statuses.some(
+              (statuses.some(
                 (row) =>
                   `pr:${row.status.number}` === incident.resource &&
                   row.status.headSha === incident.revision &&
                   row.status.pipeline === 'failure',
-              )
+              ) ||
+                [...latestRuns.values()].some(
+                  (run) =>
+                    `workflow:${run.workflow}` === incident.resource &&
+                    run.sha === incident.revision &&
+                    ['failure', 'timed_out', 'action_required'].includes(run.conclusion ?? ''),
+                ))
             )
               await store.retry(incident.id);
             if (

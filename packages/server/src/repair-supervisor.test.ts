@@ -241,18 +241,69 @@ it('releases a repair claim if session creation fails before dispatch', async ()
   expect((await ctx.store.repairs.incidents('a'))[0]?.owner_session_id).toBeNull();
 });
 
-it('invalidates prior actionable evidence immediately when that PR status becomes unknown', async () => {
+it.each(['unknown', 'pending'] as const)(
+  'invalidates prior actionable evidence when PR becomes %s',
+  async (pipeline) => {
+    await ctx.store.repairs.configure('a', 'user', 'monitor');
+    const { observation, supervisor } = harness();
+    await supervisor.sweep();
+    expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
+      'observedAt',
+      expect.any(String),
+    );
+    observation.statuses[0]!.status.pipeline = pipeline;
+    await supervisor.sweep();
+    expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
+      'observedAt',
+      null,
+    );
+  },
+);
+
+it('invalidates failed workflow evidence when a newer same-revision run is pending', async () => {
   await ctx.store.repairs.configure('a', 'user', 'monitor');
   const { observation, supervisor } = harness();
+  observation.page.pulls = [];
+  observation.statuses = [];
+  observation.page.runs = [
+    {
+      id: '20',
+      workflow: 'build',
+      branch: 'main',
+      sha: 'sha1',
+      conclusion: 'failure',
+      url: 'https://example.test/run/20',
+    },
+  ];
   await supervisor.sweep();
-  expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
-    'observedAt',
-    expect.any(String),
-  );
-  observation.statuses[0]!.status.pipeline = 'unknown';
+  observation.page.runs.unshift({ ...observation.page.runs[0]!, id: '21', conclusion: null });
   await supervisor.sweep();
-  expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence)).toHaveProperty(
-    'observedAt',
-    null,
-  );
+  expect(JSON.parse((await ctx.store.repairs.incidents('a'))[0]!.evidence).observedAt).toBeNull();
+});
+it('retries a failed workflow repair but waits for a newer pending run', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { observation, supervisor, deps } = harness();
+  observation.page.pulls = [];
+  observation.statuses = [];
+  observation.page.runs = [
+    {
+      id: '20',
+      workflow: 'build',
+      branch: 'main',
+      sha: 'sha1',
+      conclusion: 'failure',
+      url: 'https://example.test/run/20',
+    },
+  ];
+  await supervisor.sweep();
+  vi.mocked(deps.terminated).mockResolvedValue(true);
+  await supervisor.sweep();
+  observation.page.runs.unshift({ ...observation.page.runs[0]!, id: '21', conclusion: null });
+  await supervisor.sweep();
+  expect((await ctx.store.repairs.incidents('a'))[0]!.state).toBe('verifying');
+  observation.page.runs[0]!.conclusion = 'failure';
+  await supervisor.sweep();
+  expect((await ctx.store.repairs.incidents('a'))[0]!.state).toBe('open');
+  await supervisor.sweep();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });

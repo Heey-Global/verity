@@ -241,3 +241,14 @@ it('does not use old incident evidence just because the repository was checked r
   await coordinator.tick();
   expect(deps.delegate).not.toHaveBeenCalled();
 });
+
+it('retries a crashed review without losing its pending observation', async () => {
+  await enroll();
+  const { deps, coordinator } = harness();
+  await coordinator.tick();
+  const state = await ctx.store.repairs.qa();
+  await ctx.store.appendEvent(state.session_id!, { t: 'status', state: 'crashed' });
+  await coordinator.tick();
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+});

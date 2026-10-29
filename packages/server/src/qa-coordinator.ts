@@ -127,7 +127,7 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
       );
       if (!consumed) return;
       for (const item of snapshot)
-        if (!answer?.assignments.some((a) => a.projectId === item.projectId))
+        if (!crashed && !answer?.assignments.some((a) => a.projectId === item.projectId))
           await store.qaAcknowledge(item.projectId, item.fingerprint);
       if (!answer || state.active_revision !== state.revision || !(await active(state.revision)))
         return;
