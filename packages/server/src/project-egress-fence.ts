@@ -30,10 +30,12 @@ export interface ProjectFenceDependencies {
   destinationAllowed(address: string): Promise<boolean>;
   /** Recheck durable revision, current generation and sponsor authority at admission. */
   policyCurrent(snapshot: ProjectFenceSnapshot): Promise<boolean>;
+  /** Must commit within 1000 ms of invocation or prevent the transaction entirely. */
   apply(script: string): Promise<void>;
   now?: () => number;
 }
 const LEASE_MS = 1000;
+const APPLY_BUDGET_MS = 1000;
 const tableName = (projectId: string): string =>
   'verity_egress_' + createHash('sha256').update(projectId).digest('hex').slice(0, 24);
 const generationKey = (binding: ProjectFenceBinding): string =>
@@ -239,7 +241,10 @@ export class ProjectEgressFence {
         for (const address of addresses)
           if (!(await this.deps.destinationAllowed(address)))
             throw new Error('Protected project or host destination');
-        const expiresAt = Math.min(grant.expiresAt ?? Infinity, this.now() + LEASE_MS);
+        const expiresAt = Math.min(
+          (grant.expiresAt ?? Infinity) - APPLY_BUDGET_MS,
+          this.now() + LEASE_MS,
+        );
         for (const address of addresses)
           leases.push({ address, protocol: target.protocol, port: target.port, expiresAt });
       }
@@ -268,7 +273,7 @@ export function applyProjectFenceRules(script: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('/usr/sbin/nft', ['-f', '-'], {
       stdio: ['pipe', 'ignore', 'pipe'],
-      timeout: 1000,
+      timeout: APPLY_BUDGET_MS,
       killSignal: 'SIGKILL',
       env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
     });

@@ -20,9 +20,16 @@ current authority and attachment, classifies the destination, resolves only
 explicitly granted hostnames, rejects nonpublic/transition addresses and invokes
 the host/project exclusion check. It rechecks attachment and current authority
 immediately before installing leases. Each kernel lease is bounded by both grant
-expiry and one second, so controller death cannot leave permanent permission.
+expiry (with a one-second executor reserve) and one second of kernel lifetime,
+so controller death cannot leave permanent permission. Grants with no remaining
+budget are omitted, rather than installed with a zero timeout.
 Failed resolution, classification or inspection leaves access denied. The host
 executor invokes a fixed nft binary without a shell and has a one-second timeout.
+The trusted apply contract requires commit within that budget or no commit. A
+Node timer and SIGKILL alone are not a hard scheduling guarantee: host suspension
+or scheduler stalls beyond the budget remain unsupported until the production
+host executor enforces this contract. The reserve fixes bounded execution delay;
+it does not certify arbitrary host stalls or clock changes.
 
 The dependency callbacks are enforcement prerequisites, not optional defaults:
 `directTargetAllowed` must reject mandatory-broker/system overlap;

@@ -205,3 +205,23 @@ it('coalesces overlapping grants and canonical IPv6 addresses into one set eleme
   );
   expect(rules.match(/2001:4860:4860::8888 \. tcp \. 443 timeout 1000ms/g)).toHaveLength(1);
 });
+
+it('reserves executor delay before absolute grant expiry', async () => {
+  for (const remaining of [500, 1000, 1100, 2000, 4000]) {
+    const { deps, fence, setNow } = fixture();
+    await fence.prepare(binding);
+    const deadline = 1000 + remaining;
+    deps.apply.mockImplementation(async (script) => {
+      // The kernel starts relative timeouts at commit, after executor latency.
+      setNow(2000);
+      const timeout = script.match(/8\.8\.8\.8 \. tcp \. 443 timeout (\d+)ms/);
+      if (timeout) expect(2000 + Number(timeout[1])).toBeLessThanOrEqual(deadline);
+    });
+    // Deny-first apply is immediate; only the admission transaction is delayed.
+    deps.apply.mockImplementationOnce(async () => undefined);
+    await fence.refresh({ binding, revision: 1, grants: [{ ...grant, expiresAt: deadline }] });
+    const rules = deps.apply.mock.calls.at(-1)![0];
+    if (remaining <= 1000) expect(rules).not.toContain('elements =');
+    else expect(rules).toContain(`timeout ${Math.min(1000, remaining - 1000)}ms`);
+  }
+});
