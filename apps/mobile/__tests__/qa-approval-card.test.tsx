@@ -5,13 +5,11 @@ import { QAApprovalCard } from '../components/QAApprovalCard';
 it('explains standing consent and submits only the selected project proposal', async () => {
   const decideQAApproval = jest.fn().mockResolvedValue(undefined);
   const client = {
-    qaApprovals: jest
-      .fn()
-      .mockResolvedValue({
-        proposals: [
-          { id: 'proposal', project_id: 'p', owner: 'team', repo: 'app', resource: 'pr:42' },
-        ],
-      }),
+    qaApprovals: jest.fn().mockResolvedValue({
+      proposals: [
+        { id: 'proposal', project_id: 'p', owner: 'team', repo: 'app', resource: 'pr:42' },
+      ],
+    }),
     decideQAApproval,
   } as unknown as VerityClient;
   render(<QAApprovalCard client={client} sessionId="qa" />);
