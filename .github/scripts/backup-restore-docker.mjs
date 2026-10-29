@@ -916,6 +916,10 @@ async function restore() {
       for (const name of await readdir(directory)) {
         assert.ok(!name.startsWith(state.installationId + '-r'));
         const target = join(backup, 'repositories', name);
+        if (foreign.has(target)) {
+          assert.equal(await digestTree(join(directory, name)), foreign.get(target));
+          continue;
+        }
         await cp(join(directory, name), target, {
           recursive: true,
           errorOnExist: true,
