@@ -65,6 +65,12 @@ const dependencies = {
       process.stderr.write(`Kernel transaction failed: ${String(error)}\n`);
       await writeFile('/evidence/transport-kernel-error.txt', String(error));
       await writeFile('/evidence/transport-kernel-error.nft', script);
+      await writeFile(
+        '/evidence/transport-kernel-check.txt',
+        await exec('/usr/sbin/nft', ['--check', '-f', '/evidence/transport-kernel-error.nft'])
+          .then((reply) => reply.stdout)
+          .catch(String),
+      );
       throw error;
     }
   },
