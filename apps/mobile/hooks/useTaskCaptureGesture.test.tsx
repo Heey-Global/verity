@@ -51,3 +51,11 @@ it.each([
   result.current.onPress();
   expect(capture).toHaveBeenCalledTimes(1);
 });
+
+it('allows repeated accessibility activation without press-in events', () => {
+  const { result, capture, openTasks } = setup();
+  result.current.onPress();
+  result.current.onPress();
+  expect(capture).toHaveBeenCalledTimes(2);
+  expect(openTasks).not.toHaveBeenCalled();
+});

@@ -16,7 +16,6 @@ export function useTaskCaptureGesture(onCapture: () => void, onOpenTasks: () => 
     },
     onPress: () => {
       if (consumed.current) return;
-      consumed.current = true;
       onCapture();
     },
     onLongPress: () => {
