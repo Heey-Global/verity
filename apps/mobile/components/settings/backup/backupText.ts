@@ -43,6 +43,11 @@ export function formatInterval(intervalMs: number, style: 'short' | 'long' = 'sh
 export const INTERVAL_CHOICES = [1, 3, 6, 12, 24].map((hours) => hours * 3600000);
 export const DEFAULT_INTERVAL_MS = 6 * 3600000;
 
+/** After a confirmation whose outcome this device cannot prove (a lost reply, a
+ *  retry, another administrator's device): the restore test settles it. */
+export const KEY_OUTCOME_UNKNOWN =
+  'Backup is on, but this device could not confirm which key it uses. Run a restore test with the key you saved.';
+
 /** A short title and one sentence per server alert code (docs/BACKUP_API.md). */
 export function backupAlertText(code: string): { title: string; message: string } {
   switch (code) {

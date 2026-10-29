@@ -221,11 +221,12 @@ describe('backup setup', () => {
     await screen.findByText(KEY);
     client.getBackupStatus.mockResolvedValue(configured());
     fireEvent.press(screen.getByText('I saved it, turn on backup'));
-    expect(await screen.findByText(/set up from another device/)).toBeOnTheScreen();
+    expect(await screen.findByText(/could not confirm which key/)).toBeOnTheScreen();
     expect(screen.queryByText('Backup activated')).toBeNull();
+    expect(screen.queryByText(/was not used/)).toBeNull();
   });
 
-  it('treats a lost reply as success when the server already turned backups on', async () => {
+  it('asks for a restore test when a lost reply leaves the outcome open', async () => {
     const client = backupClient({
       getBackupStatus: jest
         .fn()
@@ -237,7 +238,8 @@ describe('backup setup', () => {
     await screen.findByText(KEY);
     client.getBackupStatus.mockResolvedValue(configured({ lastSuccess: null }));
     fireEvent.press(screen.getByText('I saved it, turn on backup'));
-    expect(await screen.findByText('Backup activated')).toBeOnTheScreen();
+    expect(await screen.findByText(/Run a restore test with the key you saved/)).toBeOnTheScreen();
+    expect(client.cancelBackupSetup).not.toHaveBeenCalled();
   });
 
   it('saves the key through the share sheet and removes the file on leaving', async () => {
@@ -376,7 +378,7 @@ describe('new recovery key', () => {
     expect(mockBack).toHaveBeenCalled();
   });
 
-  it('recognises a new key the server applied although the reply was lost', async () => {
+  it('does not guess when a new key may have been applied despite a lost reply', async () => {
     const client = backupClient({
       getBackupStatus: jest.fn().mockResolvedValue(configured({ keyGeneration: 2 })),
       confirmBackupKeyReplacement: jest.fn().mockRejectedValue(new Error('network')),
@@ -385,7 +387,8 @@ describe('new recovery key', () => {
     await screen.findByText(KEY);
     client.getBackupStatus.mockResolvedValue(configured({ keyGeneration: 3 }));
     fireEvent.press(screen.getByText('I saved it, use the new key'));
-    expect(await screen.findByText('New key is active')).toBeOnTheScreen();
+    expect(await screen.findByText(/could not confirm which key/)).toBeOnTheScreen();
+    expect(screen.queryByText(/was not used/)).toBeNull();
   });
 
   it('keeps the current key when the operator leaves without confirming', async () => {

@@ -16,6 +16,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Confetti } from '../../components/premium/Confetti';
 import { RecoveryKeyStep, removeKeyFile } from '../../components/settings/backup/RecoveryKeyStep';
 import {
+  KEY_OUTCOME_UNKNOWN,
   backupAlertText,
   backupStatusRows,
   formatBackupTime,
@@ -115,22 +116,22 @@ function BackupView({ client }: { client: VerityClient }) {
       })
       .catch(async (failure: unknown) => {
         const after = await client.getBackupStatus().catch(() => undefined);
-        const on = after?.available === true && after.configured;
-        if (failure instanceof VerityApiError && failure.status === 410) {
-          // This key was never used: it expired, or another device set up backups.
+        if (after?.available === true && after.configured) {
+          // A lost reply, a retry of a committed offer and another device's setup
+          // look the same from here, so claim neither success nor an unused key.
           setStep({ kind: 'status' });
           void reload();
-          setError(
-            on
-              ? 'Backup was set up from another device. The key shown here was not used.'
-              : 'The key expired before it was confirmed. Set up again to get a new key.',
-          );
+          setError(KEY_OUTCOME_UNKNOWN);
           return;
         }
-        // Any other failure may be a reply lost after the server committed.
-        if (on) {
-          setStep({ kind: 'success' });
-          void reload();
+        if (failure instanceof VerityApiError && failure.status === 410) {
+          // Backups are off, so this key was never used.
+          setStep({ kind: 'status' });
+          setError('The key expired before it was confirmed. Set up again to get a new key.');
+          return;
+        }
+        if (left.current) {
+          void client.cancelBackupSetup().catch(() => undefined);
           return;
         }
         pending.current = offer;

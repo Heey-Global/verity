@@ -8,6 +8,7 @@ import { ActivityIndicator } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { RecoveryKeyStep } from '../../components/settings/backup/RecoveryKeyStep';
+import { KEY_OUTCOME_UNKNOWN } from '../../components/settings/backup/backupText';
 import { SettingsMessage, SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { Button, Card, CardHead, StatusDot } from '../../components/ui';
 import { createVerityClient } from '../../lib/client';
@@ -82,21 +83,29 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
       .confirmBackupKeyReplacement(current)
       .then(() => setDone(true))
       .catch(async (failure: unknown) => {
-        if (failure instanceof VerityApiError && failure.status === 410) {
-          // This key was never used: it expired, or another device replaced the key.
-          setOffer(null);
-          setError('The new key was not used. Retry to get another one.');
-          return;
-        }
-        // Any other failure may be a reply lost after the server committed.
         const after = await client.getBackupStatus().catch(() => undefined);
-        if (
+        const before = generation.current;
+        const unchanged =
           after?.available === true &&
           after.keyGeneration !== undefined &&
-          generation.current !== undefined &&
-          after.keyGeneration > generation.current
-        ) {
-          setDone(true);
+          before !== undefined &&
+          after.keyGeneration === before;
+        if (!unchanged) {
+          // The key changed, or this device cannot tell: only a restore test can say
+          // whether the key shown here is the one in use.
+          pending.current = null;
+          setOffer(null);
+          setError(KEY_OUTCOME_UNKNOWN);
+          return;
+        }
+        if (failure instanceof VerityApiError && failure.status === 410) {
+          // The key generation did not move, so the current key stays in force.
+          setOffer(null);
+          setError('The new key expired before it was confirmed. Retry to get another one.');
+          return;
+        }
+        if (left.current) {
+          void client.cancelBackupKeyReplacement().catch(() => undefined);
           return;
         }
         pending.current = current;
@@ -129,7 +138,7 @@ function BackupNewKeyView({ client }: { client: VerityClient }) {
       title="New recovery key"
       detail
       state={state}
-      onRetry={offer === null ? begin : undefined}
+      onRetry={offer === null && error !== KEY_OUTCOME_UNKNOWN ? begin : undefined}
       footer={
         offer !== null ? (
           <Button

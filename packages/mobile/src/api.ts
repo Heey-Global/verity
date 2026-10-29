@@ -1175,7 +1175,7 @@ export const backupProbeJobSchema = z.object({
   phase: z.string(),
   startedAt: z.number(),
   finishedAt: z.number().nullable(),
-  snapshot: z.object({ repository: z.string(), sequence: z.number() }).nullable(),
+  snapshot: z.unknown(),
   error: z.string().nullable(),
 });
 export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
