@@ -1147,6 +1147,23 @@ async function restore() {
         if (state.schedule.lastSuccess !== null) break;
         await delay(500);
       }
+      if (!(state.schedule.lastSuccess > 0)) {
+        console.log('Scheduled restart state:', JSON.stringify(state.schedule));
+        const status = await api('/api/backups/status');
+        console.log(
+          'Scheduled restart availability:',
+          JSON.stringify({
+            status: status.status,
+            available: status.body.available,
+            reason: status.body.reason,
+            configured: status.body.configured,
+            alerts: status.body.alerts,
+          }),
+        );
+        const logs = await exec('docker', ['logs', server.id]);
+        for (const line of (logs.stdout + logs.stderr).split('\n'))
+          if (line.startsWith('BACKUP_ACCEPTANCE_FAILURE ')) console.log(line);
+      }
       assert.ok(state.schedule.lastSuccess > 0, 'normal server must complete overdue capture');
       assert.equal(state.schedule.failures, 0);
       assert.equal((await transport('/healthz')).status, 200);

@@ -244,6 +244,8 @@ ARG BASE
 FROM ${BASE}
 USER 0
 RUN node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const p="/app/packages/server/dist/backup/routes.js"; const s=readFileSync(p,"utf8"); const a="export const BACKUP_RECOVERY_ACCEPTED = false;"; if(s.split(a).length!==2) throw Error("test gate patch mismatch"); writeFileSync(p,s.replace(a,"export const BACKUP_RECOVERY_ACCEPTED = true;"));'
+# Test-only diagnostics preserve control flow and report only static source error literals/codes.
+RUN node --input-type=module -e 'import {readFileSync,writeFileSync,readdirSync} from "node:fs"; const root="/app/packages/server/dist/backup/"; const files=readdirSync(root).filter(n=>n.endsWith(".js")); const safe=files.flatMap(n=>[...readFileSync(root+n,"utf8").matchAll(/new Error\((["\x27])([^"\x27\\]*?)\1\)/g)].map(m=>m[2])); const report="console.error(\"BACKUP_ACCEPTANCE_FAILURE \"+JSON.stringify({name:error?.name,code:/^[A-Z0-9_]{1,30}$/.test(error?.code)?error.code:undefined,message:"+JSON.stringify(safe)+".includes(error?.message)?error.message:undefined}));"; for(const [name,before,after] of [["scheduler.js","catch {","catch (error) {"+report],["runtime.js","catch (error) {","catch (error) {"+report]]) {const p=root+name;const s=readFileSync(p,"utf8");if(s.split(before).length!==2)throw Error("diagnostic patch mismatch");writeFileSync(p,s.replace(before,after));}'
 USER 1000:1000
 DOCKERFILE
 inside docker build --quiet --build-arg "BASE=$digest" --tag "$repo:backup-enabled-acceptance" "$root/enabled-build" >/dev/null
