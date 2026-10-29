@@ -752,7 +752,7 @@ async function restore() {
     const api = (path, body, token = input.token, headers) => transport(path, body, token, headers);
     for (let attempt = 0; ; attempt++) {
       try {
-        assert.equal((await transport('/health')).status, 200);
+        assert.equal((await transport('/healthz')).status, 200);
         break;
       } catch (error) {
         if (attempt === 120) throw error;
