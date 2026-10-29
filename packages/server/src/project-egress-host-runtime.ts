@@ -37,6 +37,7 @@ const container = z
       Id: z.string(),
       HostConfig: z.object({
         NetworkMode: z.string(),
+        Runtime: z.literal('runsc-project'),
         Privileged: z.literal(false),
         RestartPolicy: z.object({ Name: z.literal('no') }),
         CapAdd: z.array(z.string()).nullable(),
@@ -92,10 +93,28 @@ export async function inspectEgressHostNetwork(
   // sysfs network entries are symlinks, but their parent is kernel-owned.
   if (!device.isSymbolicLink()) throw new Error('Missing host bridge');
 }
+/** A runtime name alone does not prove Docker uses isolated gVisor networking. */
+export function verifyEgressHostRuntime(reply: unknown): void {
+  const runtime = z
+    .object({
+      'runsc-project': z.object({
+        path: z.string().regex(/^\/opt\/verity\/runsc\/release-[0-9.]+\/runsc$/u),
+        runtimeArgs: z.array(z.string()),
+      }),
+    })
+    .parse(reply)['runsc-project'];
+  const expected = ['--host-uds=create', '--network=sandbox', '--platform=systrap'];
+  if (JSON.stringify([...runtime.runtimeArgs].sort()) !== JSON.stringify(expected))
+    throw new Error('Unsupported host runtime network profile');
+}
+
 export async function inspectEgressHostContainer(
   binding: ProjectEgressNetworkBinding,
   id: string,
 ): Promise<void> {
+  verifyEgressHostRuntime(
+    JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
+  );
   verifyEgressHostContainer(
     binding,
     id,

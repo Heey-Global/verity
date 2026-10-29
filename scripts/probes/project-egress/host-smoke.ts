@@ -129,6 +129,43 @@ try {
       call.end(JSON.stringify(body));
     });
   assert.equal(await send({ operation: 'register', binding }), 200);
+  const rejectedId = (
+    await docker(
+      'create',
+      '--name',
+      'veh-unsupported',
+      '--runtime',
+      'runc',
+      '--restart',
+      'no',
+      '--network',
+      bridge,
+      '--cap-drop',
+      'ALL',
+      '--entrypoint',
+      'python3',
+      'project-egress-fixture:local',
+      '-u',
+      '-c',
+      emitter,
+    )
+  ).trim();
+  assert.equal(
+    await send({
+      operation: 'start',
+      projectId: binding.projectId,
+      generation: binding.generation,
+      role: 'sandbox',
+      containerId: rejectedId,
+    }),
+    409,
+  );
+  assert.equal(
+    (await docker('inspect', '--format', '{{.State.Running}}', rejectedId)).trim(),
+    'false',
+  );
+  await docker('rm', rejectedId);
+  results.push('ordinary Docker runtime refused before embedded DNS can execute');
   const containerId = (
     await docker(
       'create',
@@ -173,8 +210,13 @@ try {
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   results.push('no receiver observation from first process instruction');
   // Reconstruct the host controller from its real fsynced state while traffic continues.
+  await new Promise<void>((resolve, reject) =>
+    server!.close((error) => (error ? reject(error) : resolve())),
+  );
+  server = undefined;
   const recovered = new ProjectEgressHost(await store.load(), dependencies);
   await recovered.restore();
+  server = await listenProjectEgressHost({ directory, token, controller: recovered });
   await delay(500);
   assert.ok(!(await docker('logs', 'veh-receiver')).includes('host-startup-marker'));
   results.push('registry recovery retains denial');
@@ -222,7 +264,7 @@ try {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
-  for (const name of ['veh-source', 'veh-receiver']) {
+  for (const name of ['veh-source', 'veh-receiver', 'veh-unsupported']) {
     await writeFile(
       `/evidence/${name}.jsonl`,
       await docker('logs', name).catch(() => 'unavailable'),

@@ -24,7 +24,10 @@ The Server is the trusted registrar. Project and generation come from that
 registrar, never labels or sandbox headers. The host separately checks the local
 Docker daemon's network ID, explicit bridge, network name, endpoint membership,
 container ID, nonprivileged configuration, absence of added capabilities and
-`restartPolicy: no`. Stopped containers may lack endpoint IDs; admission later
+`restartPolicy: no`. Both roles currently require the `runsc-project` runtime
+with exactly the inspected systrap/sandbox/host-uds profile; ordinary runc is
+rejected because Docker embedded DNS can bypass bridge filtering. The existing
+runc relay therefore cannot use this experimental start path yet. Stopped containers may lack endpoint IDs; admission later
 requires the existing full attachment verifier after start.
 
 ## Durable reservation and start ordering

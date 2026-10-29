@@ -11,6 +11,7 @@ import {
 import {
   openProjectEgressHostStore,
   verifyEgressHostContainer,
+  verifyEgressHostRuntime,
   verifyEgressHostNetwork,
 } from './project-egress-host-runtime.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
@@ -176,6 +177,7 @@ it('validates daemon identities, restart policy and network membership rather th
       Id: id,
       HostConfig: {
         NetworkMode: binding.networkName,
+        Runtime: 'runsc-project',
         Privileged: false,
         RestartPolicy: { Name: 'no' },
         CapAdd: null,
@@ -188,6 +190,9 @@ it('validates daemon identities, restart policy and network membership rather th
   expect(() =>
     verifyEgressHostNetwork(binding, [{ ...network[0], Containers: { foreign: {} } }], []),
   ).toThrow();
+  container[0]!.HostConfig.Runtime = 'runc';
+  expect(() => verifyEgressHostContainer(binding, id, container)).toThrow();
+  container[0]!.HostConfig.Runtime = 'runsc-project';
   container[0]!.HostConfig.RestartPolicy.Name = 'unless-stopped';
   expect(() => verifyEgressHostContainer(binding, id, container)).toThrow();
   container[0]!.HostConfig.RestartPolicy.Name = 'no';
@@ -284,4 +289,20 @@ it('attempts every registered stop even when one container has disappeared', asy
   expect(deps.stopContainer).toHaveBeenCalledWith(id);
   expect(deps.stopContainer).toHaveBeenCalledWith(relay);
   await expect(host.execute(start)).rejects.toThrow('Retired');
+});
+
+it('rejects a named gVisor runtime configured for host networking or overriding flags', () => {
+  const runtime = {
+    path: '/opt/verity/runsc/release-20260714.0/runsc',
+    runtimeArgs: ['--platform=systrap', '--network=sandbox', '--host-uds=create'],
+  };
+  expect(() => verifyEgressHostRuntime({ 'runsc-project': runtime })).not.toThrow();
+  for (const runtimeArgs of [
+    ['--platform=systrap', '--network=host', '--host-uds=create'],
+    [...runtime.runtimeArgs, '--network=host'],
+    [],
+  ])
+    expect(() =>
+      verifyEgressHostRuntime({ 'runsc-project': { ...runtime, runtimeArgs } }),
+    ).toThrow();
 });
