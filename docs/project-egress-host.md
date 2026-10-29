@@ -151,3 +151,10 @@ bindings before serving control requests. Mismatches cause attempted container
 stops and leave the controller unavailable. The bootstrap rule restoration remains
 independent of Docker. This does not establish daemon boot acceptance or hard lease
 expiry under host suspension.
+
+The experimental gVisor relay uses a PID ceiling of 64 rather than the ordinary
+relay's 32, because the cgroup includes sentry/gofer threads. With the pinned
+systrap runtime, 32 produced a `newosproc` failure; a sequential comparison at
+64 passed broker readiness with the same 192 MiB memory and CPU limits. The
+96 MiB V8 heap cap is unchanged. This evidence is specific to the pinned runtime,
+not a universal minimum for other gVisor versions or workloads.

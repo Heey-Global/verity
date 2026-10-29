@@ -147,7 +147,8 @@ export function createDockerProjectRelayStarter(
       sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
       securityOpt: ['no-new-privileges=true'],
-      pidsLimit: 32,
+      // gVisor counts sentry/gofer threads too; 32 aborts the pinned systrap runtime.
+      pidsLimit: context.egress === undefined ? 32 : 64,
       memoryBytes: RELAY_MEMORY_BYTES,
       nanoCpus: 250_000_000,
       // See RELAY_MEMORY_BYTES: the heap cap is only meaningful next to the ceiling.
