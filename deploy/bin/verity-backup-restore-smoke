@@ -68,6 +68,8 @@ start_host() {
   inside mkdir -p "$root"
   host_docker cp "$repo_root/.github/scripts/backup-restore-docker.mjs" "$daemon_name:$root/driver.mjs"
   host_docker cp "$repo_root/.github/scripts/backup-restore-diagnostics.mjs" "$daemon_name:$root/backup-restore-diagnostics.mjs"
+  host_docker cp "$repo_root/scripts/backup-restore-content.mjs" "$daemon_name:$root/backup-restore-content.mjs"
+  host_docker cp "$repo_root/.github/scripts/backup-restore-device-trust.mjs" "$daemon_name:$root/backup-restore-device-trust.mjs"
 }
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
@@ -157,6 +159,14 @@ run_driver no-space
 run_driver unsupported
 run_driver abort
 
+echo '--- recovery: copied revocation history missing requires explicit review'
+inside mv "$root/backup/revocations" "$root/revocations-held"
+run_driver begin
+for step in 1 2 3; do run_driver advance; done
+run_driver inspect-missing-history
+run_driver abort
+inside mv "$root/revocations-held" "$root/backup/revocations"
+
 echo '--- recovery: actual process interruption after each preparation transition'
 for effect in verify stage trial review; do
   run_driver begin
@@ -211,6 +221,36 @@ activate_installer() {
 }
 activate_installer
 run_driver verify-api
+
+echo '--- recovery: real root helper exposed-generation retirement'
+run_driver prepare-exposure-original
+run_identity_helper() {
+  local status=0
+  host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+    --env "VERITY_BACKUP_IDENTITY_DIR=$root/identity-requests" "$fresh" \
+    sh -c 'umask 077; exec /opt/verity-install/deploy/host/verity-backup-identity >"$1/exposure.log" 2>&1' sh "$root" || status=$?
+  if [[ $status != 0 ]]; then
+    # Only fixed helper errors reach CI output; never print ciphertext or process input.
+    inside sh -c 'sed -n "/^verity-backup-identity:/p; /^CA backup encryption failed$/p; /^docker: Error response from daemon:/p" "$1/exposure.log"' sh "$root" >&2 || true
+    echo "identity helper failed (exit $status)" >&2
+    return "$status"
+  fi
+}
+run_identity_helper
+run_driver prepare-exposure
+run_identity_helper
+run_driver assert-exposure
+
+echo '--- recovery: live root identity rotation and old snapshot fencing'
+host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \
+  --env VERITY_PAIRING_HOST=127.0.0.1 --env "VERITY_BACKUP_IDENTITY_DIR=$root/identity-requests" "$fresh" \
+  sh -c 'umask 077; exec /opt/verity-install/deploy/bin/verity-install --rotate-identity >"$1/rotation.log" 2>&1' sh "$root" || {
+    # Restrict output to fixed installer/helper errors and the public phase name.
+    inside sh -c 'sed -n "/^verity-install:/p; /^verity-pairing-material:/p; /^verity-backup-identity:/p; /^CA backup encryption failed$/p; /^docker: Error response from daemon:/p; /^psql:/p; /^ERROR:/p" "$1/rotation.log"; if [ -f "$1/host/identity-rotation/checkpoint" ]; then jq -r "\"rotation phase: \" + .phase" "$1/host/identity-rotation/checkpoint"; fi' sh "$root" >&2 || true
+    exit 1
+  }
+run_driver verify-rotated-api
+run_driver retired-identity
 
 echo '--- recovery: interrupted rollback refences resumed managed writers'
 new_identity=1

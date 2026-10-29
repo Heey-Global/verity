@@ -23,11 +23,15 @@ installation_id=$(head -n1 "$state_dir/installation-id")
 [[ $(stat -c %u "$request_dir") = 0 ]] || die 'request directory must be root-owned'
 exec {helper_lock}>"$state_dir/.backup-identity.lock"
 flock --exclusive "$helper_lock"
+if [[ -e $state_dir/identity-rotation/checkpoint || -L $state_dir/identity-rotation/checkpoint ]]; then
+  [[ -f $state_dir/identity-rotation/checkpoint && ! -L $state_dir/identity-rotation/checkpoint ]] || die 'unsafe rotation checkpoint'
+  jq -e '.phase == "complete"' "$state_dir/identity-rotation/checkpoint" >/dev/null || die 'identity rotation is pending'
+fi
 request="$request_dir/recipient.json"
 [[ -f $request && ! -L $request && $(stat -c %s "$request") -le 1024 ]] || die 'no bounded regular recipient request'
 # Read once: subsequent pathname replacement cannot change validated data.
 request_data=$(head -c 1025 -- "$request")
-jq -e 'type == "object" and (keys == ["keyGeneration", "recipient"]) and (.keyGeneration | type == "number" and . >= 1 and . <= 999999999 and floor == .) and (.recipient | type == "string" and test("^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$"))' <<<"$request_data" >/dev/null || die 'invalid recipient request'
+jq -e 'type == "object" and ((keys == ["keyGeneration", "recipient"]) or (keys == ["keyGeneration", "recipient", "retireGeneration"])) and (if has("retireGeneration") then (.retireGeneration | type == "number" and . >= 1 and . <= 999999999 and floor == .) and .retireGeneration < .keyGeneration else true end) and (.keyGeneration | type == "number" and . >= 1 and . <= 999999999 and floor == .) and (.recipient | type == "string" and test("^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$"))' <<<"$request_data" >/dev/null || die 'invalid recipient request'
 recipient=$(jq -r '.recipient' <<<"$request_data")
 generation=$(jq -r '.keyGeneration' <<<"$request_data")
 identity_dir="$backup_dir/identity"
@@ -40,6 +44,37 @@ exec {identity_fd}<"$identity_dir"
 identity_mode=$(stat -Lc %a "/proc/self/fd/$identity_fd")
 [[ $((8#$identity_mode & 0022)) = 0 ]] || die 'identity directory is writable by another user'
 pinned="/proc/self/fd/$identity_fd"
+retired_dir="$state_dir/backup-retired-generations"
+if [[ ! -e $retired_dir && ! -L $retired_dir ]]; then mkdir -m 0700 -- "$retired_dir"; fi
+[[ -d $retired_dir && ! -L $retired_dir && $(stat -c %u "$retired_dir") = 0 ]] || die 'unsafe retirement directory'
+if jq -e 'has("retireGeneration")' <<<"$request_data" >/dev/null; then
+  retired=$(jq -r '.retireGeneration' <<<"$request_data")
+  tombstone="$retired_dir/$installation_id-k$retired"
+  if [[ ! -e $tombstone && ! -L $tombstone ]]; then
+    printf '%s:%s\n' "$installation_id" "$retired" > "$tombstone"
+    sync -f "$tombstone"
+    sync -f "$retired_dir"
+  fi
+  [[ -f $tombstone && ! -L $tombstone ]] || die 'unsafe retirement tombstone'
+fi
+# Finish every durable deletion before considering a recipient. A crash between tombstone and
+# unlink cannot re-enable the exposed generation, even if an old request is replayed.
+for tombstone in "$retired_dir/$installation_id"-k*; do
+  [[ -e $tombstone || -L $tombstone ]] || continue
+  retired=${tombstone##*-k}
+  [[ $retired =~ ^[1-9][0-9]{0,8}$ && -f $tombstone && ! -L $tombstone && $(stat -c %u "$tombstone") = 0 ]] || die 'invalid retirement tombstone'
+  old="$pinned/$installation_id-ca-key-k$retired"
+  [[ ! -e $old && ! -L $old || -f $old && ! -L $old ]] || die 'unsafe retired identity'
+  rm -f -- "$old"
+  sync -f "$pinned"
+  marker="$pinned/$installation_id-ca-retired-k$retired"
+  [[ ! -L $marker ]] || die 'unsafe retirement marker'
+  printf '%s:%s\n' "$installation_id" "$retired" > "$marker"
+  chmod 0644 "$marker"
+  sync -f "$marker"
+  sync -f "$pinned"
+done
+[[ ! -e $retired_dir/$installation_id-k$generation ]] || die 'recipient generation is permanently retired'
 temporary=$(mktemp "$pinned/.ca-backup.XXXXXXXX")
 trap 'rm -f -- "$temporary"' EXIT
 # A CA-signed receipt binds ciphertext to this installation, generation and certificate.

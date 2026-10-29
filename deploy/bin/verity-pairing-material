@@ -53,6 +53,19 @@ write_root_private() {
   mv -f "$temporary" "$target"
 }
 
+if [[ ${VERITY_PAIRING_INVITATION_ONLY:-0} = 1 ]]; then
+  # A rotation retry may renew an invitation, but must never replace published keys.
+  for material in "$identity_key" "$tls_key" "$tls_cert" "$tls_ca_key" "$tls_ca_cert"; do
+    [[ -s $material ]] || die 'invitation refresh requires existing identity material'
+  done
+  openssl verify -CAfile "$tls_ca_cert" "$tls_cert" >/dev/null || die 'invitation refresh requires a valid TLS chain'
+  for key_kind in tls tls-ca; do
+    key_digest=$(openssl pkey -in "$state_dir/$key_kind-key.pem" -pubout -outform DER | openssl dgst -sha256)
+    cert_digest=$(openssl x509 -in "$state_dir/$key_kind-cert.pem" -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256)
+    [[ $key_digest = "$cert_digest" ]] || die 'invitation refresh identity keys do not match'
+  done
+  had_ca_chain=true
+else
 if [ ! -s "$identity_key" ]; then
   openssl genpkey -algorithm ED25519 | write_private "$identity_key"
 fi
@@ -97,6 +110,7 @@ if [ "$(id -u)" = 0 ]; then
 fi
 chmod 0600 "$identity_key" "$tls_key" "$tls_ca_key"
 chmod 0644 "$tls_ca_cert"
+fi
 
 ips="${VERITY_PAIRING_IPS:-$(verity_pairing_ipv4_addresses)}"
 san='DNS:localhost,IP:127.0.0.1'
@@ -153,6 +167,7 @@ fi
 
 # Reissue the leaf certificate so a newly selected IP or DNS name is always in
 # its SANs. The stable TLS key keeps the public-key pin unchanged for paired apps.
+if [[ ${VERITY_PAIRING_INVITATION_ONLY:-0} != 1 ]]; then
 temporary="$tls_cert.$$.tmp"
 csr_temporary="$tls_cert.$$.csr.tmp"
 extensions_temporary="$tls_cert.$$.ext.tmp"
@@ -203,6 +218,7 @@ mv -f "$temporary" "$tls_cert"
 rm -rf "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" \
   "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"
 trap - EXIT
+fi
 
 code="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 expires_at="$(date -u -d '+15 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"

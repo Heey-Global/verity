@@ -1,0 +1,175 @@
+{
+  "format": 1,
+  "scope": "Backend TLS point pin, signed pairing identity, preserved restore and root rotation history. TLS checks use real local connections; native mobile acceptance remains separate.",
+  "cases": [
+    {
+      "id": "preserve-mobile-pin",
+      "file": "packages/server/src/backup/restore-host.ts",
+      "replace": "if (job.selection.newIdentity) {\n      const leaf",
+      "with": "if (true) {\n      const leaf",
+      "originalSourceSha256": "302091a7d01554041c57c997655c28f57f3fa61763a6e97dddbe29b4c43c3083",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "scripts/backup-restore-device-trust.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  scripts/backup-restore-device-trust.test.ts > checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatched trust before the HTTP handler",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "reject-retired-identity",
+      "file": "packages/server/src/backup/restore-identity-history.ts",
+      "replace": "if (fingerprints.includes(fingerprint))",
+      "with": "if (false && fingerprints.includes(fingerprint))",
+      "originalSourceSha256": "adda4b6e4ffdb6c68d0f405ccb0fe35b12566bee0689599657dbbe77cc0701ff",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-identity-history.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  packages/server/src/backup/restore-identity-history.test.ts > fences retired snapshot identities, missing/corrupt history and symlinks while allowing explicit new identity",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "enforce-rotation-history",
+      "file": "packages/server/src/backup/restore-staging.ts",
+      "replace": "if (this.deps.identityHistoryRoot)",
+      "with": "if (false && this.deps.identityHistoryRoot)",
+      "originalSourceSha256": "6590323809a02069fe7a0581f24007ec757fdeb7621bace048a5aacb803d159a",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-staging.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  packages/server/src/backup/restore-staging.test.ts > authenticates the release, architecture and recovery capability before extracting or touching a database",
+        "AssertionError: promise resolved \"{ image: 'official-pinned-image', \u2026(5) }\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "pin-before-credentials",
+      "file": ".github/scripts/backup-restore-device-trust.mjs",
+      "replace": "if (certificatePin(certificate.raw) !== pin)",
+      "with": "if (false && certificatePin(certificate.raw) !== pin)",
+      "originalSourceSha256": "6ae56655a680397078e7be5b494da653363f3d80cd2d2b8225995efcc175cc60",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "scripts/backup-restore-device-trust.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  scripts/backup-restore-device-trust.test.ts > checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatched trust before the HTTP handler",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "pairing-identity-before-enrollment",
+      "file": ".github/scripts/backup-restore-device-trust.mjs",
+      "replace": "assert.equal(result.body.identityKey, expected.identityKey);",
+      "with": "// mutation: omit expected identity binding",
+      "originalSourceSha256": "6ae56655a680397078e7be5b494da653363f3d80cd2d2b8225995efcc175cc60",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "scripts/backup-restore-device-trust.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  scripts/backup-restore-device-trust.test.ts > checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatched trust before the HTTP handler",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "pairing-signature-verification",
+      "file": ".github/scripts/backup-restore-device-trust.mjs",
+      "replace": "    verify(\n",
+      "with": "    true || verify(\n",
+      "originalSourceSha256": "6ae56655a680397078e7be5b494da653363f3d80cd2d2b8225995efcc175cc60",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "scripts/backup-restore-device-trust.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  scripts/backup-restore-device-trust.test.ts > checks saved leaf pins and fresh pairing proofs over TLS and rejects mismatched trust before the HTTP handler",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "Tests  1 failed (1)"
+      ]
+    },
+    {
+      "id": "root-ca-public-read-mode",
+      "file": "packages/server/src/backup/restore-host.ts",
+      "replace": "await chmod(join(root, 'tls-ca-cert.pem'), 0o644);",
+      "with": "// mutation: omit public CA access mode",
+      "originalSourceSha256": "302091a7d01554041c57c997655c28f57f3fa61763a6e97dddbe29b4c43c3083",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-host.test.ts",
+        "--maxWorkers=1"
+      ],
+      "exitCode": 1,
+      "failureEvidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "FAIL  packages/server/src/backup/restore-host.test.ts > preserves deployment keys and CA while reissuing the pinned host leaf and rotating installation credentials",
+        "AssertionError: expected 384 to be 420 // Object.is equality",
+        "Tests  1 failed (1)"
+      ]
+    }
+  ],
+  "testFileSha256": [
+    {
+      "path": "scripts/backup-restore-device-trust.test.ts",
+      "sha256": "068a96dc24e36395b6dcb84d113fd8402b608bdfbe053228cc7feb9abc4337c4"
+    },
+    {
+      "path": "packages/server/src/backup/restore-host.test.ts",
+      "sha256": "47adae65d929bdac3d02be6c2bba6d498a5c47845e6d2fb302a78c26067bd056"
+    },
+    {
+      "path": "packages/server/src/backup/restore-identity-history.test.ts",
+      "sha256": "f241426093af90f22f141d4a2ee9949cd1eac546daec4a9738f623be6594e9e2"
+    },
+    {
+      "path": "packages/server/src/backup/restore-staging.test.ts",
+      "sha256": "c38c16173992d0c5633889544923ba457a42651da757bd47395b0861acb21dbe"
+    },
+    {
+      "path": "packages/server/src/backup/identity-rotation-database.test.ts",
+      "sha256": "b50a7819e7b83f3fd87e48b361a8a5e961de7fbdcb2123490578686a5bc048a7"
+    }
+  ],
+  "restoration": "All seven deliberate changes rejected by the named tests and restored byte-for-byte; positive TLS baseline and final restored checks passed. Actual installer SQL also passed against the migrated PostgreSQL schema."
+}
