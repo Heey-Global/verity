@@ -226,3 +226,10 @@ export type {
   LiveMeetingResultItem,
   LiveMeetingResultTask,
 } from './live-meetings.js';
+
+export {
+  RepairSupervisionStore,
+  type RepairMandate,
+  type RepairIncident,
+  type RepairMode,
+} from './repair-supervision.js';

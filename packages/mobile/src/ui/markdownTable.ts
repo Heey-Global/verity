@@ -34,7 +34,8 @@ export function splitTableCells(line: string): string[] {
  * table starts where a header row is immediately followed by a `|---|` separator;
  * its body runs until the first non-row (or another separator). */
 export function parseMarkdownBlocks(content: string): MdBlock[] {
-  const lines = content.split('\n');
+  // Coordination contracts remain in the audit transcript, not in user-facing prose.
+  const lines = content.replace(/```qa:decision[^\n]*\n[\s\S]*?(?:\n```|$)/g, '').split('\n');
   const blocks: MdBlock[] = [];
   let buf: string[] = [];
   const flush = (): void => {

@@ -129,6 +129,7 @@ function build(
                   'verity_present_plan',
                   'verity_end_planning',
                   'verity_tasks',
+                  'verity_repairs',
                   'verity_app_help',
                   'verity_http_request',
                 ]
@@ -508,6 +509,9 @@ it('keeps the session task list available while planning, unlike external tools'
     const tasks = await call('verity_tasks', { action: 'list' });
     expect(tasks.result.isError).toBeUndefined();
     expect(tasks.body).not.toContain('planning mode');
+    const repairs = await call('verity_repairs', { action: 'status' });
+    expect(repairs.result.isError).toBeUndefined();
+    expect(repairs.body).toContain('incidents');
     // Explaining the app is read-only and belongs to planning as much as to any turn;
     // refusing it would leave the agent answering setup questions from memory.
     const help = await call('verity_app_help', { topic: 'github' });

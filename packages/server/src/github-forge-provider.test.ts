@@ -93,3 +93,66 @@ describe('GitHub forge provider', () => {
     expect(forge.parseRemote('https://codeberg.org/acme/app.git')).toBeNull();
   });
 });
+
+describe('repository supervision discovery', () => {
+  it('uses the read-only mint, identifies forks and excludes non-default workflow branches', async () => {
+    const fetch = vi.fn<HttpFetch>(async (url) => {
+      if (url.includes('/pulls?'))
+        return json([
+          { number: 42, head: { ref: 'renovate/x', sha: 'abc', repo: { full_name: 'acme/app' } } },
+          { number: 43, head: { ref: 'fork', sha: 'def', repo: { full_name: 'other/app' } } },
+        ]);
+      if (url.includes('/actions/runs?'))
+        return json({
+          workflow_runs: [
+            {
+              id: 1,
+              workflow_id: 2,
+              head_sha: 'abc',
+              head_branch: 'main',
+              conclusion: 'failure',
+              html_url: 'https://github.com/acme/app/actions/runs/1',
+            },
+            {
+              id: 3,
+              workflow_id: 2,
+              head_sha: 'def',
+              head_branch: 'feature',
+              conclusion: 'failure',
+              html_url: 'https://github.com/acme/app/actions/runs/3',
+            },
+          ],
+        });
+      return json({ default_branch: 'main' });
+    });
+    const forge = createGitHubForgeProvider({
+      projectTokenMint: () => Promise.resolve('write'),
+      discoveryTokenMint: () => Promise.resolve('read'),
+      issuesTokenMint: () => Promise.resolve('issues'),
+      installationToken: () => Promise.resolve('installation'),
+      fetch,
+    });
+    const page = await forge.discover!(project, 1);
+    expect(page.pulls.map((p) => p.fork)).toEqual([false, true]);
+    expect(page.runs.map((r) => r.id)).toEqual(['1']);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [url, init] of fetch.mock.calls) {
+      expect(init?.headers?.Authorization).toBe('Bearer read');
+      expect(url).not.toContain('/logs');
+    }
+  });
+  it('backs off repository discovery after rate limiting', async () => {
+    const fetch = vi.fn<HttpFetch>(() =>
+      Promise.resolve({
+        ok: false,
+        status: 429,
+        headers: { get: (name) => (name === 'retry-after' ? '120' : null) },
+        json: () => Promise.resolve({}),
+      }),
+    );
+    const forge = provider(fetch);
+    await expect(forge.discover!(project, 1)).rejects.toThrow('429');
+    await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

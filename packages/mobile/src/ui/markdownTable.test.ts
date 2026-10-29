@@ -69,3 +69,13 @@ describe('parseMarkdownBlocks', () => {
     expect(blocks[1]).toEqual({ type: 'lines', lines: [''] });
   });
 });
+
+it('hides complete and streaming QA decision contracts while preserving prose', () => {
+  for (const suffix of ['', '\n```']) {
+    const blocks = parseMarkdownBlocks(
+      'Repair needs review.\n```qa:decision\n{"assignments":[]}' + suffix,
+    );
+    expect(JSON.stringify(blocks)).toContain('Repair needs review.');
+    expect(JSON.stringify(blocks)).not.toContain('assignments');
+  }
+});

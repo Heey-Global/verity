@@ -17,6 +17,7 @@ import { createGitHubRepositoryOperations } from './github-repository-operations
 export interface GitHubForgeProviderOptions {
   /** Cached repository-scoped installation token used for PR, release and broker calls. */
   projectTokenMint: GitHubProjectTokenMint;
+  discoveryTokenMint?: GitHubProjectTokenMint;
   /** Narrower read-only mint for the issue list. */
   issuesTokenMint: GitHubProjectTokenMint;
   /** Metadata-only installation token for the repository list. Rejections propagate,
@@ -64,7 +65,93 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
     ...fetchOpt,
   });
 
+  const repositoryServices = new Map<string, ForgePrService>();
   return {
+    async discover(ref, page) {
+      const cooldown = prFailureCooldownFor(ref.owner, ref.repo);
+      if (Date.now() < cooldown.until) throw new Error('GitHub discovery is backing off');
+      const token = await (opts.discoveryTokenMint ?? opts.projectTokenMint)(ref);
+      if (!token) throw new Error('GitHub credentials unavailable');
+      const read = async (path: string) => {
+        const response = await (opts.fetch ?? fetch)(
+          `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${path}`,
+          {
+            headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        if (!response.ok) {
+          const retry = Number(response.headers?.get('retry-after'));
+          const reset = Number(response.headers?.get('x-ratelimit-reset')) * 1000;
+          cooldown.until = Math.max(
+            Date.now() + 60_000,
+            Number.isFinite(retry) ? Date.now() + Math.min(retry * 1000, 3_600_000) : 0,
+            response.status === 403 || response.status === 429
+              ? Math.min(reset || 0, Date.now() + 3_600_000)
+              : 0,
+          );
+          throw new Error(`GitHub discovery unavailable (${response.status})`);
+        }
+        return response.json();
+      };
+      const repository = (await read('')) as { default_branch: string };
+      const pulls = (await read(`pulls?state=open&per_page=30&page=${page}`)) as {
+        number: number;
+        head: { ref: string; sha: string; repo?: { full_name?: string } };
+      }[];
+      const body = (await read(
+        `actions/runs?created=${encodeURIComponent('>=' + new Date(Date.now() - 7 * 86400_000).toISOString())}&per_page=30&page=${page}`,
+      )) as {
+        workflow_runs: {
+          id: number;
+          workflow_id: number;
+          head_sha: string;
+          head_branch: string;
+          conclusion: string | null;
+          html_url: string;
+        }[];
+      };
+      if (!Array.isArray(pulls) || !Array.isArray(body.workflow_runs))
+        throw new Error('Invalid GitHub discovery response');
+      return {
+        pulls: pulls.map((p) => ({
+          number: p.number,
+          branch: p.head.ref,
+          sha: p.head.sha,
+          fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+        })),
+        runs: body.workflow_runs
+          .filter((r) => r.head_branch === repository.default_branch)
+          .map((r) => ({
+            id: String(r.id),
+            workflow: String(r.workflow_id),
+            sha: r.head_sha,
+            branch: r.head_branch,
+            conclusion: r.conclusion,
+            url: r.html_url,
+          })),
+        nextPage: pulls.length === 30 || body.workflow_runs.length === 30 ? page + 1 : null,
+        workflowsSupported: true,
+      };
+    },
+    repositoryPrService(ref) {
+      const key = JSON.stringify([ref.owner, ref.repo]);
+      let service = repositoryServices.get(key);
+      if (!service) {
+        service = createGitHubPrService({
+          repoDir: '',
+          ...(opts.prStatusTtlMs === undefined ? {} : { ttlMs: opts.prStatusTtlMs }),
+          identity: () => Promise.resolve(ref),
+          asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
+          failureCooldownFor: prFailureCooldownFor,
+          ...fetchOpt,
+        });
+        if (repositoryServices.size >= 200)
+          repositoryServices.delete(repositoryServices.keys().next().value!);
+        repositoryServices.set(key, service);
+      }
+      return service;
+    },
     id: 'github',
     capabilities: {
       repositoryListing: true,

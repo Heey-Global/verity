@@ -1,3 +1,4 @@
+import { createForgeStatusCache, type ForgeStatusIdentity } from './forge-status-cache.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
@@ -2028,6 +2029,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_repairs',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2049,6 +2051,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_repairs',
             'verity_app_help',
             'verity_vulnerabilities',
             'verity_google_slides',
@@ -2391,6 +2394,19 @@ export async function buildEmbeddedServer(
       permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
     });
 
+  const discoveryTokenMint = createCachedProjectTokenMint(
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: {
+        metadata: 'read',
+        contents: 'read',
+        pull_requests: 'read',
+        checks: 'read',
+        actions: 'read',
+      },
+    }),
+    { authorityKey: githubAppAuthorityKey },
+  );
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -2419,6 +2435,7 @@ export async function buildEmbeddedServer(
   // The latest-release lookup for the project overview is non-blocking: `GET
   // /projects` reads it synchronously and it refreshes in the background on a TTL.
   const githubForge = createGitHubForgeProvider({
+    discoveryTokenMint: config.githubProjectTokenMint ?? discoveryTokenMint,
     projectTokenMint: cachedProjectTokenMint,
     issuesTokenMint,
     installationToken: async () => {
@@ -2467,6 +2484,29 @@ export async function buildEmbeddedServer(
       }
     }
     return githubForge;
+  };
+  const sharedForgeStatus = createForgeStatusCache();
+  const statusScopes = new Map<string, ForgeStatusIdentity>();
+  const readProjectStatus = async (project: ProjectRecord, branch: string) => {
+    if (project.kind === 'local' || project.kind === 'control_plane') return null;
+    const provider = await projectForgeProvider(eventStore, githubForge, project);
+    if (!provider?.repositoryPrService) return null;
+    const token = await provider.mintProjectToken(project);
+    if (!token) throw new Error('Forge credentials unavailable');
+    const authority = `${project.forgeConnectionId ?? 'github'}:${createHash('sha256').update(token).digest('hex')}`;
+    const identity = { authority, owner: project.owner, repo: project.repo };
+    statusScopes.set(project.id, identity);
+    return sharedForgeStatus.read(identity, branch, () =>
+      provider.repositoryPrService!(project).prStatusForBranch(branch),
+    );
+  };
+  const readWorktreeStatus = async (branch: string, worktree: string) => {
+    const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
+    const project = session?.projectId ? await eventStore.getProject(session.projectId) : undefined;
+    return project
+      ? readProjectStatus(project, branch)
+      : ((await forgeForWorktree(worktree))?.prServiceFor(worktree).prStatusForBranch(branch) ??
+          null);
   };
   const installationService: GitHubInstallationService = {
     listInstallationRepos: () => githubForge.listRepositories(),
@@ -4717,10 +4757,65 @@ export async function buildEmbeddedServer(
     forgejoEnabled: projectRelayEnabled && provisioner !== undefined,
     branchPr: async (b: string, wt: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
-    branchPrStatus: async (b: string, wt: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranch(b) ?? null,
-    branchPrStatusForBranches: async (bs: readonly string[], wt: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).prStatusForBranches(bs) ?? null,
+    branchPrStatus: readWorktreeStatus,
+    invalidateProjectPrStatus: (projectId) => {
+      const scope = statusScopes.get(projectId);
+      if (scope) sharedForgeStatus.invalidate(scope);
+    },
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
+      const values = [];
+      for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
+      return (
+        values
+          .filter((value) => value?.phase === 'open')
+          .sort((a, b) => (b?.updatedAt ?? '').localeCompare(a?.updatedAt ?? ''))[0] ??
+        values[0] ??
+        null
+      );
+    },
+    repairDiscovery: async (project, pageNumber) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.discover) throw new Error('Repository monitoring unsupported');
+      const firstPage = await provider.discover(project, 1);
+      const olderPage = pageNumber > 1 ? await provider.discover(project, pageNumber) : undefined;
+      const page = olderPage
+        ? {
+            ...olderPage,
+            pulls: [
+              ...new Map(
+                [...firstPage.pulls, ...olderPage.pulls].map((p) => [p.number, p]),
+              ).values(),
+            ],
+            runs: [
+              ...new Map([...firstPage.runs, ...olderPage.runs].map((r) => [r.id, r])).values(),
+            ],
+          }
+        : firstPage;
+      const statuses = [];
+      for (const pull of page.pulls) {
+        if (pull.fork) continue;
+        const status = await readProjectStatus(project, pull.branch);
+        if (status && status.number === pull.number && status.headSha === pull.sha)
+          statuses.push({ branch: pull.branch, status });
+      }
+      for (const incident of await eventStore.repairs.incidents(project.id)) {
+        if (
+          !incident.resource.startsWith('pr:') ||
+          ['resolved', 'superseded'].includes(incident.state)
+        )
+          continue;
+        const evidence = JSON.parse(incident.evidence) as { branch?: string };
+        if (
+          !evidence.branch ||
+          statuses.some((row) => `pr:${row.status.number}` === incident.resource)
+        )
+          continue;
+        const status = await readProjectStatus(project, evidence.branch);
+        if (status && `pr:${status.number}` === incident.resource)
+          statuses.push({ branch: evidence.branch, status });
+      }
+      return { page, statuses };
+    },
     mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
     repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,

@@ -271,6 +271,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
+            icon="activity"
+            title="QA · CI supervision"
+            subtitle="Project monitoring and repair ownership"
+            onPress={() => router.push('/settings/repairs')}
+          />
+          <SettingsNavRow
             icon="shield"
             title="Vulnerability scan"
             subtitle="Known vulnerabilities in code projects"
