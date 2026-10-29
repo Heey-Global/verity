@@ -45,6 +45,7 @@ import { RESTORE_EPHEMERAL_TABLES } from '/app/packages/server/dist/backup/resto
 import { probeSnapshot } from '/app/packages/server/dist/backup/probe.js';
 import { createProbeDatabase } from '/app/packages/server/dist/backup/probe-database.js';
 import { stageSnapshot } from '/app/packages/server/dist/backup/staging.js';
+import { prepareRestoredGit } from '/app/packages/server/dist/backup/restore-git.js';
 import { BackupLifecycleCoordinator } from '/app/packages/server/dist/backup/lifecycle.js';
 import { BackupRevocationJournal } from '/app/packages/server/dist/backup/revocations.js';
 import { InstallerRestoreJob } from '/app/packages/server/dist/backup/restore-job.js';
@@ -1250,6 +1251,7 @@ async function restore() {
         manifest,
         input.recoveryKey,
       );
+      assert.deepEqual(await prepareRestoredGit(restored, manifest.capture, restored, signal), []);
       await assertRestoredFiles(restored, input.expectedContent);
       assert.ok(manifest.files.some((file) => file.path.startsWith('database/tables/')));
       console.log('BACKUP_ACCEPTANCE_RESTART authenticated filesystem restored');

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { expect, it } from 'vitest';
 import { createPostgresDb, migrateToLatest } from '../packages/store/src/db.js';
-import { seedRestoreContent } from './backup-restore-content.mjs';
+import { assertRestoredFiles, seedRestoreContent } from './backup-restore-content.mjs';
 import { captureInstallation } from '../packages/server/src/backup/capture.js';
 import { generateBackupKeys } from '../packages/server/src/backup/crypto.js';
 import { BackupDestination } from '../packages/server/src/backup/destination.js';
@@ -13,6 +13,8 @@ import { readCaptureInventory } from '../packages/server/src/backup/inventory.js
 import { BackupLifecycleCoordinator } from '../packages/server/src/backup/lifecycle.js';
 import { BackupRepository } from '../packages/server/src/backup/repository.js';
 import { sanitizeRestoredDatabase } from '../packages/server/src/backup/restore-database.js';
+import { stageSnapshot } from '../packages/server/src/backup/staging.js';
+import { prepareRestoredGit } from '../packages/server/src/backup/restore-git.js';
 import { writeBackupIdentityFixture } from '../packages/server/src/backup/testing.js';
 
 const adminUrl = process.env.VERITY_TEST_SHARED_POSTGRES_URL;
@@ -38,7 +40,7 @@ it.skipIf(!adminUrl)(
     try {
       await admin.query(`CREATE DATABASE "${name}"`);
       await migrateToLatest(database);
-      await seedRestoreContent(root, pool);
+      const expected = await seedRestoreContent(root, pool);
       const client = await pool.connect();
       try {
         await sanitizeRestoredDatabase(client, {
@@ -69,7 +71,7 @@ it.skipIf(!adminUrl)(
           `FOR ROLE "${(await pool.query('SELECT current_user AS name')).rows[0].name}" `,
         );
       await pool.query(sql);
-      const { host } = await generateBackupKeys();
+      const { host, recoveryKey } = await generateBackupKeys();
       const installationId = randomUUID();
       const identity = join(root, 'identity-fixture');
       await writeBackupIdentityFixture(identity, host, installationId);
@@ -115,6 +117,16 @@ it.skipIf(!adminUrl)(
           return keys.get(key)!;
         },
       });
+      const restored = await stageSnapshot(
+        root,
+        join(backup, 'repositories'),
+        manifest,
+        recoveryKey,
+      );
+      // Raw extraction stores frozen Git separately until the real restore adapter reconstructs it.
+      await expect(assertRestoredFiles(restored, expected)).rejects.toThrow();
+      expect(await prepareRestoredGit(restored, manifest.capture!)).toEqual([]);
+      await assertRestoredFiles(restored, expected);
       expect(manifest.kind).toBe('scheduled');
       expect(
         manifest.files.filter((f) => f.path.startsWith('database/tables/')).length,
