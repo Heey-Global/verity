@@ -6,6 +6,28 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.66.0](https://github.com/Heey-Global/verity/compare/v4.65.0...v4.66.0) (2026-10-29)
+
+
+### Features
+
+* **assistant:** add the Verity assistant as a Verity Control function ([#2048](https://github.com/Heey-Global/verity/issues/2048)) ([2a1fd31](https://github.com/Heey-Global/verity/commit/2a1fd319d3e0bd3db35a8ac4eb1a93708d878a7b))
+* **backup:** harden restore trust and rotate recovery identities ([#2032](https://github.com/Heey-Global/verity/issues/2032)) ([6dce8eb](https://github.com/Heey-Global/verity/commit/6dce8ebfae3c19f79423b794eb615384a351dfd9))
+* **egress:** add deny-only host controller and durable start gate ([#2041](https://github.com/Heey-Global/verity/issues/2041)) ([fbed2eb](https://github.com/Heey-Global/verity/commit/fbed2eb345d18e6c184bac96cd71098d3cbd6086))
+* **egress:** add host-owned generation-bound network fence ([#2036](https://github.com/Heey-Global/verity/issues/2036)) ([e332fdc](https://github.com/Heey-Global/verity/commit/e332fdc87c1c2144ff2539dd47d005d1cc0787f7))
+* **egress:** connect generation lifecycle to deny-only host control ([#2042](https://github.com/Heey-Global/verity/issues/2042)) ([5664536](https://github.com/Heey-Global/verity/commit/56645363c9cdc0f913dcfec6d7b483ea70c013c0))
+* **egress:** isolate relay sockets and exercise real Runner topology ([#2046](https://github.com/Heey-Global/verity/issues/2046)) ([c443554](https://github.com/Heey-Global/verity/commit/c4435540c217b3ea4ff20111bb874d83db11e2e4))
+* **logs:** list individual audit and system events ([#2052](https://github.com/Heey-Global/verity/issues/2052)) ([be666a4](https://github.com/Heey-Global/verity/commit/be666a482aaf6420c1dc9e57a82d30a0217af25e))
+* **qa:** add opt-in CI supervision and repair coordination ([#2040](https://github.com/Heey-Global/verity/issues/2040)) ([0ccdfbf](https://github.com/Heey-Global/verity/commit/0ccdfbf17a7723aef3936fc4c0ee4d1fd6859447))
+
+
+### Bug Fixes
+
+* **backup:** reject unsafe relocation and extend backend acceptance ([#2039](https://github.com/Heey-Global/verity/issues/2039)) ([179f1f7](https://github.com/Heey-Global/verity/commit/179f1f7c32c3573486ba2ee4a16387c4ede12a46))
+* **qa:** recover dispatches and reconcile repair lifecycles ([#2044](https://github.com/Heey-Global/verity/issues/2044)) ([268638c](https://github.com/Heey-Global/verity/commit/268638c8b71d9b1ca11bb92d166f19975c205bbf))
+* **qa:** safely admit work after settled marker cleanup ([#2047](https://github.com/Heey-Global/verity/issues/2047)) ([abce14f](https://github.com/Heey-Global/verity/commit/abce14fe4d00a90818d448af7c9463edce80a29e))
+* **release:** recover OTA source association after history rewrites ([#2043](https://github.com/Heey-Global/verity/issues/2043)) ([93db44e](https://github.com/Heey-Global/verity/commit/93db44efb5c7d3670b10f6c94ab4f49ead5d5aad))
+
 ## [4.65.0](https://github.com/Heey-Global/verity/compare/v4.64.0...v4.65.0) (2026-10-29)
 
 
