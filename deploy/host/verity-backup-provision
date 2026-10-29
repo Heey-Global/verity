@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Fixed target-image entrypoint used by the Updater, never a general host command runner.
+set -euo pipefail
+umask 077
+die() { printf 'verity-backup-provision: %s\n' "$*" >&2; exit 1; }
+note() { printf 'verity-backup-provision: %s\n' "$*" >&2; }
+[[ $(id -u) = 0 ]] || die 'requires root'
+STATE_DIR=${VERITY_STATE_DIR:?}
+image=${VERITY_BACKUP_IMAGE:?}
+postgres=${VERITY_BACKUP_POSTGRES:?}
+backup_dir=${VERITY_BACKUP_DIR:?}
+[[ $image =~ ^ghcr\.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]] || die 'requires an official digest'
+[[ $postgres =~ ^[a-f0-9]{12,64}$ ]] || die 'invalid PostgreSQL container identity'
+[[ -d $STATE_DIR && ! -L $STATE_DIR && $(stat -c %u "$STATE_DIR") = 0 && $(readlink -f "$STATE_DIR") = "$STATE_DIR" ]] || die 'unsafe installer state'
+[[ $(( 8#$(stat -c %a "$STATE_DIR") & 8#22 )) = 0 ]] || die 'installer state is writable by other users'
+[[ -S /run/systemd/private ]] || die 'automatic backup provisioning requires the host systemd service manager'
+read_state() {
+  [[ -e $1 || -L $1 ]] || return 0
+  [[ -f $1 && ! -L $1 && $(stat -c %s "$1") -le 1024 ]] || die 'unsafe installer state file'
+  head -n1 "$1"
+}
+write_state() {
+  local temporary
+  temporary=$(mktemp "$(dirname "$1")/.backup-state.XXXXXXXX")
+  cat > "$temporary"
+  chown root:root "$temporary"
+  chmod "$2" "$temporary"
+  sync -f "$temporary"
+  mv -fT "$temporary" "$1"
+  sync -f "$(dirname "$1")"
+}
+[[ ! -L $STATE_DIR/.verity-install.lock ]] || die 'unsafe installer lock'
+exec 8>"$STATE_DIR/.verity-install.lock"
+flock -n 8 || die 'another installer or migration is running'
+# Reject an in-progress identity/restore transition rather than provisioning over it.
+if [[ -e $STATE_DIR/restore/job || -L $STATE_DIR/restore/job ]]; then
+  [[ -f $STATE_DIR/restore/job && ! -L $STATE_DIR/restore/job ]] || die 'unsafe restore checkpoint'
+  recovery_phase=$(jq -er '.phase' "$STATE_DIR/restore/job") || die 'invalid restore checkpoint'
+  case "$recovery_phase" in
+    aborted) ;;
+    accepted)
+      recovery_id=$(jq -er '.id' "$STATE_DIR/restore/job") || die 'invalid restore identity'
+      [[ $(read_state "$STATE_DIR/restore/activation-complete") = "$recovery_id" ]] || die 'restore activation is pending' ;;
+    *) die 'restore is pending' ;;
+  esac
+fi
+if [[ -e $STATE_DIR/identity-rotation/checkpoint ]]; then
+  jq -e '.phase == "complete"' "$STATE_DIR/identity-rotation/checkpoint" >/dev/null || die 'identity rotation is pending'
+fi
+previous=$(read_state "$STATE_DIR/backup-dir")
+[[ -z $previous || $previous = "$backup_dir" ]] || die 'backup destination changed'
+# Docker may create an absent bind source as root. Only adopt an empty new default.
+if [[ -z $previous && $backup_dir = /var/lib/verity/backups ]]; then
+  [[ -z $(find "$backup_dir" -mindepth 1 -maxdepth 1 -print -quit) ]] || die 'unrecorded backup destination is not empty'
+  chown "${VERITY_SERVER_UID:?}:${VERITY_SERVER_GID:?}" "$backup_dir"
+  chmod 0700 "$backup_dir"
+fi
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+source "$repo_root/deploy/host/verity-backup-prerequisites"
+setup_backup_prerequisites "$backup_dir" "$image"
+configure_backup_database_role "$postgres" "$VERITY_BACKUP_POSTGRES_PASSWORD"
+unset VERITY_BACKUP_POSTGRES_PASSWORD
+systemctl is-active --quiet verity-backup-identity.path || die 'backup identity watcher is not active'
+printf '1\n' | write_state "$STATE_DIR/backup-provisioning-version" 0644
