@@ -218,6 +218,7 @@ activate_installer() {
   # Capture safe summaries before managed-up removes an unhealthy candidate during rollback.
   run_driver monitor-activation >"$work/activation-diagnostics.log" 2>&1 &
   monitor=$!
+  inside sh -c 'date +%s000 > "$1/restored-schedule-start"' sh "$root"
   # The real bundled installer consumes the supplied keys on stdin and performs normal deployment activation.
   inside jq -r '.recoveryKey,.masterPassword' "$root/input" \
     | host_docker exec -i --env DOCKER_HOST=unix:///var/run/docker.sock --env "VERITY_STATE_DIR=$root/host" \

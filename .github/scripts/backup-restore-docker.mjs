@@ -1111,21 +1111,28 @@ async function restore() {
       const status = (await api('/api/backups/status')).body;
       assert.equal(status.available, true);
       assert.equal(status.configured, true);
-      // Restore clears lastSuccess, so the ordinary image captures the restored host right away.
+      // A restored timestamp must not count as a capture by the new installation.
+      const activatedAfter = Number(
+        (await readFile(join(root, 'restored-schedule-start'), 'utf8')).trim(),
+      );
+      assert.ok(Number.isFinite(activatedAfter) && activatedAfter > 0);
       const deadline = Date.now() + 180000;
       let state;
       while (Date.now() < deadline) {
         try {
           state = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
-          if (state.schedule.lastSuccess !== null) break;
+          if (state.schedule.lastSuccess >= activatedAfter) break;
         } catch {
           // The server replaces the state file atomically; retry a read that raced it.
         }
         await delay(500);
       }
-      if (!(state?.schedule.lastSuccess > 0))
+      if (!(state?.schedule.lastSuccess >= activatedAfter))
         console.log('Restored schedule state:', JSON.stringify(state?.schedule));
-      assert.ok(state?.schedule.lastSuccess > 0, 'restored host must capture on its own');
+      assert.ok(
+        state?.schedule.lastSuccess >= activatedAfter,
+        'restored host must complete a new capture after activation',
+      );
       assert.notDeepEqual(
         await readdir(
           join(
