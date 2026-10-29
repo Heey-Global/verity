@@ -214,6 +214,27 @@
       "originalSourceSha256": "8a482eaf3f7247e6d53c10fd6ff8e4c8fa580b136df8a14ee99f867ff3b0763a",
       "test": "packages/server/src/backup/installer-destination.test.ts",
       "testSha256": "ade322a43aaec05d3ee3a069299d5236d8c8ff247f5aa65e9032e3446614b614"
+    },
+    {
+      "id": "ordinary-project-activation-with-runtime-control",
+      "file": "scripts/backup-restore-content.mjs",
+      "before": "assert.equal(states[0]?.n, 0);",
+      "after": "assert.equal(0, 0);",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "--maxWorkers=1",
+        "scripts/backup-restore-content.test.ts"
+      ],
+      "environment": {
+        "VERITY_TEST_POSTGRES_ROOT": "<isolated PostgreSQL test root>"
+      },
+      "expected": "assertion failure",
+      "observedExitCode": 1,
+      "originalSourceSha256": "b22ef29300508bac30a3c9dbdd8f2c419927bda7f68cfa246570e33a97a0cdd4",
+      "test": "scripts/backup-restore-content.test.ts",
+      "testSha256": "d26dc1a36b43eb001bd04dbe80242bd3b591a20142f4a4585afba21228af7f4a"
     }
   ],
   "environmentRequirements": {
