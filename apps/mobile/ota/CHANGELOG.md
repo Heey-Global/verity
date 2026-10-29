@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.80.3](https://github.com/Heey-Global/verity/compare/mobile-v1.80.2...mobile-v1.80.3) (2026-10-29)
+
+
+### Features
+
+* **logs:** link build diagnostics with audit and system logs ([#2031](https://github.com/Heey-Global/verity/issues/2031)) ([8f3a05e](https://github.com/Heey-Global/verity/commit/8f3a05ea6a93ed4036ce20eae7a34f7156d7a5be))
+* **mobile:** add selection scheduling diagnostics ([#2023](https://github.com/Heey-Global/verity/issues/2023)) ([86c07c2](https://github.com/Heey-Global/verity/commit/86c07c25975201ecb8ad7aea006240639a337f3b))
+
+
+### Bug Fixes
+
+* **settings:** refine feature order and simplify footer ([#2021](https://github.com/Heey-Global/verity/issues/2021)) ([8fe5dc8](https://github.com/Heey-Global/verity/commit/8fe5dc8e8a9bb5a8f62259ad59550ab2a788dfb3))
+
 ## [1.80.2](https://github.com/Heey-Global/verity/compare/mobile-v1.80.1...mobile-v1.80.2) (2026-10-28)
 
 
