@@ -6002,6 +6002,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }),
     });
     registerMcpAppsRoutes(app, {
+      authorizeRequest: async (request) => {
+        const registry = deps.authRegistry;
+        if (registry === undefined || !registry.isEnabled()) return true;
+        const token = requestCredential(request);
+        if (!registry.verify(token)) return false;
+        const userId = registry.resolveUserId(token);
+        if (userId === undefined || userId !== request.localUserId) return false;
+        return (
+          (await authorizePairedRoute(
+            deps.eventStore,
+            userId,
+            request.method,
+            request.routeOptions.url ?? request.url,
+            (request.params ?? {}) as Record<string, unknown>,
+          )) === 'allow'
+        );
+      },
       resolveConnection: resolveMcpAppConnection,
       getProjectId: async (sessionId) =>
         (await deps.eventStore.getSession(sessionId))?.projectId ?? undefined,

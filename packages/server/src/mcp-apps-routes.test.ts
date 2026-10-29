@@ -27,11 +27,13 @@ function setup() {
   };
   const events = [event];
   const resolveConnection = vi.fn(async () => connection as typeof connection | undefined);
+  const authorizeRequest = vi.fn(async () => true);
   const approve = vi.fn(async () => true);
   const closeSession = vi.fn(async () => undefined);
   const app = Fastify();
   apps.push(app);
   registerMcpAppsRoutes(app, {
+    authorizeRequest,
     resolveConnection,
     getProjectId: async (sessionId) => (sessionId === 's' ? 'p' : undefined),
     getApp: async (_sessionId, appId) => events.findLast((candidate) => candidate.appId === appId),
@@ -54,6 +56,7 @@ function setup() {
     event,
     resolveConnection,
     approve,
+    authorizeRequest,
     closeSession,
     url,
     refresh,
@@ -123,6 +126,18 @@ describe('MCP Apps scoped routes', () => {
     });
     expect((await f.refresh()).statusCode).toBe(404);
     expect(f.fixture.calls.some((call) => call.method === 'tools/call')).toBe(false);
+  });
+
+  it('rechecks requester access after approval before executing', async () => {
+    const f = setup();
+    f.approve.mockImplementation(async () => {
+      f.authorizeRequest.mockResolvedValue(false);
+      return true;
+    });
+    expect((await f.refresh()).statusCode).toBe(403);
+    expect(f.authorizeRequest).toHaveBeenCalledOnce();
+    expect(f.fixture.calls.some((call) => call.method === 'tools/call')).toBe(false);
+    expect(f.events).toHaveLength(1);
   });
 
   it('rejects removed bindings and replaced credentials for reads and actions', async () => {

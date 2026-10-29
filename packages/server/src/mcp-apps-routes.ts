@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   connectionFingerprint,
@@ -46,6 +46,7 @@ export function appDocument(html: string, resourceMeta: unknown): string {
 }
 
 export interface McpAppsRouteDeps {
+  authorizeRequest(request: FastifyRequest): Promise<boolean>;
   resolveConnection: HttpMcpProxyDeps['resolveConnection'];
   getProjectId(sessionId: string): Promise<string | undefined>;
   getApp(sessionId: string, appId: string): Promise<McpAppEvent | undefined>;
@@ -198,6 +199,9 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             uiMetadata(currentOwner ?? {}).resourceUri !== resolved.event.resourceUri
           )
             return reply.code(403).send({ error: 'Tool access changed' });
+          // Approval can outlive the caller's login or project execute grant.
+          if (!(await deps.authorizeRequest(request)))
+            return reply.code(403).send({ error: 'MCP app access changed' });
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
           if ((await resolve(id, appId)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
