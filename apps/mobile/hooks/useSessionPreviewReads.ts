@@ -196,6 +196,7 @@ export function useSessionPreviewReads({
 
   return {
     managedByInstance,
+    refreshManaged,
     hasActiveStaticPreview: publicShared || localShared,
     hasRunningDevServer,
     refreshStaticPreview,

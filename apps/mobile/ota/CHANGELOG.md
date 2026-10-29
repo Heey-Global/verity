@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.80.3](https://github.com/Heey-Global/verity/compare/mobile-v1.80.2...mobile-v1.80.3) (2026-10-29)
+
+
+### Features
+
+* **logs:** link build diagnostics with audit and system logs ([#2031](https://github.com/Heey-Global/verity/issues/2031)) ([8f3a05e](https://github.com/Heey-Global/verity/commit/8f3a05ea6a93ed4036ce20eae7a34f7156d7a5be))
+* **mobile:** add selection scheduling diagnostics ([#2023](https://github.com/Heey-Global/verity/issues/2023)) ([86c07c2](https://github.com/Heey-Global/verity/commit/86c07c25975201ecb8ad7aea006240639a337f3b))
+
+
+### Bug Fixes
+
+* **settings:** refine feature order and simplify footer ([#2021](https://github.com/Heey-Global/verity/issues/2021)) ([8fe5dc8](https://github.com/Heey-Global/verity/commit/8fe5dc8e8a9bb5a8f62259ad59550ab2a788dfb3))
+
+## [1.80.2](https://github.com/Heey-Global/verity/compare/mobile-v1.80.1...mobile-v1.80.2) (2026-10-28)
+
+
+### Features
+
+* **backup:** add encrypted local backups and installer recovery ([#1975](https://github.com/Heey-Global/verity/issues/1975)) ([6d5bc40](https://github.com/Heey-Global/verity/commit/6d5bc40184649e6eeb47f0d519a4ef1e36558379))
+
+
+### Bug Fixes
+
+* **history:** recover oversized events in bounded chunks ([#2007](https://github.com/Heey-Global/verity/issues/2007)) ([91411a7](https://github.com/Heey-Global/verity/commit/91411a70ccf61236f8171e092f29393717c2fa3b))
+* **settings:** group features and app administration settings ([#2005](https://github.com/Heey-Global/verity/issues/2005)) ([82332ff](https://github.com/Heey-Global/verity/commit/82332ffe4eccf6517fc3777c789e070eba41dcb0))
+
+## [1.80.1](https://github.com/Heey-Global/verity/compare/mobile-v1.80.0...mobile-v1.80.1) (2026-10-27)
+
+
+### Features
+
+* **audit:** add administrator logs for project image operations ([#1977](https://github.com/Heey-Global/verity/issues/1977)) ([3ef0ba7](https://github.com/Heey-Global/verity/commit/3ef0ba792b9ca14728e8df2effac2362c12d9a2a))
+* **server:** derive a meeting result after a live meeting ends ([#1978](https://github.com/Heey-Global/verity/issues/1978)) ([06aa780](https://github.com/Heey-Global/verity/commit/06aa780a57f9b478f70143b1319b7a3d9b667759))
+
+
+### Bug Fixes
+
+* **mobile:** steady the iPad meeting column before and during the transcript ([#1972](https://github.com/Heey-Global/verity/issues/1972)) ([b665b63](https://github.com/Heey-Global/verity/commit/b665b636e5a19440ca61e4284582c115c53c8bdf))
+* **server:** revalidate execution and provider authority ([#1971](https://github.com/Heey-Global/verity/issues/1971)) ([ceb7048](https://github.com/Heey-Global/verity/commit/ceb7048d36f2d5bb0ee542e45e4d5ceca04ac4dd))
+* **web:** render inline images and readable code blocks ([#1973](https://github.com/Heey-Global/verity/issues/1973)) ([53e9e16](https://github.com/Heey-Global/verity/commit/53e9e165b648dba575b2a3f6ed8d9e54a3b460f2))
+
 ## [1.79.3](https://github.com/Heey-Global/verity/compare/mobile-v1.79.2...mobile-v1.79.3) (2026-10-26)
 
 

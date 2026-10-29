@@ -38,6 +38,8 @@ import {
   publishSessionProgressRequestSchema,
   TASKS_TOOL_DESCRIPTION,
   tasksRequestSchema,
+  ASSISTANT_TOOL_DESCRIPTION,
+  assistantRequestSchema,
   APP_HELP_TOOL_DESCRIPTION,
   appHelpRequestSchema,
 } from '@verity/events';
@@ -185,6 +187,7 @@ export interface McpGatewayDeps {
     sessionId: string;
     callId: string;
     invocationId: string;
+    authorizationSnapshot?: string;
     requestMac: string;
     macKeyId: string;
     toolName: GatewayToolName;
@@ -209,6 +212,12 @@ export interface McpGatewayDeps {
    * the early refusal and nothing else — the tool still refuses the call itself. So this must
    * never be the only place a check lives.
    */
+  /** Revalidate execution rights after approval and before adapter dispatch. */
+  authorizeExecution?(input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+  }): Promise<void>;
   authorizeCall?(
     input: McpGatewayCaller & {
       projectId: string;
@@ -241,6 +250,7 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      authorizationSnapshot?: string;
       toolName: GatewayToolName;
       request: unknown;
     },
@@ -307,6 +317,8 @@ const TOOL_SCHEMAS = {
   verity_start_planning: z.object({}).strict(),
   verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
+  verity_repairs: z.object({ action: z.literal('status') }).strict(),
+  verity_assistant: assistantRequestSchema,
   verity_tasks: tasksRequestSchema,
   verity_app_help: appHelpRequestSchema,
   verity_vulnerabilities: vulnerabilityRequestSchema,
@@ -463,6 +475,9 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Submit the complete current plan while the session is in planning mode, as Markdown with a short "# Title", "## Goal" (one sentence) and "## Steps" (a numbered list, one line per step). Resolve open questions in the chat before submitting. Verity pins the card above the composer with Implement and Dismiss buttons. Submit the whole revised plan again whenever it changes; end your turn without repeating it or explaining the buttons.',
   verity_end_planning:
     'Implement the latest submitted plan when the user explicitly tells you to go ahead in the chat. Their message is the approval, so there is no second confirmation. End your turn immediately; implementation starts in a new turn. Use action discard to ask once to leave planning without implementing, including before a plan exists.',
+  verity_repairs:
+    'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
+  verity_assistant: ASSISTANT_TOOL_DESCRIPTION,
   verity_tasks: TASKS_TOOL_DESCRIPTION,
   verity_app_help: APP_HELP_TOOL_DESCRIPTION,
   verity_vulnerabilities: VULNERABILITY_TOOL_DESCRIPTION,
@@ -834,7 +849,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         'unavailable',
         keyed,
         toolName,
-        toolError(id, 'Google access changed. Try again.'),
+        toolError(id, 'Tool access changed. Try again.'),
       );
     }
     let answer: ExternalPermissionAnswer;
@@ -880,6 +895,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           sessionId,
           callId,
           invocationId,
+          ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
           ...keyed,
           toolName: toolName,
           input: request.data,
@@ -936,7 +952,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         });
         if (current !== authorizationSnapshot)
           throw new ControlPlaneSessionAuthorityError(
-            'Google access changed while waiting for approval. Submit the operation again.',
+            'Tool access changed while waiting for approval. Submit the operation again.',
           );
       }
       // A card can be parked for minutes, and the caller's turn may settle while it waits —
@@ -948,6 +964,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // release cannot interleave there. A turn that settles once the call is on the wire is
       // not a window any check could close — the request has left. What bounds that case is
       // the tool's own at-most-once fence, which keys on the turn this bearer named.
+      await deps.authorizeExecution?.({ projectId, sessionId, turnId });
       const still =
         token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
       if (still === undefined || still.sessionId !== sessionId || still.turnId !== turnId) {
@@ -961,6 +978,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         callId,
         invocationId,
         approvedByCard: !standingAuthorization,
+        ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
         toolName: toolName,
         request: request.data,
       });

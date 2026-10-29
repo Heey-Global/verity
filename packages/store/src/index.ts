@@ -1,4 +1,15 @@
 export {
+  ProjectEgressStore,
+  ProjectEgressError,
+  canonicalEgressTarget,
+  egressTargetKey,
+  egressGrantCovers,
+  type EgressTarget,
+  type EgressPolicy,
+  type EgressRequest,
+  type EgressGrant,
+} from './project-egress.js';
+export {
   ForgeConnectionStore,
   type ForgeConnection,
   type ForgeConnectionProvider,
@@ -220,3 +231,23 @@ export { redactSecrets, redactProcessStderr } from './redact.js';
 export * from './google-accounts.js';
 
 export * from './vulnerability-scan.js';
+
+export type {
+  LiveMeetingResult,
+  LiveMeetingResultItem,
+  LiveMeetingResultTask,
+} from './live-meetings.js';
+
+export {
+  AssistantStore,
+  type AssistantGrant,
+  type AssistantMode,
+  type AssistantSettings,
+} from './assistant.js';
+
+export {
+  RepairSupervisionStore,
+  type RepairMandate,
+  type RepairIncident,
+  type RepairMode,
+} from './repair-supervision.js';

@@ -172,13 +172,16 @@ describe('a managed deployment refuses project networks', () => {
       // throws keeps it that way.
       fetch: () => Promise.reject(new Error('this test never issues a Docker request')),
     });
-    // `ensureNetwork` is the Server-side creation D2 always left with the
-    // provisioner; it creates a network and puts nothing on one. Asserting it is
-    // the only network verb catches the additions worth catching — a
+    // Both creation verbs leave membership unchanged: ensureNetwork is the
+    // legacy path; createEgressNetwork creates a fresh deny-only generation bridge.
+    // Pinning the complete creation-only set catches additions such as a
     // `connectNetwork`, an `addContainerToNetwork` — where a list of forbidden
     // names would only catch the ones someone thought of. A membership call
     // named without `network` at all, or hidden inside an existing method, would
     // still get past this; the spec pin above is what stops it landing.
-    expect(Object.keys(client).filter((verb) => /network/i.test(verb))).toEqual(['ensureNetwork']);
+    expect(Object.keys(client).filter((verb) => /network/i.test(verb))).toEqual([
+      'ensureNetwork',
+      'createEgressNetwork',
+    ]);
   });
 });

@@ -10,10 +10,10 @@ import {
   githubRepositoryAccessReady,
   settingsChecklist,
   settingsChecklistHeadline,
+  type AuditHealth,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
-import * as Application from 'expo-application';
 import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
@@ -23,16 +23,12 @@ import {
   SettingsListPanel,
   SettingsMessage,
   SettingsNavRow,
-  SettingsPanel,
-  SettingsSaveState,
   SettingsScaffold,
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
-import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
-import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
 import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
@@ -42,11 +38,6 @@ import {
   useLoadVeritySettings,
   useVeritySettings,
 } from '../../lib/settingsStore';
-
-// The one operator-facing app version names the JavaScript bundle that is actually
-// running. Embedded bundles use the native `.0` marketing version; an OTA carries
-// its own stamped patch version and therefore replaces the displayed value.
-const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVersion);
 
 // Where each unfinished setup step is actually fixed. Exhaustive over the id
 // union by type, so a checklist item added in `@verity/mobile` cannot ship
@@ -82,13 +73,15 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   // without first opening the connection that needs it.
   const githubPermission = useGithubPermission(client, githubConnected);
   const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
-  const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const appStoreVersion = useAppStoreUpdateVersion(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
+  // `null` until the Server says this device may read audit logs; members and
+  // Servers without the trail never show the row.
+  const [auditHealth, setAuditHealth] = useState<AuditHealth | null>(null);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -99,6 +92,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       client
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      client
+        .auditHealth()
+        .then((health) => active && setAuditHealth(health))
         .catch(() => undefined);
       // A stored key is not an active subscription: Uplink may have refused it.
       // Keep the last known state while re-reading so the row does not flicker.
@@ -124,21 +121,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       };
     }, [client, keyConfigured]),
   );
-
-  const checkForManualUpdate = useCallback(() => {
-    if (checkingForUpdate) return;
-    setCheckingForUpdate(true);
-    void checkForAppUpdate()
-      .then((result) => {
-        if (result === 'current') Alert.alert('Verity is up to date', APP_VERSION_LABEL);
-        if (result === 'busy') Alert.alert('Update check in progress');
-        if (result === 'disabled') Alert.alert('Updates unavailable', 'EAS Update is disabled.');
-        if (typeof result === 'object' && result.status === 'failed') {
-          Alert.alert('Update failed', result.message);
-        }
-      })
-      .finally(() => setCheckingForUpdate(false));
-  }, [checkingForUpdate]);
 
   const checklist = settingsChecklist({ settings, secretStatus, failed });
 
@@ -184,8 +166,20 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Connections">
+      <SettingsGroup title="Features">
         <SettingsListPanel>
+          <SettingsNavRow
+            icon="user"
+            title="Assistant"
+            subtitle="Voice notes, mail and calendar, project tasks"
+            onPress={() => router.push('/settings/assistant')}
+          />
+          <SettingsNavRow
+            icon="activity"
+            title="QA · CI supervision"
+            subtitle="Project monitoring and repair ownership"
+            onPress={() => router.push('/settings/repairs')}
+          />
           <SettingsNavRow
             icon="link"
             title="Connections"
@@ -195,20 +189,60 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/services')}
           />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Access">
-        <SettingsListPanel>
           <SettingsNavRow
-            icon="monitor"
-            title="Devices & Web Browsers"
-            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage devices and web browsers"
+            icon="check-square"
+            title="Tasks"
+            subtitle="Capture bubble, screenshot tips"
+            status={
+              taskPreferences.enabled
+                ? { intent: 'ready', label: 'On' }
+                : { intent: 'optional', label: 'Off' }
+            }
+            onPress={() => router.push('/settings/tasks')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
+          />
+          <SettingsNavRow
+            icon="shield"
+            title="Vulnerability scan"
+            subtitle="Known vulnerabilities in code projects"
+            onPress={() => router.push('/settings/vulnerability-scan')}
+          />
+          <SettingsNavRow
+            icon="zap"
+            signature
+            title="Verity Premium"
+            subtitle="Online sharing, remote access"
+            status={
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkState === 'rejected'
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
+            }
+            onPress={() => router.push('/settings/premium')}
+          />
+          <SettingsToggleRow
+            label="Verity Control"
+            subtitle="Advanced mode for server administration sessions"
+            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
+            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
+            onValueChange={(value) => {
+              setPendingAdvancedMode(value);
+              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
+                setPendingAdvancedMode(undefined),
+              );
+            }}
           />
         </SettingsListPanel>
       </SettingsGroup>
-      <SettingsGroup title="Server">
+
+      <SettingsGroup title="App & Server">
         <SettingsListPanel>
           <SettingsNavRow
             icon="download"
@@ -230,53 +264,41 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
-            icon="zap"
-            signature
-            title="Verity Premium"
-            subtitle="Online sharing, remote access"
-            status={
-              !settings?.uplinkSubscriptionKeyConfigured
-                ? { intent: 'optional', label: 'Not active' }
-                : uplinkState === 'rejected'
-                  ? { intent: 'needsSetup', label: 'Key rejected' }
-                  : uplinkState === 'active'
-                    ? { intent: 'ready', label: 'Active' }
-                    : { intent: 'optional', label: 'Configured' }
-            }
-            onPress={() => router.push('/settings/premium')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Features">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="shield"
-            title="Vulnerability scan"
-            subtitle="Known vulnerabilities in code projects"
-            onPress={() => router.push('/settings/vulnerability-scan')}
+            icon="server"
+            title="Server address"
+            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
+            accessibilityLabel="Change server address"
           />
           <SettingsNavRow
-            icon="check-square"
-            title="Tasks"
-            subtitle="Capture bubble, screenshot tips"
-            status={
-              taskPreferences.enabled
-                ? { intent: 'ready', label: 'On' }
-                : { intent: 'optional', label: 'Off' }
-            }
-            onPress={() => router.push('/settings/tasks')}
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
           />
-          <SettingsNavRow
-            icon="mic"
-            title="Meeting transcription"
-            onPress={() => router.push('/settings/transcription')}
-          />
+          {auditHealth !== null ? (
+            <SettingsNavRow
+              icon="file-text"
+              title="Logs"
+              subtitle="Audit history and system output"
+              status={
+                auditHealth.status === 'degraded'
+                  ? { intent: 'needsSetup', label: 'Needs review' }
+                  : undefined
+              }
+              onPress={() => router.push('/settings/audit-logs' as Href)}
+            />
+          ) : null}
         </SettingsListPanel>
       </SettingsGroup>
 
-      {/* Server connection — the recovery path if the saved address is wrong or the
-          server moved (IP / Tailscale name change). Routes to the onboarding step in
-          reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
           {!isDemoMode() ? (
@@ -320,57 +342,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               }}
             />
           ) : null}
-          <SettingsNavRow
-            icon="server"
-            title="Server address"
-            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
-            onPress={() => {
-              if (isDemoMode()) {
-                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
-              } else {
-                router.push('/onboarding/server-url?reconfigure=1');
-              }
-            }}
-            accessibilityLabel="Change server address"
-          />
         </SettingsListPanel>
       </SettingsGroup>
-
-      <SettingsGroup title="Advanced">
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>Verity Control</Text>
-          <Text style={styles.reproSubtitle}>
-            Show an internal Verity Control workspace for server administration sessions.
-          </Text>
-          <SettingsToggleRow
-            label="Advanced mode"
-            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
-            onValueChange={(value) => {
-              setPendingAdvancedMode(value);
-              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
-                setPendingAdvancedMode(undefined),
-              );
-            }}
-          />
-        </SettingsPanel>
-      </SettingsGroup>
-
-      <View style={styles.settingsGroup}>
-        <SettingsSaveState />
-        {/* The exact JS bundle version currently running. Long-pressing performs
-            an immediate, serialized EAS Update check. */}
-        <Pressable
-          onLongPress={checkForManualUpdate}
-          delayLongPress={600}
-          disabled={checkingForUpdate}
-          accessibilityRole="button"
-          accessibilityLabel={`Version ${APP_VERSION_LABEL}`}
-          accessibilityHint="Long press to check for an update"
-        >
-          <Text style={styles.versionFootnote}>{APP_VERSION_LABEL}</Text>
-        </Pressable>
-      </View>
     </SettingsScaffold>
   );
 }

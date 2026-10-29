@@ -12,7 +12,7 @@ import {
   type ProjectAgent,
   type VerityClient,
 } from '@verity/mobile';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
@@ -25,6 +25,7 @@ import {
   SettingsGroup,
   SettingsListPanel,
   SettingsMessage,
+  SettingsNavRow,
   SettingsPanel,
   SettingsScaffold,
   SettingsToggleRow,
@@ -244,6 +245,29 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
               );
             })}
           </SettingsPanel>
+        </SettingsGroup>
+      ) : null}
+      {detail.project.kind !== 'control_plane' ? (
+        <SettingsGroup
+          title="Functions"
+          description="Choose which Verity functions may access this project."
+        >
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="user"
+              title="Assistant"
+              subtitle="Off, tasks only or tasks and sessions"
+              onPress={() => router.push(`/project/${projectId}/settings/assistant`)}
+            />
+            {['github', 'forgejo'].includes(detail.project.kind ?? 'github') ? (
+              <SettingsNavRow
+                icon="check"
+                title="QA"
+                subtitle="Off, monitor only or automatic repairs"
+                onPress={() => router.push(`/project/${projectId}/settings/repairs`)}
+              />
+            ) : null}
+          </SettingsListPanel>
         </SettingsGroup>
       ) : null}
       <SettingsGroup

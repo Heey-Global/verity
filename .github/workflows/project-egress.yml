@@ -1,0 +1,54 @@
+name: project-egress
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/project-egress.yml'
+      - 'scripts/probes/project-egress/**'
+      - 'deploy/gvisor-ci.Dockerfile'
+      - 'deploy/gvisor/versions.env'
+      - 'deploy/egress/**'
+      - 'scripts/build-project-egress-host.mjs'
+      - 'packages/server/src/provisioner.ts'
+      - 'packages/server/src/project-egress-*.ts'
+      - 'packages/server/src/project-relay-*.ts'
+      - 'packages/server/src/provisioner.ts'
+      - 'packages/server/src/docker.ts'
+      - 'packages/store/src/project-egress.ts'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-egress-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  project-boundary:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
+      - name: Bundle actual host adapter for the disposable runtime
+        run: node scripts/probes/project-egress/build-adapter.mjs
+      - name: Check harness and evidence rejection
+        run: python3 -m unittest discover -s scripts/probes/project-egress -p 'test_*.py' -v
+      - name: Exercise the external project fence on pinned gVisor
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-evidence
+        run: bash scripts/probes/project-egress/ci.sh
+      - name: Retain runtime and receiver evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: project-egress-evidence
+          path: ${{ runner.temp }}/project-egress-evidence
+          if-no-files-found: error
+          retention-days: 7

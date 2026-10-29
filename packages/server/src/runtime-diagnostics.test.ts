@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -477,4 +477,151 @@ it('bounds Docker diagnostic bodies over the Unix transport and makes only GET r
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('exposes only fresh, validated builder migration status to Control diagnostics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'builder-migration-status-'));
+  const path = join(directory, 'status.json');
+  try {
+    const status = {
+      version: 1,
+      state: 'deferred',
+      message: 'Builds are still running',
+      observedAt: new Date(now).toISOString(),
+    };
+    await writeFile(path, JSON.stringify(status));
+    const read = createRuntimeDiagnostics({ builderMigrationPath: path, now: () => now });
+    expect((await read({})).builderMigration).toEqual(status);
+    await writeFile(
+      path,
+      JSON.stringify({ ...status, observedAt: new Date(now - 121000).toISOString() }),
+    );
+    expect((await read({})).builderMigration).toBeUndefined();
+    await writeFile(path, JSON.stringify({ ...status, state: 'invented' }));
+    expect((await read({})).builderMigration).toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A missing migration status alone left Control unable to tell an unprovisioned
+// host from one in maintenance; the admission state answers that directly.
+it('reports whether the host provisioned build admission', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'builder-admission-'));
+  try {
+    const read = createRuntimeDiagnostics({ builderAdmissionDirectory: directory, now: () => now });
+    expect((await read({})).builderAdmission).toMatchObject({
+      state: 'not-provisioned',
+      message: expect.stringContaining('Re-run the verified Verity installer'),
+    });
+    await mkdir(join(directory, 'leases'));
+    expect((await read({})).builderAdmission?.state).toBe('incomplete');
+    await writeFile(join(directory, 'build-admission.lock'), '');
+    expect((await read({})).builderAdmission?.state).toBe('provisioned');
+    await writeFile(join(directory, 'migration-pending'), '');
+    expect((await read({})).builderAdmission?.state).toBe('migration-pending');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Build admission no longer refuses on missing storage evidence, so the gap has
+// to be visible somewhere other than a failed build.
+it('reports gaps in the host storage evidence build admission relies on', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const read = createRuntimeDiagnostics({ buildStorageReportPath: path, now: () => now });
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['host storage report is missing or invalid'],
+    });
+    const observedAt = new Date(now).toISOString();
+    const root = (kind: string) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    });
+    const roots = ['buildkit', 'docker', 'export', 'project'].map(root);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        observedAt,
+        roots: [...roots, { kind: 'containerd', path: '/x', state: 'unavailable' }],
+      }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({
+      state: 'partial',
+      problems: ['containerd filesystem is not established'],
+    });
+    await writeFile(
+      path,
+      JSON.stringify({ schemaVersion: 1, observedAt, roots: [...roots, root('containerd')] }),
+    );
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// The Docker inspection before this read can take seconds; a report published
+// meanwhile is fresh, not future-dated.
+it('judges storage evidence freshness when it reads the report', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'build-storage-evidence-clock-'));
+  const path = join(directory, 'storage.json');
+  try {
+    const later = now + 30_000;
+    const observedAt = new Date(later).toISOString();
+    const roots = ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+      kind,
+      path: `/${kind}`,
+      state: 'available',
+      observedAt,
+      filesystemId: '1:1',
+      availableBytes: 100,
+      freeInodes: 100,
+    }));
+    await writeFile(path, JSON.stringify({ schemaVersion: 1, observedAt, roots }));
+    let calls = 0;
+    const read = createRuntimeDiagnostics({
+      buildStorageReportPath: path,
+      now: () => (calls++ === 0 ? now : later),
+    });
+    expect((await read({})).buildStorageEvidence).toEqual({ state: 'complete', problems: [] });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// An unconfirmed build attempt no longer blocks every build, so what it still holds, and
+// the output of the build that failed, have to be visible where an operator looks.
+it('reports build storage reservations and the selected project’s last build failure', async () => {
+  const read = createRuntimeDiagnostics({
+    now: () => now,
+    buildStorageReservations: () => [
+      {
+        attempt: 'attempt-HS9hLo',
+        operation: 'build-export',
+        startedAt: new Date(now).toISOString(),
+        reservedBytes: 24 * 1024 ** 3,
+        reason: 'remote build/import termination is not yet confirmed',
+      },
+    ],
+    projectBuildFailure: (projectId) =>
+      projectId === 'p1'
+        ? { recordedAt: new Date(now).toISOString(), tail: 'ERROR: failed to solve: pip' }
+        : undefined,
+  });
+  const all = await read({});
+  expect(all.buildStorageReservations).toEqual([
+    expect.objectContaining({ attempt: 'attempt-HS9hLo', reservedBytes: 24 * 1024 ** 3 }),
+  ]);
+  expect(all.projectBuildFailure).toBeUndefined();
+  expect((await read({ projectId: 'p1' })).projectBuildFailure?.tail).toContain('pip');
+  expect((await read({ projectId: 'p2' })).projectBuildFailure).toBeUndefined();
 });

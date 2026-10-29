@@ -335,11 +335,21 @@ export class ManagedDevServerStore {
     return (result.numDeletedRows ?? 0n) > 0n;
   }
 
-  /** Approves exactly the command and subdirectory the operator saw. If the agent
-   *  changed either in the meantime, nothing is approved. */
+  /** Provider identity approved for secret-bearing starts, absent on legacy rows. */
+  async approvedProviderAuthority(id: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('managed_dev_servers')
+      .select('approved_provider_authority')
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row?.approved_provider_authority ?? undefined;
+  }
+
+  /** Approve only the command, directory and aliases that were reviewed. */
   async approve(
     id: string,
     seen: {
+      providerAuthority?: string;
       command: string;
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
@@ -348,6 +358,7 @@ export class ManagedDevServerStore {
     const row = await this.db
       .updateTable('managed_dev_servers')
       .set({
+        approved_provider_authority: seen.providerAuthority ?? null,
         approved_command: seen.command,
         approved_workdir: seen.workdir,
         approved_secret_bindings: JSON.stringify(

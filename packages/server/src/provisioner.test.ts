@@ -1,5 +1,10 @@
+import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
+import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { ProjectEgressHost } from './project-egress-host.js';
+import { BuildStorage } from './build-storage.js';
+import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { DerivedImageReferences } from './derived-image-references.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, X509Certificate } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -47,6 +52,7 @@ import {
   RUNNER_AGENT_GID,
   RUNNER_AGENT_UID,
   devcontainerBuildArgs,
+  devcontainerBuilderIdle,
   defaultDevcontainerBuildSpawner,
   DEVCONTAINER_NODE_FEATURE_REF,
   devcontainerLifecycleCommand,
@@ -91,8 +97,25 @@ import {
   SANDBOX_ENV_COHORTS,
 } from './project-relay-migration.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
-import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import {
+  createClaudeEgressIdentityService,
+  type ClaudeEgressIdentityService,
+} from './claude-egress-identity.js';
+import { normalizeFingerprint } from './claude-egress-mtls.js';
+import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
+import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
+import { createAuditRecorder } from './audit-recorder.js';
+
+/** Recreates the relay reconciler and turn repair start, with the initiator each records. */
+const RECONCILE = {
+  confirmWarnings: true,
+  initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+};
+const TURN_REPAIR = {
+  confirmWarnings: true,
+  initiator: { kind: 'session', sessionId: 'requesting-session' },
+};
 
 const verifiedNodeVersion = readFileSync(
   new URL('../../../.nvmrc', import.meta.url),
@@ -571,6 +594,129 @@ describe('ProvisionerImpl (#174)', () => {
     return id;
   }
 
+  it.each([false, true])(
+    'provisions and replaces experimental generations only through the host (Runner: %s)',
+    async (runnerSupervisor) => {
+      const id = await seedProject();
+      const root = mkdtempSync(join(tmpdir(), 'egress-provision-'));
+      const events: string[] = [];
+      let networkName = '';
+      let sequence = 0;
+      const host = new ProjectEgressHost(
+        { version: 1, records: [] },
+        {
+          save: async () => {},
+          apply: async () => {
+            events.push('deny');
+          },
+          inspectNetwork: async () => {},
+          inspectContainer: async () => {},
+          startContainer: async () => {
+            events.push('host.start');
+          },
+          stopContainer: async () => {
+            events.push('host.stop');
+          },
+        },
+      );
+      const { client: docker, calls } = fakeDocker({
+        createEgressNetwork: async (name) => {
+          networkName = name;
+          events.push('network.create');
+          return { id: (++sequence).toString(16).padStart(64, '0') };
+        },
+        createdContainerId: 'b'.repeat(64),
+        inspectContainer: async (name) => ({
+          id: name,
+          running: true,
+          networks: { [networkName]: { ipAddress: '172.30.0.2' } },
+        }),
+      });
+      const egress = new ProjectEgressLifecycle((command) => host.execute(command), docker);
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const relay = defaultProjectRelay();
+      const original = relay.start.bind(relay);
+      relay.start = async (binding) => {
+        expect(binding.egress).toBe(egress);
+        await binding.egress!.prepare({
+          projectId: binding.projectId,
+          containerGeneration: binding.containerGeneration,
+        });
+        return original(binding);
+      };
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        git,
+        projectRelay: relay,
+        projectEgress: egress,
+        sandboxRuntime: 'runsc-project',
+        verifySandboxRuntime: async () => {},
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+        gitSecretRoot: join(root, 'secrets'),
+        isDirectory: (path) => path === join(root, 'runners', id),
+        dataVolumeRoot: root,
+        runnerSupervisor,
+        runnerSupervisorTrustedDefaultImage: true,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        prepareRunnerRuntime: vi.fn(),
+        containerCommand: async () => ({ stdout: '', stderr: '' }),
+      });
+      try {
+        await provisioner.provision(id);
+        const first = await egress.current(id);
+        expect(first).toBeDefined();
+        const specs = calls
+          .filter((call) => call.method === 'createContainer')
+          .map((call) => call.payload as ContainerSpec);
+        expect(specs.at(-1)).toMatchObject({
+          network: first!.networkName,
+          restartPolicy: 'no',
+          runtime: 'runsc-project',
+        });
+        const spec = specs.at(-1)!;
+        expect(() =>
+          verifyEgressHostContainer(
+            first!,
+            'b'.repeat(64),
+            [
+              {
+                Id: 'b'.repeat(64),
+                HostConfig: {
+                  NetworkMode: spec.network,
+                  Runtime: spec.runtime,
+                  Privileged: false,
+                  RestartPolicy: { Name: spec.restartPolicy },
+                  CapAdd: spec.capAdd ?? null,
+                  CapDrop: spec.capDrop,
+                  SecurityOpt: spec.securityOpt,
+                },
+                NetworkSettings: {
+                  Networks: { [first!.networkName]: { NetworkID: first!.networkId } },
+                },
+              },
+            ],
+            'sandbox',
+          ),
+        ).not.toThrow();
+        expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+        expect(events).toContain('host.start');
+        events.length = 0;
+        // A replacement is a fresh Docker object; reuse of an old object ID must fail.
+        docker.createContainer = async () => ({ id: 'c'.repeat(64), warnings: [] });
+        await provisioner.recreateContainer(id);
+        expect((await egress.current(id))?.generation).not.toBe(first!.generation);
+        expect(events.indexOf('host.stop')).toBeLessThan(events.indexOf('network.create'));
+        expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('sleeps an owned active Sandbox only after revoking its relay and egress identity', async () => {
     const id = await seedProject('active');
     const inspections = [
@@ -865,84 +1011,102 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
-  it('wakes the exact retained generation with fresh relay capabilities', async () => {
-    const id = await seedProject('active');
-    const retained = {
-      id: 'container-1',
-      running: false,
-      image: 'verity-devc-test:latest',
-      networks: { 'project-network': {} },
-      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
-      mounts: [
-        { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
-        { source: '/srv/verity/runners/p1', destination: '/run/verity-runner', readWrite: true },
-      ],
-      capDrop: ['ALL'],
-      capAdd: [...RUNNER_BROKER_CAPABILITIES],
-      securityOpt: ['no-new-privileges=true'],
-    };
-    await ctx.store.updateProjectSleepState(id, 'sleeping', {
-      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
-        ...retained,
-        running: true,
-        networks: { 'project-network': { ipAddress: '172.20.0.2' } },
-      }),
-      sleepingSince: new Date(),
-      wakeStartedAt: null,
-    });
-    const { client: docker, calls } = fakeDocker({
-      inspectContainer: vi
-        .fn()
-        .mockResolvedValueOnce(retained)
-        .mockResolvedValueOnce({ ...retained, running: true }),
-    });
-    const bindings: ProjectRelayBinding[] = [];
-    const relay = defaultProjectRelay();
-    const lifecycle = vi.fn();
-    relay.reactivate = async (binding) => {
-      bindings.push(binding);
-      return {
-        identity: { projectId: id, containerGeneration: 'generation-1' },
-        signingCapability: 'fresh-signing',
-        githubCapability: 'fresh-github',
+  it.each([false, true])(
+    'wakes the exact retained generation with fresh relay capabilities (host: %s)',
+    async (protectedStart) => {
+      const id = await seedProject('active');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'verity-devc-test:latest',
+        networks: { 'project-network': {} },
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+        mounts: [
+          { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
+          { source: '/srv/verity/runners/p1', destination: '/run/verity-runner', readWrite: true },
+        ],
+        capDrop: ['ALL'],
+        capAdd: [...RUNNER_BROKER_CAPABILITIES],
+        securityOpt: ['no-new-privileges=true'],
       };
-    };
-    const provisioner = createProvisioner({
-      store: ctx.store,
-      db: ctx.db,
-      docker,
-      projectTokenMint: async () => undefined,
-      defaultImageRef: 'sandbox:test',
-      hostCloneRoot: '/work',
-      projectRelay: relay,
-      onSandboxLifecycle: lifecycle,
-    });
-    const requestingSessionIds = new Set(['s-sleeping-turn']);
-    const busyProbe = vi.fn(
-      async (_projectId: string, exceptSessionIds?: ReadonlySet<string>) =>
-        !exceptSessionIds?.has('s-sleeping-turn'),
-    );
-    provisioner.attachProjectBusyProbe(busyProbe);
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
+          ...retained,
+          running: true,
+          networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+        }),
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi
+          .fn()
+          .mockResolvedValueOnce(retained)
+          .mockResolvedValueOnce({ ...retained, running: true }),
+      });
+      const bindings: ProjectRelayBinding[] = [];
+      const relay = defaultProjectRelay();
+      const lifecycle = vi.fn();
+      relay.reactivate = async (binding) => {
+        bindings.push(binding);
+        return {
+          identity: { projectId: id, containerGeneration: 'generation-1' },
+          signingCapability: 'fresh-signing',
+          githubCapability: 'fresh-github',
+        };
+      };
+      const egress = new ProjectEgressLifecycle(async () => {
+        throw new Error('unexpected host command');
+      }, {});
+      const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        ...(protectedStart
+          ? { projectEgress: egress, sandboxRuntime: 'runsc-project' as const }
+          : {}),
+        onSandboxLifecycle: lifecycle,
+      });
+      const requestingSessionIds = new Set(['s-sleeping-turn']);
+      const busyProbe = vi.fn(
+        async (_projectId: string, exceptSessionIds?: ReadonlySet<string>) =>
+          !exceptSessionIds?.has('s-sleeping-turn'),
+      );
+      provisioner.attachProjectBusyProbe(busyProbe);
 
-    const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
+      const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
 
-    expect(result).toMatchObject({
-      state: 'active',
-      sleepCompatibilityFingerprint: null,
-      sleepingSince: null,
-      wakeStartedAt: null,
-    });
-    expect(bindings).toEqual([
-      expect.objectContaining({ projectId: id, containerGeneration: 'generation-1' }),
-    ]);
-    expect(calls).toContainEqual({ method: 'startContainer', payload: 'container-1' });
-    expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
-    expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
-    expect(lifecycle).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: id, operation: 'wake', outcome: 'succeeded' }),
-    );
-    expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
-  });
+      expect(result).toMatchObject({
+        state: 'active',
+        sleepCompatibilityFingerprint: null,
+        sleepingSince: null,
+        wakeStartedAt: null,
+      });
+      expect(bindings).toEqual([
+        expect.objectContaining({ projectId: id, containerGeneration: 'generation-1' }),
+      ]);
+      if (protectedStart) {
+        expect(hostStart).toHaveBeenCalledWith(
+          { projectId: id, containerGeneration: 'generation-1' },
+          'sandbox',
+          'container-1',
+        );
+        expect(bindings[0]?.egress).toBe(egress);
+        expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+      } else expect(calls).toContainEqual({ method: 'startContainer', payload: 'container-1' });
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
+      expect(lifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: id, operation: 'wake', outcome: 'succeeded' }),
+      );
+      expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
+    },
+  );
 
   it.each([false, true])(
     'restores a retained runner-only key safely (symlink: %s)',
@@ -1021,6 +1185,101 @@ describe('ProvisionerImpl (#174)', () => {
       }
     },
   );
+
+  it('re-projects the Agent Gateway identity of a Sandbox woken without a recreate', async () => {
+    const id = await seedProject('active');
+    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-wake-identity-'));
+    try {
+      const identity = createClaudeEgressIdentityService({
+        store: ctx.store,
+        serverName: 'gateway.test',
+      });
+      // What provisioning projected into the container and stamped on its label.
+      const created = await identity.sandboxMaterial(id);
+      const keyDir = join(secretRoot, 'claude-egress');
+      const certPath = join(keyDir, `egress_client.${id}.crt`);
+      const keyPath = join(keyDir, `egress_client.${id}.key`);
+      mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(keyDir, `egress_ca.${id}.crt`), created.caCertPem);
+      writeFileSync(certPath, created.clientCertPem);
+      writeFileSync(keyPath, created.clientKeyPem, { mode: 0o600 });
+      const running = {
+        id: 'container-1',
+        running: true,
+        image: 'sandbox:test',
+        labels: {
+          [PROJECT_ID_LABEL]: id,
+          [CONTAINER_GENERATION_LABEL]: 'generation-1',
+          [AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]: created.fingerprint256,
+        },
+        mounts: [
+          {
+            source: keyPath,
+            destination: '/run/verity/claude-egress/client.key',
+            readWrite: false,
+          },
+        ],
+      };
+      const stopped = { ...running, running: false };
+      // sleep: inspect running, confirm stopped; wake: inspect retained, inspect started.
+      const inspections = [running, stopped, stopped, running];
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi.fn(async () => inspections.shift() ?? running),
+      });
+      const relay = defaultProjectRelay();
+      relay.sleep = async () => {};
+      relay.reactivate = relay.start.bind(relay);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+        gitSecretRoot: secretRoot,
+        claudeEgressIdentity: identity,
+        chownRunnerFile: () => {},
+      });
+
+      await provisioner.sleepProject(id);
+      expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+
+      const mounted = normalizeFingerprint(
+        new X509Certificate(readFileSync(certPath, 'utf8')).fingerprint256,
+      );
+      const accepted = (await identity.gatewayMaterial()).peerBindings
+        .filter((binding) => binding.projectId === id)
+        .map((binding) => binding.fingerprint256);
+      // The gateway accepts exactly what the woken container now holds, and the
+      // revoked creation-time certificate stays revoked.
+      expect(accepted).toEqual([mounted]);
+      // The silent failure: the immutable label still names the revoked
+      // certificate, so a readiness check that trusts only the label rejects this
+      // healthy Sandbox on every turn and forces a recreate.
+      expect(accepted).not.toContain(running.labels[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]);
+      expect(projectedAgentGatewayFingerprint(secretRoot, id, running)).toBe(mounted);
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+
+      // The record vouches for that container generation only. A recreated or
+      // foreign container falls back to its own label and is never re-authorized.
+      for (const other of [
+        { ...running, id: 'container-2' },
+        {
+          ...running,
+          labels: { ...running.labels, [CONTAINER_GENERATION_LABEL]: 'generation-2' },
+        },
+        { ...running, labels: { ...running.labels, [PROJECT_ID_LABEL]: 'other-project' } },
+      ]) {
+        const claimed = projectedAgentGatewayFingerprint(secretRoot, id, other);
+        expect(claimed).toBe(created.fingerprint256);
+        expect(accepted).not.toContain(claimed);
+      }
+    } finally {
+      rmSync(secretRoot, { recursive: true, force: true });
+    }
+  });
 
   it('keeps a retained sleeping Sandbox when Docker inspection fails transiently', async () => {
     const id = await seedProject('active');
@@ -5261,6 +5520,171 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  describe('project image build audit (ADR 0028)', () => {
+    function auditLog(failing: boolean) {
+      const appended: AuditEventInput[] = [];
+      const log: AuditLog = {
+        append: (input) => {
+          if (failing) return Promise.reject(new Error('audit storage down'));
+          appended.push(input);
+          return Promise.resolve({} as AuditEvent);
+        },
+        listOperations: () => Promise.resolve({ operations: [], nextBefore: null }),
+        operation: () => Promise.resolve([]),
+        oldestRecordedAt: () => Promise.resolve(null),
+      };
+      return { log, appended };
+    }
+
+    async function devcontainerProvisioner(
+      root: string,
+      failing: boolean,
+      diagnostics = createBuildDiagnosticStore(join(root, 'diagnostics')),
+    ) {
+      const devcontainerDir = join(root, 'example-org-example-repo', '.devcontainer');
+      mkdirSync(devcontainerDir, { recursive: true });
+      writeFileSync(join(devcontainerDir, 'devcontainer.json'), '{ "image": "node:24" }');
+      const id = await seedProject('active');
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client } = fakeDocker({
+        imageExists: vi.fn(async () => false),
+        createdContainerId: 'cid-audited',
+      });
+      const audit = auditLog(failing);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: {
+          ...client,
+          inspectImageIdentity: async () => ({
+            id: 'sha256:built',
+            sizeBytes: 42,
+            repoDigests: [`node@sha256:${'a'.repeat(64)}`],
+          }),
+        },
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: {
+          ref: '/opt/verity-features/verity-sandbox-toolkit',
+          version: '1.0.0',
+          identity: 'sha256:toolkit-v1',
+        },
+        buildDiagnostics: diagnostics,
+        audit: createAuditRecorder(audit.log, {
+          server: () => Promise.resolve({ release: '1.2.3', generation: 7 }),
+        }),
+      });
+      return { id, build, provisioner, appended: audit.appended };
+    }
+
+    // The whole point of the intent is that an unexplained image cannot appear:
+    // when it cannot be written, nothing may have been built.
+    it('refuses to build when the intent cannot be recorded', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-refuse-'));
+      try {
+        const { id, build, provisioner } = await devcontainerProvisioner(root, true);
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
+          'Audit storage is unavailable',
+        );
+        expect(build).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('records who started the build and the image it produced', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-record-'));
+      try {
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(root, false);
+        await provisioner.recreateContainer(id, {
+          forceRebuild: true,
+          initiator: { kind: 'user', userId: 'admin-1' },
+        });
+        expect(build).toHaveBeenCalledOnce();
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.succeeded']);
+        const [requested, succeeded] = appended;
+        expect(requested).toMatchObject({
+          projectId: id,
+          initiator: { kind: 'user', userId: 'admin-1' },
+          server: { release: '1.2.3', generation: 7 },
+          payload: {
+            forceRebuild: true,
+            baseImageRef: 'node:24',
+            imageTag: build.mock.calls[0]?.[0].imageName,
+          },
+        });
+        expect(succeeded).toMatchObject({
+          operationId: requested!.operationId,
+          imageId: 'sha256:built',
+          payload: { imageId: 'sha256:built', sizeBytes: 42, baseImageDigest: null },
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    // A Dockerfile's base cannot be inferred from the configured Verity default.
+    it('leaves unresolved Dockerfile provenance unknown', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-base-'));
+      try {
+        const { id, provisioner, appended } = await devcontainerProvisioner(root, false);
+        const dir = join(root, 'example-org-example-repo', '.devcontainer');
+        writeFileSync(
+          join(dir, 'devcontainer.json'),
+          '{ "build": { "dockerfile": "Dockerfile" } }',
+        );
+        writeFileSync(join(dir, 'Dockerfile'), 'FROM node:24\n');
+        await provisioner.recreateContainer(id, { forceRebuild: true });
+        expect(appended[0]!.payload).toMatchObject({ baseImageRef: null });
+        expect(appended[1]!.payload).toMatchObject({ baseImageDigest: null });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('preserves the original build error and audit outcome when diagnostic storage fails', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-diagnostic-fail-'));
+      try {
+        const diagnostics = createBuildDiagnosticStore(join(root, 'diagnostics'));
+        diagnostics.save = vi.fn().mockRejectedValue(new Error('diagnostic disk full'));
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(
+          root,
+          false,
+          diagnostics,
+        );
+        build.mockRejectedValueOnce(new Error('compiler process failed'));
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
+          'compiler process failed',
+        );
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.failed']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('records a failed build without its output', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-audit-fail-'));
+      try {
+        const { id, build, provisioner, appended } = await devcontainerProvisioner(root, false);
+        build.mockRejectedValueOnce(new Error('RUN failed: secret=hunter2'));
+        await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow();
+        expect(appended.map((event) => event.kind)).toEqual(['build.requested', 'build.failed']);
+        expect(JSON.stringify(appended)).not.toContain('hunter2');
+        expect(appended[0]!.initiator).toEqual({ kind: 'unknown' });
+        const diagnostic = await createBuildDiagnosticStore(join(root, 'diagnostics')).read(
+          appended[0]!.operationId,
+        );
+        expect(diagnostic?.text).toContain('RUN failed');
+        expect(diagnostic?.text).not.toContain('hunter2');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('forceRebuild rebuilds a cached devcontainer image with --no-cache; a plain recreate reuses it', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-recreate-rebuild-'));
     try {
@@ -6833,6 +7257,99 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     return { root, clonePath };
   }
 
+  it.each(['measured', 'previous', 'missing', 'unavailable'] as const)(
+    'retains the production snapshot and admission after uncertain remote failure (%s image)',
+    async (measurement) => {
+      const { root } = makeCloneRoot(true);
+      try {
+        const id = await seedProject();
+        const report = join(root, 'report.json');
+        writeFileSync(
+          report,
+          JSON.stringify({
+            schemaVersion: 1,
+            hostBootId: '11111111-1111-4111-8111-111111111111',
+            hostIdentity: 'a'.repeat(64),
+            observedAt: new Date().toISOString(),
+            roots: [],
+          }),
+        );
+        const storage = new BuildStorage(
+          join(root, 'build-storage'),
+          report,
+          { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+          () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+        );
+        // Host admission is independently tested; give this integration a fresh full report.
+        const data = JSON.parse(readFileSync(report, 'utf8'));
+        data.roots = ['buildkit', 'docker', 'containerd', 'export', 'project'].map((kind) => ({
+          kind,
+          observedAt: data.observedAt,
+          state: 'available',
+          filesystemId: 'fixture',
+          availableBytes: 1e12,
+          freeInodes: 1e9,
+        }));
+        writeFileSync(report, JSON.stringify(data));
+        let snapshot = '';
+        const build: DevcontainerBuildSpawner = async ({ storageLease, workspaceFolder }) => {
+          snapshot = workspaceFolder;
+          return await storageLease!.run(process.execPath, ['-e', 'process.exit(1)'], {
+            env: process.env,
+            timeout: 1000,
+            maxBuffer: 1024,
+            remoteOperation: 'build-export',
+          });
+        };
+        if (measurement === 'previous')
+          await ctx.db
+            .updateTable('projects')
+            .set({ image_ref: 'verity-devc-example-org-example-repo:old' })
+            .where('id', '=', id)
+            .execute();
+        const inspect = vi.fn(async (ref: string) => {
+          if (measurement === 'unavailable') throw new Error('daemon unavailable');
+          return measurement === 'measured' || (measurement === 'previous' && ref.endsWith(':old'))
+            ? { id: 'sha256:previous', sizeBytes: 10 * 1024 ** 3, repoDigests: [] }
+            : undefined;
+        });
+        const admission = vi.spyOn(storage, 'admit').mockImplementation(() => {
+          const lease = storage.acquire();
+          vi.spyOn(lease, 'reserveBuild');
+          return lease;
+        });
+        const { client: docker } = fakeDocker({
+          imageExists: async () => false,
+          inspectImageIdentity: inspect,
+        });
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          devcontainerBuild: build,
+          dockerHostForBuild: 'unix:///var/run/docker.sock',
+          devcontainerFeature: toolkitFeature,
+          buildStorage: storage,
+        });
+        await expect(provisioner.provision(id)).rejects.toThrow();
+        expect(inspect).toHaveBeenCalled();
+        expect(inspect).toHaveBeenCalledTimes(measurement === 'previous' ? 2 : 1);
+        expect(admission.mock.results[0]!.value.reserveBuild).toHaveBeenCalledWith(
+          measurement === 'measured' || measurement === 'previous' ? 10 * 1024 ** 3 : undefined,
+        );
+        expect(snapshot).not.toBe('');
+        expect(existsSync(join(snapshot, '.devcontainer', 'devcontainer.json'))).toBe(true);
+        // Kept with its estimate, without refusing the next build.
+        storage.acquire().dispose();
+        expect(storage.unresolvedAttempts()).toHaveLength(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(['build', 'cached', 'failure'] as const)(
     'reserves images before cache lookup through container creation, then releases (%s)',
     async (mode) => {
@@ -6894,6 +7411,173 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       }
     },
   );
+
+  // A Sandbox recreate whose image already exists builds nothing. It used to take a build
+  // storage lease first, so a storage blocked by another project's build refused the repair.
+  it('reuses an existing derived image while build storage refuses every lease', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const storage = new BuildStorage(join(root, 'build-storage'));
+      const admit = vi.spyOn(storage, 'admit').mockImplementation(() => {
+        throw new Error('Build storage unavailable: blocked for this test');
+      });
+      const { client: docker, calls } = fakeDocker({ imageExists: async () => true });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+      });
+      const result = await provisioner.provision(id);
+      expect(result.state).toBe('active');
+      expect(admit).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      const created = calls.find((c) => c.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).image).toMatch(/^verity-devc-/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A build that met another project's build used to fail with "Build storage busy".
+  it('waits for another project’s build to finish instead of failing', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const report = join(root, 'report.json');
+      writeFileSync(
+        report,
+        JSON.stringify({
+          schemaVersion: 1,
+          observedAt: new Date().toISOString(),
+          hostBootId: '11111111-1111-4111-8111-111111111111',
+          hostIdentity: 'a'.repeat(64),
+          roots: [],
+        }),
+      );
+      const storage = new BuildStorage(
+        join(root, 'build-storage'),
+        report,
+        { estimateBytes: 1, reserveBytes: 1, reserveInodes: 1 },
+        () => ({ availableBytes: 1e12, freeInodes: 1e9 }),
+      );
+      // Another project's build holds this Server's lease.
+      const other = storage.acquire();
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+      });
+      try {
+        const provisioned = provisioner.provision(id);
+        await vi.waitFor(() =>
+          expect(log).toHaveBeenCalledWith(
+            expect.stringContaining('waits for 1 other image build'),
+          ),
+        );
+        expect(build).not.toHaveBeenCalled();
+        other.dispose();
+        expect((await provisioned).state).toBe('active');
+        expect(build).toHaveBeenCalledOnce();
+      } finally {
+        log.mockRestore();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The provisioning error keeps a dozen lines; a pip or ansible-galaxy failure fills those
+  // with its own traceback before the cause, which was then lost.
+  it('keeps the last hundred lines of a failed build for diagnostics', async () => {
+    const { root } = makeCloneRoot(true);
+    const logs = mkdtempSync(join(tmpdir(), 'verity-build-failures-'));
+    const inherited = 'ghp_inheritedServerToken0123456789';
+    vi.stubEnv('GITHUB_TOKEN', inherited);
+    try {
+      const id = await seedProject();
+      const output = Array.from({ length: 150 }, (_, line) =>
+        line === 140 ? `step echoed ${inherited}` : `step output line ${line}`,
+      ).join('\n');
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        throw new Error('Devcontainer build/export failed: summary', {
+          cause: Object.assign(new Error('Build command exited 1'), { stdout: output, stderr: '' }),
+        });
+      });
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildFailureLogDirectory: logs,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow();
+      const failure = provisioner.lastBuildFailure(id);
+      expect(failure?.tail).toContain('step output line 149');
+      expect(failure?.tail).toContain('step output line 50');
+      expect(failure?.tail).not.toContain('step output line 49');
+      // The build inherits the Server env; its credentials never reach diagnostics.
+      expect(failure?.tail).toContain('step echoed [redacted]');
+      expect(failure?.tail).not.toContain(inherited);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
+  it('forgets the last build failure once a build succeeds', async () => {
+    const { root } = makeCloneRoot(true);
+    const logs = mkdtempSync(join(tmpdir(), 'verity-build-failures-'));
+    try {
+      const id = await seedProject();
+      writeFileSync(
+        join(logs, `${id}.json`),
+        JSON.stringify({ recordedAt: new Date().toISOString(), tail: 'old failure' }),
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client: docker } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildFailureLogDirectory: logs,
+      });
+      expect(provisioner.lastBuildFailure(id)?.tail).toBe('old failure');
+      await provisioner.provision(id);
+      expect(build).toHaveBeenCalled();
+      expect(provisioner.lastBuildFailure(id)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
 
   it('(a) no .devcontainer/ → runs the base image, no build spawned', async () => {
     const { root } = makeCloneRoot(false);
@@ -7207,6 +7891,97 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       expect(row?.state).toBe('failed');
       expect(row?.provisionError).toMatch(/devcontainer build failed/);
       expect(row?.provisionError).toMatch(/exited 100/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The devcontainer CLI ends a failed build with its own stack trace. Kept as
+  // the tail, it replaced the one line that says which step failed and why.
+  it('keeps the BuildKit failure ahead of the CLI stack trace', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const cause =
+        'ERROR: failed to build: failed to solve: process "/bin/sh -c npm install -g example" did not complete successfully: exit code: 1';
+      const frames = Array.from(
+        { length: 20 },
+        (_, index) =>
+          `    at Object.step${index} (/usr/lib/node_modules/@devcontainers/cli/dist/spec-node/devContainersSpecCLI.js:470:${index})`,
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        const error = new Error('Command failed: devcontainer build');
+        (error as Error & { stderr?: string }).stderr = [
+          '#9 [4/6] RUN npm install -g example',
+          '#9 12.40 npm error code E404',
+          `#9 ERROR: process "/bin/sh -c npm install -g example" did not complete successfully: exit code: 1`,
+          cause,
+          'Error: Command failed: docker buildx build --load',
+          ...frames,
+        ].join('\n');
+        throw error;
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists: async () => false }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
+      const row = await ctx.store.getProject(id);
+      expect(row?.provisionError).toContain(cause);
+      expect(row?.provisionError).toContain('npm error code E404');
+      expect(row?.provisionError).not.toContain('devContainersSpecCLI.js');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Redaction matches whole values after formatting. A length cut inside a
+  // credential would leave a fragment no redaction recognises.
+  it('never cuts a credential when shortening failed build output', async () => {
+    const { root } = makeCloneRoot(true);
+    const registryToken = 'ghs_' + 'k'.repeat(60);
+    try {
+      const id = await seedProject();
+      // The cause line's 500-character limit and the tail's 1000-character limit
+      // both fall inside the token.
+      const cause = `ERROR: failed to solve: ${'x'.repeat(450)} ${registryToken} rejected`;
+      const filler = Array.from({ length: 11 }, (_, index) => `#9 ${index} ${'y'.repeat(80)}`);
+      const lead = `#9 ${'z'.repeat(1000 - 11 * 84 - 30)} ${registryToken}`;
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        const error = new Error('Command failed: devcontainer build');
+        (error as Error & { stderr?: string }).stderr = [
+          cause,
+          'later output',
+          lead,
+          ...filler,
+        ].join('\n');
+        throw error;
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists: async () => false }).client,
+        projectTokenMint: async () => 'server-side-token',
+        registryTokenMint: async () => registryToken,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(/devcontainer build failed/);
+      const row = await ctx.store.getProject(id);
+      expect(row?.provisionError).toContain('ERROR: failed to solve');
+      expect(row?.provisionError).not.toMatch(/k{8}/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -8945,7 +9720,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     const migrated: string[] = [];
     await provisioner.reconcileRelays([p], { onMigrated: (id) => migrated.push(id) });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toEqual([p.id]);
   });
 
@@ -8968,7 +9743,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await provisioner.reconcileRelays([p], {
       onMigrated: (id, info) => migrated.push({ id, envDrift: info.envDrift }),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toEqual([{ id: p.id, envDrift: true }]);
   });
 
@@ -9082,7 +9857,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await provisioner.reconcileRelays([p], {
       onMigrated: (id, info) => migrated.push({ id, envDrift: info.envDrift }),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Not blamed on drift either — with drift out of scope there is no drift reason.
     expect(migrated).toEqual([{ id: p.id, envDrift: false }]);
   });
@@ -9389,7 +10164,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       onRepaired: (id) => repaired.push(id),
       onMigrated: (id) => migrated.push(id),
     });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Reported as a repair, not a migration — the two have different causes and a
     // lost relay is worth a louder log line than a planned migration.
     expect(repaired).toEqual([p.id]);
@@ -9430,7 +10205,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       onMigrated: migrated,
     });
 
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect(migrated).toHaveBeenCalledWith(p.id, {
       envDrift: false,
       imageUpdate: true,
@@ -9553,7 +10328,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
 
       busy = false;
       await tick();
-      expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+      expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
       expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
     });
   });
@@ -9675,7 +10450,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     // report rather than leave it up until a later pass reclassifies.
     busy.mockResolvedValue(false);
     await provisioner.reconcileRelays([p]);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     expect([...provisioner.disconnectedSandboxProjects()]).toEqual([]);
   });
 
@@ -9963,7 +10738,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(deferred).toHaveLength(ORPHAN_DEFER_TICK_LIMIT);
 
     await tick();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
     // Reported as an interruption so the log says a turn was taken, not just that
     // a relay was replaced.
     expect(repaired).toEqual([{ id: p.id, interruptedTurn: true }]);
@@ -10016,7 +10791,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     }
     expect(recreate).not.toHaveBeenCalled();
     await provisioner.reconcileRelays([p]);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
   });
 
   it('never spends the window when the busy probe cannot answer', async () => {
@@ -10099,7 +10874,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     await provisioner.reconcileRelays([p]);
     expect(isHealthy).not.toHaveBeenCalled();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
   });
 
   it('never recreates a foreign container', async () => {
@@ -10265,7 +11040,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await expect(provisioner.repairSandboxForTurn(p.id, 'requesting-session')).resolves.toBe(true);
     expect(busyProbe).toHaveBeenCalledWith(p.id, new Set(['requesting-session']));
     expect(recreate).toHaveBeenCalledOnce();
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, TURN_REPAIR);
   });
 
   it('coalesces concurrent turn-time repairs for the same sandbox', async () => {
@@ -10474,7 +11249,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
         requireFreshAgentGatewayIdentity: true,
       }),
     ).resolves.toBe(true);
-    expect(recreate).toHaveBeenCalledWith(migrated.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(migrated.id, TURN_REPAIR);
   });
 
   it('repairs an env-drifted sandbox during turn preparation', async () => {
@@ -10510,7 +11285,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     });
 
     await expect(provisioner.repairSandboxForTurn(p.id, 'requesting-session')).resolves.toBe(true);
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect(recreate).toHaveBeenCalledWith(p.id, TURN_REPAIR);
   });
 
   it('stops rebuilding a sandbox for turns once the drift budget is spent', async () => {
@@ -10638,5 +11413,55 @@ describe('this repository’s own .devcontainer', () => {
     // signal would be provisions that got slower and no reason why.
     const dir = join(import.meta.dirname, '..', '..', '..', '.devcontainer');
     expect(devcontainerBuildInputsConfined(dir)).toBe(true);
+  });
+});
+
+describe('devcontainerBuilderIdle', () => {
+  const endpoint = { VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT: 'unix:///run/buildkit.sock' };
+  const withEndpoint = async (run: Parameters<typeof devcontainerBuilderIdle>[1]) => {
+    const previous = process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+    process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT =
+      endpoint.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+    try {
+      return await devcontainerBuilderIdle('unix:///var/run/docker.sock', run);
+    } finally {
+      if (previous === undefined) delete process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT;
+      else process.env.VERITY_DEVCONTAINER_BUILDKIT_ENDPOINT = previous;
+    }
+  };
+  const history = (stdout: string) =>
+    (async (_command: string, args: readonly string[]) =>
+      args.includes('history') ? { stdout, stderr: '' } : { stdout: '', stderr: '' }) as never;
+
+  it('answers idle only when the worker lists no running build', async () => {
+    expect(await withEndpoint(history(''))).toBeUndefined();
+    expect(
+      await withEndpoint(
+        history('{"ref":"a","status":"Completed"}\n{"ref":"b","status":"Error"}\n'),
+      ),
+    ).toBe(true);
+    expect(
+      await withEndpoint(
+        history('{"ref":"a","status":"Completed"}\n{"ref":"b","status":"Running"}\n'),
+      ),
+    ).toBe(false);
+    // An entry it cannot read is never taken as finished.
+    expect(await withEndpoint(history('{"ref":"a"}'))).toBe(false);
+    for (const status of ['', 'Unknown', 'Queued', 7])
+      expect(
+        await withEndpoint(history(JSON.stringify([{ ref: 'a', status, completed_at: 'x' }]))),
+      ).toBe(false);
+    expect(await withEndpoint(history('[{"ref":"a","status":"Canceled"}]'))).toBe(true);
+    expect(await withEndpoint(history('[{"ref":"a","completed_at":"2026-10-28T00:00:00Z"}]'))).toBe(
+      true,
+    );
+    // An empty list is no more evidence of idleness than no output.
+    expect(await withEndpoint(history('[]'))).toBeUndefined();
+    expect(await withEndpoint(history('not json'))).toBeUndefined();
+    expect(
+      await withEndpoint((async () => {
+        throw new Error('worker unreachable');
+      }) as never),
+    ).toBeUndefined();
   });
 });

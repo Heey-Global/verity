@@ -1,3 +1,4 @@
+import { parseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
 
@@ -103,6 +104,7 @@ export function createMcpGatewayToolExecutor(options: {
     toolName,
     request,
     approvedByCard,
+    authorizationSnapshot,
   }) => {
     if (toolName === 'verity_secret_output') {
       if (options.trustedCliOutput === undefined) throw new Error('trusted CLI output unavailable');
@@ -119,7 +121,14 @@ export function createMcpGatewayToolExecutor(options: {
         projectId,
         sessionId,
         turnId,
-        { id: callId, name: 'verity_secret_run', input: request },
+        {
+          id: callId,
+          name: 'verity_secret_run',
+          input: request,
+          ...(authorizationSnapshot === undefined
+            ? {}
+            : { approvedBinding: parseBrokeredDopplerBinding(authorizationSnapshot) }),
+        },
         (input, streamOptions) => runTrustedCli(join(runnerRoot, projectId), input, streamOptions),
       );
     }
@@ -128,6 +137,9 @@ export function createMcpGatewayToolExecutor(options: {
         id: callId,
         name: 'verity_http_request',
         input: request,
+        ...(authorizationSnapshot === undefined
+          ? {}
+          : { approvedBinding: parseBrokeredDopplerBinding(authorizationSnapshot) }),
       });
     }
     if (toolName === 'verity_google_slides') {
@@ -191,6 +203,8 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_start_planning' ||
       toolName === 'verity_present_plan' ||
       toolName === 'verity_end_planning' ||
+      toolName === 'verity_repairs' ||
+      toolName === 'verity_assistant' ||
       toolName === 'verity_tasks' ||
       toolName === 'verity_app_help' ||
       toolName === 'verity_vulnerabilities'

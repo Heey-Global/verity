@@ -31,6 +31,10 @@ interface NativePinnedTransport {
   ): Promise<NativeResponse>;
   /** New native builds decode textual bodies without a Base64 bridge round-trip. */
   requestV2?: NativePinnedTransport['request'];
+  /** Dedicated native start queue; reservation/cancellation are synchronous. */
+  requestV3?: NativePinnedTransport['request'];
+  prepareRequestV3?: (requestId: string) => boolean;
+  cancelRequestV3?: (requestId: string) => void;
   download(
     url: string,
     headers: Record<string, string>,
@@ -160,19 +164,30 @@ function native(): NativePinnedTransport {
 
 async function requestNative(
   transport: NativePinnedTransport,
+  queuedStart: boolean,
   ...args: Parameters<NativePinnedTransport['request']>
 ): Promise<NativeResponse> {
   // OTA JavaScript also runs on older native builds. Select by capability once
   // per request; a failed V2 mutation must never be replayed through the old API.
   const diagnosticRequestId = args[3]['x-verity-switch-request'];
   markSwitchTransportRequest(diagnosticRequestId, 'native-dispatch', args[6] > 0 ? 1 : 0);
+  let reserved = false;
   try {
-    const pending = transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+    let pending: Promise<NativeResponse>;
+    if (queuedStart) {
+      reserved = transport.prepareRequestV3!(args[0]);
+      if (!reserved) throw new Error('Native request start unavailable.');
+      markSwitchTransportRequest(diagnosticRequestId, 'native-queued-start');
+      pending = transport.requestV3!(...args);
+    } else {
+      pending = transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+    }
     markSwitchTransportRequest(diagnosticRequestId, 'native-promise-returned', Date.now());
     const response = await pending;
     markSwitchTransportRequest(diagnosticRequestId, 'native-return', Date.now());
     return response;
   } catch (error) {
+    if (reserved) transport.cancelRequestV3!(args[0]);
     markSwitchTransportRequest(diagnosticRequestId, 'native-error');
     throw error;
   }
@@ -263,8 +278,17 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     if (init.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const transport = native();
+    const queuedStart =
+      init.transportLane === 'interactive' &&
+      (init.method ?? 'GET').toUpperCase() === 'GET' &&
+      init.body == null &&
+      /^\/sessions\/[^/]+(?:\/events|\/history\/v1)?$/.test(new URL(url).pathname) &&
+      !!transport.requestV3 &&
+      !!transport.prepareRequestV3 &&
+      !!transport.cancelRequestV3;
     const onAbort = (): void => {
-      void transport.cancelRequest(requestId);
+      if (queuedStart) transport.cancelRequestV3!(requestId);
+      else void transport.cancelRequest(requestId);
     };
     init.signal?.addEventListener('abort', onAbort, { once: true });
     let response!: NativeResponse;
@@ -321,12 +345,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             if (settled || outcome === 'reachable' || directRouteKnownReachable(url)) return;
             if (outcome === 'dead') {
               cancelledBy = 'verdict';
-              void transport.cancelRequest(requestId);
+              if (queuedStart) transport.cancelRequestV3!(requestId);
+              else void transport.cancelRequest(requestId);
             } else
               grace = setTimeout(() => {
                 if (settled || directRouteKnownReachable(url)) return;
                 cancelledBy = 'grace';
-                void transport.cancelRequest(requestId);
+                if (queuedStart) transport.cancelRequestV3!(requestId);
+                else void transport.cancelRequest(requestId);
               }, DIRECT_GRACE_MS);
           },
           () => undefined,
@@ -351,6 +377,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             )
           : await requestNative(
               transport,
+              queuedStart,
               requestId,
               url,
               init.method ?? 'GET',
@@ -379,6 +406,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           try {
             response = await requestNative(
               transport,
+              queuedStart,
               requestId,
               url,
               'GET',
@@ -415,6 +443,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             // paired URL and pin when a reachable direct route can recover it.
             response = await requestNative(
               transport,
+              queuedStart,
               requestId,
               url,
               'GET',
@@ -468,6 +497,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             try {
               response = await requestNative(
                 transport,
+                queuedStart,
                 requestId,
                 url,
                 'GET',
@@ -527,6 +557,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       releaseLane?.();
       init.signal?.removeEventListener('abort', onAbort);
     }
+    if (init.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     const body = utf8ResponseBody(response);
     return new Response(body, {
       status: response.status,
@@ -646,6 +677,8 @@ export function exportPinnedTransportTimings(): {
       'nativeCompletionWallMs',
       'nativeResponseReadyMs',
       'nativeResponseReadyWallMs',
+      'nativePromiseResolveWallMs',
+      'nativeWorkEntryWallMs',
       'transactionCount',
       'fetchStartMs',
       'dnsStartMs',

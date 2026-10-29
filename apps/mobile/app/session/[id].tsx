@@ -1,3 +1,8 @@
+import { QAApprovalCard } from '../../components/QAApprovalCard';
+import {
+  managedServerApproval,
+  confirmManagedServerApproval,
+} from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
@@ -21,7 +26,7 @@ import {
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { Button } from '../../components/ui/Button';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
-import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
@@ -232,7 +237,8 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
 // URL, so a referenced image loads only when its row is on screen and is cached
 // across reopens — the backlog of images never loads up front.
-import { Image as ExpoImage, type ImageSource } from 'expo-image';
+import type { ImageSource } from 'expo-image';
+import { Image as ExpoImage } from '../../components/ui/Image';
 import { UITextView } from 'react-native-uitextview';
 import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
@@ -988,16 +994,21 @@ export const SessionChat = memo(function SessionChat({
       ).length,
     [session.messages],
   );
-  const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
-    useSessionPreviewReads({
-      client,
-      sessionId,
-      projectId,
-      loaded,
-      completedServerTools,
-      enabled: optionalWorkReady || staticPreviewOpen,
-      devServers: session.devServers,
-    });
+  const {
+    managedByInstance,
+    hasActiveStaticPreview,
+    hasRunningDevServer,
+    refreshStaticPreview,
+    refreshManaged,
+  } = useSessionPreviewReads({
+    client,
+    sessionId,
+    projectId,
+    loaded,
+    completedServerTools,
+    enabled: optionalWorkReady || staticPreviewOpen,
+    devServers: session.devServers,
+  });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
     if (previewOpening !== null) return;
     setPreviewOpening(server.port);
@@ -1266,7 +1277,10 @@ export const SessionChat = memo(function SessionChat({
   // the fix is a screen-reader mode that renders chronologically — those users
   // navigate by element focus, where the paging jumps this inversion removes barely
   // matter — not a per-row patch here.
-  const data = useMemo(() => [...chronologicalData].reverse(), [chronologicalData]);
+  const data = useMemo(
+    () => latestMeetingCards([...chronologicalData].reverse()),
+    [chronologicalData],
+  );
   const latestTranscriptRowKey =
     transcriptData.length > 0 ? rowKey(transcriptData[transcriptData.length - 1]) : null;
   const dataRef = useRef<Row[]>([]);
@@ -1991,6 +2005,7 @@ export const SessionChat = memo(function SessionChat({
         return;
       }
       if (shouldRestoreToLatestEdge(anchor)) {
+        markSessionSwitch(switchTiming, 'restore-path-latest');
         readingAwayFromBottomRef.current = false;
         restoreToLatestEdge(anchor?.atBottom ? 'saved-bottom' : 'empty');
         return;
@@ -2002,6 +2017,7 @@ export const SessionChat = memo(function SessionChat({
         inTail,
       });
       if (!inTail) {
+        markSessionSwitch(switchTiming, 'restore-path-outside-tail');
         // Do not page deep history on open. A stale/bad deep anchor makes the session
         // feel stuck behind the restore cover and can fetch toward the beginning of a
         // long transcript. Restore only positions already loaded in the initial tail.
@@ -2015,6 +2031,7 @@ export const SessionChat = memo(function SessionChat({
       // Left scrolled up reading history and that row is still in the loaded tail:
       // cover the final positioning so the operator never sees the measurement
       // correction hop.
+      markSessionSwitch(switchTiming, 'restore-path-anchor');
       readingAwayFromBottomRef.current = true;
       setRestoring(true);
       setRestoreTarget(anchor);
@@ -2045,12 +2062,14 @@ export const SessionChat = memo(function SessionChat({
       // (restoreInterruptedRef) so we don't fight the operator taking over.
       const RESTORE_STEPS_MS = [0, 60, 150, 300, 500];
       const settle = () => {
+        markSessionSwitch(switchTiming, 'restore-settle');
         cancelRestoreTimers();
         setRestoring(false);
         setRestoreTarget(null);
         positioningRef.current = false;
       };
       const step = (i: number) => {
+        markSessionSwitch(switchTiming, 'restore-step', i);
         if (restoreInterruptedRef.current) {
           settle();
           return;
@@ -2089,13 +2108,15 @@ export const SessionChat = memo(function SessionChat({
       // Start once the open transition has settled (InteractionManager); a timeout backs
       // it up if that handle is delayed (mirrors the composer-focus pattern above).
       let started = false;
-      const begin = () => {
+      const begin = (source: number) => {
         if (started) return;
         started = true;
+        markSessionSwitch(switchTiming, 'restore-start', source);
         step(0);
       };
-      restoreTaskRef.current = InteractionManager.runAfterInteractions(begin);
-      restoreTimersRef.current.push(setTimeout(begin, 300));
+      markSessionSwitch(switchTiming, 'restore-scheduled');
+      restoreTaskRef.current = InteractionManager.runAfterInteractions(() => begin(0));
+      restoreTimersRef.current.push(setTimeout(() => begin(1), 300));
       return;
     }
     // A normal user-triggered history load is in flight — wait for it to settle.
@@ -2110,6 +2131,7 @@ export const SessionChat = memo(function SessionChat({
   useEffect(() => {
     if (!restoring) return;
     const timer = setTimeout(() => {
+      markSessionSwitch(switchTiming, 'restore-timeout');
       cancelRestoreTimers();
       setRestoring(false);
       setRestoreTarget(null);
@@ -4182,26 +4204,19 @@ export const SessionChat = memo(function SessionChat({
                 setPreviewOpening(server.port);
                 void (async () => {
                   let current = entry;
+                  const seen = managedServerApproval(current);
                   if (!current.approved || current.instance?.awaitingApproval) {
-                    const allowed = await new Promise<boolean>((resolve) =>
-                      Alert.alert(
-                        `Allow ${current.name} on your network?`,
-                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}${current.secretBindings?.length ? `\n\nSecrets: ${current.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\nAnyone on your network can open it while it runs.`,
-                        [
-                          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-                          { text: 'Allow', onPress: () => resolve(true) },
-                        ],
-                        { cancelable: true, onDismiss: () => resolve(false) },
-                      ),
-                    );
-                    if (!allowed) return;
-                    const approved = await client.approveManagedDevServer(sessionId, current.id, {
-                      command: current.command,
-                      workdir: current.workdir,
-                      ...(current.secretBindings?.length
-                        ? { secretBindings: current.secretBindings }
-                        : {}),
+                    const allowed = await confirmManagedServerApproval(seen, {
+                      title: `Allow ${current.name} on your network?`,
+                      action: 'Allow',
+                      warning: 'Anyone on your network can open it while it runs.',
                     });
+                    if (!allowed) return;
+                    const approved = await client.approveManagedDevServer(
+                      sessionId,
+                      current.id,
+                      seen,
+                    );
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }
                   const url = current.instance?.url;
@@ -4226,12 +4241,13 @@ export const SessionChat = memo(function SessionChat({
                     () => router.push('/settings/premium'),
                   );
                 })()
-                  .catch((caught: unknown) =>
+                  .catch(async (caught: unknown) => {
                     Alert.alert(
                       'Could not open preview',
                       caught instanceof Error ? caught.message : 'Try again.',
-                    ),
-                  )
+                    );
+                    await refreshManaged();
+                  })
                   .finally(() => setPreviewOpening(null));
               }}
               onShare={() => {
@@ -4770,6 +4786,7 @@ export const SessionChat = memo(function SessionChat({
           onImplement={() => implementPlan(planningRevision)}
         />
       ) : null}
+      {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
@@ -7059,7 +7076,9 @@ function AgentMarkdown({
             block.type === 'code' ? (
               <View key={i} style={styles.codeBlock}>
                 {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-                {searchHighlightQuery ? (
+                {/* UITextView's web fallback bypasses the route's Unistyles
+                    Text transform, losing the code's theme color. */}
+                {Platform.OS === 'web' || searchHighlightQuery ? (
                   <Text style={styles.codeText} selectable>
                     <HighlightedSearchText text={block.content} />
                   </Text>

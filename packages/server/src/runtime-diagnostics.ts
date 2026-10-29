@@ -1,3 +1,9 @@
+import {
+  builderAdmissionMessage,
+  readBuilderAdmissionState,
+  readHostStorageEvidence,
+  type UnresolvedBuildAttempt,
+} from './build-storage.js';
 import { request as httpRequest } from 'node:http';
 import { open, stat, statfs } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -107,7 +113,52 @@ const containerSchema = z.object({
     records: z.array(runtimeEvidenceSchema).max(100),
   }),
 });
+const builderMigrationSchema = z
+  .object({
+    version: z.literal(1),
+    state: z.enum(['deferred', 'migrating', 'converged', 'rolled-back', 'blocked']),
+    message: z.string().max(200),
+    observedAt: timestamp,
+  })
+  .strict();
+const builderAdmissionSchema = z
+  .object({
+    state: z.enum([
+      'provisioned',
+      'migration-pending',
+      'not-provisioned',
+      'incomplete',
+      'unreadable',
+    ]),
+    message: z.string().max(300),
+  })
+  .strict();
+const buildStorageEvidenceSchema = z
+  .object({
+    state: z.enum(['complete', 'partial']),
+    problems: z.array(z.string().max(200)).max(10),
+  })
+  .strict();
+const buildStorageReservationSchema = z
+  .object({
+    attempt: z.string().max(80),
+    operation: z.enum(['build-export', 'image-import', 'local']),
+    startedAt: timestamp.optional(),
+    reservedBytes: number,
+    reason: z.string().max(200),
+  })
+  .strict();
 export const runtimeDiagnosticSnapshotSchema = z.object({
+  builderAdmission: builderAdmissionSchema.optional(),
+  /** The selected project's last failed devcontainer build, until one succeeds. */
+  projectBuildFailure: z
+    .object({ recordedAt: timestamp, tail: z.string().max(16_000) })
+    .strict()
+    .optional(),
+  /** Earlier build attempts whose end is not yet confirmed; each holds only its own estimate. */
+  buildStorageReservations: z.array(buildStorageReservationSchema).max(20).optional(),
+  buildStorageEvidence: buildStorageEvidenceSchema.optional(),
+  builderMigration: builderMigrationSchema.optional(),
   observedAt: timestamp,
   window: z.object({ since: timestamp, until: timestamp }),
   resources: z.object({
@@ -461,6 +512,16 @@ export function createRuntimeDiagnostics(deps: {
   serverContainerId?: string | undefined;
   dataRoot?: string | undefined;
   hostSnapshotPath?: string | undefined;
+  builderMigrationPath?: string | undefined;
+  /** Where the host provisions build admission; reported even when no migration status exists. */
+  builderAdmissionDirectory?: string | undefined;
+  /** The host storage report build admission reads; gaps are reported, never fatal. */
+  buildStorageReportPath?: string | undefined;
+  /** Attempts still reserving build storage, as the Server's build storage tracks them. */
+  buildStorageReservations?: (() => UnresolvedBuildAttempt[]) | undefined;
+  /** The output tail of a project's last failed devcontainer build. */
+  projectBuildFailure?:
+    ((projectId: string) => { recordedAt: string; tail: string } | undefined) | undefined;
   readHostSnapshot?: (() => Promise<string>) | undefined;
   now?: () => number;
 }) {
@@ -857,7 +918,62 @@ export function createRuntimeDiagnostics(deps: {
         }
       }
     }
+    let builderMigration: z.infer<typeof builderMigrationSchema> | undefined;
+    if (deps.builderMigrationPath !== undefined) {
+      try {
+        const parsed = builderMigrationSchema.parse(
+          JSON.parse(await readSmallFile(deps.builderMigrationPath)),
+        );
+        const age = now - Date.parse(parsed.observedAt);
+        if (age >= -5000 && age <= 120_000) builderMigration = parsed;
+      } catch {
+        /* Missing or stale host evidence never implies convergence. */
+      }
+    }
+    let builderAdmission: z.infer<typeof builderAdmissionSchema> | undefined;
+    if (deps.builderAdmissionDirectory !== undefined) {
+      try {
+        const admission = readBuilderAdmissionState(deps.builderAdmissionDirectory);
+        builderAdmission = { state: admission.state, message: builderAdmissionMessage(admission) };
+      } catch {
+        builderAdmission = {
+          state: 'unreadable',
+          message: 'Builder admission state could not be read; builds remain paused.',
+        };
+      }
+    }
+    let buildStorageEvidence: z.infer<typeof buildStorageEvidenceSchema> | undefined;
+    if (deps.buildStorageReportPath !== undefined) {
+      const { problems } = readHostStorageEvidence(
+        deps.buildStorageReportPath,
+        // Read after the Docker inspection, which can take seconds; the snapshot's
+        // own `now` would make a report published meanwhile look future-dated.
+        deps.now?.() ?? Date.now(),
+      );
+      buildStorageEvidence = {
+        state: problems.length === 0 ? 'complete' : 'partial',
+        problems: problems.slice(0, 10),
+      };
+    }
+    const reservations = deps.buildStorageReservations?.();
+    const buildFailure =
+      request.projectId === undefined ? undefined : deps.projectBuildFailure?.(request.projectId);
     return runtimeDiagnosticSnapshotSchema.parse({
+      ...(builderAdmission === undefined ? {} : { builderAdmission }),
+      ...(buildFailure === undefined ? {} : { projectBuildFailure: buildFailure }),
+      ...(reservations === undefined || reservations.length === 0
+        ? {}
+        : {
+            buildStorageReservations: reservations.slice(0, 20).map((entry) => ({
+              attempt: entry.attempt.slice(0, 80),
+              operation: entry.operation,
+              ...(entry.startedAt === undefined ? {} : { startedAt: entry.startedAt }),
+              reservedBytes: entry.reservedBytes,
+              reason: entry.reason.slice(0, 200),
+            })),
+          }),
+      ...(buildStorageEvidence === undefined ? {} : { buildStorageEvidence }),
+      ...(builderMigration === undefined ? {} : { builderMigration }),
       observedAt: new Date(now).toISOString(),
       window,
       resources,

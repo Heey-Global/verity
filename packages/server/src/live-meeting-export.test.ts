@@ -206,3 +206,37 @@ it('does not count combined or unfinished retries as completed answers', () => {
     ),
   ).toBe(0);
 });
+
+it('exports derived results beside the transcript and excludes dismissed tasks', () => {
+  const item = {
+    id: 'item',
+    text: 'Ship Friday',
+    quote: 'Ship it today.',
+    speaker: 0,
+    atSeconds: 12,
+  };
+  const markdown = renderLiveMeetingMarkdown({
+    meeting: { ...meeting, title: null },
+    notes: [],
+    insights: [],
+    result: {
+      meetingId: meeting.id,
+      revision: 1,
+      status: 'ready',
+      title: 'Release',
+      summary: 'The team agreed to ship.',
+      decisions: [item],
+      tasks: [{ ...item, state: 'dismissed', taskId: null }],
+      openQuestions: [{ ...item, text: 'Which region?' }],
+      model: 'm',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  });
+  expect(markdown).toContain('# Release');
+  expect(markdown).toContain('## Summary');
+  expect(markdown).toContain('## Decisions');
+  expect(markdown).toContain('## Open questions');
+  expect(markdown).toContain('## Transcript');
+  expect(markdown).not.toContain('## Tasks');
+});

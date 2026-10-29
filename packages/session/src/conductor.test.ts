@@ -405,6 +405,52 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
+  it('enforces tool-free QA turns even when a caller requests execution tools', async () => {
+    await ctx.store.repairs.configureQA(false, 'admin');
+    await ctx.store.repairs.qaSession('qa');
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaClaim((await ctx.store.repairs.qa()).revision, '[]', 0);
+    await ctx.store.repairs.configureQA(false, 'admin');
+    await ctx.store.createSession({ sessionId: 'qa', worktree: '/wt/qa', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('qa', 'Explain open incidents', {
+      permissionMode: 'bypassPermissions',
+      allowedTools: ['Bash'],
+    });
+    expect(fake.last().toolless).toBe(true);
+    expect(fake.last().resumeSessionId).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
+  });
+
+  it('gives the assistant session its standing prompt without taking its tools away', async () => {
+    await ctx.store.assistant.configure(true, 'admin');
+    await ctx.store.assistant.session('assistant');
+    await ctx.store.createSession({
+      sessionId: 'assistant',
+      worktree: '/wt/assistant',
+      model: 'm',
+    });
+    await ctx.store.createSession({ sessionId: 'plain', worktree: '/wt/plain', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('assistant', 'Did Jonas send the offer?');
+    expect(fake.last().toolless).not.toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    expect(fake.last().appendSystemPrompt).toContain('# Verity assistant');
+    await conductor.sendTurn('plain', 'Continue');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Verity assistant');
+    expect(fake.last().gatewayToolsOnly).not.toBe(true);
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi
@@ -1962,6 +2008,129 @@ describe('Conductor.dispatchTurn', () => {
     },
   );
 
+  it('durably admits a QA dispatch once and rejects a cancelled reservation before backend execution', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect((await ctx.store.repairs.dispatchReceipt(id))?.state).toBe('admitted');
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'duplicate', {}, { durableDispatchId: id }),
+    ).toEqual({ accepted: true });
+    expect(fake.calls).toHaveLength(1);
+    await ctx.store.repairs.qaFinish(id, 'done');
+    const cancelled = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(await ctx.store.repairs.cancelReservedDispatch(cancelled)).toBe(true);
+    expect(
+      await conductor.dispatchTurnWhenIdle('s1', 'late', {}, { durableDispatchId: cancelled }),
+    ).toEqual({ accepted: false });
+    expect(fake.calls).toHaveLength(1);
+    expect((await ctx.store.getEvents('s1')).filter((row) => row.t === 'prompt')).toHaveLength(1);
+  });
+
+  it('settles acceptance interrupted before backend launch without replaying the prompt', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession('s1');
+    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    await ctx.store.admitBackgroundDispatch(id, 's1', { t: 'prompt', text: 'review' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.recover();
+    expect(fake.calls).toHaveLength(0);
+    expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
+  });
+
+  it.each(['delayed', 'failed'] as const)(
+    'admits QA after %s predecessor cleanup without deleting its successor',
+    async (mode) => {
+      await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+      const clear = ctx.store.clearRunningTurn.bind(ctx.store);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const cleanup = vi
+        .spyOn(ctx.store, 'clearRunningTurn')
+        .mockImplementationOnce(async (...args) => {
+          if (mode === 'failed') throw new Error('cleanup unavailable');
+          await gate;
+          await clear(...args);
+        });
+      const fake = scriptedBackend();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+      });
+      await conductor.dispatchTurnWhenIdle('s1', 'previous');
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalled());
+      await ctx.store.repairs.configureQA(true, 'admin');
+      await ctx.store.repairs.qaSession('s1');
+      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      try {
+        expect(
+          await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
+        ).toEqual({ accepted: true });
+        release();
+        await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+        expect(fake.calls).toHaveLength(2);
+        expect((await ctx.store.repairs.dispatchReceipt(dispatch))?.state).toBe('admitted');
+      } finally {
+        release();
+        cleanup.mockRestore();
+      }
+    },
+  );
+
+  it('bounds a hung settlement proof and leaves unproven QA admission closed', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const proof = vi
+      .spyOn(ctx.store, 'confirmTurnSettled')
+      .mockImplementation(() => new Promise(() => {}));
+    const cleanup = vi
+      .spyOn(ctx.store, 'clearRunningTurn')
+      .mockRejectedValue(new Error('cleanup unavailable'));
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    try {
+      await conductor.dispatchTurnWhenIdle('s1', 'previous');
+      await vi.waitFor(() => expect(proof).toHaveBeenCalled());
+      await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false), { timeout: 10_000 });
+      await ctx.store.repairs.configureQA(true, 'admin');
+      await ctx.store.repairs.qaSession('s1');
+      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      expect(
+        await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
+      ).toEqual({ accepted: false });
+      expect(fake.calls).toHaveLength(1);
+      expect((await ctx.store.repairs.dispatchReceipt(dispatch))?.state).toBe('reserved');
+    } finally {
+      proof.mockRestore();
+      cleanup.mockRestore();
+    }
+  });
+
   it('validates idle dispatch under its lock and releases rejected admissions', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({
@@ -2364,6 +2533,24 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
       expect(
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
       ).toMatchObject({ text: 'second', initiatedBy: { userId: 'bob' } });
+    });
+  });
+
+  it('stamps the initiator on a server-awaited turn', async () => {
+    // Save to project awaits its turn through sendTurn; without the initiator on the prompt,
+    // an authenticated server refuses every gateway call in that turn.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(Promise.resolve()).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'save it', {}, 'Save to project', {
+      initiatedBy: { userId: 'alice' },
+    });
+    expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject({
+      text: 'Save to project',
+      initiatedBy: { userId: 'alice' },
     });
   });
 
@@ -4636,6 +4823,35 @@ async function waitFor(cond: () => boolean): Promise<void> {
 }
 
 describe('Conductor.startSession', () => {
+  it('admits QA after initial-session marker cleanup fails', async () => {
+    const cleanup = vi
+      .spyOn(ctx.store, 'clearRunningTurn')
+      .mockRejectedValueOnce(new Error('cleanup unavailable'));
+    const fake = scriptedBackend({ sessionId: 'initial-qa', model: 'sonnet', text: 'hi' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    const { sessionId } = await conductor.startSession({ worktree: '/wt/new', prompt: 'start' });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(cleanup).toHaveBeenCalled();
+    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+    await ctx.store.repairs.configureQA(true, 'admin');
+    await ctx.store.repairs.qaSession(sessionId);
+    const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    expect(
+      await conductor.dispatchTurnWhenIdle(
+        sessionId,
+        'review',
+        {},
+        { durableDispatchId: dispatch },
+      ),
+    ).toEqual({ accepted: true });
+    await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
+    expect(fake.calls).toHaveLength(2);
+  });
+
   it('spawns a fresh agent run, resolves the minted id, and persists the session', async () => {
     const fake = scriptedBackend({ sessionId: 'claude-xyz', model: 'sonnet', text: 'hi' });
     const conductor = new Conductor({
@@ -10368,6 +10584,69 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       target: 'api.revenuecat.com',
       channel: 'acp',
     });
+  });
+
+  it('keeps the server-resolved binding for grant lookup and persistence across approval waits', async () => {
+    await createProjectSession('binding-frozen');
+    let resolveCheck!: (covered: boolean) => void;
+    const check = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const persist = vi.fn(async () => {});
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const params = {
+      sessionId: 'binding-frozen',
+      toolUseId: 'binding-request',
+      toolName: 'verity_http_request',
+      input: { ...gatewayInput, bindingId: 'untrusted-tool-binding' },
+      channel: 'acp' as const,
+      brokeredGrantBindingId: 'original-provider-binding',
+    };
+    const answered = conductor.requestExternalPermission(params);
+    // A provider update while the card waits must not retarget the saved consent.
+    params.brokeredGrantBindingId = 'replacement-provider-binding';
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    expect(check).toHaveBeenCalledWith({
+      projectId: 'project-x',
+      sessionId: 'binding-frozen',
+      secretAlias: 'REVENUECAT_ADMIN_KEY',
+      toolName: 'verity_http_request',
+      target: 'api.revenuecat.com',
+      channel: 'acp',
+      bindingId: 'original-provider-binding',
+    });
+    resolveCheck(false);
+    await vi.waitFor(async () =>
+      expect((await ctx.store.getEvents('binding-frozen')).length).toBe(1),
+    );
+    const onScopeSaved = vi.fn();
+    await conductor.decidePermission(
+      'binding-frozen',
+      'binding-request',
+      { behavior: 'allow' },
+      { scope: 'session', onScopeSaved },
+    );
+    await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
+    expect(conductor.pendingPermissions('binding-frozen')).toEqual([]);
+    expect(persist).toHaveBeenCalledWith({
+      projectId: 'project-x',
+      sessionId: 'binding-frozen',
+      secretAlias: 'REVENUECAT_ADMIN_KEY',
+      toolName: 'verity_http_request',
+      target: 'api.revenuecat.com',
+      channel: 'acp',
+      scope: 'session',
+      bindingId: 'original-provider-binding',
+    });
+    expect(onScopeSaved).toHaveBeenCalledWith(true);
   });
 
   it('binds project CLI grants to the server-resolved execution directory', async () => {

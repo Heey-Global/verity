@@ -1,0 +1,105 @@
+{
+  "command": [
+    "npx",
+    "vitest",
+    "run",
+    "scripts/backup-restore-content.test.ts",
+    "--maxWorkers=1"
+  ],
+  "sourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7",
+  "testSha256": "2cd71f72b40378438f4dae1859057110cec876ac6a9516f470051a49589d5af6",
+  "cases": [
+    {
+      "id": "linked-worktree-file-digest",
+      "file": "scripts/backup-restore-content.mjs",
+      "replace": "for (const file of expected.files)",
+      "with": "for (const file of expected.files.slice(0, 0))",
+      "exitCode": 1,
+      "evidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        " FAIL  scripts/backup-restore-content.test.ts > separate-daemon recovery content fixture > seeds real inventory and detects missing worktree bytes, old revisions and attachment corruption",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "      Tests  1 failed (1)"
+      ],
+      "originalSourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7"
+    },
+    {
+      "id": "historical-knowledge-revision",
+      "file": "scripts/backup-restore-content.mjs",
+      "replace": "[...expected.revisions].sort((a, b) => a.id.localeCompare(b.id))",
+      "with": "(await database.query('SELECT id,document_id,body_markdown FROM knowledge_document_revisions ORDER BY id')).rows",
+      "exitCode": 1,
+      "evidence": [
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        " FAIL  scripts/backup-restore-content.test.ts > separate-daemon recovery content fixture > seeds real inventory and detects missing worktree bytes, old revisions and attachment corruption",
+        "AssertionError: promise resolved \"undefined\" instead of rejecting",
+        "      Tests  1 failed (1)"
+      ],
+      "originalSourceSha256": "b5586e55ad34fe0ac5f9fd864d1fe43064a663514546e2f26b1bcbae3424f2d7"
+    },
+    {
+      "id": "immutable-v1-probe-database-import",
+      "file": "packages/server/src/backup/probe.ts",
+      "replace": "await importDatabaseExport(",
+      "with": "await Promise.resolve(",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/fixture.test.ts",
+        "--maxWorkers=1"
+      ],
+      "originalSourceSha256": "bb813521c15d656d0b113a3e7e59d82e8c34d0475493458294b9580d05714df8",
+      "exitCode": 1,
+      "evidence": [
+        "Tests  1 failed | 1 passed (2)",
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        "AssertionError: expected [] to have a length of 1 but got +0"
+      ]
+    },
+    {
+      "id": "rollback-updater-starts-last",
+      "file": "packages/server/src/backup/restore-previous-runtime.ts",
+      "replace": "for (const container of startOrder) {",
+      "with": "for (const container of previous.containers) {",
+      "command": [
+        "npx",
+        "vitest",
+        "run",
+        "packages/server/src/backup/restore-previous-runtime.test.ts",
+        "--maxWorkers=1"
+      ],
+      "originalSourceSha256": "cca805cf660664c865d71cb95ee47ee71e885897ad0e06ef926e6c26fdb7bc23",
+      "exitCode": 1,
+      "evidence": [
+        "      Tests  1 failed | 1 passed (2)",
+        "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+        " FAIL  packages/server/src/backup/restore-previous-runtime.test.ts > starts the updater after the Server so immediate replacement cannot invalidate pending inspections",
+        "Error: container_not_found"
+      ],
+      "executionNote": "Local execution used the repository configuration with a teardown wrapper for an unrelated Vite cleanup error; the command shown is the repository-supported reproduction."
+    }
+  ],
+  "description": "Scoped omission mutations for independent content recovery assertions and the immutable format v1 probe/import path. Public synthetic fixtures only; original sources restored after every run. Includes rollback startup ordering when an updater immediately replaces the Server.",
+  "environment": {
+    "VERITY_TEST_SHARED_POSTGRES_URL": "Dedicated PostgreSQL15 superuser connection; disposable databases cleaned after each test."
+  },
+  "testFileSha256": [
+    {
+      "path": "scripts/backup-restore-content.test.ts",
+      "sha256": "2cd71f72b40378438f4dae1859057110cec876ac6a9516f470051a49589d5af6"
+    },
+    {
+      "path": "packages/server/src/backup/fixture.test.ts",
+      "sha256": "b2a3e481ec777b5e2322cd59e73d41371ff64ab2ed713123e2469429305c1409"
+    },
+    {
+      "path": "packages/server/src/backup/fixtures/v1-installation.json",
+      "sha256": "bfc5243bc20d14bd82b86f48207c35aaf29ebdb794d924b7370b446543d405c3"
+    },
+    {
+      "path": "packages/server/src/backup/restore-previous-runtime.test.ts",
+      "sha256": "092f3c73540ae0e712f375d2d4135feb5d93e44ab06357b6e4a504d59f065f90"
+    }
+  ]
+}

@@ -14,6 +14,58 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/projects/:id/assistant'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/assistant'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repairs/approval'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repairs/retry'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/remove-request'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/permanent'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/egress'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/requests'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/decisions'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/reopen'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/egress/revoke'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/vulnerability-scan/ignores'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],

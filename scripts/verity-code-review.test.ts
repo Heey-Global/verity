@@ -616,15 +616,52 @@ describe('verity-code-review session backend', () => {
     expect(helper).toMatch(/Re-run first when a fix changed HEAD/i);
   });
 
-  it('keeps both Codex calls read-only without nested network isolation', () => {
-    const helper = readFileSync(review, 'utf8');
-    const calls = helper.match(/timeout "\$CALL_TIMEOUT" codex exec[\s\S]*?\|\| STATUS=\$\?/g);
-    expect(calls).toHaveLength(2);
-    for (const call of calls ?? []) {
-      expect(call).toContain('permissions.verity_review.extends=\'":read-only"\'');
-      expect(call).toContain('permissions.verity_review.network.enabled=true');
-      expect(call).toContain('default_permissions=\'"verity_review"\'');
-      expect(call).toContain('approval_policy=\'"never"\'');
+  it.each([
+    ['4.19.0-gvisor', true],
+    ['6.12.0-generic', false],
+  ])('selects reviewer permissions on %s for chunks and synthesis', (kernel, externalSandbox) => {
+    const { bin, repo } = fixture();
+    executable(join(bin, 'uname'), `printf '%s\\n' '${kernel}'`);
+    for (const name of ['first.txt', 'second.txt']) {
+      writeFileSync(join(repo, name), `${'a'.repeat(Math.floor(CHUNK_BYTES * 0.7))}\n`);
+    }
+    execFileSync('git', ['-C', repo, 'add', '.']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'two review chunks']);
+    executable(
+      join(bin, 'codex'),
+      'record=$(mktemp "$PWD/invocation.XXXXXX")\n' +
+        'printf "%s\\n" "$@" >"$record"\n' +
+        'cat >"$record.prompt"\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "-o" ]; then printf "No findings.\\n" >"$2"; exit 0; fi\n' +
+        '  shift\n' +
+        'done\nexit 2',
+    );
+    const result = run(repo, bin, {
+      VERITY_SESSION_BACKEND: 'codex',
+      CODEX_HOME: join(repo, '.codex'),
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const records = readdirSync(repo).filter(
+      (name) => name.startsWith('invocation.') && !name.endsWith('.prompt'),
+    );
+    expect(records).toHaveLength(3);
+    for (const name of records) {
+      const args = readFileSync(join(repo, name), 'utf8').trim().split('\n');
+      expect(args).toContain('approval_policy="never"');
+      expect(args).toContain('shell_environment_policy.inherit="none"');
+      if (externalSandbox) {
+        expect(args).toContain('--sandbox');
+        expect(args[args.indexOf('--sandbox') + 1]).toBe('danger-full-access');
+        expect(args.some((arg) => arg.startsWith('permissions.'))).toBe(false);
+        expect(args.some((arg) => arg.startsWith('default_permissions='))).toBe(false);
+      } else {
+        expect(args).not.toContain('danger-full-access');
+        expect(args).toContain('permissions.verity_review.extends=":read-only"');
+        expect(args).toContain('permissions.verity_review.network.enabled=true');
+        expect(args).toContain('default_permissions="verity_review"');
+      }
+      expect(readFileSync(join(repo, `${name}.prompt`), 'utf8')).toContain('do not modify files');
     }
   });
 

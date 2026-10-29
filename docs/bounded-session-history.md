@@ -26,8 +26,23 @@ New arrivals belong to live continuation and never move the older-history cursor
 If the next required event cannot fit on a page by itself, the endpoint returns
 `kind: "oversized-event"`, with `seq`, `snapshotSeq`, `requiredBytes` and `maxBytes`.
 It does not truncate, replace or skip that event. Newer complete events can still
-be returned on an earlier page. Loading arbitrary oversized payloads separately
-is not part of this contract.
+be returned on an earlier page.
+
+To recover an oversized event, request the same endpoint with
+`beforeSeq=seq+1`, the returned `snapshotSeq`, and `eventOffset=0`. Core returns
+`kind: "event-chunk"` with `seq`, `snapshotSeq`, `offset`, `totalChars`, and `data`.
+`data` is a substring of the serialized single-event page; offsets and lengths
+count UTF-16 code units. Each chunk response stays below the 256 KiB JSON wire
+limit, including escaping and its envelope. Continue with `eventOffset` advanced
+by `data.length` until `totalChars` is reached. Concatenate before parsing, so
+Unicode characters split across chunks are preserved. Validate the reconstructed
+page and its original byte count before advancing the history cursor. Stored
+events, sequence numbers, timestamps, and payloads remain unchanged.
+
+The mobile client performs recovery within the original request's cancellation
+and 30-second deadline. Partial events are never installed; retry starts the
+transfer again. Recovery requires both an updated Core and an updated client;
+older clients continue to show the explicit oversized-event error.
 
 The mobile session model reads at most two pages on initial opening. Additional
 history starts through an explicit continuation action; older-history scans also

@@ -1,3 +1,22 @@
+import { createQACoordinator } from './qa-coordinator.js';
+import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
+import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
+import { registerAssistantRoutes } from './assistant-routes.js';
+import {
+  assistantToolRefusal,
+  executeAssistantTool,
+  requireAssistantGrant,
+  requireAssistantSession,
+  type AssistantToolDeps,
+} from './assistant-tool.js';
+import type { RepairDiscovery } from './repair-supervisor.js';
+import { registerProjectEgressRoutes } from './project-egress-routes.js';
+import { createBackupAlertNotifier } from './backup/alert-notifier.js';
+import { registerLogRoutes, type LogRouteDeps } from './log-routes.js';
+import {
+  brokeredDopplerBindingId,
+  parseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import type { SessionFileRootName } from './session-files.js';
 import {
   createDocumentWorkspaceProvisioner,
@@ -365,11 +384,16 @@ import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
+import { BACKUP_RECOVERY_ACCEPTED, registerBackupRoutes } from './backup/routes.js';
+import type { BackupRuntime } from './backup/runtime.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
+import type { AuditLog } from './audit-log.js';
+import { registerAuditRoutes } from './audit-routes.js';
+import type { AuditRecorder } from './audit-recorder.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
@@ -1145,6 +1169,8 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  /** Internal service; public operations remain gated on complete recovery acceptance. */
+  backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;
   matrixConnectorToken?: string | (() => Promise<string | undefined>) | undefined;
   onMatrixConfigured?: (() => Promise<void>) | undefined;
@@ -1333,6 +1359,12 @@ export interface ServerDeps {
   branchPr?: (branch: string, worktree: string) => Promise<number | null>;
   /** Live compact PR status for the current branch: title, URL, check counts and
    * whether the Merge button should be enabled. Absent → older token-less behavior. */
+  invalidateProjectPrStatus?: (projectId: string) => void;
+  repairPullRequest?: (
+    project: ProjectRecord,
+    number: number,
+  ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
+  repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
    * Live compact PR status for a session spanning SEVERAL branches — the most-
@@ -1412,6 +1444,13 @@ export interface ServerDeps {
   invalidateProjectList?: () => void;
   /** Best-effort image cleanup after a successful project soft-delete. */
   onProjectHidden?: (projectId: string) => Promise<void>;
+  /** Durable audit trail (ADR 0028): project deletion and the admin read API. */
+  audit?:
+    | ({ recorder: AuditRecorder; log: AuditLog } & Pick<
+        LogRouteDeps,
+        'buildDiagnostics' | 'serverLogs'
+      >)
+    | undefined;
   /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
@@ -2268,7 +2307,8 @@ async function fileLiveMeeting(input: {
     if (!meeting || meeting.state === 'active') return null;
     const notes = changes.notes.filter((note) => note.meetingId === meeting.id);
     const insights = await input.eventStore.liveMeetings.insights(input.sessionId, meeting.id);
-    return { meeting, notes, insights: insights ?? [] };
+    const result = await input.eventStore.liveMeetings.result(input.sessionId, meeting.id);
+    return { meeting, notes, insights: insights ?? [], result };
   };
   const first = await load();
   if (!first) return;
@@ -2276,7 +2316,10 @@ async function fileLiveMeeting(input: {
   const meetingDir = knowledge
     ? await ensureMeetingDirectory(input.dataRoot!, session.projectId!)
     : await ensureLegacyMeetingDirectory(session.worktree);
-  const title = liveMeetingTitle(first.meeting);
+  const title = liveMeetingTitle({
+    ...first.meeting,
+    title: first.meeting.title || first.result?.title || null,
+  });
   const hash = createHash('sha256').update(first.meeting.id).digest('hex').slice(0, 8);
   const date = new Date(first.meeting.startedAt).toISOString().slice(0, 10);
   const relPath = `${knowledge ? KNOWLEDGE_MEETINGS_DIR : 'docs/meetings'}/${date}-live-meeting-${hash}.md`;
@@ -2315,6 +2358,7 @@ async function fileLiveMeeting(input: {
         people: liveMeetingPeopleCount(current.meeting),
         notes: current.notes.length,
         answers: liveMeetingAnswerCount(events, current.meeting.id),
+        ...(current.result?.summary ? { summary: current.result.summary } : {}),
       };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
@@ -3760,13 +3804,59 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // session. Prompt-only runs need nothing but the conductor, which wakes a
   // sleeping project for the turn itself; only a check script needs the
   // project container directly.
+  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
+    if (!userId) return deps.authRegistry?.isEnabled() !== true;
+    return (
+      projectId !== null &&
+      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
+    );
+  };
+  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
+  // `undefined` when the turn is not the session's running one or has no initiator.
+  const runningTurnInitiator = async (
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> => {
+    const running = (await deps.eventStore.listRunningTurns()).find(
+      (t) => t.sessionId === sessionId,
+    );
+    if (running?.turnId !== turnId) return undefined;
+    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
+      (event) => event.seq === running.promptSeq,
+    )?.event;
+    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
+  };
+  // The assistant acts for the user behind its running turn, and only in granted projects.
+  // Reading and filing tasks follow the project routes, where administrators count as
+  // readers. Handing off starts a turn, so it needs the same execute permission as
+  // `canExecuteAs`, which every later tool call of that turn is checked against.
+  const assistantToolDeps: AssistantToolDeps = {
+    eventStore: deps.eventStore,
+    initiator: runningTurnInitiator,
+    permitted: async (userId, projectId, permission) => {
+      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
+      if (permission === 'execute') return canExecuteAs(userId, projectId);
+      return (
+        (await deps.eventStore.isActiveAdministrator(userId)) ||
+        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
+      );
+    },
+  };
   const automationExecutor = createAutomationExecutor({
+    isAuthorized: async (automation, session) => {
+      try {
+        return await canExecuteAs(automation.sponsorUserId, session.projectId);
+      } catch {
+        return false;
+      }
+    },
     isCurrent: async (automation, snapshot) => {
       const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
       const session = await deps.eventStore.getSession(automation.sessionId);
       return (
         current?.id === automation.id &&
         current.status === 'enabled' &&
+        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
         session?.projectId === snapshot.projectId &&
         session.worktree === snapshot.worktree
       );
@@ -3789,7 +3879,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
       ? {
-          runScript: async ({ script, project, session }) => {
+          runScript: async ({ script, project, session, automation }) => {
             const runtime = deps.projectRuntime;
             const cloneRoot = deps.projectCloneRoot;
             if (!runtime?.runAutomationScript || !cloneRoot) {
@@ -3798,6 +3888,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
+            try {
+              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
+                throw new Error('revoked');
+            } catch {
+              throw new ControlPlaneSessionAuthorityError(
+                'The automation sponsor no longer has execution permission.',
+              );
+            }
             return runtime.runAutomationScript(
               project,
               settings ?? emptyProjectSettings(project.id),
@@ -3838,7 +3936,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
     isSkippableError: (error) =>
-      error instanceof SealedError || error instanceof ProjectNotReadyError,
+      error instanceof SealedError ||
+      error instanceof ProjectNotReadyError ||
+      error instanceof ControlPlaneSessionAuthorityError,
   });
 
   const automationScheduler = startAutomationScheduler({
@@ -4085,6 +4185,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     repair: PullRequestRepairKind,
   ): Promise<void> => {
     if (!repair.applies(pr)) return;
+    if (session.projectId !== null) {
+      const mandate = await deps.eventStore.repairs.mandate(session.projectId);
+      if (mandate) {
+        await deps.eventStore.repairs.associate(
+          session.projectId,
+          `pr:${pr.number}`,
+          session.sessionId,
+        );
+        return;
+      }
+    }
     const { sessionId } = session;
     const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
@@ -4115,12 +4226,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           marker = `${repair.id}:${repair.key(sessionId, latest)}`;
           const fresh = await deps.eventStore.markSessionAutomation(sessionId, marker);
           if (!fresh) return;
+          // Nobody asked for this turn, so it runs for the session's most recent user;
+          // their project rights are still checked on every gateway call it makes.
+          const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
             repair.prompt(latest, await codeHostName(session)),
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
+              ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
           if (!accepted) {
@@ -4495,6 +4610,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     done();
   });
 
+  if (deps.backup) {
+    app.addHook('onClose', () => deps.backup!.close());
+    if (BACKUP_RECOVERY_ACCEPTED) {
+      deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
+      app.addHook('onReady', (done) => {
+        deps.backup!.service?.start();
+        done();
+      });
+    }
+  }
+  registerBackupRoutes(app, {
+    userId: (request) => request.localUserId,
+    isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+    recoveryAccepted: () => BACKUP_RECOVERY_ACCEPTED,
+    service: deps.backup?.service,
+    unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
+  });
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,
@@ -4666,6 +4798,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   });
   registerDiagnosticsMemoryRoute(app);
+  if (deps.audit !== undefined) {
+    registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
+    registerAuditRoutes(app, {
+      ...deps.audit,
+      sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
+    });
+  }
 
   registerServerUpdateRoutes(app, deps);
 
@@ -4997,12 +5136,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prRepairSweep = (async () => {
       if (deps.secretCipher?.isSealed() === true) return;
       const sessions = await deps.eventStore.listSessions();
+      const supervisedProjects = new Set(
+        (await deps.eventStore.repairs.mandates()).map((m) => m.project_id),
+      );
       const live = new Set(sessions.map((session) => session.worktree));
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
+        if (session.projectId && supervisedProjects.has(session.projectId)) continue;
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         try {
@@ -5115,12 +5258,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const applyPrSummaryAction = (session: SessionRecord, pr: SessionPrSummary | null): void => {
     const { worktree } = session;
     sessionPrCache.invalidate(worktree);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
   const invalidatePrSummaryAction = (session: SessionRecord): void => {
     const { worktree } = session;
     sessionPrCache.invalidate(worktree);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.delete(worktree);
   };
@@ -5818,6 +5963,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId: string,
         id: string,
         decision: { behavior: 'allow' | 'deny'; updatedInput?: Record<string, unknown> },
+        decidedBy?: { userId: string },
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
@@ -5863,6 +6009,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       message: string;
       invocationId: string;
       approvedByCard: boolean;
+      // The user the delivered turn runs for. Without one, an authenticated server
+      // refuses every gateway call in the peer's turn.
+      initiatedBy: { userId: string } | undefined;
     }): Promise<{ sessionId: string; queued: boolean }> => {
       const source = await deps.eventStore.getSession(input.sourceSessionId);
       const link = await linkedSessionTarget(input.sourceSessionId, input.targetSessionId);
@@ -5915,6 +6064,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             {
               displayPrompt: prompt,
               clientReplyId: `linked:${input.invocationId}`,
+              ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
               peer: {
                 sessionId: input.sourceSessionId,
                 projectId: source.projectId!,
@@ -5933,7 +6083,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       string,
       { behavior: 'allow' | 'deny'; promise: Promise<boolean> }
     >();
-    decidePendingLinkedMessage = (sessionId, id, decision) => {
+    decidePendingLinkedMessage = (sessionId, id, decision, decidedBy) => {
       const key = `${sessionId}\0${id}`;
       const existing = pendingLinkDecisions.get(key);
       if (existing) {
@@ -5958,6 +6108,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           message: pending.message,
           invocationId: pending.invocationId,
           approvedByCard: true,
+          // The sending turn has usually ended by now; the user who approved delivery is
+          // the one the message runs for.
+          initiatedBy: decidedBy,
         });
         // The original gateway call recorded a timeout refusal. Pair it with a
         // served record under the same call id when this saved approval delivers.
@@ -5993,6 +6146,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
+      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
+      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
+        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
+        await requireAssistantGrant(
+          assistantToolDeps,
+          { sessionId, turnId, projectId },
+          'delegate',
+        );
+      },
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -6074,13 +6236,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // the first delivery's answer without a second turn. That is the same trade ADR 0008 made
       // for every dispatch, and it is the safe direction — the failure is a briefing not sent
       // twice, and a caller that meant it can say it differently or send it from a new call.
-      dispatchTurn: ({ sessionId, prompt, displayPrompt, idempotencyKey }) =>
-        conductor.dispatchTurn(
+      dispatchTurn: async ({ sessionId, prompt, displayPrompt, idempotencyKey, caller }) => {
+        const initiatedBy = await runningTurnInitiator(caller.sessionId, caller.turnId);
+        return conductor.dispatchTurn(
           sessionId,
           prompt,
           {},
-          { displayPrompt, clientReplyId: idempotencyKey },
-        ),
+          {
+            displayPrompt,
+            clientReplyId: idempotencyKey,
+            ...(initiatedBy ? { initiatedBy } : {}),
+          },
+        );
+      },
       createSession: async ({ projectId, name, idempotencyKey }) => {
         const existing = controlHandoffSessionCreates.get(idempotencyKey);
         if (existing !== undefined) return existing;
@@ -6341,13 +6509,49 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      // Runs before the card, so a caller that may not use these tools is turned away without
-      // an operator being asked to read a briefing their answer could not have delivered. The
-      // tools re-check it themselves on the way in; this only decides when it is caught.
+      // Approval cannot restore rights revoked from the initiating user while waiting.
+      authorizeExecution: async (input) => {
+        const running = (await deps.eventStore.listRunningTurns()).find(
+          (t) => t.sessionId === input.sessionId,
+        );
+        if (!running && deps.authRegistry?.isEnabled() !== true) {
+          await gatewayDeps.authorizeExecution?.(input);
+          return;
+        }
+        if (!running || running.turnId !== input.turnId)
+          throw new ControlPlaneSessionAuthorityError('The calling turn is no longer active.');
+        const session = await deps.eventStore.getSession(input.sessionId);
+        const prompt = (
+          await deps.eventStore.getEventsAfter(input.sessionId, running.promptSeq - 1, 1)
+        ).find((event) => event.seq === running.promptSeq)?.event;
+        const userId = prompt?.t === 'prompt' ? prompt.initiatedBy?.userId : undefined;
+        if (
+          session?.projectId !== input.projectId ||
+          !(await canExecuteAs(userId, input.projectId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'The calling user no longer has project execution permission.',
+          );
+        await gatewayDeps.authorizeExecution?.(input);
+      },
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
+        if ((await deps.eventStore.repairs.qa()).session_id === sessionId)
+          throw new ControlPlaneSessionAuthorityError(
+            'QA uses server-validated decisions, not executable tools.',
+          );
+        // The assistant reads mail and voice notes, so it gets an allow-list rather than
+        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
+        // Control later stays closed to it until it is listed here.
+        const assistantRefusal = assistantToolRefusal(
+          await deps.eventStore.assistant.settings(),
+          sessionId,
+          toolName,
+        );
+        if (assistantRefusal !== undefined)
+          throw new ControlPlaneSessionAuthorityError(assistantRefusal);
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -6385,6 +6589,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // static catalog, and explaining Verity is as much a part of planning.
         if (
           toolName !== 'verity_tasks' &&
+          toolName !== 'verity_repairs' &&
           toolName !== 'verity_app_help' &&
           ((await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
             conductor.isPlanningTurn?.(sessionId))
@@ -6537,6 +6742,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_assistant') {
+          await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+          await requireAssistantSession(deps.eventStore, sessionId);
+          return;
+        }
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -6547,7 +6757,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+      authorizationSnapshot: async ({ sessionId, turnId, projectId, toolName, request }) => {
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
+          const snapshot = await gatewayDeps.authorizationSnapshot?.({
+            sessionId,
+            turnId,
+            projectId,
+            toolName,
+            request,
+          });
+          if (snapshot === undefined) throw new Error('approved Doppler binding is unavailable');
+          return JSON.stringify(parseBrokeredDopplerBinding(snapshot));
+        }
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
@@ -6605,12 +6826,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             (await deps.eventStore.getSession(sessionId))?.projectId === projectId
           );
         }
+        // The project grant is the user's consent; the executor re-checks it on every call.
+        if (toolName === 'verity_assistant') {
+          const session = await deps.eventStore.getSession(sessionId);
+          return (
+            session?.projectId === projectId &&
+            (await deps.eventStore.assistant.settings()).session_id === sessionId
+          );
+        }
         // The tasks tool writes only to the calling session's own list and cannot
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.
         if (
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
+          toolName === 'verity_repairs' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -6778,6 +7008,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               input.sessionId,
               planningRevision,
               planningConsents.get(input.request as object),
+              // Approved from the planning turn, so the implementation runs for its initiator.
+              await runningTurnInitiator(input.sessionId, input.turnId),
             ))
           )
             throw new ControlPlaneSessionAuthorityError(
@@ -6790,6 +7022,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (input.toolName === 'verity_app_help') {
           return answerAppHelp(appHelpRequestSchema.parse(input.request));
+        }
+        if (input.toolName === 'verity_repairs') {
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (!session?.projectId || session.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return {
+            mandate: (await deps.eventStore.repairs.mandate(session.projectId)) ?? null,
+            incidents: await deps.eventStore.repairs.incidents(session.projectId),
+          };
         }
         if (input.toolName === 'verity_tasks') {
           const session = await deps.eventStore.getSession(input.sessionId);
@@ -6836,6 +7077,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             message: request.message,
             invocationId: input.invocationId,
             approvedByCard: input.approvedByCard === true,
+            initiatedBy: await runningTurnInitiator(input.sessionId, input.turnId),
           });
           await deps.eventStore.deletePendingSessionLinkMessage(input.sessionId, input.callId);
           return result;
@@ -6867,6 +7109,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_assistant')
+          return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
@@ -6905,6 +7149,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         sessionId,
         callId,
         invocationId,
+        authorizationSnapshot,
         requestMac,
         macKeyId,
         toolName,
@@ -6943,6 +7188,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             toolName,
             input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
+            ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+            authorizationSnapshot !== undefined
+              ? {
+                  brokeredGrantBindingId: brokeredDopplerBindingId(
+                    parseBrokeredDopplerBinding(authorizationSnapshot),
+                  ),
+                }
+              : {}),
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
@@ -7360,6 +7613,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
+  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);
@@ -7630,6 +7884,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!hidden) {
         return { code: 404, body: { error: `project ${id} not found` } };
       }
+      // Before the image cleanup, so the trail reads deletion first, removals second.
+      // Best-effort: the deletion has happened, and a lost record becomes a write gap.
+      try {
+        await deps.audit?.recorder.projectDeleted({
+          projectId: id,
+          projectLabel: `${project.owner}/${project.repo}`,
+          initiator: { kind: 'user', userId: request.localUserId },
+        });
+      } catch (error) {
+        request.log.warn({ err: error, projectId: id }, 'project deletion not audited');
+      }
       try {
         await deps.onProjectHidden?.(id);
       } catch (error) {
@@ -7756,7 +8021,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : project;
       settleBackgroundProvision(
         project.id,
-        deps.provisioner.provision(project.id, { confirmWarnings }),
+        deps.provisioner.provision(project.id, {
+          confirmWarnings,
+          initiator: { kind: 'user', userId: request.localUserId },
+        }),
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
@@ -7889,6 +8157,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
+          initiator: { kind: 'user', userId: request.localUserId },
         });
         await afterProjectProvision(project.id);
       } catch (error) {
@@ -8052,7 +8321,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // to report the link itself as failed.
         if (linked.state !== 'absent' && provisioner.recreateContainer) {
           try {
-            await provisioner.recreateContainer(linked.id, { confirmWarnings: true });
+            await provisioner.recreateContainer(linked.id, {
+              confirmWarnings: true,
+              initiator: { kind: 'user', userId: request.localUserId },
+            });
             await afterProjectProvision(linked.id);
           } catch (error) {
             app.log.warn(
@@ -8342,6 +8614,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
   const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
+    onTasksChanged: () => resources.invalidate('/tasks'),
+    onResultChanged: (sessionId, meetingId) =>
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/result`,
+      ),
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -8374,7 +8651,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
       if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
-        return directMeetingQuery({ model, prompt, signal });
+        return directMeetingQuery({
+          model,
+          prompt,
+          signal,
+          maxOutputTokens: prompt.startsWith('Write a meeting result') ? 12000 : 2048,
+        });
       return conductor.query({
         prompt,
         model,
@@ -9580,12 +9862,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
       // a long session with only its tail and fetch older turns on scroll-up, instead
       // of replaying the whole event log. Live updates still arrive over the WS stream.
-      boundedHistory: async (reply, id, beforeSeq, snapshotSeq) => {
+      boundedHistory: async (reply, id, beforeSeq, snapshotSeq, eventOffset) => {
         if (!(await deps.eventStore.getSession(id))) {
           reply.code(404);
           return { error: `session ${id} not found` };
         }
-        return deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq);
+        try {
+          return await deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq, eventOffset);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          reply.code(400);
+          return { error: 'invalid history offset' };
+        }
       },
       history: async (reply, id, limit, beforeSeq) => {
         const session = await deps.eventStore.getSession(id);
@@ -9785,6 +10073,180 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
   });
+
+  registerRepairRoutes(app, deps.eventStore);
+  registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
+  // callers share one attempt, so two requests never spawn the same session id twice.
+  let ensuringAssistant: Promise<string> | undefined;
+  const ensureAssistantSession = async (): Promise<string> => {
+    let id = await deps.eventStore.assistant.session(randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
+    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
+    if (await deps.eventStore.getSession(id)) return id;
+    const project = await ensureVerityControlProject();
+    const result = await sessionCreate.spawn(
+      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
+      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model: DEFAULT_MODEL },
+      app.log,
+    );
+    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+    return id;
+  };
+  registerAssistantRoutes(app, deps.eventStore, {
+    ensureSession: () =>
+      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
+        ensuringAssistant = undefined;
+      })),
+    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
+    cancel: (id) => conductor.cancelTurn(id),
+  });
+  if (deps.repairDiscovery) {
+    const qaEnabled = async () => {
+      const state = await deps.eventStore.repairs.qa();
+      return (
+        state.enabled &&
+        !!state.sponsor &&
+        (await deps.eventStore.isActiveAdministrator(state.sponsor))
+      );
+    };
+    const preparingDispatches = new Set<string>();
+    const supervisor = createRepairSupervisor({
+      preparingDispatches,
+      enabled: qaEnabled,
+      coordinate: true,
+      store: deps.eventStore,
+      discover: deps.repairDiscovery,
+      ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
+      changed: (projectId) => {
+        resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
+        void deps.eventStore.repairs
+          .incidents(projectId)
+          .then((incidents) => {
+            for (const incident of incidents)
+              if (incident.last_session_id)
+                liveHub.notify({
+                  sessionId: incident.last_session_id,
+                  projectId,
+                  topics: ['status'],
+                });
+          })
+          .catch(() => undefined);
+      },
+      authorized: (userId, projectId) => canExecuteAs(userId, projectId),
+      busy: (id) => conductor.isBusy(id),
+      result: async (sessionId) => {
+        const session = await deps.eventStore.getSession(sessionId);
+        return session ? sessionPrStatus(session) : null;
+      },
+      target: async (projectId, branch) => {
+        let match: string | undefined;
+        for (const session of await deps.eventStore.listSessions()) {
+          if (session.projectId !== projectId || !(await worktreeExists(session.worktree)))
+            continue;
+          const branches = await branchesForSession(session);
+          if (!branches || (await branches.current(session.worktree)) !== branch) continue;
+          if (
+            match ||
+            conductor.isBusy(session.sessionId) ||
+            session.planning === 'active' ||
+            (await branches.isDirty(session.worktree))
+          )
+            return { blocked: true };
+          match = session.sessionId;
+        }
+        return match ? { sessionId: match, blocked: false } : { blocked: false };
+      },
+      terminated: async (id, dispatchId) => {
+        const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
+        const boundary =
+          receipt?.prompt_seq == null
+            ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
+            : Number(receipt.prompt_seq);
+        if (boundary === undefined) return false;
+        const events = await deps.eventStore.listRecentSessionProjectionEvents(id, 20);
+        return repairTurnTerminated(events.filter((row) => row.seq > boundary));
+      },
+      spawn: async (projectId, sessionId) => {
+        if (await deps.eventStore.getSession(sessionId)) return;
+        const result = await sessionCreate.spawn(
+          { projectId, sessionId, name: 'QA · CI repair' },
+          app.log,
+        );
+        if (result.statusCode >= 300) throw new Error('Repair session could not be created');
+      },
+      dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
+        if ((await deps.eventStore.repairs.dispatchReceipt(dispatchId))?.state === 'admitted')
+          return true;
+        const result = await conductor.dispatchTurnWhenIdle(
+          sessionId,
+          prompt,
+          {},
+          {
+            displayPrompt: 'QA: investigate assigned CI failure',
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId: sponsorUserId },
+            validateSession: async (session) => {
+              if (session.projectId !== projectId || !(await validate())) return false;
+              const mandate = await deps.eventStore.repairs.mandate(session.projectId);
+              return (
+                mandate?.mode === 'automatic' &&
+                (await canExecuteAs(mandate.sponsor_user_id, session.projectId))
+              );
+            },
+          },
+        );
+        return result.accepted;
+      },
+    });
+    const qa = createQACoordinator({
+      preparingDispatches,
+      store: deps.eventStore,
+      authorized: canExecuteAs,
+      administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
+      busy: (id) => conductor.isBusy(id),
+      ensureSession: async (id) => {
+        if (await deps.eventStore.getSession(id)) return;
+        const project = await ensureVerityControlProject();
+        const result = await sessionCreate.spawn(
+          { projectId: project.id, sessionId: id, name: 'Verity · QA' },
+          app.log,
+        );
+        if (result.statusCode >= 300) throw new Error('QA session could not be created');
+      },
+      dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
+        const result = await conductor.dispatchTurnWhenIdle(
+          id,
+          prompt,
+          { timeoutMs: 180_000 },
+          {
+            displayPrompt: 'QA: review changes in CI supervision',
+            durableDispatchId: dispatchId,
+            initiatedBy: { userId: sponsor },
+            validateSession: validate,
+          },
+        );
+        return result.accepted;
+      },
+      delegate: supervisor.delegate,
+    });
+    let timer: ReturnType<typeof setInterval> | undefined;
+    app.addHook('onReady', () => {
+      timer = setInterval(() => {
+        void supervisor
+          .sweep()
+          .then(() => qa.tick())
+          .catch((error) => app.log.warn({ error }, 'repair supervision failed'));
+      }, 120_000);
+      timer.unref();
+    });
+    app.addHook('onClose', async () => {
+      if (timer) clearInterval(timer);
+      await qa.stop();
+      await supervisor.stop();
+    });
+  }
 
   // First-run welcome session in the starter project (see welcome-session.ts).
   // Created through the same spawn path as POST /sessions; the session-route
@@ -10186,6 +10648,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
 
     localSavesInFlight.add(id);
+    // The save and its follow-up turns run for the user who asked for it, so they keep
+    // gateway tool access under authentication.
+    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
+    const origin = initiatedBy ? { initiatedBy } : {};
     const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
     const prompt =
       "Save this session's work to the local project. Review the working tree and the branch changes. " +
@@ -10196,7 +10662,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
     void (async () => {
       try {
-        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project');
+        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project', origin);
         if (result.aborted || result.exitCode !== 0) return;
         let approvedTip: string;
         try {
@@ -10215,11 +10681,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
           return;
         }
-        const merged = await mergeLocalSession(id, () => undefined, approvedTip);
+        const merged = await mergeLocalSession(id, () => undefined, approvedTip, initiatedBy);
         if ('error' in merged) {
           await conductor.dispatchTurn(
             id,
@@ -10229,7 +10695,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               { error: merged.error },
             ),
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           );
         }
       } catch (error) {
@@ -10239,7 +10705,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             id,
             'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
             undefined,
-            { displayPrompt: 'Save to project needs attention' },
+            { displayPrompt: 'Save to project needs attention', ...origin },
           )
           .catch(() => undefined);
       } finally {
