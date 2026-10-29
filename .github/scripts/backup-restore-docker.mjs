@@ -1128,8 +1128,19 @@ async function restore() {
       assert.equal(servers.length, 1);
       const server = servers[0];
       assert.ok(server, 'running normal server required');
-      const before = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
+      const updaters = [];
+      for (const container of await docker.listContainers())
+        if (
+          container.labels?.['com.docker.compose.service'] === 'verity-updater' &&
+          (await docker.inspectContainer(container.id)).running
+        )
+          updaters.push(container);
+      assert.equal(updaters.length, 1);
+      await exec('docker', ['stop', '--time', '30', updaters[0].id]);
+      assert.equal((await docker.inspectContainer(updaters[0].id)).running, false);
       await exec('docker', ['stop', '--time', '30', server.id]);
+      assert.equal((await docker.inspectContainer(server.id)).running, false);
+      const before = JSON.parse(await readFile('/srv/verity/backup-state/state', 'utf8'));
       // Force exactly one overdue run while the normal server is stopped, without a master key.
       before.schedule = {
         ...before.schedule,
@@ -1166,6 +1177,10 @@ async function restore() {
       }
       assert.ok(state.schedule.lastSuccess > 0, 'normal server must complete overdue capture');
       assert.equal(state.schedule.failures, 0);
+      assert.deepEqual(
+        (await activeServers()).map((container) => container.id),
+        [server.id],
+      );
       assert.equal((await transport('/healthz')).status, 200);
       assert.equal((await api('/secret/status')).body.status, 'sealed');
       const available = await api('/api/backups/status');
@@ -1255,6 +1270,7 @@ async function restore() {
       });
 
       assert.equal((await api('/secret/status')).body.status, 'sealed');
+      await exec('docker', ['start', updaters[0].id]);
       console.log(
         'Normal-server sealed restart, scheduled capture and isolated pinned database/content restore passed.',
       );
