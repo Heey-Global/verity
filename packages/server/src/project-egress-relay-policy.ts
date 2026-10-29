@@ -28,6 +28,7 @@ const relay = z
     z.object({
       Image: z.string(),
       Config: z.object({
+        Healthcheck: z.null().optional(),
         Image: z.string(),
         User: z.string(),
         Entrypoint: z.array(z.string()),

@@ -90,6 +90,11 @@ it('accepts exact host-owned relay configuration and rejects unsafe substitution
   const check = (f: ReturnType<typeof fixture>) =>
     verifyEgressRelay(binding, policy, f.reply, image, f.volume);
   expect(check(fixture())).toHaveLength(3);
+  const healthcheck = fixture();
+  Object.assign(healthcheck.reply[0]!.Config, {
+    Healthcheck: { Test: ['CMD', '/nodejs/bin/node', '-e', 'arbitrary()'] },
+  });
+  expect(() => check(healthcheck)).toThrow();
   const mutations: ((f: ReturnType<typeof fixture>) => void)[] = [
     (f) => {
       f.reply[0]!.HostConfig.SecurityOpt.push('seccomp=unconfined');
