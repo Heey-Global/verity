@@ -38,6 +38,8 @@ import {
   publishSessionProgressRequestSchema,
   TASKS_TOOL_DESCRIPTION,
   tasksRequestSchema,
+  ASSISTANT_TOOL_DESCRIPTION,
+  assistantRequestSchema,
   APP_HELP_TOOL_DESCRIPTION,
   appHelpRequestSchema,
 } from '@verity/events';
@@ -316,6 +318,7 @@ const TOOL_SCHEMAS = {
   verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
   verity_repairs: z.object({ action: z.literal('status') }).strict(),
+  verity_assistant: assistantRequestSchema,
   verity_tasks: tasksRequestSchema,
   verity_app_help: appHelpRequestSchema,
   verity_vulnerabilities: vulnerabilityRequestSchema,
@@ -474,6 +477,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Implement the latest submitted plan when the user explicitly tells you to go ahead in the chat. Their message is the approval, so there is no second confirmation. End your turn immediately; implementation starts in a new turn. Use action discard to ask once to leave planning without implementing, including before a plan exists.',
   verity_repairs:
     'Read the current project repair mandate and incidents, including assigned sessions and verification state. This tool grants no execution rights and cannot mark a repair successful.',
+  verity_assistant: ASSISTANT_TOOL_DESCRIPTION,
   verity_tasks: TASKS_TOOL_DESCRIPTION,
   verity_app_help: APP_HELP_TOOL_DESCRIPTION,
   verity_vulnerabilities: VULNERABILITY_TOOL_DESCRIPTION,

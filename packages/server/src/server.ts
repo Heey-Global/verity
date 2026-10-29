@@ -1,6 +1,13 @@
 import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
+import { registerAssistantRoutes } from './assistant-routes.js';
+import {
+  executeAssistantTool,
+  requireAssistantGrant,
+  requireAssistantSession,
+  type AssistantToolDeps,
+} from './assistant-tool.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
@@ -3814,6 +3821,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     )?.event;
     return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
   };
+  // The assistant acts for the user behind its running turn, and only in granted projects.
+  const assistantToolDeps: AssistantToolDeps = {
+    eventStore: deps.eventStore,
+    initiator: runningTurnInitiator,
+    permitted: async (userId, projectId, permission) =>
+      userId === undefined
+        ? deps.authRegistry?.isEnabled() !== true
+        : deps.eventStore.hasProjectPermission(userId, projectId, permission),
+  };
   const automationExecutor = createAutomationExecutor({
     isAuthorized: async (automation, session) => {
       try {
@@ -6118,6 +6134,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
+      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
+      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
+        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
+        await requireAssistantGrant(
+          assistantToolDeps,
+          { sessionId, turnId, projectId },
+          'delegate',
+        );
+      },
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -6695,6 +6720,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_assistant') {
+          await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+          await requireAssistantSession(deps.eventStore, sessionId);
+          return;
+        }
         if (
           toolName !== 'verity_diagnostics' &&
           toolName !== 'verity_list_sessions' &&
@@ -6777,6 +6807,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // The tasks tool writes only to the calling session's own list and cannot
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.
+        // The project grant is the user's consent; the executor re-checks it on every call.
+        if (toolName === 'verity_assistant') {
+          const session = await deps.eventStore.getSession(sessionId);
+          return (
+            session?.projectId === projectId &&
+            (await deps.eventStore.assistant.settings()).session_id === sessionId
+          );
+        }
         if (
           toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
@@ -7049,6 +7087,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             documentViewForSession(session),
           );
         }
+        if (input.toolName === 'verity_assistant')
+          return executeAssistantTool(assistantToolDeps, input);
         if (input.toolName === 'verity_diagnostics') return controlDiagnosticsTool(input);
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
@@ -10014,6 +10054,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  registerAssistantRoutes(app, deps.eventStore, {
+    // One Verity Control session, recreated under the same id if it was deleted.
+    ensureSession: async () => {
+      const id = await deps.eventStore.assistant.session(randomUUID());
+      if (await deps.eventStore.getSession(id)) return id;
+      const project = await ensureVerityControlProject();
+      const result = await sessionCreate.spawn(
+        { projectId: project.id, sessionId: id, name: 'Verity · Assistant' },
+        app.log,
+      );
+      if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
+      return id;
+    },
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();

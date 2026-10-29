@@ -427,6 +427,28 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().appendSystemPrompt).toContain('You are Verity, acting in the QA function');
   });
 
+  it('gives the assistant session its standing prompt without taking its tools away', async () => {
+    await ctx.store.assistant.configure(true, 'admin');
+    await ctx.store.assistant.session('assistant');
+    await ctx.store.createSession({
+      sessionId: 'assistant',
+      worktree: '/wt/assistant',
+      model: 'm',
+    });
+    await ctx.store.createSession({ sessionId: 'plain', worktree: '/wt/plain', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('assistant', 'Did Jonas send the offer?');
+    expect(fake.last().toolless).not.toBe(true);
+    expect(fake.last().appendSystemPrompt).toContain('# Verity assistant');
+    await conductor.sendTurn('plain', 'Continue');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Verity assistant');
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi

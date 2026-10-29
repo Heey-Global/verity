@@ -5728,6 +5728,48 @@ export class VerityClient {
       })
       .parse(await res.json());
   }
+  /** The Verity assistant: one Verity Control session plus per-project grants. */
+  async assistantSettings(enabled?: boolean) {
+    const res = await this.request(
+      '/settings/assistant',
+      enabled === undefined
+        ? { method: 'GET' }
+        : {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+    );
+    return z
+      .object({
+        enabled: z.boolean(),
+        sessionId: z.string().nullable(),
+        grants: z.array(
+          z.object({ projectId: z.string(), mode: z.enum(['off', 'tasks', 'delegate']) }),
+        ),
+      })
+      .parse(await res.json());
+  }
+
+  async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/assistant`,
+      mode
+        ? {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        : { method: 'GET' },
+    );
+    return z
+      .object({
+        assistantEnabled: z.boolean().optional(),
+        mode: z.enum(['off', 'tasks', 'delegate']),
+      })
+      .parse(await res.json());
+  }
+
   async retryRepair(projectId: string, incidentId: string): Promise<void> {
     await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/retry`, {
       method: 'POST',

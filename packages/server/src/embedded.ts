@@ -2084,6 +2084,8 @@ export async function buildEmbeddedServer(
             'verity_session_handoff',
             'verity_session_progress',
             'verity_recent_session_messages',
+            // Advertised to every Control session; only the assistant session may call it.
+            'verity_assistant',
           ]
         : [],
     authorizationSnapshot: async ({ projectId, toolName }) => {

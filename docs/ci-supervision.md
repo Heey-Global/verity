@@ -1,6 +1,6 @@
 # CI supervision
 
-QA is a function of the Verity assistant. Its persistent technical session,
+QA is a function of the [Verity assistant](assistant.md). Its persistent technical session,
 Verity · QA, lives in Verity Control and reviews
 changes from repository monitoring and delegates ordinary project repair sessions.
 The installation-wide switch in Settings → QA · CI supervision is disabled by

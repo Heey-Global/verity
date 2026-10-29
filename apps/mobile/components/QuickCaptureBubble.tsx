@@ -2,7 +2,7 @@ import { refreshTaskContext, startTaskContext, useTaskContext } from '../lib/sha
 import { Icon } from './Icon';
 import { bubbleRestingPlace, projectsByRecentCapture, taskContext } from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
-import { useGlobalSearchParams, usePathname } from 'expo-router';
+import { router, useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -74,7 +74,11 @@ export function QuickCaptureBubble() {
     () => (preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)),
     () => setPanel(true),
   );
-  const [saved, setSaved] = useState<{ id: string; label: string } | null>(null);
+  const [saved, setSaved] = useState<{
+    id: string;
+    label: string;
+    kind: 'task' | 'assistant';
+  } | null>(null);
   const position = useRef(new Animated.ValueXY()).current;
   const origin = useRef({ x: 0, y: 0 });
   const context = taskContext(pathname, params, sessions);
@@ -398,7 +402,7 @@ export function QuickCaptureBubble() {
           context={context}
           projects={recentProjects}
           onClose={() => setCapture(false)}
-          onSaved={(id, label) => setSaved({ id, label })}
+          onSaved={(id, label, kind = 'task') => setSaved({ id, label, kind })}
         />
       ) : null}
       {panel ? (
@@ -428,9 +432,17 @@ export function QuickCaptureBubble() {
             backgroundColor: theme.colors.surface,
           }}
         >
-          <Text style={{ color: theme.colors.text }}>Saved · {saved.label}</Text>
+          <Text style={{ color: theme.colors.text }}>
+            {saved.kind === 'assistant' ? 'Sent' : 'Saved'} · {saved.label}
+          </Text>
           <Pressable
             onPress={() => {
+              // A message cannot be unsent; offer the conversation instead.
+              if (saved.kind === 'assistant') {
+                setSaved(null);
+                router.push(`/session/${saved.id}`);
+                return;
+              }
               void removeTask(saved.id)
                 .then(() => setSaved(null))
                 .catch((error) =>
@@ -441,7 +453,9 @@ export function QuickCaptureBubble() {
                 );
             }}
           >
-            <Text style={{ color: theme.colors.action }}>Undo</Text>
+            <Text style={{ color: theme.colors.action }}>
+              {saved.kind === 'assistant' ? 'Open' : 'Undo'}
+            </Text>
           </Pressable>
         </View>
       ) : null}

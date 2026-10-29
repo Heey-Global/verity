@@ -1,4 +1,4 @@
-import { KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
+import { ASSISTANT_SYSTEM_PROMPT, KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -1432,6 +1432,9 @@ export class Conductor {
     if (resumeSessionId === undefined) {
       const sessionSystemPrompt = (await this.deps.sessionSystemPrompt?.(session))?.trim();
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
+      // The assistant keeps its tools; its role is the stored session id, as for QA.
+      if ((await this.deps.store.assistant.settings()).session_id === sessionId)
+        runOpts.appendSystemPrompt += `\n\n${ASSISTANT_SYSTEM_PROMPT}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
     runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);

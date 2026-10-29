@@ -200,6 +200,12 @@ export interface ControlPlaneSessionToolDeps {
   /** Missing sessionId checks a project before session creation or discovery. */
   canAccessKnowledgeTarget?:
     ((input: { projectId: string; sessionId?: string }) => Promise<boolean>) | undefined;
+  /** Refuses (by throwing) a handoff from this caller into the target project. Runs before a
+   *  new session is created and again right before delivery, so a grant revoked while the
+   *  approval card was open still stops the briefing. */
+  authorizeHandoffTarget?:
+    | ((input: { sessionId: string; turnId: string; projectId: string }) => Promise<void>)
+    | undefined;
   listProjects(): Promise<readonly ProjectRecord[]>;
   /** Live sessions, already projected to metadata. Supplied by the route so `status` and
    *  `resumable` are the same projection `GET /sessions` serves.
@@ -365,6 +371,17 @@ export function createControlPlaneSessionTools(
       );
     }
     if (!deps.allowKnowledgeControlOperations) await deps.authorizeKnowledgeCaller?.(input);
+  };
+
+  const requireHandoffTarget = async (
+    input: Pick<ControlPlaneSessionCall, 'sessionId' | 'turnId'>,
+    projectId: string,
+  ): Promise<void> => {
+    await deps.authorizeHandoffTarget?.({
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      projectId,
+    });
   };
 
   const requireKnowledgeTarget = async (projectId: string, sessionId?: string): Promise<void> => {
@@ -655,6 +672,7 @@ export function createControlPlaneSessionTools(
         }
         const blocker = handoffBlocker(found.facts, found.project);
         if (blocker !== undefined) throw new ControlPlaneSessionToolError(blocker);
+        await requireHandoffTarget(input, found.project.id);
         target = found;
       } else if ('newSession' in request.target) {
         const project = resolveProject(projects, request.target.newSession.project);
@@ -665,6 +683,7 @@ export function createControlPlaneSessionTools(
           );
         const blockedProject = projectHandoffBlocker(project);
         if (blockedProject !== undefined) throw new ControlPlaneSessionToolError(blockedProject);
+        await requireHandoffTarget(input, project.id);
         if (deps.createSession === undefined) {
           throw new ControlPlaneSessionToolError('new-session handoff is not configured');
         }
@@ -714,6 +733,7 @@ export function createControlPlaneSessionTools(
         // with the same sentence.
         const blockedProject = projectHandoffBlocker(project);
         if (blockedProject !== undefined) throw new ControlPlaneSessionToolError(blockedProject);
+        await requireHandoffTarget(input, project.id);
         // `requireResumable`, unlike the by-id branch above. There, dropping a dead target
         // before projection would cost the caller the precise "has no workspace left" message
         // in favour of "does not exist", and the narrow is one session anyway. Here it is a
@@ -751,6 +771,7 @@ export function createControlPlaneSessionTools(
       );
       await requireControlPlaneCaller(input);
       await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
+      await requireHandoffTarget(input, target.project.id);
       const { queued } = await deps.dispatchTurn({
         sessionId: target.facts.sessionId,
         prompt,

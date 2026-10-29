@@ -1601,6 +1601,8 @@ export interface Database {
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
+  assistant_settings: AssistantSettingsTable;
+  assistant_project_grants: AssistantProjectGrantsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1830,6 +1832,21 @@ interface RepairSessionHistoryTable {
   resource: string;
   session_id: string;
   created_at: Generated<Date>;
+}
+interface AssistantSettingsTable {
+  id: number;
+  enabled: Generated<boolean>;
+  revision: Generated<number>;
+  sponsor_user_id: string | null;
+  session_id: string | null;
+  updated_at: Generated<Date>;
+}
+interface AssistantProjectGrantsTable {
+  project_id: string;
+  mode: import('./assistant.js').AssistantMode;
+  sponsor_user_id: string;
+  revision: Generated<number>;
+  updated_at: Generated<Date>;
 }
 interface QACoordinatorTable {
   id: number;

@@ -1,0 +1,61 @@
+# Verity assistant
+
+The assistant is the general function of Verity: a persistent session, Verity ·
+Assistant, that lives in Verity Control. You reach it by voice note or chat and
+it turns short requests into outcomes: an answer, a task in the right project,
+or a briefing handed to a project session. QA ([CI supervision](ci-supervision.md))
+is a second, specialised function next to it.
+
+## Switching it on
+
+Settings → Assistant holds the installation-wide switch. It is off by default and
+only administrators can change it. Turning it on creates the session in Verity
+Control; turning it off keeps the session and its history, and every assistant
+tool call is refused until it is on again.
+
+Mail, calendar and contacts use the Google accounts assigned to the Verity
+Control project (Settings → Assistant → Mail and calendar). Sending mail and
+changing events keep their approval cards.
+
+## Project access
+
+The assistant has no access to any project until someone grants it in
+Project settings → Agents → Functions → Assistant:
+
+| Mode | The assistant may |
+| --- | --- |
+| Off · no access (default) | nothing in this project |
+| Tasks only | file tasks into the project's backlog |
+| Tasks and sessions | also hand work to the project's sessions with `verity_session_handoff` |
+
+Granting needs execute permission on the project and an enabled assistant.
+Revoking is always possible. Verity Control itself can never be granted.
+
+## Enforcement
+
+- The assistant session is identified by its stored session id, never by its
+  name, the same way QA is.
+- `verity_assistant` is advertised to Verity Control sessions but runs only for
+  the enabled assistant session. `projects` lists granted projects the turn's
+  user can still read; `add_task` files a task owned by that user, after checking
+  the grant and the user's read permission on the project.
+- A handoff from the assistant session needs a "Tasks and sessions" grant and
+  the turn user's execute permission on the target project. It is checked before
+  a new session is created and again right before delivery. Handoffs from other
+  Verity Control sessions are unchanged.
+- The grant is the consent for `verity_assistant`; its calls run without a
+  separate approval card. The handoff keeps its approval card.
+
+## Quick capture
+
+When the assistant is on, the capture sheet offers **Verity** next to the
+project chips. A note sent there becomes a message in the assistant session
+instead of a task; the assistant decides where it belongs. The target is shown
+to administrators, who can read the assistant settings. Choosing a project keeps
+the previous behaviour.
+
+## Not yet included
+
+- Capture from a widget, Control Center or the Dynamic Island.
+- Reading other projects' knowledge.
+- A shared registry for functions; QA and the assistant keep separate storage.
