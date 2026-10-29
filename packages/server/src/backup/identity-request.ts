@@ -61,3 +61,59 @@ export async function requestBackupIdentity(options: {
     }
   });
 }
+
+/** Exposure revocation is durable and cannot be undone by replaying an earlier recipient request. */
+export async function retireBackupIdentity(options: {
+  requestRoot: string;
+  destination: BackupDestination;
+  installationId: string;
+  retiredGeneration: number;
+  keyGeneration: number;
+  recipient: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  const request = identityHelperRequestSchema.parse({
+    installationId: options.installationId,
+    keyGeneration: options.keyGeneration,
+    recipient: options.recipient,
+  });
+  if (
+    !Number.isInteger(options.retiredGeneration) ||
+    options.retiredGeneration < 1 ||
+    options.retiredGeneration >= request.keyGeneration
+  )
+    throw new Error('Invalid retired generation');
+  await withRepositoryLock(join(options.requestRoot, 'request.lock'), async () => {
+    const signal = AbortSignal.any([options.signal, AbortSignal.timeout(120000)]);
+    await options.destination.assertPresent();
+    await writeDurable(
+      join(options.requestRoot, 'recipient.json'),
+      Buffer.from(
+        JSON.stringify({
+          recipient: request.recipient,
+          keyGeneration: request.keyGeneration,
+          retireGeneration: options.retiredGeneration,
+        }),
+      ),
+      false,
+    );
+    const marker = options.destination.pinnedPath(
+      'identity',
+      `${request.installationId}-ca-retired-k${options.retiredGeneration}`,
+    );
+    while (true) {
+      signal.throwIfAborted();
+      await options.destination.assertPresent();
+      try {
+        if (
+          (await readBounded(marker, 128)).toString() ===
+          `${request.installationId}:${options.retiredGeneration}\n`
+        )
+          return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await delay(250, undefined, { signal });
+    }
+  });
+}

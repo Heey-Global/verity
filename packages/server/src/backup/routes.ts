@@ -10,6 +10,9 @@ type BackupApi = Pick<
   | 'beginSetup'
   | 'confirmSetup'
   | 'cancelSetup'
+  | 'beginKeyReplacement'
+  | 'confirmKeyReplacement'
+  | 'cancelKeyReplacement'
   | 'setPolicy'
   | 'startProbe'
   | 'probeStatus'
@@ -81,6 +84,37 @@ export function registerBackupRoutes(app: FastifyInstance, deps: BackupRouteDepe
     app.post('/api/backups/setup/cancel', { bodyLimit: 16384 }, async (_request, reply) =>
       execute(reply, async () => {
         await deps.service!.cancelSetup();
+        return { ok: true };
+      }),
+    );
+    app.post('/api/backups/key-replacement', { bodyLimit: 16384 }, async (request, reply) => {
+      const body = z
+        .object({ reason: z.enum(['lost', 'exposed']) })
+        .strict()
+        .safeParse(request.body);
+      if (!body.success) return reply.code(400).send({ error: 'invalid replacement request' });
+      return execute(reply, () => deps.service!.beginKeyReplacement(body.data.reason));
+    });
+    app.post(
+      '/api/backups/key-replacement/confirm',
+      { bodyLimit: 16384 },
+      async (request, reply) => {
+        const body = confirmation.safeParse(request.body);
+        request.body = undefined;
+        if (!body.success) return reply.code(400).send({ error: 'invalid backup confirmation' });
+        return execute(reply, async () => {
+          try {
+            await deps.service!.confirmKeyReplacement(body.data.id, body.data.recoveryKey);
+          } finally {
+            body.data.recoveryKey = '';
+          }
+          return { ok: true };
+        });
+      },
+    );
+    app.post('/api/backups/key-replacement/cancel', { bodyLimit: 16384 }, async (_request, reply) =>
+      execute(reply, async () => {
+        await deps.service!.cancelKeyReplacement();
         return { ok: true };
       }),
     );

@@ -87,8 +87,11 @@ off-host copy made before the compromise, with `--new-identity`, and replaces
 the key there. After a leak of the recovery key itself, the user replaces the
 key with the reason "exposed", which deletes the old generation's CA key file
 at once, and runs `verity-install --rotate-identity` on the live host, which
-issues a new CA, TLS and pairing identity and revokes every device token, so
-the identity in old snapshots and copies becomes worthless.
+issues a new CA, TLS and pairing identity and revokes every device token. Old
+snapshot credentials cannot authenticate to that rotated host, and local
+pre-rotation snapshots require `--new-identity` for recovery. Offline devices
+retain their saved old pin and identity until deliberately reset and paired
+again; rotation cannot erase or remotely invalidate external copies.
 
 Every manifest is signed; the signature covers the whole manifest including
 each object's ID, digest and length, the repository identity, format version and

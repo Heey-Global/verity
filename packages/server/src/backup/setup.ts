@@ -9,12 +9,16 @@ export class BackupSetup {
   constructor(
     private readonly configured: () => Promise<boolean>,
     private readonly now: () => number = Date.now,
+    private readonly replacement = false,
   ) {}
   async begin(): Promise<{ id: string; recoveryKey: string; expiresAt: number }> {
     if (this.busy) throw new Error('Backup setup is already in progress');
     this.busy = true;
     try {
-      if (await this.configured()) throw new Error('Backups are already configured');
+      if ((await this.configured()) !== this.replacement)
+        throw new Error(
+          this.replacement ? 'Backups are not configured' : 'Backups are already configured',
+        );
       const { host, recoveryKey } = await generateBackupKeys();
       const candidate = { id: randomUUID(), host, expiresAt: this.now() + SETUP_LIFETIME_MS };
       this.pending = candidate;
@@ -40,7 +44,10 @@ export class BackupSetup {
         this.pending = undefined;
         throw new Error('Backup setup expired; start again');
       }
-      if (await this.configured()) throw new Error('Backups are already configured');
+      if ((await this.configured()) !== this.replacement)
+        throw new Error(
+          this.replacement ? 'Backups are not configured' : 'Backups are already configured',
+        );
       await confirmRecoveryKey(recoveryKey, candidate.host);
       await commit(candidate.host);
       this.pending = undefined;

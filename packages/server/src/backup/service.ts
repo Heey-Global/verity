@@ -1,4 +1,8 @@
-import { maintainBackupGenerations, registerBackupGeneration } from './generation-maintenance.js';
+import {
+  maintainBackupGenerations,
+  registerBackupGeneration,
+  readBackupGenerations,
+} from './generation-maintenance.js';
 import { BackupOperationalAlerts, type BackupAlertNotifier } from './operational-alerts.js';
 import { validateReadableIdentity } from './restore-identity.js';
 import { lstat, mkdir } from 'node:fs/promises';
@@ -24,6 +28,8 @@ import {
   validateScheduleState,
 } from './scheduler.js';
 import { BackupSetup } from './setup.js';
+import { BackupKeyReplacement, type ReplacementReason } from './key-replacement.js';
+import { retireBackupIdentity } from './identity-request.js';
 import { BackupStateStore, type BackupState } from './state.js';
 import { BackupProbeJobs, probeVerificationAlerts, type ProbeJob } from './probe-jobs.js';
 import { createProbeExecution, type ProbeRuntimeOptions } from './probe-runtime.js';
@@ -55,6 +61,9 @@ export class BackupService {
   private alerts!: BackupOperationalAlerts;
   private probes: BackupProbeJobs | undefined;
   private readonly setup: BackupSetup;
+  private readonly replacementSetup: BackupSetup;
+  private readonly replacement: BackupKeyReplacement;
+  private replacementReason: ReplacementReason | undefined;
   private readonly scheduler: BackupScheduler;
   private readonly shutdown = new AbortController();
   private active: Promise<unknown> | undefined;
@@ -70,6 +79,12 @@ export class BackupService {
     private readonly destination: BackupDestination,
   ) {
     this.setup = new BackupSetup(async () => (await state.load()) !== undefined);
+    this.replacementSetup = new BackupSetup(
+      async () => (await state.load()) !== undefined,
+      Date.now,
+      true,
+    );
+    this.replacement = new BackupKeyReplacement(state);
     this.scheduler = new BackupScheduler({
       load: async () => (await this.configured()).schedule,
       update: async (change) =>
@@ -110,15 +125,38 @@ export class BackupService {
         const current = await this.state.load();
         if (!current) return;
         await this.options.store.setBackupJournaling(true);
-        const journal = new BackupRevocationJournal(
-          this.destination,
-          join(this.state.root, `key-${current.keyGeneration}`),
+        await registerBackupGeneration(this.state.root, current);
+        const journals: BackupRevocationJournal[] = [];
+        const seen = new Set<number>();
+        for (const generation of await readBackupGenerations(
+          this.state.root,
           current.installationId,
-          current.keyGeneration,
-          current.host,
+        )) {
+          if (generation.targetId !== current.targetId)
+            throw new Error('Invalid backup generation');
+          if (seen.has(generation.keyGeneration)) continue;
+          seen.add(generation.keyGeneration);
+          journals.push(
+            new BackupRevocationJournal(
+              this.destination,
+              join(this.state.root, `key-${generation.keyGeneration}`),
+              generation.installationId,
+              generation.keyGeneration,
+              generation.host,
+            ),
+          );
+        }
+        await syncRevocationOutbox(
+          this.options.store,
+          {
+            queue: async (id, event) => {
+              for (const journal of journals) if (!(await journal.queue(id, event))) return false;
+              return true;
+            },
+          },
+          this.shutdown.signal,
         );
-        await syncRevocationOutbox(this.options.store, journal, this.shutdown.signal);
-        await journal.flush();
+        for (const journal of journals) await journal.flush();
       }
     });
     this.revocationActive = work;
@@ -148,6 +186,7 @@ export class BackupService {
     const service = new BackupService(options, state, destination);
     try {
       service.alerts = await BackupOperationalAlerts.open(state.root);
+      if (current) await service.run(() => service.resumeReplacement());
       if (current) await registerBackupGeneration(state.root, current);
       const probe = options.probe;
       if (probe)
@@ -272,6 +311,89 @@ export class BackupService {
       }),
     );
   }
+  async beginKeyReplacement(
+    reason: ReplacementReason,
+  ): Promise<{ id: string; recoveryKey: string; expiresAt: number }> {
+    return this.run(async () => {
+      if (reason !== 'lost' && reason !== 'exposed') throw new Error('Invalid replacement reason');
+      const pending = await this.replacement.load();
+      if (pending && !pending.complete) throw new Error('Confirmed replacement requires retry');
+      const candidate = await this.replacementSetup.begin();
+      this.replacementReason = reason;
+      return candidate;
+    });
+  }
+  async cancelKeyReplacement(): Promise<void> {
+    return this.run(async () => {
+      const pending = await this.replacement.load();
+      if (pending && !pending.complete)
+        throw new Error('Confirmed replacement cannot be cancelled');
+      this.replacementSetup.cancel();
+      this.replacementReason = undefined;
+    });
+  }
+  async confirmKeyReplacement(id: string, recoveryKey: string): Promise<void> {
+    return this.run(async () => {
+      const pending = await this.replacement.load();
+      if (pending?.id === id) {
+        await this.resumeReplacement();
+        return;
+      }
+      if (pending && !pending.complete) throw new Error('Confirmed replacement requires retry');
+      await this.replacementSetup.confirm(id, recoveryKey, async (host) => {
+        const previous = await this.configured();
+        if (!this.replacementReason) throw new Error('Replacement reason missing');
+        await this.destination.assertWritable();
+        let number = Math.max(previous.repositoryNumber, previous.keyGeneration) + 1;
+        for (; number <= 999999999; number++) {
+          try {
+            await lstat(this.destination.repositoryPath(`${previous.installationId}-r${number}`));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') break;
+            throw error;
+          }
+        }
+        if (number > 999999999) throw new Error('Backup repository number exhausted');
+        const next: BackupState = {
+          ...previous,
+          host,
+          repositoryNumber: number,
+          keyGeneration: number,
+          confirmedAt: Date.now(),
+          lastProbe: null,
+          schedule: { ...previous.schedule, lastSuccess: null, lastAttempt: null, failures: 0 },
+        };
+        await this.replacement.save({
+          format: 1,
+          id,
+          reason: this.replacementReason,
+          previous,
+          next,
+          complete: false,
+        });
+        await this.resumeReplacement();
+      });
+    });
+  }
+  private async resumeReplacement(): Promise<void> {
+    await this.replacement.resume({
+      retire: (journal) =>
+        retireBackupIdentity({
+          requestRoot: this.options.identityRequests,
+          destination: this.destination,
+          installationId: journal.previous.installationId,
+          retiredGeneration: journal.previous.keyGeneration,
+          keyGeneration: journal.next.keyGeneration,
+          recipient: journal.next.host.recipient,
+          signal: this.shutdown.signal,
+        }),
+      publish: async (next) => {
+        await this.repository(next).initialize(true);
+        await registerBackupGeneration(this.state.root, next);
+        await this.identity(next, this.shutdown.signal);
+      },
+    });
+  }
   private async identity(current: BackupState, signal: AbortSignal): Promise<string> {
     return requestBackupIdentity({
       requestRoot: this.options.identityRequests,
@@ -287,6 +409,7 @@ export class BackupService {
     });
   }
   private async capture(signal: AbortSignal): Promise<void> {
+    await this.resumeReplacement();
     const current = await this.configured();
     const combined = AbortSignal.any([signal, this.shutdown.signal]);
     await captureInstallation({
@@ -329,6 +452,7 @@ export class BackupService {
     if (!(await this.state.load())) return;
     return this.run(async () => {
       try {
+        await this.resumeReplacement();
         await this.scheduler.tick();
       } finally {
         await this.health();
@@ -442,6 +566,7 @@ export class BackupService {
       return { ...current, schedule };
     });
   }
+
   async close(): Promise<void> {
     this.closed = true;
     this.unsubscribeRevocations();
@@ -452,6 +577,7 @@ export class BackupService {
       await Promise.allSettled([this.active, this.revocationActive, this.healthActive]);
     } finally {
       this.setup.cancel();
+      this.replacementSetup.cancel();
       await this.destination.close();
     }
   }

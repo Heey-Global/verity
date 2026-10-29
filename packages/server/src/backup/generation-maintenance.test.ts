@@ -15,7 +15,11 @@ import { expect, it, vi } from 'vitest';
 import { generateBackupKeys } from './crypto.js';
 import { BackupDestination } from './destination.js';
 import { BackupRepository } from './repository.js';
-import { registerBackupGeneration, maintainBackupGenerations } from './generation-maintenance.js';
+import {
+  registerBackupGeneration,
+  maintainBackupGenerations,
+  readBackupGenerations,
+} from './generation-maintenance.js';
 import type { BackupState } from './state.js';
 import { BackupRevocationJournal, readRevocations } from './revocations.js';
 
@@ -79,6 +83,19 @@ it('keeps live generations, expires only globally unretained history and retries
     await second.initialize();
     await registerBackupGeneration(local, a);
     await registerBackupGeneration(local, b);
+    const remnant = join(local, 'generations', '.pending-' + 'a'.repeat(32));
+    await writeFile(remnant, 'incomplete durable publication');
+    expect(
+      (await readBackupGenerations(local, installationId))
+        .map((entry) => entry.repositoryNumber)
+        .sort(),
+    ).toEqual([1, 2]);
+    const unexpected = join(local, 'generations', '.pending-unrecognized');
+    await writeFile(unexpected, '{}');
+    await expect(readBackupGenerations(local, installationId)).rejects.toThrow(
+      'Unexpected backup generation entry',
+    );
+    await rm(unexpected);
     await mkdir(destination.pinnedPath('identity'));
     const ca = destination.pinnedPath('identity', `${installationId}-ca-key-k1`);
     await writeFile(ca, 'encrypted CA');

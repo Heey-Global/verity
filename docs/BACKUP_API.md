@@ -15,6 +15,9 @@ use `Cache-Control: no-store`.
 | `POST /api/backups/setup` | None | `{ id, recoveryKey, expiresAt }` |
 | `POST /api/backups/setup/confirm` | `{ id, recoveryKey }` | `{ ok: true }` |
 | `POST /api/backups/setup/cancel` | None | `{ ok: true }` |
+| `POST /api/backups/key-replacement` | `{ reason: "lost" \| "exposed" }` | `{ id, recoveryKey, expiresAt }` |
+| `POST /api/backups/key-replacement/confirm` | `{ id, recoveryKey }` | `{ ok: true }` |
+| `POST /api/backups/key-replacement/cancel` | None | `{ ok: true }` |
 | `PATCH /api/backups/policy` | `{ paused?: boolean, intervalMs?: number }` | `{ ok: true }` |
 | `POST /api/backups/probes` | `{ recoveryKey }` | `202` with a key-free job record |
 | `GET /api/backups/probes/:id` | None | Current or most recent job record |
@@ -37,6 +40,12 @@ Missing generation catalogs or authenticated references stop maintenance rather 
 risking deletion of recoverable history. Retired generation CA material and journal
 entries are removed only when no retained snapshot needs that generation; signed
 journal checkpoints preserve its sequence floor across interrupted cleanup.
+
+Confirmed [key replacement](BACKUP_KEY_REPLACEMENT.md) starts a new repository and
+key generation without re-encrypting historical snapshots. An exposed generation
+is durably retired by the root helper before replacement publication; old local
+CA material is deleted without claiming deletion of external copies. Live identity
+rotation and device trust reset are separate required steps after exposure.
 
 Status returns `{ available: false, reason: "recovery-validation-pending" }`
 while the acceptance gate is closed. Once that gate opens, hosts without the

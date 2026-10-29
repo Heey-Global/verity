@@ -18,6 +18,7 @@ export function createRestorePreparation(options: {
   docker: DockerClient;
   root: string;
   liveRoot: string;
+  hostRoot?: string;
   tufCachePath: string;
   release?: ProbeReleaseOptions;
   hostNetworking?: boolean;
@@ -34,6 +35,7 @@ export function createRestorePreparation(options: {
     const staging = new InstallerRestoreStaging({
       root: options.root,
       liveRoot: options.liveRoot,
+      ...(options.hostRoot ? { identityHistoryRoot: options.hostRoot } : {}),
       checkRelease: createProbeReleaseCheck({
         ...(options.release ?? { verification: { tufCachePath: options.tufCachePath } }),
         ...(signal ? { signal } : {}),

@@ -163,7 +163,7 @@ export class BackupRepository {
     await writeDurable(path, bytes, immutable);
   }
 
-  async initialize(): Promise<void> {
+  async initialize(resumeConfirmedReplacement = false): Promise<void> {
     await this.destination?.assertWritable();
     if (this.destination) {
       const path = this.destination.pinnedPath('repositories');
@@ -177,27 +177,73 @@ export class BackupRepository {
     } else await mkdir(this.root, { recursive: true, mode: 0o700 });
     await mkdir(this.stateRoot, { recursive: true, mode: 0o700 });
     await this.withLock(async () => {
-      await mkdir(join(this.root, 'objects'), { mode: 0o700 });
-      await mkdir(join(this.root, 'snapshots'), { mode: 0o700 });
-      await mkdir(join(this.stateRoot, 'references'), { mode: 0o700 });
-      await this.write(
+      // Persist randomized ciphertext before destination publication: a retry must
+      // compare the exact artifact for this path, not just its shared signature domain.
+      const artifact = async (name: string, create: () => Promise<Buffer>): Promise<Buffer> => {
+        if (!resumeConfirmedReplacement) return create();
+        const path = join(this.stateRoot, `initialization-${name}`);
+        try {
+          const existing = await readBounded(path, 65536);
+          verifyMetadata(this.host.verificationKey, existing);
+          return existing;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        const bytes = await create();
+        await writeDurable(path, bytes, true);
+        return bytes;
+      };
+      const publish = async (
+        path: string,
+        bytes: Uint8Array,
+        immutable: boolean,
+      ): Promise<void> => {
+        try {
+          await this.write(path, bytes, immutable);
+        } catch (error) {
+          if (!resumeConfirmedReplacement || (error as NodeJS.ErrnoException).code !== 'EEXIST')
+            throw error;
+          const existing = await readBounded(path, 65536);
+          if (!Buffer.from(bytes).equals(existing))
+            throw new Error('Replacement repository is not empty', { cause: error });
+        }
+      };
+      await mkdir(join(this.root, 'objects'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await mkdir(join(this.root, 'snapshots'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await mkdir(join(this.stateRoot, 'references'), {
+        mode: 0o700,
+        recursive: resumeConfirmedReplacement,
+      });
+      await publish(
         join(this.root, 'header'),
-        await sealMetadata(
-          this.host,
-          Buffer.from(
-            JSON.stringify({
-              kind: 'repository',
-              format: 1,
-              repository: this.name,
-              createdAt: new Date().toISOString(),
-            }),
+        await artifact('header', () =>
+          sealMetadata(
+            this.host,
+            Buffer.from(
+              JSON.stringify({
+                kind: 'repository',
+                format: 1,
+                repository: this.name,
+                createdAt: new Date().toISOString(),
+              }),
+            ),
           ),
         ),
         true,
       );
-      await this.write(join(this.root, 'keys'), await sealHostKeyBundle(this.host), true);
-      await this.write(join(this.root, 'sequence'), Buffer.from('0'), true);
-      await this.write(
+      await publish(
+        join(this.root, 'keys'),
+        await artifact('keys', () => sealHostKeyBundle(this.host)),
+        true,
+      );
+      await publish(join(this.root, 'sequence'), Buffer.from('0'), true);
+      await publish(
         join(this.stateRoot, 'index'),
         encodeLocalIndex({}, this.host.fingerprintKey),
         true,
