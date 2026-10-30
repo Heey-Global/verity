@@ -138,6 +138,8 @@ def attest_filters(filters, identity):
         elif set(entry) - {'protocol', 'pref', 'kind', 'chain', 'parent'}:
             raise ValueError('Unexpected deadline classifier header')
     if (len(programs) != 1 or programs[0].get('id') != identity
+            or programs[0].get('direct-action') is not True
+            or programs[0].get('skip_hw') is not True or programs[0].get('skip_sw', False)
             or programs[0].get('in_hw', False) or programs[0].get('actions')):
         raise ValueError('Deadline hook identity changed: ' + json.dumps(filters))
 

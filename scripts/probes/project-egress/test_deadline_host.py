@@ -144,8 +144,14 @@ class DeadlineHostTests(unittest.TestCase):
 
     def test_attestation_accepts_only_one_software_program_with_matching_headers(self):
         header = {'kind': 'bpf', 'pref': 1, 'chain': 0, 'protocol': 'all'}
-        concrete = {**header, 'options': {'id': 7, 'not_in_hw': True}}
+        concrete = {**header, 'options': {'id': 7, 'not_in_hw': True,
+                                            'direct-action': True, 'skip_hw': True}}
         host.attest_filters([header, concrete], 7)
+        for option in ('direct-action', 'skip_hw'):
+            missing = {**concrete['options']}
+            del missing[option]
+            with self.assertRaises(ValueError):
+                host.attest_filters([{**concrete, 'options': missing}], 7)
         for filters in ([header], [concrete, concrete], [{**concrete, 'protocol': 'ip'}],
                         [{**concrete, 'options': {'id': 8}}],
                         [{**concrete, 'options': {'id': 7, 'in_hw': True}}],
