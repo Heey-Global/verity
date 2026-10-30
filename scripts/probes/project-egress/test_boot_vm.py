@@ -63,3 +63,21 @@ class RetainedTopologyTests(unittest.TestCase):
             save(records[:1])
             with self.assertRaisesRegex(AssertionError, 'cover lifecycle'):
                 boot_proof.verify_receipts(path, 0, 3_000_000_000)
+
+
+class RemovedFenceSensitivityTests(unittest.TestCase):
+    def test_requires_all_sandbox_paths_and_inherited_descriptors(self):
+        import base64
+        import json
+        import tempfile
+        markers = [f'direct-{family}-{protocol}-{port}-own-credential-marker'.encode()
+                   for family in (2, 10) for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]]
+        markers += [b'host-startup-marker', b'transferred-startup-marker']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, 'receipts.jsonl')
+            rows = [{'kind': 'received', 'time_ns': 2, 'data': base64.b64encode(marker).decode()} for marker in markers]
+            path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            self.assertEqual(boot_proof.verify_removed_fences(path, 1), len(markers))
+            path.write_text(''.join(json.dumps(row) + '\n' for row in rows[1:]))
+            with self.assertRaisesRegex(AssertionError, 'every sandbox probe'):
+                boot_proof.verify_removed_fences(path, 1)

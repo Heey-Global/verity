@@ -35,12 +35,12 @@ def main():
         for family, address in [(socket.AF_INET, '172.30.105.2'), (socket.AF_INET6, 'fd42:feed:5::2')]:
             for port in (53, 8080):
                 with socket.socket(family, socket.SOCK_DGRAM) as channel:
-                    channel.sendto(b'direct-own-credential-marker', (address, port))
+                    channel.sendto(f'direct-{family}-udp-{port}-own-credential-marker'.encode(), (address, port))
             with socket.socket(family, socket.SOCK_STREAM) as channel:
                 channel.settimeout(0.5)
                 try:
                     channel.connect((address, 443))
-                    channel.sendall(b'GET /direct-own-credential-marker HTTP/1.1\r\nAuthorization: Bearer fixture-own-credential\r\n\r\n')
+                    channel.sendall(f'GET /direct-{family}-tcp-443-own-credential-marker HTTP/1.1\r\nAuthorization: Bearer fixture-own-credential\r\n\r\n'.encode())
                     channel.recv(1024)
                 except OSError:
                     pass

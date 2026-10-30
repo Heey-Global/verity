@@ -35,6 +35,21 @@ def verify_receipts(path, start_ns, end_ns):
     return len(records)
 
 
+def verify_removed_fences(path, started_ns):
+    import base64
+    expected = {f'direct-{family}-{protocol}-{port}-own-credential-marker'.encode()
+                for family in (2, 10) for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]}
+    expected.update({b'host-startup-marker', b'transferred-startup-marker'})
+    observed = set()
+    for line in Path(path).read_text().splitlines():
+        record = json.loads(line)
+        if record['kind'] == 'received' and record['time_ns'] >= started_ns:
+            payload = base64.b64decode(record['data'])
+            observed.update(marker for marker in expected if marker in payload)
+    assert observed == expected, f'Removed fences did not enable every sandbox probe: {expected - observed}'
+    return len(observed)
+
+
 def verify_retained(before, after):
     assert before['projectId'] == after['projectId']
     assert before['registry'] == after['registry'], 'Registry generation or container identities changed'
@@ -141,11 +156,13 @@ def main():
         verify_receipts(protected, start_ns, end_ns)
         # Removing the real kernel fences must turn independent receiver silence
         # into a failed verdict; a synthetic verifier test is insufficient here.
+        mutation_started_ns = time.time_ns()
         vm.ssh(guest + 'remove-fences')
         vm.ssh(guest + 'external')
         mutation_inflight = json.loads(vm.ssh(guest + 'inflight removed-fences', timeout=20))
         (evidence / 'mutation-inflight.json').write_text(json.dumps(mutation_inflight))
         time.sleep(1)
+        verify_removed_fences(receipts, mutation_started_ns)
         try:
             verify_receipts(receipts, start_ns, end_ns)
         except AssertionError as failure:
