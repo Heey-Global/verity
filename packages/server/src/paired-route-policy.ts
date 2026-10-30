@@ -120,6 +120,14 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/sessions/:id/scheduling-requests'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/scheduling-requests/:requestId/revoke'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

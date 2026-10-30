@@ -2049,6 +2049,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ]
@@ -2071,6 +2072,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ],
@@ -4680,6 +4682,7 @@ export async function buildEmbeddedServer(
         }
       : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    googleAccessToken,
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();
