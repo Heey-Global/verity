@@ -42,20 +42,14 @@ function installed(root) {
           read(join(root, 'pnpm-lock.yaml'))
       );
     if (selected === 'yarn') {
-      const integrity = read(join(root, 'node_modules', '.yarn-integrity'));
-      if (integrity) {
-        const receipt = JSON.parse(integrity);
-        return (
-          Array.isArray(receipt.topLevelPatterns) &&
-          receipt.lockfileEntries !== null &&
-          typeof receipt.lockfileEntries === 'object'
-        );
-      }
-      return (
-        existsSync(join(root, '.yarn', 'install-state.gz')) &&
-        (existsSync(join(root, '.pnp.cjs')) ||
-          existsSync(join(root, 'node_modules', '.yarn-state.yml')))
-      );
+      // Receipt presence alone cannot prove current manifests/lockfile were installed.
+      // Classic's integrity check is read-only; unsupported managers fail closed.
+      if (!existsSync(join(root, 'node_modules', '.yarn-integrity'))) return false;
+      return spawnSync('yarn', ['check', '--integrity', '--offline'], {
+        cwd: root,
+        stdio: 'ignore',
+        timeout: 10_000,
+      }).status === 0;
     }
     const receipt = JSON.parse(read(join(root, 'node_modules', '.package-lock.json')) ?? 'null');
     if (!receipt || !receipt.packages || typeof receipt.packages !== 'object') return false;

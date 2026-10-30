@@ -135,6 +135,11 @@ describe('shared dependency reuse', () => {
       mkdirSync(join(f.worktree, 'node_modules'), { recursive: true });
       if (manager === 'yarn') {
         writeFileSync(
+          join(f.root, 'bin', 'yarn'),
+          '#!/bin/sh\n[ "$*" = "check --integrity --offline" ] && [ ! -f stale ]\n',
+          { mode: 0o755 },
+        );
+        writeFileSync(
           join(f.worktree, 'node_modules', '.yarn-integrity'),
           JSON.stringify({ topLevelPatterns: [], lockfileEntries: {} }),
         );
@@ -147,6 +152,12 @@ describe('shared dependency reuse', () => {
       expect(f.run('status').status).toBe(0);
       expect(f.run('install').status).toBe(0);
       expect(existsSync(f.called)).toBe(false);
+      if (manager === 'yarn') {
+        writeFileSync(join(f.worktree, 'stale'), 'native integrity check fails');
+        expect(f.run('status').status).toBe(1);
+        expect(f.run('install').status).toBe(1);
+        expect(existsSync(f.called)).toBe(false);
+      }
       rmSync(join(f.worktree, 'node_modules'), { recursive: true });
       expect(f.run('install').status).toBe(1);
       expect(existsSync(f.called)).toBe(false);

@@ -491,11 +491,18 @@ export class SessionStorage {
     signal: AbortSignal,
   ): Promise<void> {
     const root = await this.safeRoot(project, path);
+    const firstRemoval = report.dependenciesRemoved.length;
     try {
       await this.reclaimContents(project, path, sessionId, git, report, signal);
     } finally {
-      // Every retained worktree needs its own source links, even when remote proof fails.
-      if (!this.deps.dryRun && (await exists(path))) linkWorkspacePackages(root, path);
+      // Restore wiring only for installations this pass verified and removed.
+      // A rejected private graph can contain intentionally customized workspace links.
+      if (
+        !this.deps.dryRun &&
+        report.dependenciesRemoved.slice(firstRemoval).includes(join(path, 'node_modules')) &&
+        (await exists(path))
+      )
+        linkWorkspacePackages(root, path);
     }
   }
   private async reclaimContents(

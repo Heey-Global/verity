@@ -256,6 +256,23 @@ describe('safe session storage reclamation', () => {
       readFileSync(join(f.path, 'apps', 'example', 'node_modules', 'nested', 'index.js'), 'utf8'),
     ).toBe('nested');
   });
+  it('preserves customized workspace links when dependency comparison rejects removal', async () => {
+    const f = fixture();
+    for (const root of [f.root, f.path]) {
+      writeFileSync(join(root, 'package.json'), '{"workspaces":["packages/*"]}');
+      mkdirSync(join(root, 'packages', 'source'), { recursive: true });
+      writeFileSync(join(root, 'packages', 'source', 'package.json'), '{"name":"@local/source"}');
+      f.run(['-C', root, 'add', 'package.json', 'packages/source/package.json']);
+      mkdirSync(join(root, 'node_modules', '@local'), { recursive: true });
+    }
+    const patch = join(f.dir, 'patched-package');
+    mkdirSync(patch);
+    symlinkSync(patch, join(f.path, 'node_modules', '@local', 'source'));
+    symlinkSync('../../packages/source', join(f.root, 'node_modules', '@local', 'source'));
+    await f.service.runOnce();
+    expect(f.service.lastReport?.dependenciesRemoved).toEqual([]);
+    expect(readlinkSync(join(f.path, 'node_modules', '@local', 'source'))).toBe(patch);
+  });
   it('repairs private workspace source links after rejected retirement', async () => {
     const f = fixture();
     for (const root of [f.root, f.path]) {

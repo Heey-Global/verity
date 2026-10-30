@@ -13,8 +13,7 @@ cancel a deletion already in progress or admit the waiting build.
 compatible installation reachable through Node's ancestor lookup. It compares
 tracked manifests, lockfiles, workspace metadata and npm configuration against
 the base checkout and rejects unknown workspace manifests. Workspace symlinks
-alone do not count as installed dependencies. The pre-push hook uses this check. Existing Yarn/pnpm installation metadata is
-recognized, including npm v1 source lockfiles; this helper installs only npm projects and never changes the package
+alone do not count as installed dependencies. The pre-push hook uses this check. Existing pnpm installations require a matching installed lockfile; Yarn Classic installations require a successful read-only `yarn check --integrity --offline`. Unavailable or unsupported Yarn integrity checks fail closed. npm v1 source lockfiles are also recognized; this helper installs only npm projects and never changes the package
 manager of another project.
 When installation is authorized, `verity-dependencies install` reuses compatible
 shared dependencies, or installs privately with lifecycle scripts disabled when
