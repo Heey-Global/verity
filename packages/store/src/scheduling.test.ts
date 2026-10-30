@@ -28,7 +28,7 @@ const draft = (
   durationMinutes: 30,
   addMeet: true,
   organizerName: 'Sam',
-  organizerEmail: 'holger@example.test',
+  organizerEmail: 'sam@example.test',
   guestEmail: 'anna@example.test',
   guestName: 'Anna',
   colleagues: [{ email: 'lea@example.test', name: 'Lea' }],
