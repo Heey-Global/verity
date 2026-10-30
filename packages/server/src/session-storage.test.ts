@@ -355,10 +355,13 @@ describe('safe session storage reclamation', () => {
     const f = fixture();
     f.recent();
     let blocked = false;
-    f.service.bind(async (_, run) => {
-      blocked = true;
-      return { ran: true, value: await run() };
-    }, () => blocked);
+    f.service.bind(
+      async (_, run) => {
+        blocked = true;
+        return { ran: true, value: await run() };
+      },
+      () => blocked,
+    );
     await f.service.runOnce();
     expect(existsSync(join(f.path, 'node_modules'))).toBe(true);
   });

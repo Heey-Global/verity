@@ -265,7 +265,8 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     validateGithubApp:
       opts.validateGithubApp ??
       jest.fn().mockResolvedValue({ ok: true, commitStatusPermission: { state: 'ready' } }),
-    getStorageReclamation: opts.getStorageReclamation ?? jest.fn().mockRejectedValue(new Error('unavailable')),
+    getStorageReclamation:
+      opts.getStorageReclamation ?? jest.fn().mockRejectedValue(new Error('unavailable')),
     reclaimStorage: opts.reclaimStorage ?? notImplemented('reclaimStorage'),
     getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
     startReturnPathDiagnostics:

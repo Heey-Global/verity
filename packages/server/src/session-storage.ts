@@ -389,15 +389,17 @@ export class SessionStorage {
                 (s) => s.sessionId === session.sessionId,
               );
               const latest = await this.deps.activity(session.sessionId);
-              if (
-                !fresh ||
-                fresh.worktree !== session.worktree ||
-                latest === null
-              )
-                return;
+              if (!fresh || fresh.worktree !== session.worktree || latest === null) return;
               await this.deps.withGit(project, (git) =>
-                this.reclaim(project, session.worktree, session.sessionId, git, report, signal,
-                  now - latest >= WEEK),
+                this.reclaim(
+                  project,
+                  session.worktree,
+                  session.sessionId,
+                  git,
+                  report,
+                  signal,
+                  now - latest >= WEEK,
+                ),
               );
             });
           } catch (error) {

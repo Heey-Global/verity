@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 
-const challenge = z.object({ version: z.literal(1), nonce: z.uuid(), observedAt: z.iso.datetime() }).strict();
+const challenge = z
+  .object({ version: z.literal(1), nonce: z.uuid(), observedAt: z.iso.datetime() })
+  .strict();
 
 /** A challenge is answered only from a complete, non-mutating reservation inventory.
  * The host holds admission exclusively while challenging every socket consumer. */

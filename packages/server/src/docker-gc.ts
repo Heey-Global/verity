@@ -215,7 +215,11 @@ export interface DockerGcDeps {
    *  wire it wherever both the GC and the lifecycle are available. */
   beforeSweep?: () => Promise<void>;
   onReport?: (report: DockerGcReport) => void;
-  retireContainers?: () => Promise<{ removed: string[]; errors: string[]; retained?: Array<{ name: string; reason: string }> }>;
+  retireContainers?: () => Promise<{
+    removed: string[];
+    errors: string[];
+    retained?: Array<{ name: string; reason: string }>;
+  }>;
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 

@@ -3868,7 +3868,9 @@ export async function buildEmbeddedServer(
       undefined,
       '/run/verity-buildkit',
     );
-    const nativeEvidence = startNativeRetirementEvidence(() => buildStorage?.retirementInventoryEmpty() === true);
+    const nativeEvidence = startNativeRetirementEvidence(
+      () => buildStorage?.retirementInventoryEmpty() === true,
+    );
     // Registered after app construction below.
     stopNativeEvidence = () => nativeEvidence.stop();
     provisioner = new ProvisionerImpl({
@@ -4993,7 +4995,7 @@ export async function buildEmbeddedServer(
                 errors: lastDockerGcReport.errors.length,
                 stoppedContainerPins: lastDockerGcReport.stoppedContainerPins,
                 keptImageReasons: lastDockerGcReport.keptImageReasons,
-              retainedContainers: lastDockerGcReport.retainedContainers,
+                retainedContainers: lastDockerGcReport.retainedContainers,
               }
             : null,
           worktrees: report
@@ -6143,7 +6145,11 @@ export async function buildEmbeddedServer(
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
       beforeSweep: async () => {
         nativeMaintenanceRequested = null;
-        await requestNativeReclamation().then((requestedAt) => { nativeMaintenanceRequested = requestedAt; }).catch(() => undefined);
+        await requestNativeReclamation()
+          .then((requestedAt) => {
+            nativeMaintenanceRequested = requestedAt;
+          })
+          .catch(() => undefined);
         await sessionStorage?.runOnce();
       },
       onReport: (report) => {
@@ -6172,7 +6178,11 @@ export async function buildEmbeddedServer(
               }),
             ),
         });
-        return { removed: [...removed, ...result.removed], errors: result.errors, retained: result.retained };
+        return {
+          removed: [...removed, ...result.removed],
+          errors: result.errors,
+          retained: result.retained,
+        };
       },
       imageReferences,
       onProjectImageRemoved: (image) =>
