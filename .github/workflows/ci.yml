@@ -531,7 +531,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-rotate-identity|deploy/bin/verity-rotate-identity.test.mjs|scripts/backup-restore-content.mjs|.github/scripts/backup-restore-device-trust.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
+                deploy/host/verity-backup-provision|deploy/bin/verity-backup-provision.test.mjs|deploy/host/verity-backup-prerequisites|deploy/host/verity-backup-identity|deploy/installer-ci.Dockerfile|deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs|deploy/bin/verity-restore-install|deploy/bin/verity-restore-install.test.mjs|deploy/bin/verity-rotate-identity|deploy/bin/verity-rotate-identity.test.mjs|scripts/backup-restore-content.mjs|.github/scripts/backup-restore-device-trust.mjs|deploy/bin/verity-backup-restore-smoke|.github/scripts/backup-restore-docker.mjs|.github/scripts/backup-restore-diagnostics.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -974,11 +974,10 @@ jobs:
   # fork of the default profile with two syscall rules changed, which is a file
   # nobody would keep in step with Docker's.
   #
-  # `kernel.apparmor_restrict_unprivileged_userns` is already 0 on this host, so the
-  # other axis Ubuntu 24.04 can close is open; the preflight below proves both at
-  # once rather than asserting either. The suite imports nothing beyond node:
-  # builtins, so the container image supplies node and the job needs no `npm ci`, no
-  # `setup-node` and no node_modules — it finishes in well under a minute.
+  # Backup provisioning additionally needs bind mounts. Its separate root fixture
+  # gets SYS_ADMIN only inside a disposable container with no writable host mount,
+  # network or Docker socket. It creates a mount namespace without uid remapping;
+  # the ordinary installer suite stays non-root and capability-less.
   installer:
     needs: changes
     if: needs.changes.outputs.installer == 'true'
@@ -988,6 +987,8 @@ jobs:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
       VERITY_INSTALLER_IMAGE: node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0a7fc7cc99c0bb5120586f70
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
+      # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
+      VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     steps:
       # A prior job on this lane can leave root-owned files in the shared workspace,
       # and actions/checkout's clean then fails with EACCES for the non-root runner.
@@ -1047,6 +1048,17 @@ jobs:
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
             node --test deploy/bin/verity-install.test.mjs deploy/bin/verity-restore-install.test.mjs deploy/bin/verity-rotate-identity.test.mjs docs/website/site/install.test.mjs
+
+      - name: Run backup provisioning in an isolated mount fixture
+        run: |
+          set -euo pipefail
+          docker run $VERITY_BACKUP_TEST_SANDBOX \
+            --user 0:0 \
+            --env CI=true \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            "$VERITY_INSTALLER_IMAGE" \
+            sh -c 'unshare -m sh -c "mount --bind /tmp /tmp" && exec node --test deploy/bin/verity-backup-provision.test.mjs'
 
       - name: Clean installer test tools
         if: always()

@@ -84,6 +84,7 @@ docker exec "$name" docker tag "$runner_image" project-egress-runner:local
 docker exec "$name" docker tag "$relay_image" project-egress-relay:local
 timeout 240 docker exec "$name" node /probe/host-smoke.mjs > "$PROBE_EVIDENCE/host-smoke.txt" 2>&1
 timeout 240 docker exec "$name" node /probe/adapter-smoke.mjs > "$PROBE_EVIDENCE/adapter-smoke.txt" 2>&1
+python3 "$probe_dir/deadline-adapter-proof.py" "$PROBE_EVIDENCE" > "$PROBE_EVIDENCE/adapter-deadline-verification.json"
 # No project probe receives the outer/inner Docker socket or evidence mount.
 timeout 600 docker exec "$name" python3 /probe/probe.py before-restart > "$PROBE_EVIDENCE/before-restart.txt" 2>&1
 # A real daemon/network-namespace restart, with project restart policies active.

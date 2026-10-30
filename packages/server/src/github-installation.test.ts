@@ -369,7 +369,7 @@ describe('createGitHubInstallationService (#174)', () => {
 });
 
 describe('syncProjectsFromInstallation (integration, #174)', () => {
-  // The route handler is tested via server.test.ts (it injects a stub
+  // The route handler is tested via server-projects.test.ts (it injects a stub
   // listProjects). This block exercises the live composition that the
   // embedded.ts provider wires: a fake installation service → real EventStore
   // upserts → listProjects readback, exercising the worker-state-preserves-

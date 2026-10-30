@@ -484,6 +484,7 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export type { SchedulingRequestView } from './api.js';
 export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export {
   type LiveMeeting,
@@ -608,6 +609,11 @@ export {
 } from './api.js';
 
 export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+export {
+  schedulingApprovalSummary,
+  schedulingWindowLabel,
+  type SchedulingApprovalSummary,
+} from './ui/schedulingSummary.js';
 
 export type { LocalPreviewShare, ManagedDevServer } from './api.js';
 

@@ -3147,3 +3147,10 @@ it('DockerClient.pullImage honors caller cancellation during a disposable operat
     docker.pullImage!('postgres:18-alpine', { signal: controller.signal }),
   ).rejects.toMatchObject({ kind: 'network' });
 });
+
+it('GC removal never forces a running container or deletes volumes', async () => {
+  const fetch = fakeFetch([{ match: /containers\/stopped/, method: 'DELETE', resp: res({}) }]);
+  const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+  await docker.removeStoppedContainer!('stopped');
+  expect(fetch.calls[0]?.url).toContain('force=false&v=false');
+});

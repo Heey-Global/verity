@@ -2422,6 +2422,7 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(job?.steps?.some((step) => step.run?.includes('unshare -r true'))).toBe(true);
     expect(
       job?.steps?.some((step) =>
         step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
@@ -2437,6 +2438,21 @@ describe('GitHub-hosted runner boundary', () => {
     expect(suite?.run).toContain('$VERITY_INSTALLER_SANDBOX');
     expect(suite?.run).toContain('--user "$(id -u):$(id -g)"');
     expect(suite?.run).toContain('--env CI=true');
+    const backupSuite = job?.steps?.find((step) =>
+      step.run?.includes('node --test deploy/bin/verity-backup-provision.test.mjs'),
+    );
+    expect(backupSuite?.run).toContain('$VERITY_BACKUP_TEST_SANDBOX');
+    expect(backupSuite?.run).toContain('--user 0:0');
+    expect(backupSuite?.run).toContain('--env CI=true');
+    expect(backupSuite?.run).toContain('unshare -m sh -c');
+    expect(backupSuite?.run).toContain('$GITHUB_WORKSPACE:/workspace:ro');
+    expect(backupSuite?.run).not.toContain('docker.sock');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).not.toContain('SYS_ADMIN');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--cap-drop ALL --network none');
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain(
+      '--cap-drop ALL --cap-add SYS_ADMIN --network none',
+    );
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain('--security-opt apparmor=unconfined');
     expect(
       job?.steps?.some(
         (step) => step.run === 'node --test deploy/bin/verity-pairing-material.test.mjs',
@@ -3400,7 +3416,7 @@ describe('CI runner footprint', () => {
     expect(cached).toBe(true);
   });
 
-  it('never caches the ESLint result, because that cache fails OPEN', () => {
+  it('keeps CI lint uncached and never enables ESLint single-file result caching', () => {
     // Prettier's cache above is safe; ESLint's is not, and the difference is not
     // visible from the shape of the two steps — which is why this is asserted and
     // not left to the comment in ci.yml. An ESLint cache entry is invalidated by
@@ -3419,8 +3435,9 @@ describe('CI runner footprint', () => {
     // the next. Both halves are asserted because "add --cache, it is free" is the
     // obvious review comment and the flag costs one line to reintroduce.
     //
-    // The scoped command uses the same uncached runner. Its explicit targets
-    // still do not replace the full CI check of unchanged consumers.
+    // Local dependency-aware reuse belongs to the bounded runner; its CLI tests
+    // verify that CI disables it. Explicit local targets still do not replace
+    // the full CI check of unchanged consumers.
     const scripts = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { scripts?: Record<string, string> }
     ).scripts;
@@ -3438,16 +3455,17 @@ describe('CI runner footprint', () => {
     const runner = scripts?.lint?.match(/^bash (scripts\/[A-Za-z0-9_-]+\.sh)$/)?.[1];
     expect(runner).toBeDefined();
     const source = readFileSync(runner!, 'utf8');
-    expect(source).toMatch(/^\s*node scripts\/lint-files\.mjs\s/m);
+    expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
     expect(eslintStep?.run).toBe('npm run lint');
-    // Comments document why caching is forbidden; inspect executable lines.
+    // Inspect executable flags, without confusing git's --cached file listing
+    // with ESLint's --cache flag.
     const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]
       .join('\n')
       .split('\n')
       .filter((line) => !line.trim().startsWith('#'));
-    expect(flags.filter((line) => line.includes('--cache'))).toEqual([]);
+    expect(flags.filter((line) => /(?:^|\s)--cache(?:[=\s]|$)/u.test(line))).toEqual([]);
   });
 });
 
@@ -4311,6 +4329,18 @@ describe('Claude ACP sandbox smoke', () => {
     expect(lossCheck).toBeLessThan(recreate.indexOf('client.startTurn('));
   });
 
+  it('patches Claude auth probes for root option parsing', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--test', 'scripts/claude-acp-auth-probe.test.mjs'],
+      {
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+  });
+
   it('answers ACP auth probes with managed settings without starting a session', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-auth-probe-fixture-'));
     try {
@@ -4318,7 +4348,7 @@ describe('Claude ACP sandbox smoke', () => {
         for (const settings of [[], ['--settings', '{"apiKeyHelper":""}']]) {
           const result = spawnSync(
             process.execPath,
-            [`scripts/fixtures/${fixture}`, 'auth', 'status', '--json', ...settings],
+            [`scripts/fixtures/${fixture}`, ...settings, 'auth', 'status', '--json'],
             {
               env: { VERITY_LIVE_SMOKE_WORKTREE: worktree },
               encoding: 'utf8',

@@ -164,12 +164,18 @@ export async function inspectEgressRelay(
   id: string,
   policyInput: EgressRelayPolicy,
   docker: (...args: string[]) => Promise<string>,
+  restoring = false,
 ): Promise<void> {
   const policy = egressRelayPolicy.parse(policyInput);
+  const container: unknown = JSON.parse(await docker('container', 'inspect', id));
+  const stopped = z
+    .array(z.object({ State: z.object({ Running: z.literal(false) }) }))
+    .length(1)
+    .safeParse(container).success;
   const paths = verifyEgressRelay(
     binding,
     policy,
-    JSON.parse(await docker('container', 'inspect', id)),
+    container,
     JSON.parse(await docker('image', 'inspect', policy.image)),
     JSON.parse(await docker('volume', 'inspect', policy.dataVolume)),
   );
@@ -189,17 +195,26 @@ export async function inspectEgressRelay(
       if (path === '/') break;
     }
     const dir = await lstat(directory);
-    const file = await lstat(join(directory, socket));
+    // Docker boot restores stopped containers before the Server can recreate its
+    // listeners. Only that deny-only restoration may accept an empty directory;
+    // every start/admission and every running relay still requires the socket.
+    const file = await lstat(join(directory, socket)).catch((error: unknown) => {
+      if (restoring && stopped && (error as NodeJS.ErrnoException).code === 'ENOENT')
+        return undefined;
+      throw error;
+    });
     if (
       dir.uid !== policy.socketOwnerUid ||
       dir.gid !== policy.relayGid ||
       (dir.mode & 0o777) !== 0o710 ||
-      !file.isSocket() ||
-      file.isSymbolicLink() ||
-      file.uid !== policy.socketOwnerUid ||
-      file.gid !== policy.relayGid ||
-      (file.mode & 0o777) !== 0o660 ||
-      JSON.stringify(await readdir(directory)) !== JSON.stringify([socket])
+      (file !== undefined &&
+        (!file.isSocket() ||
+          file.isSymbolicLink() ||
+          file.uid !== policy.socketOwnerUid ||
+          file.gid !== policy.relayGid ||
+          (file.mode & 0o777) !== 0o660)) ||
+      JSON.stringify(await readdir(directory)) !==
+        JSON.stringify(file === undefined ? [] : [socket])
     ) {
       throw new Error('Untrusted relay socket inode or directory contents');
     }

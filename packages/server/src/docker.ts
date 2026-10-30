@@ -128,6 +128,8 @@ export interface DockerClient {
    *  named volumes are unaffected by `v` — so taking them down with the
    *  container is both safe and the only correct lifetime. */
   removeContainer(id: string): Promise<void>;
+  /** GC only: never stop a running container and never delete attached volumes. */
+  removeStoppedContainer?(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
    * config back if creation or startup of the successor fails. Optional config
@@ -244,6 +246,7 @@ export interface DockerContainerSummary {
   id: string;
   /** Resolved image content id (`sha256:…`), NOT the human-readable `repo:tag`. */
   imageId: string;
+  state?: string;
   /** Container names as the daemon reports them, WITHOUT the leading `/`. Only
    *  used for logging which container a sweep retired. Optional so pre-existing
    *  test fakes stay valid. */
@@ -436,6 +439,8 @@ export interface ContainerInspect {
   id: string;
   /** True while the container's state reports `Running: true`. */
   running: boolean;
+  finishedAt?: string;
+  exitCode?: number;
   /** Whether Docker keeps stdin open when no attach client is currently connected. */
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
@@ -1787,6 +1792,15 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       // including the rollback of a start that never got the container running.
       if (!res.ok && res.status !== 304) throw await toDockerError(res, id);
     },
+    removeStoppedContainer: async (id) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/containers/${encodeURIComponent(id)}?force=false&v=false`,
+        'DELETE',
+        timeoutMs,
+      );
+      if (!res.ok && res.status !== 404) throw await toDockerError(res, id);
+    },
     removeContainer: async (id) => {
       // `v=true` removes the anonymous volumes the daemon minted for this
       // container's image `VOLUME` instructions. Without it every teardown
@@ -2068,6 +2082,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         Image?: unknown;
         RestartCount?: unknown;
         State?: {
+          FinishedAt?: string;
+          ExitCode?: number;
           Running?: unknown;
           Status?: unknown;
           Health?: { Status?: unknown };
@@ -2156,6 +2172,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         id: json.Id,
         running: json.State?.Running === true,
+        ...(typeof json.State?.FinishedAt === 'string'
+          ? { finishedAt: json.State.FinishedAt }
+          : {}),
+        ...(typeof json.State?.ExitCode === 'number' ? { exitCode: json.State.ExitCode } : {}),
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
         ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
@@ -2453,7 +2473,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       return json.map((entry): DockerContainerSummary => {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
           throw invalidInventory();
-        const { Id, ImageID, Names, Labels, Created } = entry as Record<string, unknown>;
+        const { Id, ImageID, Names, Labels, Created, State } = entry as Record<string, unknown>;
         if (
           typeof Id !== 'string' ||
           Id.trim() === '' ||
@@ -2469,6 +2489,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         return {
           id: Id,
           imageId: ImageID,
+          ...(typeof State === 'string' ? { state: State } : {}),
           names,
           labels: parseDockerLabels(Labels) ?? {},
           ...(typeof Created === 'number' ? { created: Created } : {}),

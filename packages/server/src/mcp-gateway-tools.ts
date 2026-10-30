@@ -207,7 +207,8 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_assistant' ||
       toolName === 'verity_tasks' ||
       toolName === 'verity_app_help' ||
-      toolName === 'verity_vulnerabilities'
+      toolName === 'verity_vulnerabilities' ||
+      toolName === 'verity_scheduling'
     ) {
       // Not served from here. Most need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`

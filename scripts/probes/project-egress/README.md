@@ -181,3 +181,40 @@ dual-stack receiver observes direct TCP with caller-supplied test credentials an
 UDP/DNS attempts, and every external path must work after deliberate fence removal.
 Authorization suites separately drive the actual TCP-to-UDS relay and existing
 broker/model handlers, retaining project, account and action rejection checks.
+
+## Native boot fixture
+
+`boot-build.sh` assembles the actual EmbeddedServer, persistent PGlite test
+backend, AgentGateway and managed Runner/relay images. `boot-proof.py` installs
+the experimental units only inside the pinned disposable KVM guest. An outer
+TAP receiver remains independent of the guest, Docker daemon and Server process.
+Its dual-stack TCP/UDP positive controls and continuous heartbeat are mandatory.
+
+Setup, guest operations, event orchestration and cleanup are separate. The
+host-side driver explicitly requests fresh authenticated admission; no stored
+transport grant counts as recovery. Container IDs, images, registry generation,
+worktree mounts and a data marker must survive recovery. Process crashes and
+kernel/daemon restarts are distinct evidence events.
+
+The memory relay intentionally closes each completed response. Revocation is
+therefore measured with repeated authenticated requests, separately from a
+retained **in-flight** memory request across fast fence/readmission. That request
+must finish within ten seconds, below the actual fifteen-second relay timeout;
+a delayed-completion positive must append its unique marker, while the revoked
+request must not append. This does not claim persistent SSE survival across a
+kernel reboot. Actual Server memory and fresh authenticated requests decide the
+verdict. Removing the real kernel fences must produce external receipts and a
+failed protected-receiver verdict.
+
+The workflow uploads full observations, the protected observation window,
+per-event topology, revocation and recovery timings, guest journal, and kernel
+rules. Infrastructure reboot feasibility alone is not full topology acceptance;
+only a completed `boot-proof.json` together with its supporting observations can
+establish that narrower experimental-host result. No production installer loads
+these assets or enables the experimental composition seam.
+
+After downloading the complete evidence artifact, independently recompute its
+verdict with `python3 scripts/probes/project-egress/boot-proof.py verify <directory>`.
+The verifier checks original receiver observations, actual handler receipts,
+retained identities, required events, changed boot ID, failure controls and
+removed-fence sensitivity; it does not trust the `complete` flag alone.

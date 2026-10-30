@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { backupProvisionPlan, provisionBackupHost } from './backup-provisioning.js';
 import type { ContainerInspect, DockerClient } from '../docker.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './deployment-spec.js';
 import {
@@ -9,6 +10,7 @@ import {
   migrateManagedControlPlaneRunner,
   migrateManagedDevcontainerBuilder,
   migrateManagedHostDiagnostics,
+  migrateManagedBackupMounts,
   readManagedDeployment,
 } from './managed-deployment.js';
 import { readHostDiagnosticsCapability } from './host-diagnostics.js';
@@ -413,6 +415,24 @@ export async function dockerUpdatePreparation(
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      const backup = await backupProvisionPlan(docker, migrated.spec, journal.targetDigest);
+      if (backup) {
+        await provisionBackupHost(docker, migrated.spec, journal.targetDigest, backup);
+        const standby = await findNamed(docker, candidateName(journal, STANDBY_ROLE));
+        const hasMounts = ['/run/verity-backups', '/run/verity-backup-identity'].every(
+          (target) =>
+            migrated.managed && migrated.spec.mounts.some((mount) => mount.target === target),
+        );
+        if (standby && !hasMounts) throw new Error('Existing standby predates backup mounts');
+        migrated = await migrateManagedBackupMounts({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          backupPath: backup.backupPath,
+          identityPath: backup.identityPath,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+      }
       const diagnostics = await readHostDiagnosticsCapability(options.hostRuntimeDir);
       if (diagnostics.state === 'available') {
         const sealedDiagnosticMount = migrated.spec.mounts.find(

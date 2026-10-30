@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from './path-text.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
@@ -1028,7 +1029,7 @@ export { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL };
  *  to one, so the rewritten `(owner, repo)` cannot silently point the mount — and
  *  every session worktree persisted underneath it — at a different directory. */
 export function projectClonePath(hostCloneRoot: string, project: ProjectRecord): string {
-  const root = hostCloneRoot.replace(/\/+$/, '');
+  const root = stripTrailingSlashes(hostCloneRoot);
   return `${root}/${project.cloneDir ?? `${project.owner}-${project.repo}`}`;
 }
 
@@ -1905,7 +1906,11 @@ export interface Provisioner {
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
-  withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
+  withProjectExclusiveMutation?<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
@@ -1929,6 +1934,8 @@ export interface Provisioner {
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
+  /** Reattach a verified retained relay without replacing its Sandbox. */
+  resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
@@ -2808,6 +2815,16 @@ export class ProvisionerImpl implements Provisioner {
         }
       });
     this.localConfigState = opts.localConfigState ?? inspectLocalConfig;
+  }
+
+  async resumeProjectRelay(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined || project.state !== 'active' || project.kind === 'control_plane')
+      return;
+    // Classification already validates and resumes the retained generation. It
+    // makes no migration/replacement decision; an empty process-local map alone
+    // must not force a fresh Sandbox during secret-unlock identity projection.
+    await this.classifyProjectSandbox(project);
   }
 
   async reconcileRunnerSupervisors(projects: readonly ProjectRecord[]): Promise<void> {
@@ -6311,7 +6328,9 @@ export class ProvisionerImpl implements Provisioner {
             // Missing/pruned images and unavailable diagnostics use the fallback.
           }
         }
-        storageLease.reserveBuild(imageBytes);
+        if (storageLease.reserveBuildWithReclamation)
+          await storageLease.reserveBuildWithReclamation(imageBytes);
+        else storageLease.reserveBuild(imageBytes);
       }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as

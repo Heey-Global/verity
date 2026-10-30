@@ -2439,6 +2439,29 @@ export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
+const schedulingRequestViewSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
+  title: z.string(),
+  durationMinutes: z.number(),
+  addGoogleMeet: z.boolean(),
+  timeZone: z.string(),
+  guest: z.object({ email: z.string(), name: z.string().nullable() }),
+  colleagues: z.array(z.object({ email: z.string(), name: z.string().optional() })),
+  closesAt: z.string(),
+  windows: z.array(z.object({ start: z.string(), end: z.string(), state: z.string() })),
+  emailSentAt: z.string().nullable(),
+  booked: z.object({ start: z.string(), end: z.string() }).nullable(),
+  failure: z.string().nullable(),
+  pendingCleanups: z.number(),
+  link: z.string().nullable(),
+  createdAt: z.string(),
+});
+const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestViewSchema) });
+/** A scheduling request as the app shows it: its state, windows and the guest's link. */
+export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
+
 export class VerityClient {
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
@@ -5834,6 +5857,22 @@ export class VerityClient {
         ),
       })
       .parse(await res.json());
+  }
+  async sessionSchedulingRequests(sessionId: string): Promise<SchedulingRequestView[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/scheduling-requests`,
+      { method: 'GET' },
+    );
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  async schedulingRequests(): Promise<SchedulingRequestView[]> {
+    const res = await this.request('/scheduling-requests', { method: 'GET' });
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  async revokeSchedulingRequest(requestId: string): Promise<void> {
+    await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {
+      method: 'POST',
+    });
   }
   async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {

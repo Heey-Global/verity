@@ -1,3 +1,6 @@
+// Keep this dispatcher module-scoped when tools parse it outside a TypeScript program.
+export {};
+
 // Dispatch before loading a runtime: companion processes must not import the
 // HTTP server, session backends, and project lifecycle just to select their mode.
 async function main(): Promise<void> {

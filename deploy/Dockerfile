@@ -209,7 +209,7 @@ FROM node:26.12.1-bookworm-slim@sha256:3041f464442defe6de36c20b6904b125a6178cfa0
 # util-linux: provides setpriv for the image's anti-forgery boundary test.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux; \
+    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux systemd jq; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/
@@ -220,6 +220,8 @@ COPY deploy/bin/verity-transcribe-meeting /usr/local/bin/verity-transcribe-meeti
 # from the exact digest it is about to install, so Compose, overlays and guarded
 # host scripts can never drift from the Server release.
 COPY deploy /opt/verity-install/deploy
+LABEL org.verity.backup-provisioning="1"
+RUN jq --version && systemctl --version && bash -n /opt/verity-install/deploy/host/verity-backup-provision
 RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 
 # The official devcontainer CLI (ADR 0003 R3.1): when a project repo carries a
@@ -245,6 +247,8 @@ COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-harden.mjs /tmp/verit
 RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.mjs
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
+COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-auth-probe.mjs /tmp/verity-claude-acp-auth-probe.mjs
+RUN node /tmp/verity-claude-acp-auth-probe.mjs && rm /tmp/verity-claude-acp-auth-probe.mjs
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex-acp
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs opencode

@@ -1607,6 +1607,8 @@ export interface Database {
   qa_decisions: QADecisionsTable;
   assistant_settings: AssistantSettingsTable;
   assistant_project_grants: AssistantProjectGrantsTable;
+  scheduling_requests: SchedulingRequestsTable;
+  scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
   vuln_ignores: VulnIgnoresTable;
   vuln_notifications: VulnNotificationsTable;
@@ -1852,6 +1854,59 @@ interface AssistantProjectGrantsTable {
   mode: import('./assistant.js').AssistantMode;
   sponsor_user_id: string;
   revision: Generated<number>;
+  updated_at: Generated<Date>;
+}
+interface SchedulingRequestsTable {
+  id: string;
+  session_id: string;
+  project_id: string | null;
+  google_account_id: string | null;
+  calendar_id: string;
+  time_zone: string;
+  language: 'en' | 'de';
+  title: string;
+  duration_minutes: number;
+  add_meet: boolean;
+  organizer_name: string;
+  organizer_email: string;
+  guest_email: string;
+  guest_name: string | null;
+  colleagues: ColumnType<unknown, string | undefined, string>;
+  email_subject: string;
+  email_body: string;
+  state: import('./scheduling.js').SchedulingRequestState;
+  failure: string | null;
+  closes_at: Date;
+  link_expires_at: Date | null;
+  approved_at: Date | null;
+  approval_digest: string | null;
+  sender_account_id: string | null;
+  share_secret: string | null;
+  share_revoked_at: Date | null;
+  email_sent_at: Date | null;
+  booked_event_id: string | null;
+  booked_start: Date | null;
+  booked_end: Date | null;
+  guest_note: string | null;
+  notified_no_slots_at: Date | null;
+  attempts: Generated<number>;
+  next_attempt_at: Date | null;
+  lease_owner: string | null;
+  lease_until: Date | null;
+  revision: Generated<number>;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+interface SchedulingHoldsTable {
+  request_id: string;
+  position: number;
+  window_start: Date;
+  window_end: Date;
+  event_id: string;
+  state: import('./scheduling.js').SchedulingHoldState;
+  attempts: Generated<number>;
+  next_attempt_at: Date | null;
+  last_error: string | null;
   updated_at: Generated<Date>;
 }
 interface QACoordinatorTable {

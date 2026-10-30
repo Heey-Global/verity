@@ -312,7 +312,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     listPairedDevices: opts.listPairedDevices ?? jest.fn().mockResolvedValue([]),
     // Audit logs are administrator-only; by default this device is not one.
     auditHealth: opts.auditHealth ?? jest.fn().mockResolvedValue(null),
-    // A Server without installer backup resources, so the Backup row stays hidden.
+    // An administrator can discover Backup before host preparation is complete.
     getBackupStatus:
       opts.getBackupStatus ??
       jest.fn().mockResolvedValue({ available: false, reason: 'installer-required' }),

@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.310}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.311}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.95.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.97.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -50,9 +50,9 @@ OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
 CODEX_VERSION="${CODEXVERSION:-0.164.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.2.2}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.3.0}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.1.4}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.2.0}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -330,6 +330,7 @@ if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
     # cannot silently lapse on a Renovate bump. See docs/adr/0012.
     node "$FEATURE_DIR/bin/verity-claude-acp-harden.mjs"
     node "$FEATURE_DIR/bin/verity-claude-acp-lifecycle.mjs"
+    node "$FEATURE_DIR/bin/verity-claude-acp-auth-probe.mjs"
   else
     echo "!! verity-sandbox-toolkit: installClaudeAcp=true but npm not on PATH — skipping Claude ACP." >&2
   fi
