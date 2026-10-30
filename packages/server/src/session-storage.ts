@@ -38,6 +38,7 @@ interface Retirement {
   sha: string;
   branch: string | null;
   sidecar: string | null;
+  locked?: boolean;
 }
 async function atomicJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -175,6 +176,7 @@ export class SessionStorage {
       wake?: (project: ProjectRecord, sessionId: string) => Promise<void>;
       now?: () => number;
       dryRun?: boolean;
+      gitRoot?: string;
     },
   ) {}
   bind(claim: NonNullable<SessionStorage['claim']>, blocked: (projectId: string) => boolean): void {
@@ -195,6 +197,30 @@ export class SessionStorage {
     if ((await exists(path)) && (await lstat(path)).isSymbolicLink())
       throw new Error('Worktree is a symlink');
     return root;
+  }
+  private hostGitPath(root: string, recorded: string): string {
+    if (!this.deps.gitRoot) return recorded;
+    const subpath = relative(this.deps.gitRoot, recorded);
+    if (isAbsolute(subpath) || subpath === '..' || subpath.startsWith('../'))
+      throw new Error('Git worktree path escapes its sandbox');
+    return resolve(root, subpath);
+  }
+  private async registrations(
+    root: string,
+    git: GitOutput,
+  ): Promise<Map<string, string | undefined>> {
+    const entries = new Map<string, string | undefined>();
+    let current: string | undefined;
+    for (const field of (await git(['-C', root, 'worktree', 'list', '--porcelain', '-z'])).split(
+      '\0',
+    )) {
+      if (field.startsWith('worktree ')) {
+        current = this.hostGitPath(root, field.slice(9));
+        entries.set(current, undefined);
+      } else if (current && (field === 'locked' || field.startsWith('locked ')))
+        entries.set(current, field.slice(7));
+    }
+    return entries;
   }
   private manifest(root: string, path: string): string {
     return join(
@@ -226,7 +252,8 @@ export class SessionStorage {
         entry.path === session.worktree &&
         /^[a-f0-9]{40,64}$/.test(entry.sha) &&
         (entry.branch === null || typeof entry.branch === 'string') &&
-        (entry.sidecar === null || typeof entry.sidecar === 'string')
+        (entry.sidecar === null || typeof entry.sidecar === 'string') &&
+        (entry.locked === undefined || typeof entry.locked === 'boolean')
       );
     } catch {
       return false;
@@ -248,7 +275,8 @@ export class SessionStorage {
       entry.path !== session.worktree ||
       !/^[a-f0-9]{40,64}$/.test(entry.sha) ||
       (entry.branch !== null && typeof entry.branch !== 'string') ||
-      (entry.sidecar !== null && typeof entry.sidecar !== 'string')
+      (entry.sidecar !== null && typeof entry.sidecar !== 'string') ||
+      (entry.locked !== undefined && typeof entry.locked !== 'boolean')
     ) {
       throw new Error('Worktree retirement journal does not match this session');
     }
@@ -273,7 +301,7 @@ export class SessionStorage {
           'add',
           ...(ref === entry.sha ? ['--detach'] : []),
           '--',
-          session.worktree,
+          relative(root, session.worktree),
           ref,
         ]);
       }
@@ -288,6 +316,23 @@ export class SessionStorage {
         } finally {
           await file.close();
         }
+      }
+      if (entry.locked) {
+        const registrations = await this.registrations(root, git);
+        const reason = registrations.get(session.worktree);
+        if (reason !== undefined && reason !== 'Verity session: managed by server')
+          throw new Error('Restored worktree has an unknown lock');
+        if (reason === undefined)
+          await git([
+            '-C',
+            root,
+            'worktree',
+            'lock',
+            '--reason',
+            'Verity session: managed by server',
+            '--',
+            relative(root, session.worktree),
+          ]);
       }
       linkWorkspacePackages(root, session.worktree);
       // Keep the durable recovery record until the directory is complete; source refs stay pinned.
@@ -367,10 +412,7 @@ export class SessionStorage {
               >;
               const current: Record<string, number> = {};
               const live = new Set((await this.deps.listSessions()).map((s) => s.worktree));
-              const listing = await git(['-C', root, 'worktree', 'list', '--porcelain', '-z']);
-              for (const field of listing.split('\0')) {
-                if (!field.startsWith('worktree ')) continue;
-                const path = field.slice(9);
+              for (const path of (await this.registrations(root, git)).keys()) {
                 if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
                 const since = old[path];
                 current[path] =
@@ -583,6 +625,23 @@ export class SessionStorage {
       .filter(Boolean);
     if (ignored.some((f) => f !== WORKTREE_SIDECAR))
       throw new Error('Unknown ignored files remain');
+    const registrations = await this.registrations(root, git);
+    if (!registrations.has(path)) throw new Error('Worktree registration is unknown');
+    const reason = registrations.get(path);
+    if (reason !== undefined && reason !== 'Verity session: managed by server')
+      throw new Error('Worktree has an unknown lock');
+    const previousSource = await this.retirementSource(root, path);
+    const previous = previousSource ? (JSON.parse(previousSource) as Retirement) : null;
+    if (
+      previousSource !== null &&
+      (!previous ||
+        previous.version !== 1 ||
+        previous.sessionId !== sessionId ||
+        previous.path !== path ||
+        previous.sha !== sha)
+    )
+      throw new Error('Existing retirement journal differs');
+    const locked = reason !== undefined || previous?.locked === true;
     if (this.deps.dryRun) {
       report.worktreesRetired.push(path);
       return;
@@ -600,9 +659,28 @@ export class SessionStorage {
       sha,
       branch,
       sidecar,
+      locked,
     } satisfies Retirement);
     // Non-force removal is the final Git backstop. The durable journal precedes it.
-    await git(['-C', root, 'worktree', 'remove', '--', path]);
+    if (reason !== undefined)
+      await git(['-C', root, 'worktree', 'unlock', '--', relative(root, path)]);
+    try {
+      await git(['-C', root, 'worktree', 'remove', '--', relative(root, path)]);
+      if (await exists(path)) throw new Error('Git left the worktree directory behind');
+    } catch (error) {
+      if (locked && (await exists(path)))
+        await git([
+          '-C',
+          root,
+          'worktree',
+          'lock',
+          '--reason',
+          'Verity session: managed by server',
+          '--',
+          relative(root, path),
+        ]).catch(() => undefined);
+      throw error;
+    }
     report.worktreesRetired.push(path);
   }
 }

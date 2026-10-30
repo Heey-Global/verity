@@ -43,6 +43,10 @@ or ignored files remain. A closed PR alone does not prove work has been saved.
 The base checkout, document workspaces and Knowledge are never retirement targets.
 Git errors and uncertain ownership retain the worktree and appear as blockers.
 
+Managed worktree locks are released only after safety checks and restored on
+failure or resume; unknown lock reasons retain the worktree. Sandbox Git uses
+clone-relative mutation paths and translates inventory paths back to the host.
+
 Before non-force Git removal, a dedicated Git ref pins the exact commit and a
 synced recovery record is atomically written under the base repository's
 `.git/verity-storage`. It preserves the session identity, path, branch, commit

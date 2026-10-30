@@ -95,6 +95,14 @@ describe('shared dependency reuse', () => {
     writeFileSync(join(f.worktree, 'package-lock.json'), lock);
     expect(f.run('status').status).toBe(1);
   });
+  it('rejects stale private packages shadowing a compatible shared installation', () => {
+    const f = fixture();
+    mkdirSync(join(f.worktree, 'node_modules', 'stale'), { recursive: true });
+    writeFileSync(join(f.worktree, 'node_modules', 'stale', 'package.json'), '{"version":"old"}');
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(readFileSync(f.called, 'utf8')).toContain(f.worktree);
+  });
   it('recognizes npm v1 source locks against modern installation receipts', () => {
     const f = fixture();
     for (const root of [f.root, f.worktree])

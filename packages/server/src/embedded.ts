@@ -4613,6 +4613,7 @@ export async function buildEmbeddedServer(
   const sessionStorage =
     config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
       ? new SessionStorage({
+          gitRoot: '/work',
           listProjects: () => eventStore.listProjects(),
           listSessions: () => eventStore.listSessions(),
           activity: async (id) =>

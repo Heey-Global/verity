@@ -58,6 +58,7 @@ function fixture() {
   run(['-C', root, 'push', '-q', 'origin', 'main']);
   const path = join(root, '.verity-sessions', 'session');
   run(['-C', root, 'worktree', 'add', '-qb', 'session', path, 'main']);
+  run(['-C', root, 'worktree', 'lock', '--reason', 'Verity session: managed by server', path]);
   mkdirSync(join(root, 'node_modules', 'dep'), { recursive: true });
   writeFileSync(join(root, 'node_modules', 'dep', 'index.js'), 'shared dependency');
   cpSync(join(root, 'node_modules'), join(path, 'node_modules'), { recursive: true });
@@ -117,6 +118,9 @@ describe('safe session storage reclamation', () => {
     expect(await f.service.canRestore(f.session)).toBe(false);
     expect(existsSync(join(f.path, 'package.json'))).toBe(true);
     expect(f.run(['-C', f.path, 'branch', '--show-current']).trim()).toBe('session');
+    expect(f.run(['-C', f.root, 'worktree', 'list', '--porcelain'])).toContain(
+      'locked Verity session: managed by server',
+    );
     await f.service.ensureWorkspace(f.session); // Recovery is idempotent.
   });
   it('refuses corrupt and symlinked recovery journals without recreating worktrees', async () => {
@@ -138,6 +142,43 @@ describe('safe session storage reclamation', () => {
     expect(await f.service.canRestore(f.session)).toBe(false);
     await expect(f.service.ensureWorkspace(f.session)).rejects.toThrow('Unsafe');
     expect(existsSync(f.path)).toBe(false);
+  });
+  it('maps sandbox inventories to host paths and uses clone-relative mutation paths', async () => {
+    const f = fixture();
+    const service = new SessionStorage({
+      ...f.deps,
+      gitRoot: '/work',
+      withGit: async <T>(p: ProjectRecord, operation: (g: GitOutput) => Promise<T>) =>
+        f.deps.withGit(p, (git) =>
+          operation(async (args) => {
+            const worktree = args.indexOf('worktree');
+            if (worktree >= 0 && ['add', 'remove', 'lock', 'unlock'].includes(args[worktree + 1]!))
+              expect(args.slice(worktree + 2)).not.toContain(f.path);
+            const output = await git(args);
+            return args.includes('list') && args.includes('worktree')
+              ? output.replaceAll(f.root, '/work')
+              : output;
+          }),
+        ),
+    });
+    service.bind(
+      async (_, run) => ({ ran: true, value: await run() }),
+      () => false,
+    );
+    await service.runOnce();
+    expect(existsSync(f.path)).toBe(false);
+    await service.ensureWorkspace(f.session);
+    expect(existsSync(f.path)).toBe(true);
+  });
+  it('preserves locks set outside the managed worktree lifecycle', async () => {
+    const f = fixture();
+    f.run(['-C', f.root, 'worktree', 'unlock', f.path]);
+    f.run(['-C', f.root, 'worktree', 'lock', '--reason', 'manual protection', f.path]);
+    await f.service.runOnce();
+    expect(existsSync(f.path)).toBe(true);
+    expect(
+      f.service.lastReport?.blockers.some((entry) => entry.reason.includes('unknown lock')),
+    ).toBe(true);
   });
   it('does not follow dependency-input or sidecar symlinks', async () => {
     const f = fixture();

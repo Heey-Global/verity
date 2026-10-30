@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 // Reuse an existing compatible project installation without mutating it.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  lstatSync,
+  readlinkSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 function git(...args) {
@@ -176,6 +183,32 @@ function compatible(root, base) {
         dependencyInputIdentity(p, read(join(base, p))),
   );
 }
+function privateSkeleton(root) {
+  const modules = join(root, 'node_modules');
+  if (!existsSync(modules)) return true;
+  if (!lstatSync(modules).isDirectory() || lstatSync(modules).isSymbolicLink()) return false;
+  const sources = new Map();
+  for (const path of git('-C', root, 'ls-files', '-z').split('\0')) {
+    if (!path.endsWith('/package.json')) continue;
+    const manifest = JSON.parse(read(join(root, path)) ?? '{}');
+    if (typeof manifest.name === 'string') sources.set(manifest.name, dirname(join(root, path)));
+  }
+  const valid = (name, path) =>
+    lstatSync(path).isSymbolicLink() &&
+    sources.get(name) === resolve(dirname(path), readlinkSync(path));
+  for (const name of readdirSync(modules)) {
+    const path = join(modules, name);
+    if (
+      name.startsWith('@') &&
+      lstatSync(path).isDirectory() &&
+      !lstatSync(path).isSymbolicLink()
+    ) {
+      if (!readdirSync(path).every((child) => valid(`${name}/${child}`, join(path, child))))
+        return false;
+    } else if (!valid(name, path)) return false;
+  }
+  return true;
+}
 try {
   const root = git('rev-parse', '--show-toplevel');
   const common = resolve(root, git('rev-parse', '--git-common-dir'));
@@ -183,7 +216,13 @@ try {
   // A private installation stays isolated. Workspace-link skeletons are not installations.
   const local = installed(root);
   let shared = false;
-  if (!local && root !== base && !existsSync(join(base, '.pnp.cjs')) && compatible(root, base)) {
+  if (
+    !local &&
+    privateSkeleton(root) &&
+    root !== base &&
+    !existsSync(join(base, '.pnp.cjs')) &&
+    compatible(root, base)
+  ) {
     // Only reuse a directory Node can reach by walking up from this worktree.
     let parent = dirname(root);
     while (parent !== dirname(parent)) {
