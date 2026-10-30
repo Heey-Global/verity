@@ -61,8 +61,9 @@ export function schedulingCardEmail(
 }
 
 /**
- * The allow decision for an edited send card: only what changed travels as `updatedInput`, and
- * an untouched default email is left to the server to regenerate. Returns an error instead when
+ * The allow decision for an edited send card: a changed title or language and a touched email
+ * travel as `updatedInput`; an untouched email is left to the server, which regenerates a default
+ * one for the new title or language. Returns an error instead when
  * the edits could not be sent.
  */
 export function schedulingCardDecision(
@@ -74,13 +75,15 @@ export function schedulingCardDecision(
   const updatedInput: Record<string, unknown> = {};
   if (title !== editable.original.title) updatedInput['title'] = title;
   if (edit.language !== editable.original.language) updatedInput['language'] = edit.language;
-  if (edit.emailEdited || !editable.defaultEmail) {
+  if (edit.emailEdited) {
     const subject = edit.emailSubject.trim();
     if (!subject) return { error: 'The email subject must not be empty.' };
     if (!edit.emailBody.includes(LINK_PLACEHOLDER))
       return { error: `Keep ${LINK_PLACEHOLDER} in the email; the booking link goes there.` };
-    if (subject !== editable.original.emailSubject) updatedInput['emailSubject'] = subject;
-    if (edit.emailBody !== editable.original.emailBody) updatedInput['emailBody'] = edit.emailBody;
+    // Always sent once touched, even if it matches the draft again: without it the server would
+    // take the email for an untouched default and regenerate it, unlike what the card shows.
+    updatedInput['emailSubject'] = subject;
+    updatedInput['emailBody'] = edit.emailBody;
   }
   return Object.keys(updatedInput).length > 0 ? { updatedInput } : {};
 }

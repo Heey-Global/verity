@@ -81,7 +81,11 @@ describe('scheduling approval summary', () => {
         scheduling: {
           ...draft,
           language: 'en',
-          email: { to: 'anna@example.test', ...defaults.en },
+          email: {
+            to: 'anna@example.test',
+            subject: 'Pick a time: Intro call',
+            body: 'Hi Anna, Intro call\n{link}',
+          },
           defaultEmail,
         },
       })!.editable!;
@@ -110,10 +114,20 @@ describe('scheduling approval summary', () => {
       const edit = { ...schedulingCardEdit(card), emailEdited: true, emailBody: 'Hello {link}' };
       expect(schedulingCardEmail(card, edit).body).toBe('Hello {link}');
       expect(schedulingCardDecision(card, edit)).toEqual({
-        updatedInput: { emailBody: 'Hello {link}' },
+        updatedInput: { emailSubject: 'Pick a time: Intro call', emailBody: 'Hello {link}' },
       });
       expect(schedulingCardDecision(card, { ...edit, emailBody: 'Hello' })).toEqual({
         error: expect.stringContaining('{link}'),
+      });
+      // A touched email that matches the draft again is still sent as shown, so a new title
+      // cannot make the server regenerate it behind the card's back.
+      const restored = { ...schedulingCardEdit(editable()), emailEdited: true, title: 'Kickoff' };
+      expect(schedulingCardDecision(editable(), restored)).toEqual({
+        updatedInput: {
+          title: 'Kickoff',
+          emailSubject: 'Pick a time: Intro call',
+          emailBody: 'Hi Anna, Intro call\n{link}',
+        },
       });
       expect(schedulingCardDecision(card, { ...edit, title: '  ' })).toEqual({
         error: expect.stringContaining('title'),

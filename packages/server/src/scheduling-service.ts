@@ -597,7 +597,12 @@ export class SchedulingService {
           { content, revision: request.revision },
         )
       : await this.store.approve(requestId, digest, sender.accountId);
-    if (!approved) throw new Error('This scheduling request was already sent');
+    if (!approved)
+      throw new Error(
+        content
+          ? 'This scheduling request changed or was already sent; check its status'
+          : 'This scheduling request was already sent',
+      );
     await this.provisionLeased(requestId);
     const current = (await this.store.get(requestId))!;
     if (current.state === 'failed')

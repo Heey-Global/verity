@@ -82,6 +82,34 @@ describe('scheduling requests', () => {
     expect(await ctx.store.scheduling.transition('r1', ['draft'], 'revoked')).toBe(false);
   });
 
+  it('stores card edits with the approval, only over the revision they were made against', async () => {
+    const created = await ctx.store.scheduling.createDraft(draft('r1'));
+    const content = {
+      title: 'Kickoff',
+      language: 'de' as const,
+      emailSubject: 'Termin',
+      emailBody: 'Hallo {link}',
+    };
+    // A draft that changed since the card was raised cannot be approved with its edits.
+    expect(
+      await ctx.store.scheduling.approve('r1', 'digest', null, {
+        content,
+        revision: created.revision + 1,
+      }),
+    ).toBe(false);
+    expect(
+      await ctx.store.scheduling.approve('r1', 'digest', null, {
+        content,
+        revision: created.revision,
+      }),
+    ).toBe(true);
+    expect(await ctx.store.scheduling.get('r1')).toMatchObject({
+      ...content,
+      state: 'provisioning',
+      approvalDigest: 'digest',
+    });
+  });
+
   it('keeps the share binding encrypted at rest and lists it until revoked', async () => {
     await ctx.store.scheduling.createDraft(draft('r1'));
     const binding = {
