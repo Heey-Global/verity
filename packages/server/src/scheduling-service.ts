@@ -489,6 +489,28 @@ export class SchedulingService {
     }
   }
 
+  /**
+   * The Uplink control to create a link with, undefined to try again shortly (right after a
+   * restart Uplink may still be connecting), or an error once waiting is no longer reasonable.
+   */
+  private async edgeReady(request: SchedulingRequest): Promise<PreviewEdgeControl | undefined> {
+    const edge = this.deps.edge;
+    const unavailable = new Error(
+      'Online sharing through Uplink is not available; turn it on to send booking links',
+    );
+    if (!edge) throw unavailable;
+    if (edge.isAvailable?.() !== false) return edge;
+    if (
+      this.now().getTime() - (request.approvedAt ?? request.createdAt).getTime() >=
+      PROVISION_PATIENCE_MS
+    )
+      throw unavailable;
+    await this.store.update(request.id, {
+      nextAttemptAt: new Date(this.now().getTime() + 60_000),
+    });
+    return undefined;
+  }
+
   private async provision(requestId: string): Promise<void> {
     let request = await this.store.get(requestId);
     if (request?.state !== 'provisioning') return;
@@ -497,6 +519,18 @@ export class SchedulingService {
       const text = holdText(request);
       // A withdrawal can land while this runs; each external step checks the state first.
       const still = async () => (await this.store.get(requestId))?.state === 'provisioning';
+      // Check what the later steps need before inviting anyone: failing after the holds would
+      // mail colleagues an invitation and then its cancellation.
+      if (!request.hasShare && !(await this.edgeReady(request))) return;
+      if (request.emailSentAt === null && request.attempts === 0) {
+        const gmail = await resolveGoogleServiceCredential(
+          this.deps.store,
+          request.sessionId,
+          'gmail',
+        );
+        if (!(await this.deps.googleAccessToken(gmail.accountId)))
+          throw new Error('Gmail is not connected');
+      }
       for (const hold of await this.store.holds(requestId)) {
         if (hold.state !== 'pending') continue;
         if (!(await still())) return;
@@ -519,27 +553,10 @@ export class SchedulingService {
       if (!(await still())) return;
       request = (await this.store.get(requestId))!;
       if (!request.hasShare) {
-        if (!this.deps.edge)
-          throw new Error(
-            'Online sharing through Uplink is not available; turn it on to send booking links',
-          );
-        // Right after a restart Uplink may still be connecting; wait for it a while.
-        if (this.deps.edge.isAvailable?.() === false) {
-          if (
-            this.now().getTime() - (request.approvedAt ?? request.createdAt).getTime() <
-            PROVISION_PATIENCE_MS
-          ) {
-            await this.store.update(requestId, {
-              nextAttemptAt: new Date(this.now().getTime() + 60_000),
-            });
-            return;
-          }
-          throw new Error(
-            'Online sharing through Uplink is not available; turn it on to send booking links',
-          );
-        }
+        const edge = await this.edgeReady(request);
+        if (!edge) return;
         const pin = String(randomInt(100_000, 1_000_000));
-        const binding = await this.deps.edge.create({
+        const binding = await edge.create({
           durationSeconds: (SCHEDULING_LINK_DAYS * DAY) / 1000,
           pinHash: hashPreviewPin(pin),
         });
@@ -553,7 +570,7 @@ export class SchedulingService {
           expiresAt: binding.expiresAt.toISOString(),
         });
         // Another run recorded a link first; this one would be an orphan nobody was sent.
-        if (!recorded) await this.deps.edge.remove(binding.shareId).catch(() => undefined);
+        if (!recorded) await edge.remove(binding.shareId).catch(() => undefined);
         request = (await this.store.get(requestId))!;
       }
       const binding = (await this.store.share(requestId))!;

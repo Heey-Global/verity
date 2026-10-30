@@ -534,14 +534,15 @@ describe('scheduling requests', () => {
     expect((await ctx.store.scheduling.dueRequests(now)).map((r) => r.id)).not.toContain(id);
   });
 
-  it('fails cleanly without a public link and removes the holds it created', async () => {
+  it('fails without a public link before inviting anyone', async () => {
     const scheduler = service({ edge: undefined });
     const prepared = await scheduler.prepare(input());
     await expect(scheduler.send(prepared.requestId, 's1', prepared.digest)).rejects.toThrow(
       'Uplink',
     );
     await scheduler.runDue();
-    expect([...calendar.events.values()].every((event) => event.status === 'cancelled')).toBe(true);
+    // Nothing was created: colleagues never get an invitation followed by a cancellation.
+    expect(calendar.events.size).toBe(0);
     expect(sent).toEqual([]);
   });
 
