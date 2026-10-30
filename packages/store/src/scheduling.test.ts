@@ -168,7 +168,12 @@ describe('scheduling requests', () => {
         }),
       ),
     );
-    expect(order).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
-    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe('second');
+    // Pool connection acquisition can reorder the callers; the lock guarantees
+    // non-overlap, not FIFO ordering before either transaction owns it.
+    expect([
+      ['first:start', 'first:end', 'second:start', 'second:end'],
+      ['second:start', 'second:end', 'first:start', 'first:end'],
+    ]).toContainEqual(order);
+    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe(order.at(-1)?.split(':')[0]);
   });
 });
