@@ -44,7 +44,7 @@
     "licenses:check": "node scripts/third-party-notices.ts --check",
     "licenses:write": "node scripts/third-party-notices.ts --write",
     "knip": "knip --exports",
-    "lint:changed": "node scripts/lint-files.mjs --",
+    "lint:changed": "node scripts/lint-runner.mjs --",
     "format": "prettier --check --cache --cache-strategy content --cache-location .cache/prettier .",
     "format:changed": "prettier --check --ignore-unknown --",
     "format:write": "prettier --write .",
