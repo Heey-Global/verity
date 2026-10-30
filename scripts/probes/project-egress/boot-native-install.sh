@@ -62,7 +62,7 @@ Before=docker.service
 After=systemd-udev-settle.service
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -ec 'link=$(for p in /sys/class/net/*; do [ "$(cat "$p/address")" != "52:54:00:be:ef:02" ] || basename "$p"; done); test -n "$link"; ip link set "$link" up; ip addr replace 172.30.105.3/24 dev "$link"; ip -6 addr replace fd42:feed:5::3/64 dev "$link"; sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1'
+ExecStart=/bin/bash -ec 'link=$(for p in /sys/class/net/*; do [ "$(cat "$p/address")" != "52:54:00:be:ef:02" ] || basename "$p"; done); test -n "$link"; ip link set "$link" up; ip addr replace 172.30.105.3/24 dev "$link"; ip -6 addr replace fd42:feed:5::3/64 nodad dev "$link"; sysctl -w net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1'
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target

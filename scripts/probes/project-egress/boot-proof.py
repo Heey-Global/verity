@@ -126,7 +126,7 @@ def main():
     try:
         command('sudo', '-n', 'ip', 'tuntap', 'add', 'dev', link, 'mode', 'tap', 'user', str(os.getuid()))
         command('sudo', '-n', 'ip', 'addr', 'add', '172.30.105.2/24', 'dev', link)
-        command('sudo', '-n', 'ip', '-6', 'addr', 'add', 'fd42:feed:5::2/64', 'dev', link)
+        command('sudo', '-n', 'ip', '-6', 'addr', 'add', 'fd42:feed:5::2/64', 'nodad', 'dev', link)
         command('sudo', '-n', 'ip', 'link', 'set', link, 'up')
         observer = subprocess.Popen(['sudo', '-n', 'python3', str(root / 'boot-observer.py'), str(receipts), str(ready)])
         deadline = time.monotonic() + 10
