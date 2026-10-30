@@ -397,11 +397,23 @@ export class SchedulingStore {
   async dueRequests(now: Date, limit = 20): Promise<SchedulingRequest[]> {
     return (
       await sql<Row>`select * from scheduling_requests where
-        (state = 'provisioning' and (next_attempt_at is null or next_attempt_at <= ${now}))
+        ((state = 'provisioning' and (next_attempt_at is null or next_attempt_at <= ${now}))
         or (state = 'open' and closes_at <= ${now})
-        or (share_secret is not null and share_revoked_at is null and link_expires_at <= ${now})
+        or (share_secret is not null and share_revoked_at is null and link_expires_at <= ${now}))
+        -- A leased row is being worked on; it must not crowd out the rest of the batch.
+        and (lease_until is null or lease_until < now())
         order by updated_at limit ${limit}`.execute(this.db)
     ).rows.map(requestFromRow);
+  }
+
+  /** Record the "no times left" notice once; false when another view already did. */
+  async markNoSlotsNotified(id: string, at: Date): Promise<boolean> {
+    return (
+      (
+        await sql`update scheduling_requests set notified_no_slots_at = ${at}
+          where id = ${id} and notified_no_slots_at is null returning id`.execute(this.db)
+      ).rows.length === 1
+    );
   }
 
   /** The earliest moment any scheduled work becomes due, or undefined when there is none. */

@@ -6981,12 +6981,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (toolName === 'verity_scheduling') {
           if (!schedulingHasStandingAuthorization(request)) return false;
-          try {
-            await schedulingTool.authorize({ projectId, sessionId, request });
-            return true;
-          } catch {
-            return false;
-          }
+          // A refused read must fail as such, not turn into a card showing raw arguments.
+          await schedulingTool.authorize({ projectId, sessionId, request });
+          return true;
         }
         if (toolName === 'verity_matrix') {
           return (

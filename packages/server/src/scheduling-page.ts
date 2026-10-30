@@ -453,14 +453,16 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
         'Content-Security-Policy': pageCsp(nonce),
-        'Referrer-Policy': 'no-referrer',
+        'Referrer-Policy': 'same-origin',
         'X-Content-Type-Options': 'nosniff',
       });
       response.end(request.method === 'HEAD' ? undefined : rendered.html);
     };
     const url = new URL(request.url ?? '/', 'http://booking.invalid');
     const zone = url.searchParams.get('tz') ?? undefined;
-    const reading = request.method === 'GET' || request.method === 'HEAD';
+    const reading =
+      (request.method === 'GET' || request.method === 'HEAD') &&
+      (url.pathname === '/' || url.pathname === '/confirm');
     if (reading && !allow(views, VIEWS_PER_MINUTE)) {
       response.writeHead(429, { 'Retry-After': '60' }).end();
       return;

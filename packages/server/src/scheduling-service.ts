@@ -538,7 +538,8 @@ export class SchedulingService {
         request = (await this.store.get(requestId))!;
       }
       const binding = (await this.store.share(requestId))!;
-      await this.ensureConnector(requestId);
+      // The scheduler reconnects a link that is not up yet; the email can still go out.
+      await this.ensureConnector(requestId).catch(() => undefined);
       if (request.emailSentAt === null) {
         if (request.attempts > 0) {
           // A send was started but never recorded. Gmail has no idempotency key, so sending
@@ -721,10 +722,12 @@ export class SchedulingService {
     if (!request) return { kind: 'unavailable', request: undefined };
     const model = await this.modelFor(this.store, request);
     await this.announceBooking(requestId);
-    if (model.kind === 'no_slots' && request.notifiedNoSlotsAt === null) {
-      await this.store.update(request.id, { notifiedNoSlotsAt: this.now() });
+    if (
+      model.kind === 'no_slots' &&
+      request.notifiedNoSlotsAt === null &&
+      (await this.store.markNoSlotsNotified(request.id, this.now()))
+    )
       await this.deps.notify?.({ kind: 'no_slots', request });
-    }
     if (model.kind === 'open' && request.notifiedNoSlotsAt !== null)
       await this.store.update(request.id, { notifiedNoSlotsAt: null });
     return model;
