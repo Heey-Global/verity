@@ -186,6 +186,28 @@ export class ProjectEgressHost {
       throw error;
     }
   }
+  /** Reject queued/new commands before waiting for any in-flight kernel write. */
+  shutdown(): Promise<void> {
+    this.healthy = false;
+    return this.queue.then(async () => {
+      this.transports.clear();
+      try {
+        await this.deps.apply(projectEgressBootstrapRules());
+      } catch (error) {
+        const stopped = await Promise.allSettled(
+          this.state.records.flatMap(containerIds).map((id) => this.deps.stopContainer(id)),
+        );
+        throw new AggregateError(
+          [
+            error,
+            ...stopped.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : [])),
+          ],
+          'Host shutdown denial failed; containment attempted',
+          { cause: error },
+        );
+      }
+    });
+  }
   /** Must finish before opening the control socket; does not require Docker. */
   restore(): Promise<void> {
     return this.serialize(async () => {

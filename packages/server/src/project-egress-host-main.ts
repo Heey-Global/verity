@@ -1,5 +1,12 @@
 import { inspectEgressTransport } from './project-egress-transport.js';
 import { constants } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import {
+  serveProjectEgressHost,
+  verifyProjectEgressServiceManager,
+  verifyProjectEgressDockerHost,
+} from './project-egress-host-service.js';
 import { dirname } from 'node:path';
 import { egressRelayPolicy } from './project-egress-relay-policy.js';
 /** Experimental host entrypoint. Not installed or enabled by production setup. */
@@ -17,9 +24,16 @@ import {
 if (process.platform !== 'linux' || process.getuid?.() !== 0)
   throw new Error('Project egress host service requires a Linux host service account');
 const mode = process.argv[2];
-if (!['restore', 'serve'].includes(mode ?? '')) throw new Error('Expected restore or serve');
+if (!['deny', 'restore', 'serve'].includes(mode ?? ''))
+  throw new Error('Expected deny, restore or serve');
 // Paths are host installation constants, not request-controlled configuration.
 await applyProjectFenceRules(projectEgressBootstrapRules());
+// ExecStopPost must fence even a corrupt registry or missing Docker daemon.
+if (mode === 'deny') process.exit(0);
+verifyProjectEgressServiceManager(
+  (await promisify(execFile)('/usr/bin/systemctl', ['--version'], { timeout: 5000 })).stdout,
+  await readFile('/proc/1/comm', 'utf8'),
+);
 const store = await openProjectEgressHostStore('/var/lib/verity-egress');
 const policyPath = '/etc/verity-egress/relay.json';
 const policyFile = await open(policyPath, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
@@ -74,20 +88,36 @@ const controller = new ProjectEgressHost(await store.load(), {
     await projectEgressHostDocker('container', 'stop', '--time', '1', id);
   },
 });
-await controller.restore();
-if (mode === 'serve') {
-  const info = JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .}}')) as {
-    OSType?: string;
-    LiveRestoreEnabled?: boolean;
-    SecurityOptions?: string[];
+if (mode === 'restore') await controller.restore();
+else {
+  const service = await serveProjectEgressHost({
+    restore: () => controller.restore(),
+    deny: () => controller.shutdown(),
+    verifyHost: async () => {
+      const info: unknown = JSON.parse(
+        await projectEgressHostDocker('info', '--format', '{{json .}}'),
+      );
+      verifyProjectEgressDockerHost(info);
+    },
+    revalidate: () => controller.revalidate(),
+    listen: async () => {
+      const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();
+      return listenProjectEgressHost({ directory: '/run/verity-egress', token, controller });
+    },
+    notifyReady: async () => {
+      if (!process.env.NOTIFY_SOCKET) throw new Error('Systemd readiness channel is required');
+      await promisify(execFile)('/usr/bin/systemd-notify', ['--ready'], {
+        timeout: 5000,
+        env: { PATH: '/usr/bin:/bin', NOTIFY_SOCKET: process.env.NOTIFY_SOCKET },
+      });
+    },
+  });
+  const stop = () => {
+    void service.stop().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
   };
-  if (
-    info.OSType !== 'linux' ||
-    info.LiveRestoreEnabled !== false ||
-    info.SecurityOptions?.some((value) => value.includes('rootless'))
-  )
-    throw new Error('Unsupported project egress Docker host');
-  await controller.revalidate();
-  const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();
-  await listenProjectEgressHost({ directory: '/run/verity-egress', token, controller });
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
 }
