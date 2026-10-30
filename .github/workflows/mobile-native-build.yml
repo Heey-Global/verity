@@ -1,6 +1,12 @@
 name: verity-mobile-native-build
 
 on:
+  workflow_dispatch:
+    inputs:
+      profile-source:
+        description: Full merged commit to build and distribute as staging CPU diagnostics
+        required: true
+        type: string
   workflow_call:
     inputs:
       mobile-tag:
@@ -17,10 +23,16 @@ jobs:
   build:
     runs-on: xcode-27
     timeout-minutes: 120
+    concurrency:
+      group: mobile-native-archive-${{ inputs.profile-source != '' && 'staging' || inputs.variant }}
+      queue: max
+      cancel-in-progress: false
     env:
-      VERITY_APP_VARIANT: ${{ inputs.variant }}
-      EXPO_UPDATE_CHANNEL: ${{ inputs.variant }}
-      NATIVE_PROFILE: ${{ inputs.variant == 'staging' && 'staging' || 'testflight' }}
+      VERITY_APP_VARIANT: ${{ inputs.profile-source != '' && 'staging' || inputs.variant }}
+      EXPO_UPDATE_CHANNEL: ${{ inputs.profile-source != '' && 'staging' || inputs.variant }}
+      NATIVE_PROFILE: ${{ inputs.profile-source != '' && 'profiling' || inputs.variant == 'staging' && 'staging' || 'testflight' }}
+      VERITY_CPU_PROFILING: ${{ inputs.profile-source != '' && '1' || '0' }}
+      EAS_LOCAL_BUILD_SKIP_CLEANUP: ${{ inputs.profile-source != '' && '1' || '' }}
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     permissions:
       contents: write
@@ -36,9 +48,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          PROFILE_SOURCE: ${{ inputs.profile-source }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${VERITY_CPU_PROFILING:-0}" == 1 ]]; then
+            [[ "$PROFILE_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+            echo "sha=$PROFILE_SOURCE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [[ "$VERITY_APP_VARIANT" == staging || "$VERITY_APP_VARIANT" == production ]]
           [[ "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]
           release="$(gh release view "$MOBILE_TAG" --json isDraft,targetCommitish)"
@@ -56,6 +74,7 @@ jobs:
           fetch-depth: 0
 
       - name: Validate native release
+        if: inputs.profile-source == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -72,6 +91,7 @@ jobs:
           fi
 
       - name: Verify native tag still names the candidate
+        if: inputs.profile-source == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -81,6 +101,14 @@ jobs:
               exit 1
             }
           fi
+
+      - name: Require merged profiling source
+        if: inputs.profile-source != ''
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+          echo "VERITY_PROFILE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
@@ -95,7 +123,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ inputs.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
+          ASC_APP_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         shell: bash
@@ -118,7 +146,7 @@ jobs:
 
       - name: Require Google Drive OAuth client
         env:
-          GOOGLE_AUTH_ID: ${{ inputs.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+          GOOGLE_AUTH_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -174,10 +202,10 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ inputs.variant == 'staging' && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
+          ASC_APP_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_ASC_APP_ID || secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          GOOGLE_AUTH_ID: ${{ inputs.variant == 'staging' && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+          GOOGLE_AUTH_ID: ${{ (inputs.profile-source != '' || inputs.variant == 'staging') && secrets.STAGING_GOOGLE_AUTH_ID || vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -289,9 +317,61 @@ jobs:
             exit 0
           fi
 
+          echo "$next_build" > "$RUNNER_TEMP/staging-build-number"
+          echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Load profiling artifact helper from workflow revision
+        if: inputs.profile-source != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .mobile-profile-tools
+          sparse-checkout: scripts/retain-mobile-profile-map.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Collect exact profiling source map
+        if: inputs.profile-source != ''
+        run: |
+          set -euo pipefail
+          python3 .mobile-profile-tools/scripts/retain-mobile-profile-map.py "$RUNNER_TEMP/verity-eas-build" "$RUNNER_TEMP/Verity.ipa" "$VERITY_PROFILE_COMMIT" "$RUNNER_TEMP/profiling-artifacts"
+
+      - name: Retain exact profiling source map before upload
+        if: inputs.profile-source != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staging-cpu-map-${{ github.run_id }}
+          path: ${{ runner.temp }}/profiling-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload and verify staging build
+        if: inputs.profile-source != '' || inputs.variant == 'staging'
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_APP_ID: ${{ secrets.STAGING_ASC_APP_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/app-store-connect/AuthKey_${ASC_KEY_ID}.p8"
+          ipa="$RUNNER_TEMP/Verity.ipa"
+          next_build="$(cat "$RUNNER_TEMP/staging-build-number")"
+          mint_asc_jwt() {
+            ruby -ropenssl -rjson -rbase64 -e '
+              b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
+              header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
+              now = Time.now.to_i
+              claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
+              input = "#{header}.#{claims}"
+              der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
+              r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
+              raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
+              print "#{input}.#{b64.call(raw)}"
+            ' "$key_path"
+          }
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
           upload_started="$(date +%s)"
           xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
@@ -352,6 +432,15 @@ jobs:
             esac
           done
 
+      - name: Retain diagnostic build receipt
+        if: inputs.profile-source != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staging-cpu-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-staging.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Store unuploaded production binary
         id: production-binary
         if: inputs.variant == 'production'
@@ -374,11 +463,11 @@ jobs:
 
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        if: inputs.variant == 'staging'
+        if: inputs.profile-source == '' && inputs.variant == 'staging'
         with:
           cosign-release: v3.1.4
       - name: Load release evidence helper from workflow revision
-        if: inputs.variant == 'staging'
+        if: inputs.profile-source == '' && inputs.variant == 'staging'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
@@ -387,12 +476,13 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Sign staging build evidence
-        if: inputs.variant == 'staging'
+        if: inputs.profile-source == '' && inputs.variant == 'staging'
         env:
           SOURCE_REVISION: ${{ steps.native-source.outputs.sha }}
         run: bash .mobile-release-tools/scripts/lib/mobile-release-evidence.sh sign "$RUNNER_TEMP"
 
       - name: Record exact native candidate
+        if: inputs.profile-source == ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ inputs.variant }}-${{ env.MOBILE_TAG }}
@@ -407,3 +497,8 @@ jobs:
         if: always() && steps.compiler-cache.outcome == 'success'
         run: |
           ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove diagnostic build workspace and signing material
+        if: always() && inputs.profile-source != ''
+        run: |
+          rm -rf "$RUNNER_TEMP/verity-eas-build" "$RUNNER_TEMP/app-store-connect" "$HOME/.appstoreconnect/private_keys"
