@@ -247,6 +247,8 @@ COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-harden.mjs /tmp/verit
 RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.mjs
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
+COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-auth-probe.mjs /tmp/verity-claude-acp-auth-probe.mjs
+RUN node /tmp/verity-claude-acp-auth-probe.mjs && rm /tmp/verity-claude-acp-auth-probe.mjs
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex-acp
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs opencode

@@ -1,3 +1,4 @@
+import { retireCompletedUpdateContainers } from '../stopped-container-gc.js';
 import {
   cp,
   lstat,
@@ -46,6 +47,7 @@ const REQUIRED_AGENT_SEED_FILES = [
   'bin/verity-gh-token',
   'bin/verity-git-sign',
   'bin/verity-memory',
+  'bin/verity-dependencies',
   'bin/verity-secret-scan',
   'bin/gh',
   'bin/git',
@@ -73,6 +75,7 @@ type CompanionDocker = Pick<
   | 'listContainers'
   | 'pullImage'
   | 'removeContainer'
+  | 'removeStoppedContainer'
   | 'replaceContainerImage'
   | 'startContainer'
   | 'stopContainer'
@@ -501,6 +504,18 @@ async function reconcileManagedCompanionsOnce(
     );
   }
 
+  // Consumers and companions have completed their dependency checks. Remove
+  // successful bootstrap jobs now; their volumes and failed jobs stay intact.
+  if (composeProject) {
+    try {
+      await retireCompletedUpdateContainers(options.docker, { composeProject });
+    } catch (error) {
+      console.warn(
+        'completed bootstrap cleanup deferred:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   const refreshed = await options.docker.listContainers();
   for (const item of refreshed.filter(
     (entry) =>
@@ -664,7 +679,7 @@ async function publishAgentSeedUnderLease(
       throw new Error(
         'managed agent-seed publication requires a complete bootstrap or legacy selection',
       );
-    await validatePublishedAgentSeed(seedTarget, legacy.image, legacy.version);
+    await validatePublishedAgentSeed(seedTarget, legacy.image, legacy.version, 'legacy');
   }
   const currentNext = join(seedTarget, `.current.${key}.next`);
   await rm(currentNext, { force: true });
@@ -698,8 +713,14 @@ export async function validatePublishedAgentSeed(
   directory: string,
   targetImage: string,
   version: string,
+  profile: 'current' | 'legacy' = 'current',
 ): Promise<void> {
-  for (const path of REQUIRED_AGENT_SEED_FILES) {
+  // Legacy flat seeds predate the dependency helper. New target trees must
+  // contain it; requiring it in the predecessor makes that first upgrade impossible.
+  const requiredFiles = REQUIRED_AGENT_SEED_FILES.filter(
+    (path) => profile !== 'legacy' || path !== 'bin/verity-dependencies',
+  );
+  for (const path of requiredFiles) {
     const entry = await lstat(join(directory, path)).catch(() => null);
     if (entry === null || !entry.isFile())
       throw new Error(`agent-seed validation failed: required file is missing: ${path}`);
@@ -707,6 +728,7 @@ export async function validatePublishedAgentSeed(
       throw new Error(`agent-seed validation failed: required file is a symlink: ${path}`);
   }
   for (const path of EXECUTABLE_AGENT_SEED_FILES) {
+    if (profile === 'legacy' && path === 'bin/verity-dependencies') continue;
     const handle = await open(join(directory, path), 'r');
     try {
       const stat = await handle.stat();

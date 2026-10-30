@@ -1,0 +1,60 @@
+name: project-egress-deadline
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/project-egress-deadline.yml'
+      - 'deploy/egress/project-egress-deadline.bpf.c'
+      - 'deploy/egress/project-egress-deadline.py'
+      - 'packages/server/src/project-egress-deadline*.ts'
+      - 'packages/server/src/project-egress-fence*.ts'
+      - 'scripts/probes/project-egress/deadline-*'
+      - 'scripts/probes/project-egress/test_deadline*'
+      - 'scripts/probes/project-egress/boot-vm.py'
+      - 'scripts/probes/project-egress/boot-observer.py'
+      - 'scripts/probes/project-egress/vm-pins.env'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-egress-deadline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deadline-kernel-prototype:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.12.1'
+      - name: Reject incomplete deadline evidence
+        run: python3 -m unittest discover -s scripts/probes/project-egress -p 'test_deadline*.py' -v
+      - name: Execute deadline guards across actual kernel suspension
+        env:
+          PROBE_EVIDENCE: ${{ runner.temp }}/project-egress-deadline
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROBE_EVIDENCE"
+          test -c /dev/kvm
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
+          sudo setfacl -m "u:$(id -u):rw" /dev/kvm
+          source scripts/probes/project-egress/vm-pins.env
+          curl --fail --location --retry 3 "$EGRESS_VM_URL" -o "$RUNNER_TEMP/egress-deadline.img"
+          printf '%s  %s\n' "$EGRESS_VM_SHA256" "$RUNNER_TEMP/egress-deadline.img" | sha256sum --check
+          cp scripts/probes/project-egress/vm-pins.env "$PROBE_EVIDENCE/"
+          python3 scripts/probes/project-egress/deadline-vm.py "$RUNNER_TEMP/egress-deadline.img" "$PROBE_EVIDENCE"
+      - name: Retain raw kernel and independent receiver evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: project-egress-deadline
+          path: ${{ runner.temp }}/project-egress-deadline
+          if-no-files-found: error
+          retention-days: 7

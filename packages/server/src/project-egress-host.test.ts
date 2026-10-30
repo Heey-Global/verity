@@ -371,7 +371,7 @@ it('revalidates restored roles before serving and stops incompatible containers'
   deps.inspectContainer.mockRejectedValueOnce(new Error('profile changed'));
   await expect(host.revalidate()).rejects.toThrow('containment attempted');
   expect(deps.stopContainer).toHaveBeenCalledWith(id);
-  expect(deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay');
+  expect(deps.inspectContainer).toHaveBeenCalledWith(binding, 'c'.repeat(64), 'relay', true);
   await expect(host.execute(start)).rejects.toThrow();
 });
 

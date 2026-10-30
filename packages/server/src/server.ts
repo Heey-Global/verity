@@ -1,3 +1,10 @@
+import { PreviewConnector } from '@verity/preview-tunnel';
+import { SchedulingPageListeners } from './scheduling-page.js';
+import { registerSchedulingRoutes } from './scheduling-routes.js';
+import { startSchedulingScheduler, type SchedulingScheduler } from './scheduling-scheduler.js';
+import { SchedulingService } from './scheduling-service.js';
+import { schedulingNoticeText, schedulingPush } from './scheduling-notices.js';
+import { createSchedulingTool } from './scheduling-tool.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
@@ -231,7 +238,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
-import { emitSessionEvent } from './session-event-writer.js';
+import { emitNotice, emitSessionEvent } from './session-event-writer.js';
 import { sessionGoogleStatus } from './session-google-status.js';
 import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
@@ -1658,6 +1665,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // filesystem. (The store lock in `createSession` covers only the row: it stops
   // such a spawn from leaving a session behind, not from writing a directory.)
   const projectSpawnsInFlight = new Map<string, Set<Promise<void>>>();
+  deps.sessionStorage?.bind(
+    (id, run) =>
+      conductor.isMovingSession(id) || sessionsBeingReaped.has(id) || hasMeetingJob(id)
+        ? Promise.resolve({ ran: false as const })
+        : conductor.tryRunExclusive(id, run),
+    (projectId) =>
+      projectsBeingDeleted.has(projectId) ||
+      (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
+      deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+      (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0,
+  );
   /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {
     let finish: () => void = () => undefined;
@@ -1940,6 +1958,75 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pushFirePoints === undefined
       ? undefined
       : deps.bus.subscribeAll((sessionId, event) => pushFirePoints.observe(sessionId, event));
+  // Scheduling requests run on their own once approved: the service owns holds, the public
+  // booking links (one Uplink share and loopback page each) and cleanup; the scheduler resumes
+  // all of it from durable state after a restart.
+  let schedulingScheduler: SchedulingScheduler | undefined;
+  const schedulingPages: SchedulingPageListeners = new SchedulingPageListeners({
+    view: (id) => schedulingService.view(id),
+    book: (id, start, note) => schedulingService.book(id, start, note),
+    publicOrigin: async (id) => (await deps.eventStore.scheduling.share(id))?.publicOrigin,
+  });
+  const schedulingService: SchedulingService = new SchedulingService({
+    store: deps.eventStore,
+    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
+    edge: deps.attendeeEdge,
+    listen: schedulingPages.listen,
+    unlisten: schedulingPages.unlisten,
+    connect: async (binding, targetOrigin) => {
+      const connector = new PreviewConnector({
+        edgeUrl: binding.edgeUrl,
+        connectorToken: binding.connectorToken,
+        targetOrigin,
+        maxBodyBytes: 65_536,
+        requestTimeoutMs: 25_000,
+      });
+      await connector.connect();
+      return connector;
+    },
+    notify: async (notification) => {
+      const sessionId = notification.request.sessionId;
+      try {
+        await emitNotice({
+          eventStore: deps.eventStore,
+          bus: deps.bus,
+          sessionId,
+          text: schedulingNoticeText(notification),
+        });
+      } catch (err) {
+        app.log.warn({ err, sessionId }, 'scheduling notice failed');
+      }
+      const push = schedulingPush(notification);
+      if (push && pushRouter)
+        try {
+          await pushRouter.notify({
+            key: `scheduling:${notification.request.id}:${notification.kind}`,
+            sessionId,
+            initiatorUserId: await pushFirePoints?.initiatorOf(sessionId),
+            notification: push,
+          });
+        } catch (err) {
+          app.log.warn({ err, sessionId }, 'scheduling push failed');
+        }
+    },
+    wake: () => schedulingScheduler?.wake(),
+  });
+  registerSchedulingRoutes(app, { eventStore: deps.eventStore, service: schedulingService });
+  app.addHook('onReady', () => {
+    schedulingScheduler = startSchedulingScheduler({
+      runDue: () => schedulingService.runDue(),
+      log: app.log,
+    });
+  });
+  app.addHook('onClose', async () => {
+    schedulingScheduler?.stop();
+    schedulingService.close();
+    await schedulingPages.close();
+  });
+  const schedulingTool = createSchedulingTool({
+    store: deps.eventStore,
+    service: () => schedulingService,
+  });
   // Built here rather than in `embedded.ts` because this is where the single
   // long-lived PushSender exists: a second instance would poll Expo receipts in
   // parallel with this one, and the notifier needs delivery, not its own fleet.
@@ -3708,6 +3795,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   };
 
+  const sessionResumable = async (session: SessionRecord): Promise<boolean> =>
+    (await worktreeExists(session.worktree)) ||
+    (await deps.sessionStorage?.canRestore(session)) === true;
+
   const summarizeSessionWithFacts = async (
     session: SessionRecord,
     facts: SessionProjectionFacts,
@@ -3717,7 +3808,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
-    const resumable = await worktreeExists(session.worktree);
+    const resumable = await sessionResumable(session);
     const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
@@ -4114,6 +4205,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     conductor,
     assistantToolDeps,
     summarizeSession,
+    sessionResumable,
+    schedulingTool,
     runningTurnInitiator,
     projectsBeingDeleted,
     beginProjectSpawn,
@@ -5438,7 +5531,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
-        resumable: await worktreeExists(session.worktree),
+        resumable: await sessionResumable(session),
         eventCount: facts.eventCount,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,

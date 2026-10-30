@@ -232,6 +232,7 @@ describe('bounded review base recovery', () => {
     const { repo } = fixture();
     if (failed) git(repo, 'remote', 'set-url', 'origin', join(repo, 'missing'));
     mkdirSync(join(repo, 'node_modules'));
+    writeFileSync(join(repo, 'node_modules', '.package-lock.json'), '{"packages":{}}');
     mkdirSync(join(repo, '.agents'));
     writeFileSync(join(repo, '.agents/.last-code-review-sha'), git(repo, 'rev-parse', 'HEAD'));
     const scan = join(repo, 'scan');
@@ -297,6 +298,7 @@ describe('bounded review base recovery', () => {
       git(repo, 'commit', '-qm', 'configuration changes');
     }
     mkdirSync(join(repo, 'node_modules'));
+    writeFileSync(join(repo, 'node_modules', '.package-lock.json'), '{"packages":{}}');
     mkdirSync(join(repo, '.agents'));
     const head = git(repo, 'rev-parse', 'HEAD');
     writeFileSync(join(repo, '.agents/.last-code-review-sha'), head);

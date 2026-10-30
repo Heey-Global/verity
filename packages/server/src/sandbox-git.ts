@@ -4,7 +4,7 @@ import { relative, isAbsolute } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
-import { DockerError, type DockerClient } from './docker.js';
+import { DockerError, type DockerClient, type ContainerInspect } from './docker.js';
 import { containerPathFor, dockerHostFor } from './project-backend.js';
 
 const execFileAsync = promisify(execFile);
@@ -197,6 +197,24 @@ export function createSandboxGit(opts: SandboxGitOptions): GitOutput {
   };
 }
 
+/** Missing retired containers are asleep; daemon failures must remain visible. */
+export async function sandboxIsRunning(inspect: SandboxInspect): Promise<boolean> {
+  try {
+    return (await inspect()).running;
+  } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') return false;
+    throw error;
+  }
+}
+
+interface SleepingGitFallback {
+  imageId: string;
+  runtime: string;
+  memoryBytes: number;
+  nanoCpus: number;
+  pidsLimit: number;
+}
+
 /** Metadata remains available while a session sleeps, without executing its startup hooks. */
 interface SleepingSessionGitOptions {
   docker: Pick<
@@ -204,6 +222,12 @@ interface SleepingSessionGitOptions {
     'inspectContainer' | 'createContainer' | 'startContainer' | 'removeContainer'
   >;
   templateContainer: string;
+  /** Storage maintenance holds the project lifecycle barrier and needs Git writes/fetches. */
+  maintenance?: {
+    fallback: SleepingGitFallback;
+  };
+  /** Current sandbox policy when GC has retired the template container. */
+  fallback?: SleepingGitFallback;
   projectId: string;
   hostRoot: string;
   dataVolume?: { name: string; root: string };
@@ -223,7 +247,14 @@ export async function withSleepingSessionGit<T>(
   const subpath = opts.dataVolume ? relative(opts.dataVolume.root, opts.hostRoot) : undefined;
   if (subpath !== undefined && (subpath === '' || subpath.startsWith('..') || isAbsolute(subpath)))
     throw new Error('Metadata checkout escapes data volume');
-  const parent = await opts.docker.inspectContainer(opts.templateContainer);
+  const parent: ContainerInspect = await opts.docker
+    .inspectContainer(opts.templateContainer)
+    .catch((error: unknown) => {
+      const fallback = opts.fallback ?? opts.maintenance?.fallback;
+      if (fallback && error instanceof DockerError && error.kind === 'container_not_found')
+        return { ...fallback, running: false, id: opts.templateContainer };
+      throw error;
+    });
   const image = parent.imageId ?? parent.image;
   if (!image) throw new Error('Metadata query image is unavailable');
   const name = `verity-query-${randomUUID()}`;
@@ -233,14 +264,19 @@ export async function withSleepingSessionGit<T>(
     ...(opts.dataVolume
       ? {
           volumeMounts: [
-            { volume: opts.dataVolume.name, subpath: subpath!, target: '/work', readOnly: true },
+            {
+              volume: opts.dataVolume.name,
+              subpath: subpath!,
+              target: '/work',
+              readOnly: !opts.maintenance,
+            },
           ],
         }
-      : { binds: [`${opts.hostRoot}:/work:ro`] }),
+      : { binds: [`${opts.hostRoot}:/work:${opts.maintenance ? 'rw' : 'ro'}`] }),
     user: parent.user || '1000:1000',
     entrypoint: ['sleep'],
-    command: ['infinity'],
-    network: 'none',
+    command: [opts.maintenance ? '120' : 'infinity'],
+    ...(opts.maintenance ? {} : { network: 'none' }),
     readOnlyRootfs: true,
     capDrop: ['ALL'],
     ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
@@ -253,7 +289,11 @@ export async function withSleepingSessionGit<T>(
     ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),
     ...(parent.nanoCpus ? { nanoCpus: parent.nanoCpus } : {}),
     ...(parent.pidsLimit ? { pidsLimit: parent.pidsLimit } : {}),
-    labels: { 'verity.project-id': opts.projectId, 'verity.session-id': name },
+    labels: {
+      'verity.project-id': opts.projectId,
+      'verity.session-id': name,
+      ...(opts.maintenance ? { 'verity.component': 'storage-maintenance' } : {}),
+    },
   });
   const commands: Promise<string>[] = [];
   try {
@@ -267,7 +307,11 @@ export async function withSleepingSessionGit<T>(
       ...(opts.exec ? { exec: opts.exec } : {}),
     });
     return await operation((args) => {
-      const command = git(['--no-optional-locks', ...args]);
+      const command = git([
+        '--no-optional-locks',
+        ...(opts.maintenance ? ['-c', 'core.hooksPath=/dev/null', '-c', 'gc.auto=0'] : []),
+        ...args,
+      ]);
       commands.push(command);
       return command;
     });

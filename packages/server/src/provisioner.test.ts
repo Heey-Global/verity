@@ -7338,7 +7338,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         });
         const admission = vi.spyOn(storage, 'admit').mockImplementation(() => {
           const lease = storage.acquire();
-          vi.spyOn(lease, 'reserveBuild');
+          vi.spyOn(lease, 'reserveBuildWithReclamation');
           return lease;
         });
         const { client: docker } = fakeDocker({
@@ -7359,7 +7359,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         await expect(provisioner.provision(id)).rejects.toThrow();
         expect(inspect).toHaveBeenCalled();
         expect(inspect).toHaveBeenCalledTimes(measurement === 'previous' ? 2 : 1);
-        expect(admission.mock.results[0]!.value.reserveBuild).toHaveBeenCalledWith(
+        expect(admission.mock.results[0]!.value.reserveBuildWithReclamation).toHaveBeenCalledWith(
           measurement === 'measured' || measurement === 'previous' ? 10 * 1024 ** 3 : undefined,
         );
         expect(snapshot).not.toBe('');
@@ -10209,6 +10209,27 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     provisioner.attachProjectBusyProbe(async () => false);
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     await provisioner.reconcileRelays([p]);
+    expect(resume).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: p.id, containerGeneration: 'gen-1' }),
+    );
+    expect(recreate).not.toHaveBeenCalled();
+  });
+
+  it('resumes a retained relay for unlock without entering migration or replacement', async () => {
+    const p = await seedActive('resumed', 'dev-resumed');
+    const { client } = dockerInspecting({ 'dev-resumed': migratedInspect(p.id) });
+    let active = false;
+    const resume = vi.fn(async () => {
+      active = true;
+      return true;
+    });
+    const provisioner = makeProvisioner(client, {
+      isHealthy: async () => active,
+      resume,
+    });
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    await provisioner.resumeProjectRelay(p.id);
     expect(resume).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: p.id, containerGeneration: 'gen-1' }),
     );

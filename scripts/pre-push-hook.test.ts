@@ -199,7 +199,7 @@ describe('pre-push lint gate', () => {
     );
     // The two options the operator is to be offered, as runnable commands: an
     // agent that only ever sees this banner must be able to act on either answer.
-    expect(result.stderr).toContain('npm ci --ignore-scripts');
+    expect(result.stderr).toContain('verity-dependencies" install');
     expect(result.stderr).toContain('verity-local-checks skip');
     expect(result.stderr).not.toMatch(/--no-verify/);
   });
@@ -210,7 +210,7 @@ describe('pre-push lint gate', () => {
     });
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('npm install --ignore-scripts');
+    expect(result.stderr).toContain('verity-dependencies" install');
     expect(result.stderr).not.toContain('npm ci');
   });
 
@@ -247,7 +247,7 @@ describe('pre-push lint gate', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('PUSH BLOCKED - dependencies or check config changed');
-    expect(result.stderr).toContain('npm ci --ignore-scripts');
+    expect(result.stderr).toContain('verity-dependencies" install');
     expect(result.stderr).toContain('verity-local-checks skip');
     expect(result.stderr).not.toContain('pre-push code review required');
   });
@@ -273,6 +273,7 @@ describe('pre-push lint gate', () => {
     const repo = repoWithPendingReview('{"scripts":{"lint":"exit 7"}}');
     skipLocalChecks(repo);
     mkdirSync(join(repo, 'node_modules'));
+    writeFileSync(join(repo, 'node_modules', '.package-lock.json'), '{"packages":{}}');
 
     const result = runHook(repo, { env: reviewEnv() });
 

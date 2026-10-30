@@ -1,3 +1,7 @@
+import {
+  schedulingHasStandingAuthorization,
+  type createSchedulingTool,
+} from './scheduling-tool.js';
 import type { Conductor } from '@verity/session';
 import {
   answerAppHelp,
@@ -11,7 +15,7 @@ import {
   tasksRequestSchema,
   type AgentEvent,
 } from '@verity/events';
-import { PermissionDecisionInProgressError, worktreeExists } from '@verity/session';
+import { PermissionDecisionInProgressError } from '@verity/session';
 import type { EventStore, SessionRecord } from '@verity/store';
 import { isLocalProject, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
@@ -103,6 +107,8 @@ interface ServerMcpRouteDeps {
   conductor: Conductor;
   assistantToolDeps: AssistantToolDeps;
   summarizeSession: (session: SessionRecord) => Promise<SessionSummary>;
+  sessionResumable: (session: SessionRecord) => Promise<boolean>;
+  schedulingTool: ReturnType<typeof createSchedulingTool>;
   runningTurnInitiator: (
     sessionId: string,
     turnId: string,
@@ -131,6 +137,8 @@ export function registerServerMcpRoutes({
   conductor,
   assistantToolDeps,
   summarizeSession,
+  sessionResumable,
+  schedulingTool,
   runningTurnInitiator,
   projectsBeingDeleted,
   beginProjectSpawn,
@@ -441,17 +449,8 @@ export function registerServerMcpRoutes({
         const { summaries, omitted } = await collectSessionFacts(
           {
             listSessions: () => deps.eventStore.listSessions(),
-            // These two must decide worktree liveness identically, and today they do:
-            // `summarizeSession` sets `resumable` from this same `worktreeExists`. The
-            // coupling is load-bearing rather than tidy. The prefilter drops rows by
-            // `worktreeExists`; eligibility is then decided by `facts.resumable`. Let
-            // `resumable` become the broader of the two and a session the handoff would
-            // have called eligible never reaches the predicate — so a project holding two
-            // eligible sessions presents as holding one, and an ambiguous handoff that
-            // `sessionHandoffCaveats` promises will "fail rather than choosing" delivers
-            // to whichever survived instead. Changing where either gets its answer means
-            // changing both.
-            worktreeExists: (worktree) => worktreeExists(worktree),
+            // Match summary eligibility, including safely journaled retired worktrees.
+            worktreeExists: (_worktree, session) => sessionResumable(session),
             summarize: summarizeSession,
           },
           keep,
@@ -858,6 +857,10 @@ export function registerServerMcpRoutes({
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_scheduling') {
+          await schedulingTool.authorize({ projectId, sessionId, request: input.request });
+          return;
+        }
         if (toolName === 'verity_matrix') {
           await createMatrixTool({ eventStore: deps.eventStore }).authorize({
             ...input,
@@ -1032,7 +1035,7 @@ export function registerServerMcpRoutes({
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
-            : toolName === 'verity_google_calendar'
+            : toolName === 'verity_google_calendar' || toolName === 'verity_scheduling'
               ? 'calendar'
               : toolName === 'verity_google_contacts'
                 ? 'contacts'
@@ -1078,6 +1081,12 @@ export function registerServerMcpRoutes({
       }) => {
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
+          return true;
+        }
+        if (toolName === 'verity_scheduling') {
+          if (!schedulingHasStandingAuthorization(request)) return false;
+          // A refused read must fail as such, not turn into a card showing raw arguments.
+          await schedulingTool.authorize({ projectId, sessionId, request });
           return true;
         }
         if (toolName === 'verity_matrix') {
@@ -1218,6 +1227,7 @@ export function registerServerMcpRoutes({
       },
       invokeTool: async (input) => {
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
+        if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);
           if (session?.projectId !== input.projectId)
@@ -1440,13 +1450,18 @@ export function registerServerMcpRoutes({
           toolName,
           request: input,
         });
+        // The card shows the stored draft itself, never the agent's description of it.
+        const scheduling =
+          toolName === 'verity_scheduling'
+            ? await schedulingTool.presentation({ projectId, sessionId, request: input })
+            : undefined;
         let answer;
         try {
           answer = await conductor.requestExternalPermission({
             sessionId,
             toolUseId: callId,
             toolName,
-            input: googleAccount ? { ...input, googleAccount } : input,
+            input: { ...input, ...(googleAccount ? { googleAccount } : {}), ...scheduling },
             channel: 'acp',
             ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
             authorizationSnapshot !== undefined

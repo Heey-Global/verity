@@ -3,6 +3,11 @@ import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
+import {
+  projectDeadlineLease,
+  type ProjectDeadlineEnforcer,
+  type ProjectDeadlineLease,
+} from './project-egress-deadline.js';
 
 export interface ProjectFenceBinding {
   projectId: string;
@@ -20,6 +25,8 @@ export interface ProjectFenceSnapshot {
   grants: readonly EgressGrant[];
 }
 export interface ProjectFenceDependencies {
+  /** Required suspend-aware guard; absence must never select a weaker executor. */
+  deadline: ProjectDeadlineEnforcer;
   /** Trusted daemon inspection, not labels or a sandbox-provided attachment. */
   inspect(binding: ProjectFenceBinding): Promise<ProjectFenceBinding>;
   /** Must deny broker/system/overlapping destinations; absent classification denies. */
@@ -84,10 +91,22 @@ export function projectFenceRules(
   leases: readonly Lease[],
   now: number,
   replace: boolean,
+  admission?: ProjectDeadlineLease,
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
-  const commands = replace ? [`delete table inet ${table}`, `delete table bridge ${table}`] : [];
+  // Keep expiry tombstones in the kernel for the entire generation. A packet
+  // already past TC can update them after a userspace snapshot has been read.
+  const commands = replace
+    ? [
+        ...['fence', 'reply', 'forward', 'input', 'output'].map(
+          (chain) => `flush chain inet ${table} ${chain}`,
+        ),
+        `flush set inet ${table} allow4`,
+        `flush set inet ${table} allow6`,
+        `delete table bridge ${table}`,
+      ]
+    : [];
   const unique = new Map<string, Lease>();
   for (const lease of leases) {
     if (
@@ -118,16 +137,98 @@ export function projectFenceRules(
       return `set allow${f} { type ipv${f}_addr . inet_proto . inet_service; flags timeout;${values ? ` elements = { ${values} };` : ''} }`;
     })
     .join('\n');
+  if (leases.length && !admission) throw new Error('Packet deadline is required for admission');
+  if (admission && (!/^[a-f0-9]{32}$/u.test(admission.nonce) || /^0+$/u.test(admission.nonce)))
+    throw new Error('Invalid packet admission identity');
+  // Numeric ct-label tokens name bit indices, not a raw bitmap literal.
+  const bits = Array.from({ length: 128 }, (_, bit) => bit).filter(
+    (bit) => (BigInt(`0x${admission?.nonce ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
+  );
+  const label = bits.length ? `(${bits.join(' | ')})` : '(0 & 1)';
+  const wall = admission?.authorityExpiresAt;
+  if (wall !== undefined && wall !== null && (!Number.isSafeInteger(wall) || wall < 0))
+    throw new Error('Invalid absolute packet expiry');
+  const expiries: Array<number | null> =
+    admission && wall !== null && wall !== undefined
+      ? Object.keys(admission.authorityBootDeadlines).map(Number)
+      : [null];
+  if (wall != null && (!expiries.includes(wall) || Math.min(...expiries.map(Number)) !== wall))
+    throw new Error('Invalid authority expiry set');
+  const deadlines = expiries.map((expiry) => {
+    if (expiry !== null && (!Number.isSafeInteger(expiry) || expiry < 0))
+      throw new Error('Invalid absolute packet expiry');
+    return {
+      identity: createHash('sha256')
+        .update(expiry === null ? 'standing' : String(expiry))
+        .digest('hex')
+        .slice(0, 16),
+      // nft date syntax rounds down, so permission can only close early.
+      date:
+        expiry === null
+          ? null
+          : new Date(Math.floor(expiry / 1000) * 1000).toISOString().slice(0, 19).replace('T', ' '),
+    };
+  });
+  const expirySets = deadlines
+    .flatMap(({ identity }) =>
+      [4, 6].map(
+        (family) =>
+          `set expired${family}_${identity} { type ipv${family}_addr; flags dynamic; size 1; }`,
+      ),
+    )
+    .join('\n');
+  const expiry = (reverse: boolean): string =>
+    [4, 6]
+      .map((family) => {
+        const ip = family === 4 ? 'ip' : 'ip6';
+        const source = `${ip} ${reverse ? 'daddr' : 'saddr'} ${family === 4 ? binding.ipv4 : binding.ipv6}`;
+        const identityAddress = family === 4 ? binding.ipv4 : binding.ipv6;
+        const identityField = `${ip} ${reverse ? 'daddr' : 'saddr'}`;
+        // Latch every represented authority before any earlier-expiry drop. An
+        // in-flight packet must retain B's expiry even after A's rules are replaced.
+        const latch = deadlines
+          .filter(({ date }) => date !== null)
+          .map(
+            ({ identity, date }) =>
+              `${source} meta time >= "${date}" add @expired${family}_${identity} { ${identityAddress} }`,
+          );
+        const reject = deadlines.map(
+          ({ identity }) =>
+            `${source} ${identityField} @expired${family}_${identity} counter name expired drop`,
+        );
+        const wallReject = deadlines
+          .filter(({ date }) => date !== null)
+          .map(({ date }) => `${source} meta time >= "${date}" counter name expired drop`);
+        return [...latch, ...wallReject, ...reject].join('\n') + '\n';
+      })
+      .join('');
   commands.push(`table inet ${table} {
 ${sets}
+${expirySets}
+counter expired { }
 chain fence {
  ip saddr != ${binding.ipv4} drop
  ip6 saddr != ${binding.ipv6} drop
- ip daddr . meta l4proto . th dport @allow4 accept
- ip6 daddr . meta l4proto . th dport @allow6 accept
+ ${expiry(false)}
+ ct state new ct label == (0 & 1) tcp flags & (syn | ack | rst | fin) == syn ct label set ${label}
+ ct state new ct label == (0 & 1) meta l4proto udp ct label set ${label}
+ ct direction original ct label == ${label} ip daddr . meta l4proto . th dport @allow4 accept
+ ct direction original ct label == ${label} ip6 daddr . meta l4proto . th dport @allow6 accept
  counter drop
 }
-chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; }
+chain reply {
+ ip daddr != ${binding.ipv4} drop
+ ip6 daddr != ${binding.ipv6} drop
+ ${expiry(true)}
+ ct direction reply ct label == ${label} ip saddr . meta l4proto . th sport @allow4 accept
+ ct direction reply ct label == ${label} ip6 saddr . meta l4proto . th sport @allow6 accept
+ counter drop
+}
+chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
+chain output { type filter hook output priority -200; policy accept;
+ oifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+ oifname "${binding.bridge}" jump reply
+}
 chain input { type filter hook input priority -200; policy accept;
  iifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
  iifname "${binding.bridge}" counter drop
@@ -162,6 +263,13 @@ export class ProjectEgressFence {
     if (bindingKey(await this.deps.inspect(binding)) !== bindingKey(binding))
       throw new Error('Project fence attachment changed');
   }
+  private async deny(binding: ProjectFenceBinding, next?: ProjectDeadlineLease): Promise<void> {
+    try {
+      await this.deps.deadline.revoke(binding, next);
+    } finally {
+      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+    }
+  }
   prepare(binding: ProjectFenceBinding): Promise<void> {
     binding = { ...binding };
     return this.serialize(async () => {
@@ -180,14 +288,18 @@ export class ProjectEgressFence {
         )
           throw new Error('Project fence bridge already bound');
       await this.verify(binding);
-      await this.deps.apply(
-        projectFenceRules(
-          binding,
-          [],
-          this.now(),
-          old !== undefined && bindingKey(old.binding) === key,
-        ),
-      );
+      try {
+        await this.deps.deadline.prepare(binding);
+      } finally {
+        await this.deps.apply(
+          projectFenceRules(
+            binding,
+            [],
+            this.now(),
+            old !== undefined && bindingKey(old.binding) === key,
+          ),
+        );
+      }
       this.bridges.set(binding.bridge, key);
       this.active.set(binding.projectId, {
         binding: { ...binding },
@@ -212,15 +324,47 @@ export class ProjectEgressFence {
         snapshot.grants.length > 1000
       )
         throw new Error('Stale or invalid project fence policy');
+      // Capture before inspection, classification, DNS or either executor can pause.
+      let admission: ProjectDeadlineLease;
+      let authority: ProjectFenceSnapshot['grants'];
+      try {
+        const sample = await this.deps.deadline.clock();
+        const capturedAt = Number(BigInt(sample.realNs) / 1_000_000n);
+        authority = snapshot.grants.filter(
+          (grant) =>
+            grant.revokedAt === undefined &&
+            (grant.expiresAt === null || grant.expiresAt > capturedAt),
+        );
+        const expiry = authority.reduce<number | null>(
+          (earliest, grant) =>
+            grant.expiresAt === null
+              ? earliest
+              : earliest === null
+                ? grant.expiresAt
+                : Math.min(earliest, grant.expiresAt),
+          null,
+        );
+        admission = projectDeadlineLease(
+          snapshot.binding,
+          snapshot.revision,
+          expiry,
+          sample,
+          authority.flatMap((grant) => (grant.expiresAt === null ? [] : [grant.expiresAt])),
+        );
+      } catch (error) {
+        await this.deny(current.binding);
+        throw error;
+      }
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
-      await this.deps.apply(projectFenceRules(current.binding, [], this.now(), true));
+      await this.deny(current.binding, admission);
       current.revision = snapshot.revision;
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
       const leases: Lease[] = [];
-      for (const grant of snapshot.grants) {
+      // Never reconsider excluded grants after an asynchronous wall-clock rollback.
+      for (const grant of authority) {
         if (
           grant.revokedAt !== undefined ||
           (grant.expiresAt !== null && grant.expiresAt <= this.now())
@@ -252,7 +396,15 @@ export class ProjectEgressFence {
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
-      await this.deps.apply(projectFenceRules(snapshot.binding, leases, this.now(), true));
+      await this.deps.apply(
+        projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
+      );
+      try {
+        if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
+      } catch (error) {
+        await this.deny(snapshot.binding);
+        throw error;
+      }
     });
   }
   retire(binding: ProjectFenceBinding): Promise<void> {
@@ -261,7 +413,7 @@ export class ProjectEgressFence {
       const current = this.active.get(binding.projectId);
       if (!current || bindingKey(current.binding) !== bindingKey(binding))
         throw new Error('Inactive project fence generation');
-      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+      await this.deny(binding);
       this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
     });
@@ -275,7 +427,7 @@ export function applyProjectFenceRules(script: string): Promise<void> {
       stdio: ['pipe', 'ignore', 'pipe'],
       timeout: APPLY_BUDGET_MS,
       killSignal: 'SIGKILL',
-      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
+      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
     });
     child.stderr.resume();
     child.once('error', reject);

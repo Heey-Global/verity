@@ -1,3 +1,4 @@
+import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
   EventStore,
@@ -144,6 +145,8 @@ export interface ServerDeps {
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
   attendeeEdge?: import('./preview-share-manager.js').PreviewEdgeControl;
+  /** Mints access tokens for a stored Google account; scheduling requests act on their own. */
+  googleAccessToken?: ((accountId?: string) => Promise<string | undefined>) | undefined;
   secretCipher?: SealableSecretCipher | undefined;
   /** Per-device API auth-token registry backing the C1 auth gate. When present
    *  AND enabled (a master password exists), a global `onRequest` hook requires a
@@ -222,6 +225,7 @@ export interface ServerDeps {
    * dir} default (empty, no repo — A1 behavior).
    */
   worktrees?: WorktreeProvisioner;
+  sessionStorage?: SessionStorage | undefined;
   /**
    * The repo-root checkout (e.g. `/work`) reserved for the human/main session —
    * NEVER provisioned or removed by the server (#105). Sessions never run here
