@@ -35,6 +35,28 @@ const fence = new ProjectEgressFence({
   policyCurrent: (snapshot) => Promise.resolve(snapshot.revision === revision),
   apply: applyProjectFenceRules,
 });
+interface KernelObservation {
+  identity: string;
+  deadline_ns: string;
+  accepted: number;
+  denied: number;
+  last_accepted_boot_ns: string;
+  last_denied_boot_ns: string;
+  clocks: { bootBeforeNs: string; bootAfterNs: string };
+}
+async function kernelObservation(): Promise<KernelObservation> {
+  return JSON.parse(
+    (await exec('/usr/bin/python3', ['/probe/deadline-observe.py', JSON.stringify(bindings[0]!)]))
+      .stdout,
+  ) as KernelObservation;
+}
+async function flow(request: Record<string, unknown>) {
+  const reply = JSON.parse(
+    await docker('exec', 've-a', 'python3', '/probe/agent.py', 'command', JSON.stringify(request)),
+  ) as { opened?: boolean; sent?: boolean; stopped?: boolean; error?: string };
+  assert.equal(reply.error, undefined, 'Persistent stream operation failed');
+  assert.ok(reply.opened || reply.sent || reply.stopped);
+}
 async function observe(
   project: string,
   host: string,
@@ -235,8 +257,53 @@ try {
     await matrix('ve-b', false, 'denied-b');
     await observe('ve-a', '172.30.101.3', 'tcp', false, 'peer-denied', 've-peer');
   });
+  const baseline = await kernelObservation();
+  await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+  await flow({
+    action: 'flow-start',
+    kind: 'tcp',
+    host: addresses[0],
+    id: 'deadline-retained',
+    repeatMarker: 'deadline-stream',
+  });
+  await flow({ action: 'flow-send', id: 'deadline-retained', marker: 'deadline-retained-live' });
+  const positive = await kernelObservation();
+  assert.ok(positive.accepted > baseline.accepted, 'No positive through the actual TC guard');
+  assert.ok(BigInt(positive.last_accepted_boot_ns) < BigInt(positive.deadline_ns));
+  assert.ok((await docker('logs', 've-receiver')).includes('deadline-retained-live'));
   await delay(1200);
+  const expiredBefore = await kernelObservation();
+  await flow({ action: 'flow-send', id: 'deadline-retained', marker: 'deadline-retained-expired' });
   await matrix('ve-a', false, 'lease-expiry');
+  const expiredAfter = await kernelObservation();
+  assert.equal(expiredAfter.accepted, expiredBefore.accepted);
+  assert.ok(expiredAfter.denied > expiredBefore.denied);
+  assert.ok(BigInt(expiredAfter.last_accepted_boot_ns) < BigInt(positive.deadline_ns));
+  assert.ok(BigInt(expiredAfter.last_denied_boot_ns) >= BigInt(positive.deadline_ns));
+  await flow({ action: 'flow-repeat-stop', id: 'deadline-retained' });
+  await fence.refresh({ binding: bindings[0]!, revision, grants: grants() });
+  await flow({ action: 'flow-send', id: 'deadline-retained', marker: 'deadline-retained-renewed' });
+  await renewed([0], async () => {
+    await observe('ve-a', addresses[0]!, 'tcp', true, 'deadline-fresh-after-renewal');
+  });
+  const retainedLogs = await docker('logs', 've-receiver');
+  assert.ok(!retainedLogs.includes('deadline-retained-expired'));
+  assert.ok(!retainedLogs.includes('deadline-retained-renewed'));
+  await writeFile('/evidence/adapter-deadline-receiver.jsonl', retainedLogs);
+  await writeFile(
+    '/evidence/adapter-deadline-proof.json',
+    JSON.stringify(
+      {
+        complete: true,
+        baseline,
+        positive,
+        expiredBefore,
+        expiredAfter,
+      },
+      null,
+      2,
+    ),
+  );
   await renewed([0], async () => {
     await matrix('ve-a', true, 'before-revoke');
   });

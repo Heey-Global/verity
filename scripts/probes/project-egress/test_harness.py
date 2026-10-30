@@ -292,6 +292,28 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         await agent.bounded(request)
         self.assertIn(("should-have-been-denied", "tcp"), self.events)
 
+    async def test_continuous_writer_retains_the_same_open_tcp_stream(self):
+        connect = asyncio.open_connection
+        flows, tasks = {}, {}
+        async def redirect(host, port):
+            return await connect(host, self.port)
+        with (patch.object(agent, 'FLOWS', flows), patch.object(agent, 'FLOW_TASKS', tasks),
+              patch.object(agent.asyncio, 'open_connection', side_effect=redirect)):
+            await agent.operation({'action': 'flow-start', 'kind': 'tcp', 'host': '127.0.0.1',
+                                   'id': 'retained', 'repeatMarker': 'continuous'})
+            try:
+                await asyncio.sleep(0.16)
+                await agent.operation({'action': 'flow-repeat-stop', 'id': 'retained'})
+                self.assertGreaterEqual(len([v for v in self.events if v[0].startswith('continuous-')]), 2)
+                await agent.operation({'action': 'flow-send', 'id': 'retained', 'marker': 'same-stream'})
+                await asyncio.sleep(0.02)
+                self.assertIn(('same-stream', 'tcp'), self.events)
+            finally:
+                for task in tasks.values(): task.cancel()
+                await asyncio.gather(*tasks.values(), return_exceptions=True)
+                flows['retained'][1].close()
+                await flows['retained'][1].wait_closed()
+
     async def test_batch_attempts_each_retained_transport_and_family(self):
         loop = asyncio.get_running_loop()
         extra_server = await asyncio.start_server(agent.receive_stream, "::1", 0)

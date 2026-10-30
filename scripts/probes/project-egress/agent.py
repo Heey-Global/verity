@@ -9,13 +9,16 @@ import socket
 import ssl
 import struct
 import sys
+import time
 from pathlib import Path
 
 TIMEOUT = 1.0
 
 
 def emit(marker, transport):
-    print(json.dumps({"marker": marker, "transport": transport}), flush=True)
+    print(json.dumps({"marker": marker, "transport": transport,
+                      "boot_ns": time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                      "real_ns": time.time_ns()}), flush=True)
 
 
 def dns_query(name, qtype=1):
@@ -265,6 +268,13 @@ async def send(request):
 
 
 FLOWS = {}
+FLOW_TASKS = {}
+
+
+async def repeat_flow(identifier, marker):
+    for sequence in range(1200):  # A disposable probe cannot emit forever.
+        await operation({'action': 'flow-send', 'id': identifier, 'marker': f'{marker}-{sequence}'})
+        await asyncio.sleep(0.05)
 
 
 async def operation(request):
@@ -286,7 +296,14 @@ async def operation(request):
             sock = socket.socket(family, socket.SOCK_DGRAM)
             sock.connect((request["host"], 8080))
             FLOWS[request["id"]] = sock
+        if request.get('repeatMarker'):
+            FLOW_TASKS[request['id']] = asyncio.create_task(repeat_flow(request['id'], request['repeatMarker']))
         return {"opened": True}
+    if action == 'flow-repeat-stop':
+        task = FLOW_TASKS.pop(request['id'])
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return {'stopped': True}
     if action == "flow-send":
         flow = FLOWS[request["id"]]
         payload = (request["marker"] + "\n").encode()
