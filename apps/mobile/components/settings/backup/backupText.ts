@@ -98,9 +98,17 @@ export function backupAlertText(code: string): { title: string; message: string 
 
 /** The Settings row: one line under the title and a status tag. */
 export function backupRowSummary(
-  status: Available,
+  status: BackupStatus,
   now: number = Date.now(),
 ): { subtitle: string; status: { intent: StatusIntent; label: string } } {
+  if (!status.available)
+    return {
+      subtitle:
+        status.reason === 'installer-required'
+          ? 'Server preparation needed'
+          : 'Check server status',
+      status: { intent: 'needsSetup', label: 'Needs attention' },
+    };
   if (!status.configured)
     return { subtitle: 'Not set up', status: { intent: 'needsSetup', label: 'Set up' } };
   const subtitle =

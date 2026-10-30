@@ -84,7 +84,10 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
       child.stdin.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code !== 'EPIPE') reject(error);
       });
-      child.stdin.end(stdin);
+      // Rejected commands can exit before reading their body; do not write an
+      // empty payload into a pipe they may already have closed.
+      if (stdin) child.stdin.end(stdin);
+      else child.stdin.end();
     });
   return { calls, run };
 }

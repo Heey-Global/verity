@@ -105,6 +105,12 @@ async function readManagedBackup(
   }
 }
 
+export async function readManagedBackupMountCheckpoint(
+  rootPath: string,
+): Promise<ServerDeploymentSpec | null> {
+  return readManagedBackup(rootPath, 'deployment-spec.before-backups.json');
+}
+
 /** Read the pre-migration authority through the same owned-directory boundary. */
 export async function readManagedHostDiagnosticBackup(
   rootPath: string,
@@ -683,7 +689,7 @@ export async function writeManagedUpdateChannel(
   }
 }
 
-/** Installer-only capability migration; old deployments remain readable without these mounts. */
+/** Release-owned capability migration; old deployments remain readable without these mounts. */
 export async function migrateManagedBackupMounts(options: {
   root: string;
   deploymentId: string;

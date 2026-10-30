@@ -2422,6 +2422,7 @@ describe('GitHub-hosted runner boundary', () => {
     const job = ci.jobs.installer;
     expect(job?.['runs-on']).toBe('ubuntu-26.04');
     expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--security-opt seccomp=unconfined');
+    expect(job?.steps?.some((step) => step.run?.includes('unshare -r true'))).toBe(true);
     expect(
       job?.steps?.some((step) =>
         step.run?.includes('docker build --file deploy/installer-ci.Dockerfile'),
@@ -2437,6 +2438,21 @@ describe('GitHub-hosted runner boundary', () => {
     expect(suite?.run).toContain('$VERITY_INSTALLER_SANDBOX');
     expect(suite?.run).toContain('--user "$(id -u):$(id -g)"');
     expect(suite?.run).toContain('--env CI=true');
+    const backupSuite = job?.steps?.find((step) =>
+      step.run?.includes('node --test deploy/bin/verity-backup-provision.test.mjs'),
+    );
+    expect(backupSuite?.run).toContain('$VERITY_BACKUP_TEST_SANDBOX');
+    expect(backupSuite?.run).toContain('--user 0:0');
+    expect(backupSuite?.run).toContain('--env CI=true');
+    expect(backupSuite?.run).toContain('unshare -m sh -c');
+    expect(backupSuite?.run).toContain('$GITHUB_WORKSPACE:/workspace:ro');
+    expect(backupSuite?.run).not.toContain('docker.sock');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).not.toContain('SYS_ADMIN');
+    expect(job?.env?.VERITY_INSTALLER_SANDBOX).toContain('--cap-drop ALL --network none');
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain(
+      '--cap-drop ALL --cap-add SYS_ADMIN --network none',
+    );
+    expect(job?.env?.VERITY_BACKUP_TEST_SANDBOX).toContain('--security-opt apparmor=unconfined');
     expect(
       job?.steps?.some(
         (step) => step.run === 'node --test deploy/bin/verity-pairing-material.test.mjs',

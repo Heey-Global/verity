@@ -1,7 +1,11 @@
 # Installer recovery from a copied backup
 
 Backup setup and scheduling are available in the app (Settings → Backup) on every
-installation the installer provisioned. The production recovery gate was removed on
+supported installer-managed installation. Normal app-initiated server updates
+prepare the backup directory, read-only database role and identity helper
+automatically on systemd hosts, including older installations; rerunning the
+installer is not required. Captures remain disabled until an administrator saves
+and confirms the recovery key in Settings → Backup. The production recovery gate was removed on
 2026-10-29 by product decision, before every v1 acceptance requirement in
 [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md) was met; native-device
 trust reset, update safeguards and same-host rollback remain open.

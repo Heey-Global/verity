@@ -232,15 +232,16 @@ function Unavailable({ reason }: { reason: string }) {
   return (
     <Card stacked>
       <CardHead
-        title={
-          reason === 'installer-required' ? 'One-time server step needed' : 'Backup unavailable'
-        }
+        title={reason === 'installer-required' ? 'Server preparation needed' : 'Backup unavailable'}
         subtitle={
           reason === 'installer-required'
-            ? 'This server was set up before backups existed. Run the Verity installer on the server once more.'
+            ? 'Update the server to prepare backups automatically. If preparation failed, check the server update details.'
             : 'Backup is not working on this server right now. Check the server logs.'
         }
       />
+      {reason === 'installer-required' && (
+        <Button label="Server updates" onPress={() => router.push('/settings/server-update')} />
+      )}
     </Card>
   );
 }
