@@ -168,14 +168,12 @@ describe('scheduling requests', () => {
         }),
       ),
     );
-    // Concurrent PostgreSQL transactions may acquire the lock in either order.
-    // Require complete, non-overlapping callbacks rather than FIFO acquisition.
+    // Pool connection acquisition can reorder the callers; the lock guarantees
+    // non-overlap, not FIFO ordering before either transaction owns it.
     expect([
       ['first:start', 'first:end', 'second:start', 'second:end'],
       ['second:start', 'second:end', 'first:start', 'first:end'],
     ]).toContainEqual(order);
-    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe(
-      order.at(-1)?.replace(':end', ''),
-    );
+    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe(order.at(-1)?.split(':')[0]);
   });
 });

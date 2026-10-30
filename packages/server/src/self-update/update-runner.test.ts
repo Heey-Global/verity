@@ -86,6 +86,30 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it('retries a resumable standby creation failure without waiting for a device or restart', async () => {
+    const { root, daemon } = await adoptedDeployment('standby-auto-retry');
+    await journalled(root);
+    const create = vi.mocked(daemon.docker.createContainer).getMockImplementation()!;
+    let failures = 0;
+    vi.spyOn(daemon.docker, 'createContainer').mockImplementation(async (spec) => {
+      if (spec.name === 'verity-managed-server-g1' && failures++ === 0)
+        throw new Error('temporary standby provisioning failure');
+      return create(spec);
+    });
+    const delays: number[] = [];
+    const update = createUpdateRunner({
+      ...options(root, daemon),
+      retrySleep: async (delay) => {
+        delays.push(delay);
+        expect(await readUpdateJournal(root)).toMatchObject({ phase: 'creating-standby' });
+      },
+    });
+    await update.run();
+    expect(delays).toEqual([1_000]);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+    expect(await readUpdateAttempt(root)).toBeNull();
+  });
+
   it('retains a standby spec when evidence refreshes after creation but before journalling', async () => {
     const { root, daemon } = await adoptedDeployment('diagnostics-retry');
     const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'diagnostics-retry-'));
