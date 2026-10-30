@@ -23,8 +23,6 @@ it('coalesces requests and separates pending host work from estimated image size
   await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
   const state = await service.status();
   expect(state.nativePending).toBe(true);
-  await service.start();
-  expect(collect).toHaveBeenCalledTimes(1);
   expect(state.result?.imagesRemoved).toBe(1);
   expect(state.result?.filesystemFreeBytesChange).not.toBe(report.estimatedImageBytes);
   expect(state.result?.retainedPins[0]?.reason).toContain('Stopped-container grace');
@@ -55,4 +53,18 @@ it('reports failure without leaking command output', async () => {
   await service.start();
   await vi.waitFor(async () => expect((await service.status()).state).toBe('failed'));
   expect((await service.status()).error).not.toContain('private detail');
+});
+
+it('allows another independent pass when the host never acknowledges a request', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'storage-action-')); roots.push(directory);
+  mkdirSync(join(directory, 'reclamation-evidence'));
+  const collect = vi.fn(async () => report);
+  const service = new StorageReclamation({ directory, collect, worktrees: () => undefined });
+  await service.start();
+  await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
+  expect((await service.status()).nativePending).toBe(true);
+  await service.start();
+  await vi.waitFor(() => expect(collect).toHaveBeenCalledTimes(2));
+  await vi.waitFor(async () => expect((await service.status()).state).toBe('completed'));
+  expect((await service.status()).nativePending).toBe(true);
 });

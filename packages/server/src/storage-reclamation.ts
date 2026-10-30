@@ -28,7 +28,7 @@ export class StorageReclamation {
   }
   async start(): Promise<void> {
     await this.status();
-    if (this.flight || this.value.nativePending) return;
+    if (this.flight) return;
     this.value = { ...this.value, state: 'running', startedAt: new Date().toISOString(), completedAt: null, error: null, result: null, nativePending: false };
     this.flight = this.run().catch(() => {
       this.value = { ...this.value, state: 'failed', error: 'Storage reclamation failed; inspect server diagnostics.', completedAt: new Date().toISOString() };
