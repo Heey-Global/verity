@@ -104,7 +104,7 @@ export interface ProjectSettingsRecord {
   updatedAt: Date;
 }
 
-export type ProjectSettingsKey =
+type ProjectSettingsKey =
   | 'devcontainerEnabled'
   | 'dopplerTokenRef'
   | 'dopplerToken'
@@ -120,7 +120,7 @@ export type ProjectSettingsKey =
   | 'googleDriveAccessMode'
   | 'allowedAgents';
 
-export type ProjectSettingsPatch = {
+type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
 };
 

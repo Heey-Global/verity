@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, vi, type Mock } from 'vitest';
 import { createAuthTokenRegistry } from './auth.js';
 import { type GitOutput } from './branches.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from './sandbox-updates.js';
@@ -118,13 +118,13 @@ export const emitMerged = vi.fn<(id: string, number: number) => Promise<void>>(
 
 export const closeSession = vi.fn<(id: string) => void>();
 
-export const runAfterCurrentTurn = vi.fn<(id: string, fn: () => void) => boolean>((id, fn) => {
+const runAfterCurrentTurn = vi.fn<(id: string, fn: () => void) => boolean>((id, fn) => {
   if (isBusy(id)) return true;
   fn();
   return false;
 });
 
-export const hasDeferredAfterCurrentTurn = vi.fn<(id: string) => boolean>(() => false);
+const hasDeferredAfterCurrentTurn = vi.fn<(id: string) => boolean>(() => false);
 
 export const isBackendHandoffPending = vi.fn<(id: string) => boolean>(() => false);
 
@@ -233,7 +233,7 @@ export const branchSvc = {
   >(),
 };
 
-export const agentLogin = {
+export const agentLogin: Record<'start' | 'get' | 'submitCode' | 'close', Mock> = {
   start: vi.fn(),
   get: vi.fn(),
   submitCode: vi.fn(),
