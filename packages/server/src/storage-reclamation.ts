@@ -68,7 +68,7 @@ export class StorageReclamation {
   }
 }
 
-/** A fixed request file wakes the root-owned path unit; its contents are never commands. */
+/** A fixed request file queues work for the existing root-owned timer; its contents are never commands. */
 export async function requestNativeReclamation(directory = '/run/verity-buildkit'): Promise<string> {
   const evidence = join(directory, 'reclamation-evidence');
   if (await realpath(evidence) !== evidence) throw new Error('Unsafe evidence directory');

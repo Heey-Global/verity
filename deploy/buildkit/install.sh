@@ -108,12 +108,12 @@ chmod 0644 /etc/systemd/system/verity-build-storage.service.new
 mv /etc/systemd/system/verity-build-storage.service.new /etc/systemd/system/verity-build-storage.service
 install -m 0644 "$source_dir/verity-build-storage.timer" /etc/systemd/system/
 install -m 0644 "$source_dir/snapshotter-policy.conf" /etc/verity-buildkit/
-install -m 0644 "$source_dir/verity-buildkit-snapshotter.service" "$source_dir/verity-buildkit-snapshotter.timer" "$source_dir/verity-buildkit-snapshotter.path" /etc/systemd/system/
+install -m 0644 "$source_dir/verity-buildkit-snapshotter.service" "$source_dir/verity-buildkit-snapshotter.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable verity-buildkit.service
 systemctl restart verity-buildkit.service
 /usr/local/libexec/verity-buildkit/snapshotter-migrate.sh init
-systemctl enable --now verity-buildkit-snapshotter.timer verity-buildkit-snapshotter.path
+systemctl enable --now verity-buildkit-snapshotter.timer
 systemctl enable --now verity-build-storage.timer
 systemctl start verity-build-storage.service
 # Snapshotter state is not an installer artifact. Old workers can hold references

@@ -118,9 +118,11 @@ separately. Other host activity can affect the latter; no exact future saving is
 guaranteed by an inventory estimate.
 
 The matching signed host-builder bundle must be installed as well as the Server
-release. It installs the root-owned `verity-buildkit-snapshotter.path` alongside
-the existing timer. The Server writes only a fixed request file in the dedicated
+release. The existing root-owned snapshotter timer services native requests on its next
+minute pass. The Server writes only a fixed request file in the dedicated
 group-writable evidence directory; requests carry no executable command or path.
+No additional systemd unit is installed, so existing host-bridge rollback coverage
+continues to cover the complete helper bundle.
 No host state mount or general root-execution API is exposed. Old host helpers
 remain safe but cannot perform the new action. Existing BuildKit cache settings
 are unchanged.
