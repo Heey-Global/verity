@@ -70,6 +70,10 @@ def setup():
     assert os.getuid() == 0 and Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
     run('docker', 'run', '-d', '--name', 'verity-boot-registry', '--network', 'host', '--restart', 'no',
         '-e', 'REGISTRY_HTTP_ADDR=127.0.0.1:5000', 'verity-boot-registry:local')
+    def registry_ready():
+        with urllib.request.urlopen('http://127.0.0.1:5000/v2/', timeout=2) as response:
+            return response.status == 200
+    wait(registry_ready, 30)
     refs = {}
     for role, image in [('runner', 'verity-boot-observed-runner:local'), ('relay', 'verity-boot-relay:local')]:
         target = f'127.0.0.1:5000/verity-boot-{role}:fixture'
@@ -241,7 +245,11 @@ if __name__ == '__main__':
     elif operation == 'snapshot':
         print(json.dumps(snapshot()))
     elif operation == 'stream-status':
-        print((worktree() / f'.boot-stream-{sys.argv[2]}.json').read_text())
+        status = json.loads((worktree() / f'.boot-stream-{sys.argv[2]}.json').read_text())
+        receipts = ROOT / 'broker-receipts.jsonl'
+        rows = [json.loads(line) for line in receipts.read_text().splitlines()] if receipts.exists() else []
+        status['last_receipt_ns'] = max((int(row['time_ns']) for row in rows if row['phase'] == sys.argv[2]), default=0)
+        print(json.dumps(status))
     elif operation == 'stop-poll':
         (worktree() / f'.boot-stop-{sys.argv[2]}').touch()
     elif operation == 'inflight':

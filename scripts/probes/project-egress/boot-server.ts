@@ -1,6 +1,6 @@
 /** Disposable boot fixture: the real EmbeddedServer with persistent test PostgreSQL. */
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, appendFile } from 'node:fs/promises';
 import { buildTestEmbeddedServer } from '../../../packages/server/src/testing.js';
 import { createDockerClient } from '../../../packages/server/src/docker.js';
 import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
@@ -98,6 +98,23 @@ if (process.argv[2] === 'gateway') {
     agentGatewayUnsealKey: config.gatewayKey,
     dockerGc: false,
     transcriptSweep: 'off',
+  });
+  // Observe completion of the actual authenticated handler, including a committed
+  // request whose TCP response was lost. Client acknowledgements alone undercount.
+  server.app.addHook('onResponse', async (request, reply) => {
+    if (request.url !== '/internal/project/memory' || reply.statusCode !== 200) return;
+    const body = request.body as { text?: unknown } | undefined;
+    const phase =
+      typeof body?.text === 'string' ? /^boot-poll-([a-z-]+)\n$/u.exec(body.text)?.[1] : undefined;
+    if (phase !== undefined) {
+      await appendFile(
+        `${root}/broker-receipts.jsonl`,
+        JSON.stringify({
+          phase,
+          time_ns: (BigInt(Date.now()) * 1_000_000n).toString(),
+        }) + '\n',
+      );
+    }
   });
   await server.app.listen({ host: '127.0.0.1', port: 9000 });
   process.on('SIGTERM', () => {

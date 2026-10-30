@@ -102,7 +102,7 @@ def main():
             vm.ssh(guest + f'stream {event}')
             time.sleep(1)
             stream_before = json.loads(vm.ssh(guest + f'stream-status {event}'))
-            assert stream_before['successes'] >= 3, 'Original stream positive control failed'
+            assert stream_before['successes'] >= 3 and stream_before['last_receipt_ns'], 'Authenticated polling positive control failed'
             before = vm.facts()
             event_time = int(vm.ssh('date +%s%N').strip())
             if event == 'controller-kill':
@@ -131,7 +131,7 @@ def main():
                 assert 'ct label set' not in rules, 'Controller/daemon restored a prior admission'
             time.sleep(2)
             stream_after = json.loads(vm.ssh(guest + f'stream-status {event}'))
-            assert stream_after['last_success_ns'] - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'
+            assert max(stream_after['last_success_ns'], stream_after['last_receipt_ns']) - event_time <= 2_000_000_000, 'Observed revocation exceeded two seconds'
             if event in ('controller-kill', 'server-kill'):
                 now = int(vm.ssh('date +%s%N').strip())
                 assert now - stream_after['heartbeat_ns'] < 2_000_000_000, 'Project poll stopped attempting authenticated requests'
@@ -176,7 +176,8 @@ def main():
     finally:
         if vm.process and vm.process.poll() is None:
             for name, shell in [('journal.txt', 'sudo journalctl --no-pager -u docker -u verity-egress-host -u verity-boot-server -u verity-boot-gateway'),
-                                ('firewall.txt', 'sudo nft list ruleset')]:
+                                ('firewall.txt', 'sudo nft list ruleset'),
+                                ('broker-receipts.jsonl', 'sudo cat /var/lib/verity-egress-fixture/broker-receipts.jsonl')]:
                 try:
                     (evidence / name).write_text(vm.ssh(shell, timeout=15))
                 except subprocess.SubprocessError as error:
