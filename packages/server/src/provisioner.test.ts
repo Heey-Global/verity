@@ -611,6 +611,21 @@ describe('ProvisionerImpl (#174)', () => {
           },
           inspectNetwork: async () => {},
           inspectContainer: async () => {},
+          inspectTransport: async () => ({
+            sandbox: {
+              address: '172.30.0.3',
+              mac: '02:42:ac:1e:00:03',
+              device: 'vethsandbox',
+              index: 10,
+            },
+            relay: {
+              address: '172.30.0.2',
+              mac: '02:42:ac:1e:00:02',
+              device: 'vethrelay',
+              index: 11,
+            },
+            codex: true,
+          }),
           startContainer: async () => {
             events.push('host.start');
           },
@@ -642,6 +657,11 @@ describe('ProvisionerImpl (#174)', () => {
           projectId: binding.projectId,
           containerGeneration: binding.containerGeneration,
         });
+        await binding.egress!.start(
+          { projectId: binding.projectId, containerGeneration: binding.containerGeneration },
+          'relay',
+          (sequence + 12).toString(16).repeat(64),
+        );
         return original(binding);
       };
       const provisioner = createProvisioner({
@@ -1019,6 +1039,7 @@ describe('ProvisionerImpl (#174)', () => {
         id: 'container-1',
         running: false,
         image: 'verity-devc-test:latest',
+        extraHosts: ['relay:172.20.0.2'],
         networks: { 'project-network': {} },
         labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
         mounts: [
@@ -1059,6 +1080,7 @@ describe('ProvisionerImpl (#174)', () => {
         throw new Error('unexpected host command');
       }, {});
       const hostStart = vi.spyOn(egress, 'start').mockResolvedValue(undefined);
+      vi.spyOn(egress, 'connect').mockResolvedValue('172.20.0.2');
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,

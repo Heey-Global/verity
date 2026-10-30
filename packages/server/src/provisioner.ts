@@ -3613,6 +3613,15 @@ export class ProvisionerImpl implements Provisioner {
                 'sandbox',
                 inspect.id,
               );
+              const identity = { projectId: project.id, containerGeneration: generation };
+              const address = await this.opts.projectEgress.connect(identity);
+              if (
+                !inspect.extraHosts?.length ||
+                inspect.extraHosts.some((entry) => !entry.endsWith(`:${address}`))
+              ) {
+                await this.opts.projectEgress.prepare(identity);
+                throw new Error('Retained relay projection differs from host transport binding');
+              }
             } else await this.opts.docker.startContainer(inspect.id);
             const running = await this.opts.docker.inspectContainer(project.containerName);
             if (!running.running) throw new Error('Docker did not report the Sandbox as running');
@@ -3650,6 +3659,9 @@ export class ProvisionerImpl implements Provisioner {
               wakeStartedAt: null,
             })) as ProjectRecord;
           } catch (cause) {
+            await this.opts.projectEgress
+              ?.prepare({ projectId: project.id, containerGeneration: generation })
+              .catch(() => undefined);
             const cleanup = await Promise.allSettled([
               this.opts.docker.stopContainer(project.containerName),
               ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
@@ -5150,7 +5162,9 @@ export class ProvisionerImpl implements Provisioner {
           effectiveCodexGatewayUrl,
         ]);
         const servers =
-          this.opts.sandboxDnsServers !== undefined && this.opts.sandboxDnsServers.length > 0
+          this.opts.projectEgress === undefined &&
+          this.opts.sandboxDnsServers !== undefined &&
+          this.opts.sandboxDnsServers.length > 0
             ? this.opts.sandboxDnsServers
             : [relayResolverAddress(effectiveClaudeGatewayUrl, gvisorExtraHosts)];
         if (this.opts.gitSecretRoot === undefined) {
@@ -5858,6 +5872,14 @@ export class ProvisionerImpl implements Provisioner {
       try {
         if (this.opts.projectEgress !== undefined) {
           await this.opts.projectEgress.start(relayActivation.identity, 'sandbox', containerId);
+          const relayAddress = await this.opts.projectEgress.connect(relayActivation.identity);
+          if (
+            !gvisorExtraHosts.length ||
+            gvisorExtraHosts.some((entry) => !entry.endsWith(`:${relayAddress}`))
+          ) {
+            await this.opts.projectEgress.prepare(relayActivation.identity);
+            throw new Error('Sandbox relay projection differs from host transport binding');
+          }
         } else await this.opts.docker.startContainer(containerId);
       } catch (cause) {
         if (
@@ -5886,6 +5908,9 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {
@@ -5939,6 +5964,9 @@ export class ProvisionerImpl implements Provisioner {
         const component =
           runnerRuntimePath !== undefined ? 'Runner supervisor' : 'Sandbox egress connector';
         const message = `${component} failed to start: ${commandFailureMessage(cause)}`;
+        // Revoke the pair before rollback removes either endpoint. The host
+        // attempts containment itself if kernel revocation fails.
+        await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
         await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
         let removalFailure: unknown;
         try {
@@ -6047,6 +6075,9 @@ export class ProvisionerImpl implements Provisioner {
       }
     } catch (cause) {
       const message = `devcontainer ${lifecycleFailureLabel} failed: ${commandFailureMessage(cause)}`;
+      // Revoke the pair before rollback removes either endpoint. The host
+      // attempts containment itself if kernel revocation fails.
+      await this.opts.projectEgress?.prepare(relayActivation.identity).catch(() => undefined);
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
       let removalFailure: unknown;
       try {

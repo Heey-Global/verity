@@ -14,6 +14,14 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/mcp-apps/:appId/call'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/assistant'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
