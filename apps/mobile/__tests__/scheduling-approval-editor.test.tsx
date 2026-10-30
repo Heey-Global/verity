@@ -67,3 +67,9 @@ it('passes a changed title and language on', () => {
   fireEvent.press(screen.getByText('Deutsch'));
   expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ language: 'de' }));
 });
+
+it('spells out hidden text-direction characters the fields would not show', () => {
+  renderEditor({ ...schedulingCardEdit(editable), title: 'Intro\u202Ecall' });
+  expect(screen.getByText('Contains hidden text-direction characters')).toBeTruthy();
+  expect(screen.getByText(/Intro<U\+202E>call/u)).toBeTruthy();
+});

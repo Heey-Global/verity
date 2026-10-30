@@ -3,10 +3,11 @@ import { StyleSheet } from 'react-native-unistyles';
 import {
   SCHEDULING_LANGUAGES,
   schedulingCardEmail,
+  spellOutBidiControls,
   type SchedulingCardEdit,
   type SchedulingEditable,
 } from '@verity/mobile';
-import { FilterChips, Text, TextField } from './ui';
+import { FilterChips, HintBox, Text, TextField } from './ui';
 
 /**
  * The editable part of a scheduling send card: the meeting title, the guest language and the
@@ -37,8 +38,19 @@ export function SchedulingApprovalEditor({
       ...change,
       emailEdited: true,
     });
+  // A text field renders direction controls invisibly, so text that would be sent with them is
+  // spelled out here, as the read-only card does for everything it shows.
+  const hidden = [edit.title, email.subject, email.body].filter(
+    (text) => spellOutBidiControls(text) !== text,
+  );
   return (
     <View style={styles.editor}>
+      {hidden.length > 0 ? (
+        <HintBox
+          title="Contains hidden text-direction characters"
+          message={hidden.map(spellOutBidiControls).join('\n\n')}
+        />
+      ) : null}
       <TextField
         label="Title"
         value={edit.title}
