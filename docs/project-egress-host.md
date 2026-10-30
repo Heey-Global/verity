@@ -63,7 +63,8 @@ subsequent increments, not hidden exceptions in this protocol.
 are uninstalled fixture templates, not a production installation command:
 
 - `verity-egress-bootstrap.service` restores denial before Docker.
-- `docker-egress.conf` makes Docker require successful bootstrap.
+- `docker-egress.conf` makes Docker require successful bootstrap and repeats
+  locked denial restoration in `ExecStartPre` on every daemon start.
 - `verity-egress-host.service` restores denial again before binding the socket,
   then accepts the trusted Server's commands after Docker starts.
 
@@ -72,8 +73,25 @@ bundle at `/opt/verity-egress`, Node 26, nftables, a local rootful Docker daemon
 and the unit/drop-in files together. RuntimeDirectory cleanup removes stale
 sockets between service invocations; the application never steals an existing
 socket pathname. `LiveRestoreEnabled` and rootless Docker are rejected by the
-control entrypoint. Systemd ordering and restart behavior still require full
-managed-host integration evidence before these templates may be installed.
+control entrypoint. The experimental entrypoint accepts Docker 29.9.2, matching
+the pinned runtime fixture; other daemon versions require explicit validation.
+Systemd >=249 must run as PID 1: Docker continuously upholds
+the controller, and `BindsTo`/`PartOf` plus ordering couple controller teardown and
+revalidation to daemon transitions. `Type=notify` reports readiness only after
+denial, host checks, binding revalidation and control-socket creation. Shutdown
+rejects queued admissions before fencing after in-flight writes; independent
+`ExecStopPost` denial also runs after crashes or failed startup, without needing
+the registry or Docker. Both preflight and cleanup share the controller lock.
+Kernel-denial failure attempts registered-container containment during graceful
+shutdown; systemd ordering alone cannot guarantee containment if the kernel and
+container stop operations both fail.
+
+The separate `project-egress-boot` workflow preflights an actual KVM guest from a
+dated, SHA256-pinned Canonical image and requires a changed guest kernel boot ID.
+Missing KVM is a failure, not a skipped acceptance result or container fallback.
+This establishes boot-VM feasibility only; actual-unit ordering, retained
+Runner/relay topology and daemon/Server recovery still require the subsequent
+VM integration matrix before these templates may be installed in production.
 
 ## Evidence and remaining gates
 

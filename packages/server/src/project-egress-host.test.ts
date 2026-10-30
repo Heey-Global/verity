@@ -409,6 +409,36 @@ it('admits only the inspected pair after both role checks and confirms endpoints
   expect(rules).toContain('meta obrname "vep*" counter drop');
   expect(rules).toContain('arp saddr ip 172.20.0.2 arp daddr ip 172.20.0.3');
 });
+it('rejects queued and new admissions during shutdown and fences after an in-flight write', async () => {
+  const f = transportFixture();
+  let release!: () => void;
+  f.deps.apply.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const command = { operation: 'connect', projectId: binding.projectId, generation: 'gen1' };
+  const inFlight = f.host.execute(command);
+  await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+  const queued = f.host.execute(command).then(
+    () => false,
+    () => true,
+  );
+  const stopping = f.host.shutdown();
+  const late = f.host.execute(command).then(
+    () => false,
+    () => true,
+  );
+  release();
+  await inFlight;
+  await stopping;
+  expect(await queued).toBe(true);
+  expect(await late).toBe(true);
+  const final = f.deps.apply.mock.calls.at(-1)![0];
+  expect(final).toContain('iifname "vep*" counter drop');
+  expect(final).not.toContain('ct label set');
+});
 it('revokes before prepare, restart validation and retirement including active connections', async () => {
   for (const operation of ['prepare', 'start', 'retire'] as const) {
     const f = transportFixture();
@@ -488,4 +518,15 @@ it('uses a fresh SYN-bound flow label after prepare and controller restoration',
     expect(rules).toContain(`ct state established ct label == ${label}`);
     expect(rules).toContain(`ct state { new, established } ct label == ${label}`);
   }
+});
+
+it('attempts registered-container containment if shutdown fencing fails', async () => {
+  const f = transportFixture();
+  f.deps.apply.mockRejectedValueOnce(new Error('kernel unavailable'));
+  await expect(f.host.shutdown()).rejects.toThrow('containment attempted');
+  expect(f.deps.stopContainer).toHaveBeenCalledWith(id);
+  expect(f.deps.stopContainer).toHaveBeenCalledWith('c'.repeat(64));
+  await expect(
+    f.host.execute({ operation: 'connect', projectId: binding.projectId, generation: 'gen1' }),
+  ).rejects.toThrow();
 });
