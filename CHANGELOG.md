@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.68.0](https://github.com/Heey-Global/verity/compare/v4.67.0...v4.68.0) (2026-10-30)
+
+
+### Features
+
+* **egress:** enforce systemd boot and recovery readiness ([#2067](https://github.com/Heey-Global/verity/issues/2067)) ([18b8c76](https://github.com/Heey-Global/verity/commit/18b8c765c3648647d1abc1bfb55af7135f5ef9d8))
+* **mobile:** add bounded CPU captures to staging diagnostic builds ([#2061](https://github.com/Heey-Global/verity/issues/2061)) ([87ccde9](https://github.com/Heey-Global/verity/commit/87ccde948a0890ee2b49507f87174ba9cab7765d))
+* **mobile:** distribute staging CPU profiling builds ([#2072](https://github.com/Heey-Global/verity/issues/2072)) ([e351edb](https://github.com/Heey-Global/verity/commit/e351edb18126d861d7239d14c9c272102d25930d))
+
+
+### Bug Fixes
+
+* **backup:** provision backup prerequisites through normal updates ([#2060](https://github.com/Heey-Global/verity/issues/2060)) ([212bd5b](https://github.com/Heey-Global/verity/commit/212bd5bcb93a4a86d886cc8e9104686f0d9c2dc6))
+* **deps:** update agent CLIs with ACP compatibility fixes ([#2074](https://github.com/Heey-Global/verity/issues/2074)) ([66514d3](https://github.com/Heey-Global/verity/commit/66514d340c3c3d4418ba5c217ae0c2f5eeae5948))
+* **egress:** preserve retained sandboxes through Server and Docker recovery ([#2076](https://github.com/Heey-Global/verity/issues/2076)) ([1b09d9f](https://github.com/Heey-Global/verity/commit/1b09d9f89466a91def310ad5ae433d89003c1cc9))
+* **storage:** reclaim disposable session and deployment resources ([#2075](https://github.com/Heey-Global/verity/issues/2075)) ([d2723ce](https://github.com/Heey-Global/verity/commit/d2723ced05fe95844fbbfc9b4cfa5bc2c756b8a5))
+
 ## [4.67.0](https://github.com/Heey-Global/verity/compare/v4.66.0...v4.67.0) (2026-10-29)
 
 
