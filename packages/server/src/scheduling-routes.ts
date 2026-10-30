@@ -7,7 +7,7 @@ import { z } from 'zod';
 import type { SchedulingService } from './scheduling-service.js';
 
 const sessionParams = z.object({ id: z.string().min(1) });
-const requestParams = z.object({ id: z.string().min(1), requestId: z.string().uuid() });
+const revokeParams = z.object({ requestId: z.string().uuid() });
 
 export interface SchedulingRequestView {
   id: string;
@@ -84,19 +84,43 @@ export function registerSchedulingRoutes(
     };
   });
 
-  // Across sessions for the overview sheet; administrators only (no member rule is declared).
-  app.get('/scheduling-requests', async () => ({
-    requests: await Promise.all((await deps.eventStore.scheduling.listRecent()).map(view)),
-  }));
+  /**
+   * Whether the caller may see and steer a request: execute access to its project, because
+   * the view carries the guest's link with its PIN. Requests outlive their session, so the
+   * project they were made in decides, never the session.
+   */
+  const mayUse = async (userId: string | null, projectId: string | null): Promise<boolean> => {
+    // No auth gate: the implicit administrator reaches every request.
+    if (userId === null) return true;
+    if (projectId === null) return deps.eventStore.isActiveAdministrator(userId);
+    return deps.eventStore.hasProjectPermission(userId, projectId, 'execute');
+  };
 
-  app.post('/sessions/:id/scheduling-requests/:requestId/revoke', async (request, reply) => {
-    const { id, requestId } = requestParams.parse(request.params);
+  // The overview across sessions, filtered to the requests the caller may use.
+  app.get('/scheduling-requests', async (request) => {
+    const usable = new Map<string | null, boolean>();
+    const visible: SchedulingRequest[] = [];
+    for (const stored of await deps.eventStore.scheduling.listRecent()) {
+      if (!usable.has(stored.projectId))
+        usable.set(stored.projectId, await mayUse(request.localUserId, stored.projectId));
+      if (usable.get(stored.projectId)) visible.push(stored);
+    }
+    return { requests: await Promise.all(visible.map(view)) };
+  });
+
+  // Also for requests whose session was deleted: they keep running until withdrawn.
+  app.post('/scheduling-requests/:requestId/revoke', async (request, reply) => {
+    const { requestId } = revokeParams.parse(request.params);
+    const stored = await deps.eventStore.scheduling.get(requestId);
+    if (!stored || !(await mayUse(request.localUserId, stored.projectId))) {
+      reply.code(404);
+      return { error: 'Scheduling request not found' };
+    }
     try {
-      return { request: await view(await deps.service.revoke(requestId, id)) };
+      return { request: await view(await deps.service.revoke(requestId)) };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not revoke the request';
-      reply.code(message === 'Scheduling request not found' ? 404 : 409);
-      return { error: message };
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : 'Could not revoke the request' };
     }
   });
 }

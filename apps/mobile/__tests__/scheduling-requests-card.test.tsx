@@ -43,7 +43,7 @@ it('withdraws an open request only after confirmation', async () => {
   await screen.findByText('Withdraw the request for Anna?');
   const buttons = screen.getAllByRole('button', { name: 'Withdraw' });
   fireEvent.press(buttons[buttons.length - 1]!);
-  await waitFor(() => expect(revokeSchedulingRequest).toHaveBeenCalledWith('s1', 'r1'));
+  await waitFor(() => expect(revokeSchedulingRequest).toHaveBeenCalledWith('r1'));
 });
 
 it('keeps running requests, problems and upcoming bookings in view, and drops closed ones', () => {

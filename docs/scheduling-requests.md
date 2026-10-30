@@ -80,7 +80,12 @@ of concurrent shares; sending then fails with a clear error and removes the hold
 ## In the app
 
 The session shows a card per running request with its windows, the guest's link and
-a Withdraw action, and an overview of all requests across sessions (administrators).
+a Withdraw action. **Settings → Google → Scheduling requests** lists every request the
+user may steer: those of projects where they have execute access (the view carries
+the guest's link with its PIN), grouped into needs attention, open and recent.
+Requests outlive their chat: deleting a session leaves its requests running until
+they are booked, expire or are withdrawn there.
+
 Bookings, requests without remaining times, unconfirmed emails and holds that could
 not be removed are posted into the session and sent as push notifications.
 

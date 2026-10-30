@@ -5869,11 +5869,10 @@ export class VerityClient {
     const res = await this.request('/scheduling-requests', { method: 'GET' });
     return schedulingRequestsSchema.parse(await res.json()).requests;
   }
-  async revokeSchedulingRequest(sessionId: string, requestId: string): Promise<void> {
-    await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/scheduling-requests/${encodeURIComponent(requestId)}/revoke`,
-      { method: 'POST' },
-    );
+  async revokeSchedulingRequest(requestId: string): Promise<void> {
+    await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {
+      method: 'POST',
+    });
   }
   async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {

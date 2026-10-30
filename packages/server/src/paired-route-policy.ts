@@ -124,10 +124,7 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     routeScopeKey('GET', '/sessions/:id/scheduling-requests'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
-  [
-    routeScopeKey('POST', '/sessions/:id/scheduling-requests/:requestId/revoke'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
-  ],
+
   [
     routeScopeKey('PUT', '/sessions/:id/live-meetings/:meetingId'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
@@ -168,6 +165,9 @@ const activeUserRoutes = new Set([
   routeScopeKey('POST', '/auth/logout'),
   // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
   routeScopeKey('GET', '/tasks'),
+  // Scheduling requests are filtered and checked per project inside the handler.
+  routeScopeKey('GET', '/scheduling-requests'),
+  routeScopeKey('POST', '/scheduling-requests/:requestId/revoke'),
   routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
   routeScopeKey('PUT', '/tasks/:id'),
   routeScopeKey('PATCH', '/tasks/:id'),
