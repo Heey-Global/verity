@@ -679,7 +679,7 @@ async function publishAgentSeedUnderLease(
       throw new Error(
         'managed agent-seed publication requires a complete bootstrap or legacy selection',
       );
-    await validatePublishedAgentSeed(seedTarget, legacy.image, legacy.version);
+    await validatePublishedAgentSeed(seedTarget, legacy.image, legacy.version, 'legacy');
   }
   const currentNext = join(seedTarget, `.current.${key}.next`);
   await rm(currentNext, { force: true });
@@ -713,8 +713,14 @@ export async function validatePublishedAgentSeed(
   directory: string,
   targetImage: string,
   version: string,
+  profile: 'current' | 'legacy' = 'current',
 ): Promise<void> {
-  for (const path of REQUIRED_AGENT_SEED_FILES) {
+  // Legacy flat seeds predate the dependency helper. New target trees must
+  // contain it; requiring it in the predecessor makes that first upgrade impossible.
+  const requiredFiles = REQUIRED_AGENT_SEED_FILES.filter(
+    (path) => profile !== 'legacy' || path !== 'bin/verity-dependencies',
+  );
+  for (const path of requiredFiles) {
     const entry = await lstat(join(directory, path)).catch(() => null);
     if (entry === null || !entry.isFile())
       throw new Error(`agent-seed validation failed: required file is missing: ${path}`);
@@ -722,6 +728,7 @@ export async function validatePublishedAgentSeed(
       throw new Error(`agent-seed validation failed: required file is a symlink: ${path}`);
   }
   for (const path of EXECUTABLE_AGENT_SEED_FILES) {
+    if (profile === 'legacy' && path === 'bin/verity-dependencies') continue;
     const handle = await open(join(directory, path), 'r');
     try {
       const stat = await handle.stat();
