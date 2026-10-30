@@ -16,7 +16,7 @@ import {
   VulnerabilityStarterCard,
 } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
-import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import { sessionLayout } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -542,6 +542,7 @@ export default function SessionScreen() {
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
   const { width } = useWindowDimensions();
+  const { wide: windowWide } = sessionLayout(width);
 
   if (!id) {
     return <CenteredMessage title="Session not found" subtitle="No session id was provided." />;
@@ -559,7 +560,7 @@ export default function SessionScreen() {
   // rather than the old per-route flat sidebar this screen used to render. Keeps
   // exactly one split implementation, so a new-session `replace('/session/[id]')`
   // (new.tsx) lands in the project-grouped overview like everywhere else.
-  if (width >= SPLIT_SCREEN_MIN_WIDTH) {
+  if (windowWide) {
     return (
       <SplitScreenRedirect
         id={id}
