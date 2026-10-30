@@ -47,6 +47,10 @@ class RetainedTopologyTests(unittest.TestCase):
         import json
         import tempfile
         records = [{'kind': 'heartbeat', 'time_ns': n} for n in [0, 1_000_000_000, 2_000_000_000]]
+        records += [{'kind': 'received', 'data': base64.b64encode(
+            f'outer-positive-{phase}-{family}-{protocol}-{port}'.encode()).decode()}
+            for phase in ('before', 'after') for family in (2, 10)
+            for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, 'receipts.jsonl')
             def save(rows):
@@ -56,6 +60,6 @@ class RetainedTopologyTests(unittest.TestCase):
             save(records + [{'kind': 'received', 'data': base64.b64encode(b'host-startup-marker').decode()}])
             with self.assertRaisesRegex(AssertionError, 'Unauthorized'):
                 boot_proof.verify_receipts(path, 0, 2_000_000_000)
-            save(records[:1] + records[-1:])
+            save(records[:1])
             with self.assertRaisesRegex(AssertionError, 'cover lifecycle'):
                 boot_proof.verify_receipts(path, 0, 3_000_000_000)

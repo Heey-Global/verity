@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import subprocess
 import sys
 import time
@@ -104,9 +105,10 @@ def recover():
     token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'boot recovery'})['token']
     # The real watchdog resumes the retained generation. A passing HTTP health route
     # alone never counts as project transport readiness.
-    project = descriptor()['projectId']
-    api(f'/projects/{project}/sleep', {}, token)
-    api(f'/projects/{project}/wake', {}, token)
+    # Explicit trusted host readmission keeps the original sandbox process alive.
+    # Actual Server listeners/capabilities are recovered by its normal project poll.
+    run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
+    api('/projects', token=token)
     wait(positive, 180)
     config = json.loads((ROOT / 'config.json').read_text())
     assert Path(config['dataRoot'], 'boot-retained-marker').read_text() == 'retained actual project data'
@@ -121,6 +123,29 @@ def snapshot():
                       'restart': container['HostConfig']['RestartPolicy']['Name'],
                       'mounts': [{k: mount[k] for k in ('Source', 'Destination')} for mount in container['Mounts']]})
     return {'projectId': descriptor()['projectId'], 'registry': registry, 'containers': facts}
+
+
+def observer_positive(phase):
+    for family, address in [(socket.AF_INET, '172.30.105.2'), (socket.AF_INET6, 'fd42:feed:5::2')]:
+        for port in (53, 8080):
+            with socket.socket(family, socket.SOCK_DGRAM) as channel:
+                channel.sendto(f'outer-positive-{phase}-{family}-udp-{port}'.encode(), (address, port))
+        with socket.socket(family, socket.SOCK_STREAM) as channel:
+            channel.settimeout(2)
+            channel.connect((address, 443))
+            channel.sendall(f'outer-positive-{phase}-{family}-tcp-443'.encode())
+            assert b'external-positive' in channel.recv(1024)
+
+
+def remove_fences():
+    # Destructive mutation is restricted to this disposable guest's own tables.
+    assert Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
+    tables = json.loads(run('nft', '--json', 'list', 'tables'))['nftables']
+    names = [entry['table'] for entry in tables if 'table' in entry and
+             (entry['table']['name'] == 'verity_egress_boot' or entry['table']['name'].startswith('verity_start_'))]
+    assert len(names) >= 4
+    for table in names:
+        run('nft', 'delete', 'table', table['family'], table['name'])
 
 
 def faults():
@@ -175,6 +200,10 @@ if __name__ == '__main__':
         recover()
     elif operation == 'positive':
         positive()
+    elif operation == 'observer-positive':
+        observer_positive(sys.argv[2])
+    elif operation == 'remove-fences':
+        remove_fences()
     elif operation == 'faults':
         faults()
     elif operation == 'external':
@@ -188,7 +217,10 @@ if __name__ == '__main__':
         config = json.loads((ROOT / 'config.json').read_text())
         directory = Path(config['dataRoot'], mount['VolumeOptions']['Subpath']).resolve()
         assert directory.is_relative_to(Path(config['dataRoot']).resolve())
-        print((directory / f'.boot-stream-{sys.argv[2]}.json').read_text())
+        status = json.loads((directory / f'.boot-stream-{sys.argv[2]}.json').read_text())
+        alive = directory / f'.boot-alive-{sys.argv[2]}'
+        status['heartbeat_ns'] = int(alive.read_text()) if alive.exists() else None
+        print(json.dumps(status))
     elif operation == 'stream':
         run('docker', 'exec', '-d', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'stream', sys.argv[2])
     else:

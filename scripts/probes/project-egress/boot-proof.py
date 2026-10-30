@@ -16,15 +16,22 @@ def command(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT)
 
 
-def verify_receipts(path, start_ns, end_ns, allowed_prefix=b'outer-positive-'):
+def verify_receipts(path, start_ns, end_ns):
     import base64
     records = [json.loads(line) for line in Path(path).read_text().splitlines()]
     beats = [r['time_ns'] for r in records if r['kind'] in ('ready', 'heartbeat', 'stopped')]
     assert beats and beats[0] <= start_ns and beats[-1] >= end_ns, 'Receiver did not cover lifecycle window'
     assert max(b - a for a, b in zip(beats, beats[1:])) <= 2_000_000_000, 'Independent observation paused'
+    expected = {f'outer-positive-{phase}-{family}-{protocol}-{port}'.encode()
+                for phase in ('before', 'after') for family in (2, 10)
+                for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]}
+    seen = set()
     for record in records:
         if record['kind'] == 'received':
-            assert base64.b64decode(record['data']).startswith(allowed_prefix), 'Unauthorized external receipt'
+            payload = base64.b64decode(record['data'])
+            assert payload in expected, 'Unauthorized external receipt'
+            seen.add(payload)
+    assert seen == expected, 'External dual-stack positive controls incomplete'
     return len(records)
 
 
@@ -66,6 +73,7 @@ def main():
         vm.start()
         vm.upload(sys.argv[2])
         vm.ssh('sudo env PROJECT_EGRESS_DISPOSABLE=yes bash /opt/verity-fixture/probe/boot-native-install.sh', timeout=600)
+        vm.ssh('sudo python3 /opt/verity-fixture/probe/boot-guest.py observer-positive before')
         vm.ssh('sudo python3 /opt/verity-fixture/probe/boot-guest.py setup', timeout=300)
         guest = 'sudo python3 /opt/verity-fixture/probe/boot-guest.py '
         initial = json.loads(vm.ssh(guest + 'snapshot'))
@@ -113,6 +121,9 @@ def main():
             time.sleep(1)
             stream_final = json.loads(vm.ssh(guest + f'stream-status {event}'))
             assert stream_after['successes'] == stream_final['successes'], 'Old stream revived after fresh admission'
+            if event in ('controller-kill', 'server-kill'):
+                now = int(vm.ssh('date +%s%N').strip())
+                assert stream_final['heartbeat_ns'] and now - stream_final['heartbeat_ns'] < 2_000_000_000, 'Original stream process stopped attempting traffic'
             events.append({'event': event, 'event_time_ns': event_time, 'before': before, 'after': vm.facts(),
                            'recovery_ns': time.monotonic_ns() - recovery_start, 'retained': after,
                            'stream_before': stream_before, 'stream_after': stream_after, 'stream_final': stream_final})
@@ -121,10 +132,27 @@ def main():
         (evidence / 'faults.json').write_text(json.dumps(faults))
         vm.ssh(guest + 'recover', timeout=240)
         verify_retained(initial, json.loads(vm.ssh(guest + 'snapshot')))
+        vm.ssh(guest + 'observer-positive after')
         end_ns = time.time_ns()
         time.sleep(0.2)
-        verify_receipts(receipts, start_ns, end_ns)
-        (evidence / 'boot-proof.json').write_text(json.dumps({'complete': True, 'events': events}, indent=2))
+        protected = evidence / 'protected-receipts.jsonl'
+        protected.write_text(receipts.read_text())
+        verify_receipts(protected, start_ns, end_ns)
+        # Removing the real kernel fences must turn independent receiver silence
+        # into a failed verdict; a synthetic verifier test is insufficient here.
+        vm.ssh(guest + 'remove-fences')
+        vm.ssh(guest + 'external')
+        time.sleep(1)
+        try:
+            verify_receipts(receipts, start_ns, end_ns)
+        except AssertionError as failure:
+            assert str(failure) == 'Unauthorized external receipt', failure
+        else:
+            raise AssertionError('Removing actual kernel fences was not detected')
+        (evidence / 'boot-proof.json').write_text(json.dumps({
+            'complete': True, 'events': events, 'protected_start_ns': start_ns,
+            'protected_end_ns': end_ns, 'removed_fences_detected': True, 'faults': faults,
+        }, indent=2))
     finally:
         if vm.process and vm.process.poll() is None:
             for name, shell in [('journal.txt', 'sudo journalctl --no-pager -u docker -u verity-egress-host -u verity-boot-server -u verity-boot-gateway'),

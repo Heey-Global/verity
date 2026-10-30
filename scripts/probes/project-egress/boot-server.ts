@@ -32,6 +32,36 @@ if (process.argv[2] === 'gateway') {
   process.on('SIGTERM', () => {
     void gateway.close().then(() => process.exit(0));
   });
+} else if (process.argv[2] === 'readmit') {
+  // Trusted host-side event driver uses the same authenticated lifecycle client;
+  // it cannot inject a policy, address, listener, credential or container profile.
+  const command = createProjectEgressHostClient({
+    socketPath: '/run/verity-egress/control.sock',
+    token: (await readFile('/etc/verity-egress/control.key', 'utf8')).trim(),
+  });
+  const state = JSON.parse(await readFile('/var/lib/verity-egress/registry.json', 'utf8')) as {
+    records: {
+      retired: boolean;
+      binding: { projectId: string; generation: string };
+      containers: { sandbox: string; relay: string };
+    }[];
+  };
+  for (const record of state.records.filter((record) => !record.retired)) {
+    const reference = {
+      projectId: record.binding.projectId,
+      generation: record.binding.generation,
+    };
+    await command({ operation: 'prepare', ...reference });
+    for (const role of ['relay', 'sandbox'] as const) {
+      await command({
+        operation: 'start',
+        ...reference,
+        role,
+        containerId: record.containers[role],
+      });
+    }
+    await command({ operation: 'connect', ...reference });
+  }
 } else {
   assert.equal(process.argv[2], 'server');
   const docker = createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' });

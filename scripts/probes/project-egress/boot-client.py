@@ -16,9 +16,14 @@ def connect():
 
 def append(connection, path, text, token=None):
     capability = Path(os.environ['VERITY_GH_BROKER_CAPABILITY_FILE']).read_text().strip() if token is None else token
-    connection.request('POST', path, json.dumps({'text': text}), {
-        'Authorization': f'Bearer {capability}', 'Content-Type': 'application/json',
-    })
+    body = json.dumps({'text': text}).encode()
+    # The relay intentionally rejects Accept-Encoding, including http.client's
+    # implicit identity header. Send only the actual broker request contract.
+    connection.putrequest('POST', path, skip_accept_encoding=True)
+    connection.putheader('Authorization', f'Bearer {capability}')
+    connection.putheader('Content-Type', 'application/json')
+    connection.putheader('Content-Length', str(len(body)))
+    connection.endheaders(body)
     response = connection.getresponse()
     body = response.read()
     return response.status, body
@@ -71,9 +76,11 @@ def main():
             # HTTPConnection can automatically reconnect after an error: retaining
             # the raw failed socket prevents this from becoming a fresh positive.
             break
-        Path(f'/work/.boot-stream-{phase}.json').write_text(json.dumps({
+        checkpoint = Path(f'/work/.boot-stream-{phase}.json.tmp')
+        checkpoint.write_text(json.dumps({
             'attempts': attempts, 'successes': successes, 'last_success_ns': last_success,
         }))
+        checkpoint.replace(f'/work/.boot-stream-{phase}.json')
         time.sleep(0.05)
     # Keep the original descriptor attempting bytes without the HTTP helper's retry.
     raw = original
