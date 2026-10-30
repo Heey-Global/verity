@@ -47,6 +47,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
@@ -524,6 +525,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { meetingTranscriber: deps.meetingTranscriber }
       : {}),
     ...(deps.projectWorktrees !== undefined ? { projectWorktrees: deps.projectWorktrees } : {}),
+    ...(deps.sessionStorage ? { sessionStorage: deps.sessionStorage } : {}),
     ...(deps.deprovisioner !== undefined ? { deprovisioner: deps.deprovisioner } : {}),
     ...(deps.onProjectHidden !== undefined ? { onProjectHidden: deps.onProjectHidden } : {}),
     ...(deps.audit !== undefined ? { audit: deps.audit } : {}),

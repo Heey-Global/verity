@@ -1,0 +1,577 @@
+import { dependencyInputIdentity } from './dependency-inputs.js';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  lstat,
+  mkdir,
+  open,
+  opendir,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  rm,
+} from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import type { ProjectRecord, SessionRecord } from '@verity/store';
+import type { GitOutput } from './branches.js';
+import { linkWorkspacePackages, WORKTREE_SIDECAR } from './worktree.js';
+
+const WEEK = 7 * 24 * 60 * 60_000;
+const inputs =
+  /(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|pnpm-workspace.yaml|\.npmrc)$/;
+export interface SessionStorageReport {
+  observedAt: string;
+  dependenciesRemoved: string[];
+  worktreesRetired: string[];
+  blockers: Array<{ path: string; reason: string }>;
+  comparedDependencyBytes: number;
+  worktreeSampledBytes: number | null;
+  dependencySampledBytes: number | null;
+  usageComplete: boolean;
+  dryRun: boolean;
+}
+interface Retirement {
+  version: 1;
+  sessionId: string | null;
+  path: string;
+  sha: string;
+  branch: string | null;
+  sidecar: string | null;
+}
+async function atomicJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  if ((await lstat(dirname(path))).isSymbolicLink())
+    throw new Error('Storage journal is a symlink');
+  const temp = `${path}.${randomUUID()}.tmp`;
+  const file = await open(temp, 'wx', 0o600);
+  try {
+    await file.writeFile(JSON.stringify(value));
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename(temp, path);
+  const dir = await open(dirname(path), 'r');
+  try {
+    await dir.sync();
+  } finally {
+    await dir.close();
+  }
+}
+async function optionalFile(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+async function digest(path: string, signal: AbortSignal): Promise<string> {
+  const file = await open(path, 'r');
+  try {
+    const hash = createHash('sha256');
+    const buffer = Buffer.alloc(128 * 1024);
+    for (;;) {
+      signal.throwIfAborted();
+      const { bytesRead } = await file.read(buffer);
+      if (!bytesRead) return hash.digest('hex');
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    await file.close();
+  }
+}
+/** A file is disposable only if another compatible installation still holds the same bytes. */
+export async function compareDependencyTrees(
+  privatePath: string,
+  sharedPath: string,
+  signal: AbortSignal,
+): Promise<number> {
+  signal.throwIfAborted();
+  const [local, shared] = await Promise.all([lstat(privatePath), lstat(sharedPath)]);
+  if (local.isSymbolicLink()) {
+    if (!shared.isSymbolicLink() || (await readlink(privatePath)) !== (await readlink(sharedPath)))
+      throw new Error('Dependency link differs');
+    return 0;
+  }
+  if (local.isDirectory() && shared.isDirectory()) {
+    let bytes = 0;
+    for (const entry of await readdir(privatePath)) {
+      if (entry === '.package-lock.json') continue; // npm-generated installation receipt, never source.
+      bytes += await compareDependencyTrees(
+        join(privatePath, entry),
+        join(sharedPath, entry),
+        signal,
+      );
+    }
+    return bytes;
+  }
+  if (
+    !local.isFile() ||
+    !shared.isFile() ||
+    local.size !== shared.size ||
+    (local.mode & 0o777) !== (shared.mode & 0o777) ||
+    (await digest(privatePath, signal)) !== (await digest(sharedPath, signal))
+  ) {
+    throw new Error('Dependency has local edits or no shared copy');
+  }
+  return local.blocks * 512;
+}
+
+export class SessionStorage {
+  private claim?: <T>(
+    id: string,
+    run: () => Promise<T>,
+  ) => Promise<{ ran: true; value: T } | { ran: false }>;
+  private blocked: (projectId: string) => boolean = () => true;
+  private flight: Promise<void> | undefined;
+  lastReport?: SessionStorageReport;
+  constructor(
+    private readonly deps: {
+      listProjects: () => Promise<ProjectRecord[]>;
+      listSessions: () => Promise<SessionRecord[]>;
+      activity: (id: string) => Promise<number | null>;
+      root: (project: ProjectRecord) => string;
+      withGit: <T>(project: ProjectRecord, operation: (git: GitOutput) => Promise<T>) => Promise<T>;
+      mutate: (
+        projectId: string,
+        sessionId: string | undefined,
+        operation: () => Promise<void>,
+      ) => Promise<void>;
+      pr: (project: ProjectRecord, branch: string) => Promise<{ phase: string } | null>;
+      wake?: (project: ProjectRecord, sessionId: string) => Promise<void>;
+      now?: () => number;
+      dryRun?: boolean;
+    },
+  ) {}
+  bind(claim: NonNullable<SessionStorage['claim']>, blocked: (projectId: string) => boolean): void {
+    this.claim = claim;
+    this.blocked = blocked;
+  }
+  private async safeRoot(project: ProjectRecord, path: string): Promise<string> {
+    const root = resolve(this.deps.root(project));
+    const sessions = join(root, '.verity-sessions');
+    if (
+      dirname(path) !== sessions ||
+      path !== resolve(path) ||
+      (await realpath(root)) !== root ||
+      (await realpath(sessions)) !== sessions ||
+      (await realpath(join(root, '.git'))) !== join(root, '.git')
+    )
+      throw new Error('Unknown or symlinked worktree root');
+    if ((await exists(path)) && (await lstat(path)).isSymbolicLink())
+      throw new Error('Worktree is a symlink');
+    return root;
+  }
+  private manifest(root: string, path: string): string {
+    return join(
+      root,
+      '.git',
+      'verity-storage',
+      `retired-${createHash('sha256').update(path).digest('hex')}.json`,
+    );
+  }
+  private async retirementSource(root: string, path: string): Promise<string | null> {
+    const journal = this.manifest(root, path);
+    if (!(await exists(journal))) return null;
+    if ((await realpath(dirname(journal))) !== dirname(journal) || !(await lstat(journal)).isFile())
+      throw new Error('Unsafe worktree retirement journal');
+    return optionalFile(journal);
+  }
+  async canRestore(session: SessionRecord): Promise<boolean> {
+    try {
+      const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
+      if (!project || project.kind === 'control_plane') return false;
+      const root = await this.safeRoot(project, session.worktree);
+      const entry = JSON.parse(
+        (await this.retirementSource(root, session.worktree)) ?? 'null',
+      ) as Retirement | null;
+      return (
+        entry !== null &&
+        entry.version === 1 &&
+        entry.sessionId === session.sessionId &&
+        entry.path === session.worktree &&
+        /^[a-f0-9]{40,64}$/.test(entry.sha) &&
+        (entry.branch === null || typeof entry.branch === 'string') &&
+        (entry.sidecar === null || typeof entry.sidecar === 'string')
+      );
+    } catch {
+      return false;
+    }
+  }
+  async ensureWorkspace(session: SessionRecord): Promise<void> {
+    const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
+    if (!project || project.kind === 'control_plane') return;
+    if (dirname(session.worktree) !== join(resolve(this.deps.root(project)), '.verity-sessions'))
+      return;
+    const root = await this.safeRoot(project, session.worktree);
+    const path = this.manifest(root, session.worktree);
+    const source = await this.retirementSource(root, session.worktree);
+    if (!source) return;
+    const entry = JSON.parse(source) as Retirement;
+    if (
+      entry.version !== 1 ||
+      entry.sessionId !== session.sessionId ||
+      entry.path !== session.worktree ||
+      !/^[a-f0-9]{40,64}$/.test(entry.sha) ||
+      (entry.branch !== null && typeof entry.branch !== 'string') ||
+      (entry.sidecar !== null && typeof entry.sidecar !== 'string')
+    ) {
+      throw new Error('Worktree retirement journal does not match this session');
+    }
+    await this.deps.wake?.(project, session.sessionId);
+    await this.deps.withGit(project, async (git) => {
+      if (!(await exists(session.worktree))) {
+        let ref = entry.sha;
+        if (entry.branch) {
+          const current = await git([
+            '-C',
+            root,
+            'rev-parse',
+            '--verify',
+            `refs/heads/${entry.branch}`,
+          ]).catch(() => '');
+          if (current.trim() === entry.sha) ref = entry.branch;
+        }
+        await git([
+          '-C',
+          root,
+          'worktree',
+          'add',
+          ...(ref === entry.sha ? ['--detach'] : []),
+          '--',
+          session.worktree,
+          ref,
+        ]);
+      }
+      if ((await git(['-C', session.worktree, 'rev-parse', 'HEAD'])).trim() !== entry.sha) {
+        throw new Error('Restored worktree differs from its retirement journal');
+      }
+      if (entry.sidecar !== null && !(await exists(join(session.worktree, WORKTREE_SIDECAR)))) {
+        const file = await open(join(session.worktree, WORKTREE_SIDECAR), 'wx', 0o600);
+        try {
+          await file.writeFile(entry.sidecar);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+      }
+      linkWorkspacePackages(root, session.worktree);
+      // Keep the durable recovery record until the directory is complete; source refs stay pinned.
+      await rm(path);
+    });
+  }
+  runOnce(): Promise<void> {
+    if (this.flight) return this.flight;
+    this.flight = this.sweep().finally(() => {
+      this.flight = undefined;
+    });
+    return this.flight;
+  }
+  private async sweep(): Promise<void> {
+    if (!this.claim) return;
+    const now = this.deps.now?.() ?? Date.now();
+    const signal = AbortSignal.timeout(60_000);
+    const report: SessionStorageReport = {
+      observedAt: new Date(now).toISOString(),
+      dependenciesRemoved: [],
+      worktreesRetired: [],
+      blockers: [],
+      comparedDependencyBytes: 0,
+      worktreeSampledBytes: null,
+      dependencySampledBytes: null,
+      usageComplete: false,
+      dryRun: this.deps.dryRun ?? false,
+    };
+    this.lastReport = report;
+    const projects = await this.deps.listProjects();
+    const sessions = await this.deps.listSessions();
+    for (const project of projects) {
+      if (project.kind === 'control_plane' || this.blocked(project.id)) continue;
+      const owned = sessions.filter((s) => s.projectId === project.id);
+      for (const session of owned) {
+        if (signal.aborted) return;
+        const activity = await this.deps.activity(session.sessionId);
+        if (activity === null || now - activity < WEEK) continue;
+        await this.claim(session.sessionId, async () => {
+          try {
+            await this.deps.mutate(project.id, session.sessionId, async () => {
+              if (this.blocked(project.id)) return;
+              const fresh = (await this.deps.listSessions()).find(
+                (s) => s.sessionId === session.sessionId,
+              );
+              const latest = await this.deps.activity(session.sessionId);
+              if (
+                !fresh ||
+                fresh.worktree !== session.worktree ||
+                latest === null ||
+                now - latest < WEEK
+              )
+                return;
+              await this.deps.withGit(project, (git) =>
+                this.reclaim(project, session.worktree, session.sessionId, git, report, signal),
+              );
+            });
+          } catch (error) {
+            report.blockers.push({
+              path: session.worktree,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+      }
+      // Orphans are registered Git worktrees, never directory-name guesses.
+      if (!signal.aborted)
+        try {
+          await this.deps.mutate(project.id, undefined, async () => {
+            if (this.blocked(project.id)) return;
+            await this.deps.withGit(project, async (git) => {
+              const root = resolve(this.deps.root(project));
+              const journal = join(root, '.git', 'verity-storage', 'orphans.json');
+              const old = JSON.parse((await optionalFile(journal)) ?? '{}') as Record<
+                string,
+                number
+              >;
+              const current: Record<string, number> = {};
+              const live = new Set((await this.deps.listSessions()).map((s) => s.worktree));
+              const listing = await git(['-C', root, 'worktree', 'list', '--porcelain', '-z']);
+              for (const field of listing.split('\0')) {
+                if (!field.startsWith('worktree ')) continue;
+                const path = field.slice(9);
+                if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
+                const since = old[path];
+                current[path] = Number.isFinite(since) && since > 0 ? since : now;
+                if (now - current[path]! < WEEK) continue;
+                try {
+                  await this.reclaim(project, path, null, git, report, signal);
+                } catch (error) {
+                  report.blockers.push({
+                    path,
+                    reason: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }
+              if (!this.deps.dryRun) await atomicJson(journal, current);
+            });
+          });
+        } catch (error) {
+          report.blockers.push({
+            path: this.deps.root(project),
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+    }
+    await this.sampleUsage(
+      sessions
+        .filter(
+          (s) =>
+            projects.some((p) => p.kind !== 'control_plane' && p.id === s.projectId) &&
+            dirname(s.worktree) ===
+              join(
+                resolve(this.deps.root(projects.find((p) => p.id === s.projectId)!)),
+                '.verity-sessions',
+              ),
+        )
+        .map((s) => s.worktree),
+      report,
+    );
+  }
+  private async sampleUsage(paths: string[], report: SessionStorageReport): Promise<void> {
+    const deadline = AbortSignal.timeout(3000);
+    let total = 0,
+      dependencies = 0;
+    const walk = async (path: string, inDependencies: boolean): Promise<void> => {
+      deadline.throwIfAborted();
+      const stat = await lstat(path);
+      if (stat.isSymbolicLink()) return;
+      total += stat.blocks * 512;
+      if (inDependencies) dependencies += stat.blocks * 512;
+      if (stat.isDirectory()) {
+        const directory = await opendir(path);
+        for await (const entry of directory)
+          await walk(join(path, entry.name), inDependencies || entry.name === 'node_modules');
+      }
+    };
+    try {
+      for (const path of paths)
+        if (await exists(path)) {
+          if ((await realpath(dirname(path))) !== dirname(path))
+            throw new Error('Symlinked sample root');
+          await walk(path, false);
+        }
+      report.usageComplete = true;
+    } catch {
+      /* A bounded partial sample is not total filesystem use. */
+    }
+    report.worktreeSampledBytes = total;
+    report.dependencySampledBytes = dependencies;
+  }
+  private async reclaim(
+    project: ProjectRecord,
+    path: string,
+    sessionId: string | null,
+    git: GitOutput,
+    report: SessionStorageReport,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const root = await this.safeRoot(project, path);
+    if (!(await exists(path))) return;
+    const files = (await git(['-C', path, 'ls-files', '-z'])).split('\0').filter(Boolean);
+    const dependencyInputs = files.filter((f) => inputs.test(f));
+    const baseFiles = (await git(['-C', root, 'ls-files', '-z']))
+      .split('\0')
+      .filter((f) => inputs.test(f));
+    const compatible =
+      dependencyInputs.length === baseFiles.length &&
+      dependencyInputs.includes('package.json') &&
+      dependencyInputs.some((f) => /lock/.test(f)) &&
+      dependencyInputs.every((f) => baseFiles.includes(f));
+    if (!compatible) throw new Error('Dependency manifests differ or are unknown');
+    for (const f of dependencyInputs) {
+      if (
+        dependencyInputIdentity(f, await readFile(join(path, f), 'utf8')) !==
+        dependencyInputIdentity(f, await readFile(join(root, f), 'utf8'))
+      )
+        throw new Error('Dependency inputs differ');
+    }
+    const unknownManifests = (
+      await git(['-C', path, 'ls-files', '--others', '--exclude-standard', '-z'])
+    )
+      .split('\0')
+      .some((f) => inputs.test(f));
+    if (unknownManifests) throw new Error('Untracked dependency inputs');
+    // Only node_modules trees with byte-identical shared copies qualify. Unknown build output stays protected.
+    const modulePaths = new Set([
+      'node_modules',
+      ...dependencyInputs
+        .filter((f) => f.endsWith('/package.json'))
+        .map((f) => join(dirname(f), 'node_modules')),
+    ]);
+    for (const modules of modulePaths) {
+      let ancestor = path;
+      for (const part of modules.split('/').slice(0, -1)) {
+        ancestor = join(ancestor, part);
+        if ((await lstat(ancestor)).isSymbolicLink())
+          throw new Error('Dependency ancestor is a symlink');
+      }
+      const local = join(path, modules);
+      if (!(await exists(local))) continue;
+      const stat = await lstat(local);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      if (files.some((f) => f === modules || f.startsWith(`${modules}/`)))
+        throw new Error('Tracked dependency files');
+      const removeVerified = async (candidate: string, shared: string): Promise<boolean> => {
+        try {
+          const before = await lstat(candidate);
+          const bytes = await compareDependencyTrees(candidate, shared, signal);
+          signal.throwIfAborted();
+          const latest = await lstat(candidate);
+          if (latest.ino !== before.ino || latest.dev !== before.dev)
+            throw new Error('Dependency root changed');
+          report.comparedDependencyBytes += bytes;
+          if (!this.deps.dryRun) await rm(candidate, { recursive: true });
+          report.dependenciesRemoved.push(candidate);
+          return true;
+        } catch (error) {
+          signal.throwIfAborted();
+          report.blockers.push({
+            path: candidate,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+      };
+      if (await removeVerified(local, join(root, modules))) continue;
+      // One patched package or unknown cache must not pin every other dependency.
+      // Keep the unknown entry and compare the remaining packages individually.
+      let removed = false;
+      for (const entry of await readdir(local, { withFileTypes: true })) {
+        signal.throwIfAborted();
+        if (entry.name === '.package-lock.json') continue;
+        if (entry.name.startsWith('@') && entry.isDirectory()) {
+          for (const name of await readdir(join(local, entry.name))) {
+            removed =
+              (await removeVerified(
+                join(local, entry.name, name),
+                join(root, modules, entry.name, name),
+              )) || removed;
+          }
+        } else {
+          removed =
+            (await removeVerified(join(local, entry.name), join(root, modules, entry.name))) ||
+            removed;
+        }
+      }
+      // npm's receipt must not claim that a now-partial private tree is complete.
+      if (removed && !this.deps.dryRun)
+        await rm(join(local, '.package-lock.json'), { force: true });
+    }
+    const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
+    const branch =
+      (
+        await git(['-C', path, 'symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')
+      ).trim() || null;
+    if (
+      sessionId &&
+      (!branch ||
+        !['merged', 'closed'].includes((await this.deps.pr(project, branch))?.phase ?? ''))
+    ) {
+      if (!this.deps.dryRun) linkWorkspacePackages(root, path);
+      return;
+    }
+    // Refresh remote evidence before trusting reachability; a failed fetch retains the worktree.
+    await git(['-C', root, 'fetch', '--prune', 'origin']);
+    const saved = (
+      await git([
+        '-C',
+        path,
+        'for-each-ref',
+        `--contains=${sha}`,
+        '--format=%(refname)',
+        'refs/remotes/origin',
+      ])
+    ).trim();
+    if (!saved) throw new Error('HEAD is not reachable from a verified remote branch');
+    if (
+      (await git(['-C', path, 'status', '--porcelain=v1', '--untracked-files=all'])).trim() ||
+      (await git(['-C', path, 'stash', 'list'])).trim()
+    )
+      throw new Error('Local changes or stashes remain');
+    const ignored = (
+      await git(['-C', path, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
+    )
+      .split('\0')
+      .filter(Boolean);
+    if (ignored.some((f) => f !== WORKTREE_SIDECAR))
+      throw new Error('Unknown ignored files remain');
+    if (this.deps.dryRun) {
+      report.worktreesRetired.push(path);
+      return;
+    }
+    const pin = `refs/verity/retired/${createHash('sha256').update(path).digest('hex')}`;
+    await git(['-C', root, 'update-ref', pin, sha]);
+    const sidecar = await optionalFile(join(path, WORKTREE_SIDECAR));
+    await atomicJson(this.manifest(root, path), {
+      version: 1,
+      sessionId,
+      path,
+      sha,
+      branch,
+      sidecar,
+    } satisfies Retirement);
+    // Non-force removal is the final Git backstop. The durable journal precedes it.
+    await git(['-C', root, 'worktree', 'remove', '--', path]);
+    report.worktreesRetired.push(path);
+  }
+}

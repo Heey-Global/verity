@@ -3362,6 +3362,27 @@ describe('GET /sessions', () => {
     expect(byId).toEqual({ s1: true, s2: false });
   });
 
+  it('keeps safely retired sessions resumable in list and detail responses', async () => {
+    await ctx.store.createSession({ sessionId: 'retired', worktree: '/wt/retired', model: 'm' });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sessionStorage: {
+        bind: () => {},
+        canRestore: async (session: { sessionId: string }) => session.sessionId === 'retired',
+      } as unknown as import('./session-storage.js').SessionStorage,
+    });
+    try {
+      const list = await server.inject({ method: 'GET', url: '/sessions' });
+      expect(list.json()[0].resumable).toBe(true);
+      const detail = await server.inject({ method: 'GET', url: '/sessions/retired' });
+      expect(detail.json().resumable).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('marks sessions that carry an automation and checks its model on confirm', async () => {
     await ctx.store.updateVeritySettings({
       claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',

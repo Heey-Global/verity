@@ -1067,3 +1067,30 @@ describe('build storage reconciliation', () => {
     expect(existsSync(young)).toBe(false);
   });
 });
+
+describe('admission reclamation', () => {
+  it('reclaims once and measures capacity again before admitting', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {
+      f.local.availableBytes = 100 * GiB;
+      f.writeReport();
+    });
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
+  it('does not loop or override reservation/capacity refusals', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {});
+    manager.setReclaimer(reclaim);
+    await expect(manager.admitInTurn()).rejects.toThrow('admission rejected');
+    expect(reclaim).toHaveBeenCalledOnce();
+  });
+});

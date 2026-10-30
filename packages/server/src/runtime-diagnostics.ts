@@ -148,7 +148,56 @@ const buildStorageReservationSchema = z
     reason: z.string().max(200),
   })
   .strict();
+export const nativeRetirementSchema = z.object({
+  version: z.literal(1),
+  observedAt: timestamp,
+  path: z.string().max(500),
+  dryRun: z.literal(true),
+  eligible: z.literal(false),
+  allocatedBytes: number.nullable(),
+  overlayAllocatedBytes: number.nullable(),
+  reclaimableBytes: number.nullable(),
+  blockers: z.array(z.string().max(200)).max(20),
+});
+export const storageReclamationSchema = z.object({
+  accounting: z.string().max(300),
+  lastGc: z
+    .object({
+      observedAt: timestamp,
+      containersRemoved: z.array(z.string()).max(100),
+      imagesRemoved: z.number().int().nonnegative(),
+      lowDisk: z.boolean(),
+      errors: z.number().int().nonnegative(),
+      stoppedContainerPins: z.object({
+        images: number,
+        containers: number,
+        estimatedBytes: number,
+      }),
+      keptImageReasons: z
+        .array(z.object({ imageId: z.string(), containers: z.array(z.string()).max(100) }))
+        .max(100),
+    })
+    .nullable(),
+  worktrees: z
+    .object({
+      observedAt: timestamp,
+      dependenciesRemoved: number,
+      worktreesRetired: number,
+      comparedDependencyBytes: number,
+      worktreeSampledBytes: number.nullable(),
+      dependencySampledBytes: number.nullable(),
+      usageComplete: z.boolean(),
+      dryRun: z.boolean(),
+      blockers: z.array(z.object({ path: z.string(), reason: z.string().max(500) })).max(100),
+    })
+    .nullable(),
+  databaseBytes: number.nullable(),
+  nativeBuildkit: nativeRetirementSchema.nullable(),
+  activeBuildkitBytes: number.nullable(),
+});
+export type StorageReclamation = z.infer<typeof storageReclamationSchema>;
 export const runtimeDiagnosticSnapshotSchema = z.object({
+  storageReclamation: storageReclamationSchema.optional(),
   builderAdmission: builderAdmissionSchema.optional(),
   /** The selected project's last failed devcontainer build, until one succeeds. */
   projectBuildFailure: z
@@ -519,6 +568,7 @@ export function createRuntimeDiagnostics(deps: {
   buildStorageReportPath?: string | undefined;
   /** Attempts still reserving build storage, as the Server's build storage tracks them. */
   buildStorageReservations?: (() => UnresolvedBuildAttempt[]) | undefined;
+  storageReclamation?: (() => Promise<StorageReclamation>) | undefined;
   /** The output tail of a project's last failed devcontainer build. */
   projectBuildFailure?:
     ((projectId: string) => { recordedAt: string; tail: string } | undefined) | undefined;
@@ -958,7 +1008,14 @@ export function createRuntimeDiagnostics(deps: {
     const reservations = deps.buildStorageReservations?.();
     const buildFailure =
       request.projectId === undefined ? undefined : deps.projectBuildFailure?.(request.projectId);
+    let storageReclamation: StorageReclamation | undefined;
+    try {
+      storageReclamation = await deps.storageReclamation?.();
+    } catch {
+      /* Missing evidence is not zero usage. */
+    }
     return runtimeDiagnosticSnapshotSchema.parse({
+      ...(storageReclamation ? { storageReclamation } : {}),
       ...(builderAdmission === undefined ? {} : { builderAdmission }),
       ...(buildFailure === undefined ? {} : { projectBuildFailure: buildFailure }),
       ...(reservations === undefined || reservations.length === 0

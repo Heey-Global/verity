@@ -1,3 +1,4 @@
+import { retireCompletedUpdateContainers } from '../stopped-container-gc.js';
 import {
   cp,
   lstat,
@@ -46,6 +47,7 @@ const REQUIRED_AGENT_SEED_FILES = [
   'bin/verity-gh-token',
   'bin/verity-git-sign',
   'bin/verity-memory',
+  'bin/verity-dependencies',
   'bin/verity-secret-scan',
   'bin/gh',
   'bin/git',
@@ -73,6 +75,7 @@ type CompanionDocker = Pick<
   | 'listContainers'
   | 'pullImage'
   | 'removeContainer'
+  | 'removeStoppedContainer'
   | 'replaceContainerImage'
   | 'startContainer'
   | 'stopContainer'
@@ -501,6 +504,18 @@ async function reconcileManagedCompanionsOnce(
     );
   }
 
+  // Consumers and companions have completed their dependency checks. Remove
+  // successful bootstrap jobs now; their volumes and failed jobs stay intact.
+  if (composeProject) {
+    try {
+      await retireCompletedUpdateContainers(options.docker, { composeProject });
+    } catch (error) {
+      console.warn(
+        'completed bootstrap cleanup deferred:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   const refreshed = await options.docker.listContainers();
   for (const item of refreshed.filter(
     (entry) =>

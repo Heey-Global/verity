@@ -519,3 +519,15 @@ it('does not recover a stale snapshot of a failed creation', async () => {
   expect(manager.list('s1')).toEqual([]);
   expect(manager.heldPorts().size).toBe(0);
 });
+
+it('storage maintenance preserves active previews and does not remove their connectors', async () => {
+  const { manager, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  const mutation = vi.fn(async () => {});
+  await expect(manager.withProjectStorageMutation('p1', mutation)).rejects.toThrow(
+    'active preview',
+  );
+  expect(mutation).not.toHaveBeenCalled();
+  expect(manager.listProject('p1').map((item) => item.id)).toContain(share.id);
+  expect(docker.removeContainer).not.toHaveBeenCalled();
+});

@@ -1,3 +1,4 @@
+import type { SessionStorage } from './session-storage.js';
 import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
 import { createQACoordinator } from './qa-coordinator.js';
@@ -1333,6 +1334,7 @@ export interface ServerDeps {
    * dir} default (empty, no repo — A1 behavior).
    */
   worktrees?: WorktreeProvisioner;
+  sessionStorage?: SessionStorage | undefined;
   /**
    * The repo-root checkout (e.g. `/work`) reserved for the human/main session —
    * NEVER provisioned or removed by the server (#105). Sessions never run here
@@ -3483,6 +3485,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // filesystem. (The store lock in `createSession` covers only the row: it stops
   // such a spawn from leaving a session behind, not from writing a directory.)
   const projectSpawnsInFlight = new Map<string, Set<Promise<void>>>();
+  deps.sessionStorage?.bind(
+    (id, run) =>
+      conductor.isMovingSession(id) ||
+      sessionsBeingReaped.has(id) ||
+      (meetingJobsBySession.get(id)?.size ?? 0) > 0
+        ? Promise.resolve({ ran: false as const })
+        : conductor.tryRunExclusive(id, run),
+    (projectId) =>
+      projectsBeingDeleted.has(projectId) ||
+      (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
+      deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+      (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0,
+  );
   /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {
     let finish: () => void = () => undefined;
@@ -5570,6 +5585,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   };
 
+  const sessionResumable = async (session: SessionRecord): Promise<boolean> =>
+    (await worktreeExists(session.worktree)) ||
+    (await deps.sessionStorage?.canRestore(session)) === true;
+
   const summarizeSessionWithFacts = async (
     session: SessionRecord,
     facts: SessionProjectionFacts,
@@ -5579,7 +5598,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
-    const resumable = await worktreeExists(session.worktree);
+    const resumable = await sessionResumable(session);
     const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
     // the store reads the newest one per window separately. See
@@ -6258,17 +6277,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const { summaries, omitted } = await collectSessionFacts(
           {
             listSessions: () => deps.eventStore.listSessions(),
-            // These two must decide worktree liveness identically, and today they do:
-            // `summarizeSession` sets `resumable` from this same `worktreeExists`. The
-            // coupling is load-bearing rather than tidy. The prefilter drops rows by
-            // `worktreeExists`; eligibility is then decided by `facts.resumable`. Let
-            // `resumable` become the broader of the two and a session the handoff would
-            // have called eligible never reaches the predicate — so a project holding two
-            // eligible sessions presents as holding one, and an ambiguous handoff that
-            // `sessionHandoffCaveats` promises will "fail rather than choosing" delivers
-            // to whichever survived instead. Changing where either gets its answer means
-            // changing both.
-            worktreeExists: (worktree) => worktreeExists(worktree),
+            // Match summary eligibility, including safely journaled retired worktrees.
+            worktreeExists: (_worktree, session) => sessionResumable(session),
             summarize: summarizeSession,
           },
           keep,
@@ -8635,7 +8645,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
-        resumable: await worktreeExists(session.worktree),
+        resumable: await sessionResumable(session),
         eventCount: facts.eventCount,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,

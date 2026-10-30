@@ -625,3 +625,27 @@ it('reports build storage reservations and the selected project’s last build f
   expect((await read({ projectId: 'p1' })).projectBuildFailure?.tail).toContain('pip');
   expect((await read({ projectId: 'p2' })).projectBuildFailure).toBeUndefined();
 });
+
+it('retains storage pinning reasons through the diagnostics schema', async () => {
+  const storage = {
+    accounting: 'Estimates overlap; unknown measurements are null.',
+    databaseBytes: null,
+    nativeBuildkit: null,
+    activeBuildkitBytes: null,
+    worktrees: null,
+    lastGc: {
+      observedAt: new Date(now).toISOString(),
+      containersRemoved: ['old-sandbox'],
+      imagesRemoved: 0,
+      lowDisk: true,
+      errors: 0,
+      stoppedContainerPins: { images: 1, containers: 2, estimatedBytes: 100 },
+      keptImageReasons: [{ imageId: image, containers: ['stopped-relay'] }],
+    },
+  };
+  const result = await createRuntimeDiagnostics({
+    ...fixture(),
+    storageReclamation: async () => storage,
+  })({});
+  expect(result.storageReclamation).toEqual(storage);
+});

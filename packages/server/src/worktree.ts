@@ -828,7 +828,14 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
       const target = relative(dirname(dst), join(worktreePath, glob, entry));
       try {
         mkdirSync(dirname(dst), { recursive: true }); // creates the scope dir (e.g. @verity)
-        rmSync(dst, { force: true, recursive: true }); // replace any stale entry
+        // A private package directory may contain local patches. Only replace
+        // links; an existing real entry is never disposable workspace wiring.
+        try {
+          if (!lstatSync(dst).isSymbolicLink()) continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+        }
+        rmSync(dst, { force: true });
         symlinkSync(target, dst);
       } catch {
         // A single unlinkable package must not fail the spawn.

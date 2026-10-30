@@ -1905,7 +1905,11 @@ export interface Provisioner {
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
-  withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
+  withProjectExclusiveMutation?<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
