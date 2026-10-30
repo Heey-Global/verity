@@ -114,6 +114,20 @@ describe('stopped container retirement', () => {
     await retireStoppedContainers(f.input);
     expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
   });
+  it('reaps expired labelled maintenance containers after seven days even on active projects', async () => {
+    const f = fixture();
+    f.sandbox.names = ['verity-query-12345678-1234-1234-1234-123456789abc'];
+    f.sandbox.labels = { 'verity.project-id': 'p', 'verity.component': 'storage-maintenance' };
+    f.docker.listImages.mockResolvedValue([]);
+    const input = {
+      ...f.input,
+      listProjects: async () => [{ ...project, state: 'active' as const }],
+    };
+    await retireStoppedContainers(input);
+    expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+    await retireStoppedContainers({ ...input, now: now + 7 * 86400000 });
+    expect(f.docker.removeStoppedContainer).toHaveBeenCalledOnce();
+  });
   it('requires seven days and identity labels for an abandoned project', async () => {
     const f = fixture();
     const input = { ...f.input, listProjects: async () => [] };

@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -805,6 +806,11 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
         const pkg: unknown = JSON.parse(readFileSync(join(dir, entry, 'package.json'), 'utf8'));
         const pkgName = (pkg as { name?: unknown }).name;
         if (typeof pkgName !== 'string' || pkgName.length === 0) continue;
+        if (
+          !/^(?:@[a-zA-Z0-9._~-]+\/)?[a-zA-Z0-9._~-]+$/.test(pkgName) ||
+          ['.', '..'].includes(pkgName)
+        )
+          continue;
         name = pkgName;
       } catch {
         continue; // not a package (no/invalid package.json)
@@ -828,6 +834,7 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
       const target = relative(dirname(dst), join(worktreePath, glob, entry));
       try {
         mkdirSync(dirname(dst), { recursive: true }); // creates the scope dir (e.g. @verity)
+        if (realpathSync(dirname(dst)) !== resolve(dirname(dst))) continue;
         // A private package directory may contain local patches. Only replace
         // links; an existing real entry is never disposable workspace wiring.
         try {

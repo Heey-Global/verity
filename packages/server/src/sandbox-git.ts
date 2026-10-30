@@ -260,7 +260,7 @@ export async function withSleepingSessionGit<T>(
       : { binds: [`${opts.hostRoot}:/work:${opts.maintenance ? 'rw' : 'ro'}`] }),
     user: parent.user || '1000:1000',
     entrypoint: ['sleep'],
-    command: ['infinity'],
+    command: [opts.maintenance ? '120' : 'infinity'],
     ...(opts.maintenance ? {} : { network: 'none' }),
     readOnlyRootfs: true,
     capDrop: ['ALL'],
@@ -274,7 +274,11 @@ export async function withSleepingSessionGit<T>(
     ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),
     ...(parent.nanoCpus ? { nanoCpus: parent.nanoCpus } : {}),
     ...(parent.pidsLimit ? { pidsLimit: parent.pidsLimit } : {}),
-    labels: { 'verity.project-id': opts.projectId, 'verity.session-id': name },
+    labels: {
+      'verity.project-id': opts.projectId,
+      'verity.session-id': name,
+      ...(opts.maintenance ? { 'verity.component': 'storage-maintenance' } : {}),
+    },
   });
   const commands: Promise<string>[] = [];
   try {

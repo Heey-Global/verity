@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
+import { WORKTREE_SIDECAR } from './worktree.js';
 import { SessionStorage, compareDependencyTrees } from './session-storage.js';
 import type { GitOutput } from './branches.js';
 
@@ -137,6 +138,23 @@ describe('safe session storage reclamation', () => {
     expect(await f.service.canRestore(f.session)).toBe(false);
     await expect(f.service.ensureWorkspace(f.session)).rejects.toThrow('Unsafe');
     expect(existsSync(f.path)).toBe(false);
+  });
+  it('does not follow dependency-input or sidecar symlinks', async () => {
+    const f = fixture();
+    const outside = join(f.dir, 'outside');
+    writeFileSync(outside, 'private marker');
+    rmSync(join(f.path, 'package.json'));
+    symlinkSync(outside, join(f.path, 'package.json'));
+    await f.service.runOnce();
+    expect(f.service.lastReport?.blockers.some((entry) => entry.reason.includes('symlink'))).toBe(
+      true,
+    );
+    expect(JSON.stringify(f.service.lastReport)).not.toContain('private marker');
+    const sidecar = fixture();
+    symlinkSync(outside, join(sidecar.path, WORKTREE_SIDECAR));
+    await sidecar.service.runOnce();
+    expect(sidecar.service.lastReport?.worktreesRetired).toEqual([]);
+    expect(existsSync(sidecar.path)).toBe(true);
   });
   it('preserves runtime resolution of patched transitive dependencies', async () => {
     const f = fixture();

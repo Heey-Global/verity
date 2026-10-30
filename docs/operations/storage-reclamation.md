@@ -51,7 +51,9 @@ meanwhile, restoration uses the saved commit detached and preserves that branch.
 Sleeping-project maintenance uses an isolated sandbox with a writable checkout,
 a read-only root filesystem and disabled Git hooks. Its default metadata-query
 mode remains read-only and offline. Missing retired project containers use the
-current sandbox image with bounded resources. Remote verification must succeed;
+current sandbox image with bounded resources. Maintenance helpers stop after two
+minutes and carry explicit ownership labels; GC can retire stopped leftovers
+after seven days. Remote verification must succeed;
 Forgejo retirement currently retains worktrees while dependency slimming remains
 available. GitHub fetch authorization is scoped to GitHub and is not persisted.
 An interrupted removal or restoration can be retried safely; unknown paths are

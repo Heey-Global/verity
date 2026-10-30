@@ -456,11 +456,21 @@ export class SessionStorage {
       dependencyInputs.every((f) => baseFiles.includes(f));
     if (!compatible) throw new Error('Dependency manifests differ or are unknown');
     for (const f of dependencyInputs) {
-      if (
-        dependencyInputIdentity(f, await readFile(join(path, f), 'utf8')) !==
-        dependencyInputIdentity(f, await readFile(join(root, f), 'utf8'))
-      )
-        throw new Error('Dependency inputs differ');
+      const localInput = join(path, f),
+        sharedInput = join(root, f);
+      for (const input of [localInput, sharedInput]) {
+        if ((await realpath(input)) !== input || !(await lstat(input)).isFile())
+          throw new Error('Dependency input is a symlink or unknown file');
+      }
+      let matches: boolean;
+      try {
+        matches =
+          dependencyInputIdentity(f, await readFile(localInput, 'utf8')) ===
+          dependencyInputIdentity(f, await readFile(sharedInput, 'utf8'));
+      } catch {
+        throw new Error('Dependency inputs are invalid or unavailable');
+      }
+      if (!matches) throw new Error('Dependency inputs differ');
     }
     const unknownManifests = (
       await git(['-C', path, 'ls-files', '--others', '--exclude-standard', '-z'])
@@ -554,7 +564,10 @@ export class SessionStorage {
     }
     const pin = `refs/verity/retired/${createHash('sha256').update(path).digest('hex')}`;
     await git(['-C', root, 'update-ref', pin, sha]);
-    const sidecar = await optionalFile(join(path, WORKTREE_SIDECAR));
+    const sidecarPath = join(path, WORKTREE_SIDECAR);
+    if ((await exists(sidecarPath)) && !(await lstat(sidecarPath)).isFile())
+      throw new Error('Worktree sidecar is not a regular file');
+    const sidecar = await optionalFile(sidecarPath);
     await atomicJson(this.manifest(root, path), {
       version: 1,
       sessionId,

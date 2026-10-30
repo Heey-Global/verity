@@ -53,20 +53,28 @@ export async function retireStoppedContainers(input: {
     if (!stopped(candidate)) continue;
     const projectId = candidate.labels?.[projectLabel];
     if (!projectId) continue; // One-shots have a separate deployment owner.
+    const maintenance =
+      candidate.labels?.[componentLabel] === 'storage-maintenance' &&
+      candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
     const project = projects.find((p) => p.id === projectId);
     const ownedSandbox =
       !relay(candidate) &&
       project?.containerName !== undefined &&
       candidate.names?.includes(project.containerName);
     // An orphan still needs identity labels; names or image ancestry alone are insufficient.
-    if (!relay(candidate) && !ownedSandbox && !candidate.labels?.[generationLabel]) continue;
+    if (!maintenance && !relay(candidate) && !ownedSandbox && !candidate.labels?.[generationLabel])
+      continue;
     try {
       await input.withProjectMutation(projectId, async () => {
         const freshProjects = await input.listProjects();
         const latestProject = freshProjects.find((p) => p.id === projectId);
-        if (latestProject && !['sleeping', 'absent', 'failed'].includes(latestProject.state))
+        if (
+          !maintenance &&
+          latestProject &&
+          !['sleeping', 'absent', 'failed'].includes(latestProject.state)
+        )
           return;
-        if (latestProject?.imageOverrideRef) return;
+        if (!maintenance && latestProject?.imageOverrideRef) return;
         const current = (await docker.listContainers!()).find((c) => c.id === candidate.id);
         if (!current || !stopped(current) || current.imageId !== candidate.imageId) return;
         const inspect = await docker.inspectContainer(current.id);
@@ -81,9 +89,10 @@ export async function retireStoppedContainers(input: {
           inspect.status === 'created'
             ? (current.created ?? NaN) * 1000
             : Date.parse(inspect.finishedAt ?? '');
-        const grace = latestProject ? DAY : 7 * DAY;
+        const grace = latestProject && !maintenance ? DAY : 7 * DAY;
         if (!Number.isFinite(since) || since <= 0 || now - since < grace) return;
-        if (latestProject && !superseded(current, await docker.listImages!())) return;
+        if (!maintenance && latestProject && !superseded(current, await docker.listImages!()))
+          return;
         // A relay may only be retired with its stopped sandbox generation, never independently of a running sandbox.
         if (
           relay(current) &&

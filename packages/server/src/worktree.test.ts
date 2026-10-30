@@ -1701,3 +1701,22 @@ it('workspace relinking preserves a private package directory with local patches
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it('workspace relinking never rewrites links through a symlinked dependency parent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'verity-workspace-links-'));
+  try {
+    const worktree = join(root, 'session'),
+      outside = join(root, 'outside');
+    mkdirSync(join(root, 'packages', 'pkg'), { recursive: true });
+    writeFileSync(join(root, 'package.json'), '{"workspaces":["packages/*"]}');
+    writeFileSync(join(root, 'packages', 'pkg', 'package.json'), '{"name":"pkg"}');
+    mkdirSync(worktree);
+    mkdirSync(outside);
+    symlinkSync('preserved', join(outside, 'pkg'));
+    symlinkSync(outside, join(worktree, 'node_modules'));
+    linkWorkspacePackages(root, worktree);
+    expect(readlinkSync(join(outside, 'pkg'))).toBe('preserved');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

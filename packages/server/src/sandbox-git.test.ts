@@ -439,6 +439,8 @@ it('keeps maintenance writes and fetch networking opt-in, including a retired te
   );
   const spec = docker.createContainer.mock.calls[0]![0];
   expect(spec).toMatchObject({
+    command: ['120'],
+    labels: expect.objectContaining({ 'verity.component': 'storage-maintenance' }),
     image: 'sha256:current',
     binds: ['/data/p:/work:rw'],
     readOnlyRootfs: true,
