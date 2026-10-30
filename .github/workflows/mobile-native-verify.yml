@@ -52,6 +52,11 @@ on:
         required: false
         default: false
         type: boolean
+      regular_staging:
+        description: Compile regular staging with CPU recording and OTA enabled (no publishing)
+        required: false
+        default: false
+        type: boolean
       uplink_origin:
         description: HTTPS origin of the Staging Uplink
         required: false
@@ -216,7 +221,7 @@ jobs:
         env:
           GOOGLE_AUTH_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           VERITY_CPU_PROFILING: ${{ inputs.cpu_profiling && '1' || '0' }}
-          VERITY_APP_VARIANT: ${{ inputs.cpu_profiling && 'staging' || 'production' }}
+          VERITY_APP_VARIANT: ${{ (inputs.cpu_profiling || inputs.regular_staging) && 'staging' || 'production' }}
         run: |
           export VERITY_PROFILE_COMMIT="$(git rev-parse HEAD)"
           if [ "$VERITY_CPU_PROFILING" = 1 ]; then
@@ -271,7 +276,7 @@ jobs:
           set -euo pipefail
           workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
           scheme=Verity
-          if [ "${{ inputs.cpu_profiling }}" = true ]; then scheme=VerityStaging; fi
+          if [ "${{ inputs.cpu_profiling || inputs.regular_staging }}" = true ]; then scheme=VerityStaging; fi
           xcodebuild -workspace "$workspace" -list -json \
             | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
           # No -sdk: it would force the iOS SDK onto the embedded Apple Watch
@@ -288,7 +293,7 @@ jobs:
 
       # Maps contain source text. Retain briefly and never publish them with the app.
       - name: Retain exact profiling source map
-        if: needs.changes.outputs.compile == 'true' && inputs.cpu_profiling
+        if: needs.changes.outputs.compile == 'true' && (inputs.cpu_profiling || inputs.regular_staging)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cpu-profile-map-${{ github.run_id }}

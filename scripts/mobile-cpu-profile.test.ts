@@ -14,7 +14,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error -- executable helper
-import { stampProfileMap, extractProfile, toSpeedscope } from './mobile-cpu-profile.mjs';
+import {
+  stampProfileMap,
+  extractProfile,
+  toSpeedscope,
+  retainOTAProfile,
+} from './mobile-cpu-profile.mjs';
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -106,8 +111,9 @@ describe('optimized CPU capture', () => {
     expect(diagnostic.plugins).toContain('./plugins/withCPUProfiling');
     for (const variant of ['production', 'staging']) {
       const normal = config(variant, '0');
-      expect(normal.plugins).not.toContain('./plugins/withCPUProfiling');
-      expect(normal.ios.infoPlist.VerityCPUProfiling).toBe(false);
+      expect(normal.plugins.includes('./plugins/withCPUProfiling')).toBe(variant === 'staging');
+      expect(normal.ios.infoPlist.VerityCPUProfiling).toBe(variant === 'staging');
+      expect(normal.runtimeVersion.startsWith('staging-profile-')).toBe(false);
       expect(normal.updates.enabled).not.toBe(false);
     }
     expect(() => config('production')).toThrow();
@@ -173,6 +179,7 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
     mkdirSync(join(f.root, 'App.app'));
     symlinkSync(resolve('scripts'), join(f.root, 'scripts'));
     const original = `printf '%s' '{"version":3,"sources":[],"names":[],"mappings":""}' > "$SOURCEMAP_FILE"\n`;
+    writeFileSync(join(f.root, 'App.app/main.jsbundle'), 'exact Hermes bytes');
     const first = plugin.profileBundleScript(original, 'b'.repeat(40));
     const next = plugin.profileBundleScript(first, commit);
     expect(next).not.toContain('b'.repeat(40));
@@ -182,6 +189,7 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
         ...process.env,
         PROJECT_DIR: projectDir,
         TARGET_BUILD_DIR: f.root,
+        CONFIGURATION_BUILD_DIR: f.root,
         UNLOCALIZED_RESOURCES_FOLDER_PATH: 'App.app',
         NODE_BINARY: process.execPath,
       },
@@ -227,6 +235,42 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
       }
       expect(() => extractProfile(f.capture, f.root, f.output)).toThrow('do not match');
       expect(existsSync(f.output)).toBe(false);
+    },
+  );
+  it.each([true, false])(
+    'matches the actual bundle for OTA or embedded schema2 (OTA=%s)',
+    (ota) => {
+      const f = fixture();
+      const exported = join(f.root, 'export');
+      mkdirSync(exported);
+      writeFileSync(join(exported, 'bundle.hbc'), 'Hermes bundle bytes');
+      writeFileSync(join(exported, 'bundle.hbc.map'), readFileSync(f.map));
+      writeFileSync(
+        join(exported, 'metadata.json'),
+        JSON.stringify({ fileMetadata: { ios: { bundle: 'bundle.hbc' } } }),
+      );
+      retainOTAProfile(exported, commit, f.root);
+      const identity = JSON.parse(readFileSync(join(f.root, 'manifest.json'), 'utf8'));
+      const capture = JSON.parse(readFileSync(f.capture, 'utf8'));
+      capture.schema = 2;
+      capture.identity = {
+        bundleSha256: identity.bundleSha256,
+        updateId: ota ? 'ota-id' : 'embedded-id',
+        isEmbeddedLaunch: !ota,
+      };
+      writeFileSync(f.capture, JSON.stringify(capture));
+      expect(extractProfile(f.capture, f.root, f.output)).toBe(3);
+      // Same source commit with different bytecode must not reuse its old map.
+      writeFileSync(join(exported, 'bundle.hbc'), 'different compilation');
+      retainOTAProfile(exported, commit, f.root);
+      expect(() => extractProfile(f.capture, f.root, join(f.root, 'wrong'))).toThrow(
+        'do not match',
+      );
+      writeFileSync(
+        join(exported, 'metadata.json'),
+        JSON.stringify({ fileMetadata: { ios: { bundle: '../escape.hbc' } } }),
+      );
+      expect(() => retainOTAProfile(exported, commit, f.root)).toThrow('outside export');
     },
   );
   it('rejects empty, dangling and cyclic stacks rather than emitting a convincing empty profile', () => {

@@ -84,3 +84,5 @@ coverage
 
 # Exact-bundle CPU profiling maps and private device captures.
 /apps/mobile/profiling-artifacts/
+
+/apps/mobile/dist-cpu-profile/

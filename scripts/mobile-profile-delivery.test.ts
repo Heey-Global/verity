@@ -53,6 +53,40 @@ with tempfile.TemporaryDirectory() as tmp:
     },
   );
 
+  it.each(['valid', 'bundle', 'ota'])(
+    'retains regular staging with exact archived bytecode: %s',
+    (scenario) => {
+      execFileSync(
+        'python3',
+        [
+          '-c',
+          `
+import hashlib, importlib.util, json, pathlib, plistlib, sys, tempfile, zipfile
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('retain', 'scripts/retain-mobile-profile-map.py')
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+scenario = sys.argv[1]; commit = 'a'*40
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp); maps = root/'build'/'profiling-artifacts'; maps.mkdir(parents=True)
+    data = b'{"version":3}'; bundle = b'compiled Hermes'
+    identity = {'schema':2,'commit':commit,'mapSha256':hashlib.sha256(data).hexdigest(),'bundleSha256':hashlib.sha256(bundle).hexdigest()}
+    (maps/'manifest.json').write_text(json.dumps(identity)); (maps/'main.jsbundle.map').write_bytes(data)
+    ipa = root/'app.ipa'
+    with zipfile.ZipFile(ipa, 'w') as archive:
+        archive.writestr('Payload/App.app/verity-profile-map.json', json.dumps(identity))
+        archive.writestr('Payload/App.app/main.jsbundle', bundle if scenario != 'bundle' else b'other build')
+        archive.writestr('Payload/App.app/Info.plist', plistlib.dumps({'CFBundleVersion':'33','VerityCPUProfiling':True}))
+        archive.writestr('Payload/App.app/Expo.plist', plistlib.dumps({'EXUpdatesEnabled':scenario != 'ota'}))
+    try: module.retain(root, ipa, commit, root/'retained', 'staging')
+    except ValueError: assert scenario != 'valid'
+    else: assert scenario == 'valid'
+`,
+          scenario,
+        ],
+        { stdio: 'pipe' },
+      );
+    },
+  );
   it('retains the validated map before upload and isolates diagnostics from release evidence', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
     const job = workflow.jobs.build;

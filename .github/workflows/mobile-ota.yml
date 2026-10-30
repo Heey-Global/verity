@@ -199,3 +199,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: node scripts/mobile-ota-proposal.mjs complete "${{ steps.intent.outputs.pr }}" "${{ steps.stage.outputs.deferred }}"
+
+      - name: Retain exact staging OTA CPU map
+        if: always() && steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: staging-cpu-ota-${{ steps.intent.outputs.commit }}
+          path: apps/mobile/profiling-artifacts/ota-${{ steps.intent.outputs.commit }}/
+          if-no-files-found: error
+          retention-days: 90

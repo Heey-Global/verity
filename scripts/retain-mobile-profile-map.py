@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 
-def retain(root, ipa, commit, destination):
+def retain(root, ipa, commit, destination, mode="dedicated"):
     if not re.fullmatch(r"[a-f0-9]{40}", commit):
         raise ValueError("Full profile commit required")
     with zipfile.ZipFile(ipa) as archive:
@@ -22,8 +22,20 @@ def retain(root, ipa, commit, destination):
         app = manifests[0].rsplit("/", 1)[0]
         info = plistlib.loads(archive.read(app + "/Info.plist"))
         updates = plistlib.loads(archive.read(app + "/Expo.plist"))
-        if info.get("VerityProfileCommit") != commit or updates.get("EXUpdatesEnabled") is not False:
-            raise ValueError("IPA must bind the profile commit and disable OTA")
+        if mode == "dedicated":
+            if info.get("VerityProfileCommit") != commit or updates.get("EXUpdatesEnabled") is not False:
+                raise ValueError("IPA must bind the profile commit and disable OTA")
+        elif mode == "staging":
+            if info.get("VerityCPUProfiling") is not True or updates.get("EXUpdatesEnabled") is not True:
+                raise ValueError("Regular staging requires CPU support and OTA")
+        else:
+            raise ValueError("Unknown profiling artifact mode")
+        if embedded.get("schema") == 2:
+            digest = hashlib.sha256(archive.read(app + "/main.jsbundle")).hexdigest()
+            if embedded.get("bundleSha256") != digest:
+                raise ValueError("Embedded map does not match archived bundle")
+        elif mode == "staging":
+            raise ValueError("Regular staging requires bundle-bound maps")
     if embedded.get("commit") != commit:
         raise ValueError("Embedded map belongs to another commit")
     matches = []

@@ -1,5 +1,4 @@
-// Only the dedicated optimized diagnostic build links the sampler. Normal
-// staging/production builds cannot activate it through JavaScript or OTA.
+// Regular staging includes the manually started sampler. Production omits it.
 module.exports = function withCPUProfiling(config) {
   const { withPodfile, withXcodeProject } = require('@expo/config-plugins');
   config = withPodfile(config, (mod) => {
@@ -34,7 +33,11 @@ function profileBundleScript(script, commit) {
   );
   const prefix =
     '# BEGIN VERITY CPU PROFILE SETUP\nset -e\nmkdir -p "$PROJECT_DIR/../profiling-artifacts"\nrm -f "$PROJECT_DIR/../profiling-artifacts/main.jsbundle.map" "$PROJECT_DIR/../profiling-artifacts/manifest.json"\nexport SOURCEMAP_FILE="$PROJECT_DIR/../profiling-artifacts/main.jsbundle.map"\n# END VERITY CPU PROFILE SETUP\n';
-  const suffix = `\n# BEGIN VERITY CPU PROFILE IDENTITY\n"$NODE_BINARY" "$PROJECT_DIR/../../../scripts/mobile-cpu-profile.mjs" manifest "$SOURCEMAP_FILE" "${commit}"\ncp "$PROJECT_DIR/../profiling-artifacts/manifest.json" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/verity-profile-map.json"\n# END VERITY CPU PROFILE IDENTITY\n`;
-  return prefix + clean.trimEnd() + suffix;
+  const source = commit || '$VERITY_PROFILE_COMMIT';
+  const identitySetup = commit
+    ? ''
+    : 'export VERITY_PROFILE_COMMIT="$(git -C "$PROJECT_DIR/../../.." rev-parse HEAD)"\n';
+  const suffix = `\n# BEGIN VERITY CPU PROFILE IDENTITY\n"$NODE_BINARY" "$PROJECT_DIR/../../../scripts/mobile-cpu-profile.mjs" manifest "$SOURCEMAP_FILE" "${source}" "$CONFIGURATION_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/main.jsbundle"\ncp "$PROJECT_DIR/../profiling-artifacts/manifest.json" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/verity-profile-map.json"\n# END VERITY CPU PROFILE IDENTITY\n`;
+  return prefix + identitySetup + clean.trimEnd() + suffix;
 }
 module.exports.profileBundleScript = profileBundleScript;

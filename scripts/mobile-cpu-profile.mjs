@@ -1,19 +1,26 @@
 // Exact-bundle map manifest and local CPU capture conversion. No uploads.
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, statSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  statSync,
+  realpathSync,
+  copyFileSync,
+} from 'node:fs';
+import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 /** @typedef {{name: string, parent?: string | number}} StackFrame */
 /** @typedef {{stackFrames: Record<string, StackFrame>, samples: Array<{pid: number, tid: string | number, ts: string | number, sf: number}>}} HermesProfile */
-/** @typedef {{schema: number, identity: {commit: string, mapSha256: string}, hermesProfile: HermesProfile, recording?: unknown, diagnostics?: unknown}} Capture */
+/** @typedef {{schema: number, identity: {commit?: string, mapSha256?: string, bundleSha256?: string}, hermesProfile: HermesProfile, recording?: unknown, diagnostics?: unknown}} Capture */
 /** @param {import('node:crypto').BinaryLike} data */
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 
-/** @param {string} mapPath @param {string} commit */
-export function stampProfileMap(mapPath, commit) {
+/** @param {string} mapPath @param {string} commit @param {string} [bundlePath] */
+export function stampProfileMap(mapPath, commit, bundlePath) {
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Full profile commit required');
   const map = readFileSync(mapPath);
   /** @type {unknown} */
@@ -22,8 +29,34 @@ export function stampProfileMap(mapPath, commit) {
   if (parsed.version !== 3) throw new Error('Invalid source map');
   writeFileSync(
     join(dirname(mapPath), 'manifest.json'),
-    JSON.stringify({ schema: 1, commit, mapSha256: sha256(map) }, null, 2),
+    JSON.stringify(
+      {
+        schema: bundlePath ? 2 : 1,
+        commit,
+        mapSha256: sha256(map),
+        ...(bundlePath ? { bundleSha256: sha256(readFileSync(bundlePath)) } : {}),
+      },
+      null,
+      2,
+    ),
   );
+}
+
+/** Retain maps from the very export passed to EAS with --skip-bundler.
+ * @param {string} exported @param {string} commit @param {string} destination
+ */
+export function retainOTAProfile(exported, commit, destination) {
+  const metadata = JSON.parse(readFileSync(join(exported, 'metadata.json'), 'utf8'));
+  const name = metadata.fileMetadata?.ios?.bundle;
+  if (typeof name !== 'string' || !name.endsWith('.hbc'))
+    throw new Error('Expected iOS Hermes export');
+  const bundle = resolve(exported, name);
+  const rel = relative(resolve(exported), bundle);
+  if (isAbsolute(rel) || rel.startsWith('..')) throw new Error('Bundle outside export');
+  mkdirSync(destination, { recursive: true });
+  const map = join(destination, 'main.jsbundle.map');
+  copyFileSync(bundle + '.map', map);
+  stampProfileMap(map, commit, bundle);
 }
 
 /** @param {HermesProfile} profile */
@@ -83,15 +116,19 @@ export function extractProfile(capturePath, artifacts, output) {
   const capture = /** @type {Capture} */ (captureJSON);
   /** @type {unknown} */
   const manifestJSON = JSON.parse(readFileSync(join(artifacts, 'manifest.json'), 'utf8'));
-  const manifest = /** @type {{commit: string, mapSha256: string}} */ (manifestJSON);
+  const manifest = /** @type {{commit: string, mapSha256: string, bundleSha256?: string}} */ (
+    manifestJSON
+  );
   const map = readFileSync(join(artifacts, 'main.jsbundle.map'));
-  if (
-    capture.schema !== 1 ||
-    !/^[0-9a-f]{40}$/.test(capture.identity?.commit) ||
-    manifest.commit !== capture.identity.commit ||
-    manifest.mapSha256 !== capture.identity.mapSha256 ||
-    manifest.mapSha256 !== sha256(map)
-  )
+  const matches =
+    capture.schema === 1
+      ? /^[0-9a-f]{40}$/.test(capture.identity?.commit ?? '') &&
+        manifest.commit === capture.identity.commit &&
+        manifest.mapSha256 === capture.identity.mapSha256
+      : capture.schema === 2 &&
+        /^[0-9a-f]{64}$/.test(capture.identity?.bundleSha256 ?? '') &&
+        manifest.bundleSha256 === capture.identity.bundleSha256;
+  if (!matches || !/^[0-9a-f]{40}$/.test(manifest.commit) || manifest.mapSha256 !== sha256(map))
     throw new Error('Capture and exact-bundle source map do not match');
   // Validate before creating any output, including dangling stack references.
   toSpeedscope(capture.hermesProfile);
@@ -126,11 +163,13 @@ export function extractProfile(capturePath, artifacts, output) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [mode, ...args] = process.argv.slice(2);
-  if (mode === 'manifest' && args.length === 2) stampProfileMap(args[0], args[1]);
+  if (mode === 'manifest' && (args.length === 2 || args.length === 3))
+    stampProfileMap(args[0], args[1], args[2]);
+  else if (mode === 'retain-ota' && args.length === 3) retainOTAProfile(args[0], args[1], args[2]);
   else if (mode === 'extract' && args.length === 3) {
     console.log(`Converted ${extractProfile(args[0], args[1], args[2])} samples`);
   } else
     throw new Error(
-      'Usage: mobile-cpu-profile.mjs manifest <map> <commit> | extract <capture.json> <artifacts-dir> <output-dir>',
+      'Usage: mobile-cpu-profile.mjs manifest <map> <commit> [bundle] | extract <capture.json> <artifacts-dir> <output-dir>',
     );
 }
