@@ -168,7 +168,14 @@ describe('scheduling requests', () => {
         }),
       ),
     );
-    expect(order).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
-    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe('second');
+    // Concurrent PostgreSQL transactions may acquire the lock in either order.
+    // Require complete, non-overlapping callbacks rather than FIFO acquisition.
+    expect([
+      ['first:start', 'first:end', 'second:start', 'second:end'],
+      ['second:start', 'second:end', 'first:start', 'first:end'],
+    ]).toContainEqual(order);
+    expect((await ctx.store.scheduling.get('r1'))?.guestNote).toBe(
+      order.at(-1)?.replace(':end', ''),
+    );
   });
 });
