@@ -951,6 +951,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // argument instead, and the request itself stays exactly as keyed; every other edit is
       // refused rather than silently reconciled.
       try {
+        // Only the operator's own card edits; a grant or any other decider never rewrites.
+        if (answer.decidedBy !== 'card') throw new Error('not edited on a card');
         if (deps.approvedEdits === undefined) throw new Error('no editor');
         approvedEdits = deps.approvedEdits({
           toolName,

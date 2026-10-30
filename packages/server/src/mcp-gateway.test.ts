@@ -657,6 +657,25 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
     );
   });
 
+  it('refuses edits that did not come from the operator’s card', async () => {
+    const approvedEdits = vi.fn(() => ({ title: 'x' }));
+    const { gateway, invokeTool } = harness({
+      approvedEdits,
+      requestApproval: vi.fn(async () => ({
+        decision: { behavior: 'allow' as const, updatedInput: { title: 'x' } },
+        decidedBy: 'grant' as const,
+      })),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toContain('edits are not supported');
+    expect(approvedEdits).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
   it('refuses edits the tool does not accept', async () => {
     const { gateway, invokeTool, records } = harness({
       approvedEdits: () => {
