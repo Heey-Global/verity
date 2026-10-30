@@ -44,7 +44,8 @@ def memory_mib():
 
 
 class BootVM:
-    def __init__(self, base, evidence):
+    def __init__(self, base, evidence, observation_link=None):
+        self.observation_link = observation_link
         self.base = Path(base).resolve()
         self.evidence = Path(evidence).resolve()
         self.work = Path(tempfile.mkdtemp(prefix='verity-boot-vm-'))
@@ -78,15 +79,29 @@ class BootVM:
                    '-drive', f'file={self.work / "disk.qcow2"},format=qcow2,if=virtio',
                    '-drive', f'file={self.work / "seed.img"},format=raw,if=virtio,readonly=on',
                    '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{self.port}-:22', '-device', 'virtio-net-pci,netdev=net0']
+        if self.observation_link:
+            command.extend(['-netdev', f'tap,id=observe,ifname={self.observation_link},script=no,downscript=no',
+                            '-device', 'virtio-net-pci,netdev=observe,mac=52:54:00:be:ef:02'])
         self.process = subprocess.Popen(command, stdout=self.log, stderr=subprocess.STDOUT)
         (self.evidence / 'vm-launch.json').write_text(json.dumps({'accelerator': 'kvm', 'memoryMiB': memory, 'vcpus': 1}))
         self.wait_ready()
 
-    def ssh(self, command, timeout=30):
-        return subprocess.check_output(['ssh', '-i', str(self.work / 'key'), '-p', str(self.port),
+    def ssh_command(self, command):
+        return ['ssh', '-i', str(self.work / 'key'), '-p', str(self.port),
                                         '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=3', '-o', 'ConnectionAttempts=1',
                                         '-o', 'StrictHostKeyChecking=accept-new', '-o', f'UserKnownHostsFile={self.work / "known_hosts"}',
-                                        'verity-probe@127.0.0.1', command], text=True, timeout=timeout, stderr=subprocess.STDOUT)
+                                        'verity-probe@127.0.0.1', command]
+
+    def ssh(self, command, timeout=30):
+        return subprocess.check_output(self.ssh_command(command), text=True, timeout=timeout, stderr=subprocess.STDOUT)
+
+    def upload(self, archive, destination='/opt/verity-fixture'):
+        if destination != '/opt/verity-fixture':
+            raise ValueError('Only the disposable asset directory is writable')
+        self.ssh(f'sudo mkdir -p {destination}')
+        with open(archive, 'rb') as source:
+            subprocess.run(self.ssh_command(f'sudo tar -xf - -C {destination}'), stdin=source, check=True, timeout=300)
+
 
     def wait_ready(self, previous=None):
         deadline = time.monotonic() + 180
