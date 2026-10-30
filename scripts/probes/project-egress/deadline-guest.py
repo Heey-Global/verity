@@ -114,8 +114,10 @@ def nft(deadline_seconds):
     date = datetime.datetime.fromtimestamp(deadline_seconds, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     rules = f'''table inet deadline_probe {{
 counter expired {{ }}
+set expired_sources {{ type ipv4_addr; flags dynamic; size 1; }}
 chain forward {{ type filter hook forward priority -200; policy accept;
- iifname "{PEER}" meta time >= "{date}" counter name expired drop
+ iifname "{PEER}" ip saddr @expired_sources counter name expired drop
+ iifname "{PEER}" meta time >= "{date}" add @expired_sources {{ ip saddr }} counter name expired drop
  iifname "{PEER}" ip daddr 172.30.105.2 udp dport 8080 meta time < "{date}" counter accept
  iifname "{PEER}" counter drop
 }}

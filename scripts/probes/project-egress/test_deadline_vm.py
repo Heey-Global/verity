@@ -13,7 +13,7 @@ spec.loader.exec_module(deadline_vm)
 
 def evidence():
     cases = []
-    for name in ('expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward'):
+    for name in ('expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward', 'wall-forward-backward'):
         cases.append({'name': name, 'baseline': {'accepted': 0}, 'positive': {'accepted': 1},
                       'before': {'accepted': 1, 'denied': 0},
                       'after': {'accepted': 1, 'denied': 1, 'last_accepted_boot_ns': 1,
@@ -21,7 +21,9 @@ def evidence():
                       'lease': {'deadline_ns': 2, 'committed': {'boot_ns': 3}},
                       'clocks_before': {'boot_ns': 1, 'mono_ns': 1},
                       'wall_positive_before': {'accepted': 0}, 'wall_positive_after': {'accepted': 1},
-                      'outer_pause_ns': 4_000_000_000, 'wall_expired_before': 0, 'wall_expired_after': 1})
+                      'latch_before': 0, 'latch_after': 1, 'rollback_clocks': {'real_ns': 0},
+                      'wall_deadline_real_ns': 1, 'outer_pause_ns': 4_000_000_000, 'wall_expired_before': 0, 'wall_expired_after': 1})
+    cases[-1]['lease']['deadline_ns'] = 6_000_000_000
     return {'complete': True, 'cases': cases, 'started_mono_ns': 1, 'finished_mono_ns': 2}
 
 
@@ -42,7 +44,17 @@ class DeadlineVerifierTests(unittest.TestCase):
         return deadline_vm.verify(self.root)
 
     def test_complete_contract(self):
-        self.assertEqual(self.verify(), {'cases': 6, 'complete': True})
+        self.assertEqual(self.verify(), {'cases': 7, 'complete': True})
+
+    def test_rejects_wall_rollback_revival(self):
+        self.proof['cases'][-1]['latch_after'] = 0
+        with self.assertRaises(AssertionError):
+            self.verify()
+
+    def test_rejects_boot_expiry_masking_latch(self):
+        self.proof['cases'][-1]['after']['clocks']['boot_ns'] = 6_000_000_000
+        with self.assertRaises(AssertionError):
+            self.verify()
 
     def test_rejects_late_kernel_acceptance(self):
         self.proof['cases'][0]['after']['accepted'] += 1

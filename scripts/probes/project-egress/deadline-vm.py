@@ -24,12 +24,12 @@ def verify(directory):
     root = Path(directory)
     result = json.loads((root / 'deadline-proof.json').read_text())
     assert result['complete'] is True
-    expected = {'expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward'}
+    expected = {'expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward', 'wall-forward-backward'}
     assert {c['name'] for c in result['cases']} == expected
     for case in result['cases']:
-        if case['name'] != 'wall-forward':
+        if not case['name'].startswith('wall-forward'):
             assert case['after']['denied'] > case['before']['denied'], 'No attempted post-expiry traffic'
-        if case['name'] == 'wall-forward':
+        if case['name'].startswith('wall-forward'):
             assert case['wall_expired_after'] > case['wall_expired_before'], 'Absolute nft deadline did not deny'
         else:
             assert case['after']['accepted'] == case['before']['accepted'], 'Kernel admitted post-deadline traffic'
@@ -44,6 +44,10 @@ def verify(directory):
             assert case['outer_pause_ns'] >= 3_000_000_000
         if case['name'] == 'delayed-commit':
             assert case['lease']['committed']['boot_ns'] > case['lease']['deadline_ns']
+        if case['name'] == 'wall-forward-backward':
+            assert case['latch_after'] > case['latch_before'], 'Expired authority revived after wall rollback'
+            assert case['rollback_clocks']['real_ns'] < case['wall_deadline_real_ns']
+            assert case['after']['clocks']['boot_ns'] < case['lease']['deadline_ns'], 'BOOTTIME masked missing expiry latch'
     records = [json.loads(line) for line in (root / 'external-receipts.jsonl').read_text().splitlines()]
     beats = [r['monotonic_ns'] for r in records if r['kind'] in ('heartbeat', 'ready', 'stopped')]
     assert beats[0] <= result['started_mono_ns'] and beats[-1] >= result['finished_mono_ns']
@@ -97,7 +101,7 @@ def main():
         vm.ssh('sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool nftables iproute2 util-linux', timeout=300)
         setup = call('setup', timeout=60)
         (root / 'setup.json').write_text(json.dumps(setup))
-        for name in ('expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward'):
+        for name in ('expired', 'delayed-commit', 'suspend', 'vm-pause', 'wall-forward', 'wall-backward', 'wall-forward-backward'):
             baseline = call('stats')
             # Longer prototype positives isolate capability from a one-second
             # production renewal budget; integration must impose the latter.
@@ -124,29 +128,35 @@ def main():
                 # An unexpired BOOTTIME lease isolates nft's wall-clock guard.
                 lease = call('arm 10000')
                 real = positive['clocks']['real_ns'] // 1_000_000_000
-                call('nft ' + str(real + 5))
+                extra['wall_deadline_real_ns'] = call('nft ' + str(real + 5))['deadline_real_ns']
                 extra['wall_positive_before'] = call('stats')
                 send('wall-live-' + name)
                 extra['wall_positive_after'] = call('stats')
-                offset = 10 if name == 'wall-forward' else -10
+                offset = 10 if name.startswith('wall-forward') else -10
                 vm.ssh(f'sudo date -u -s "@{real + offset}"')
                 if name == 'wall-backward':
                     # Backward wall-clock movement must never extend BOOTTIME.
                     time.sleep(10.1)
             else:
                 time.sleep(3.1)
-            if name == 'wall-forward':
+            if name.startswith('wall-forward'):
                 extra['wall_expired_before'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
             before = call('stats')
             send('expired-' + name)
             after = call('stats')
-            if name == 'wall-forward':
+            if name.startswith('wall-forward'):
                 extra['wall_expired_after'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
+            if name == 'wall-forward-backward':
+                vm.ssh(f'sudo date -u -s "@{real - 10}"')
+                extra['rollback_clocks'] = call('stats')['clocks']
+                extra['latch_before'] = extra['wall_expired_after']
+                send('expired-rollback')
+                extra['latch_after'] = next(r['counter']['packets'] for r in call('nft-stats')['nftables'] if 'counter' in r)
             case = {'name': name, 'baseline': baseline, 'positive': positive, 'before': before,
                     'after': after, 'lease': lease, 'clocks_before': before_clocks, **extra}
             cases.append(case)
             (root / 'cases.json').write_text(json.dumps(cases, indent=2))
-            if name == 'wall-forward':
+            if name.startswith('wall-forward'):
                 assert extra['wall_expired_after'] > extra['wall_expired_before']
             else:
                 assert after['accepted'] == before['accepted'], f'Post-deadline kernel acceptance: {name}'
