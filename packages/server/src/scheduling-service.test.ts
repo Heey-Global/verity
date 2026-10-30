@@ -336,6 +336,51 @@ describe('scheduling requests', () => {
     expect(notifications.filter((n) => n.kind === 'booked')).toHaveLength(1);
   });
 
+  it('withdrawing during a booking either lets the booking win or stops it before the calendar', async () => {
+    const scheduler = service();
+    const id = await openRequest(scheduler);
+    const [booking, revoke] = await Promise.allSettled([
+      scheduler.book(id, '2026-11-03T13:30:00Z'),
+      scheduler.revoke(id, 's1'),
+    ]);
+    const request = await ctx.store.scheduling.get(id);
+    const appointments = [...calendar.events.values()].filter(
+      (event) =>
+        event.status !== 'cancelled' && event.extendedProperties?.private?.verityRole === 'booked',
+    );
+    if (request?.state === 'booked') {
+      expect(booking).toMatchObject({ status: 'fulfilled', value: { kind: 'booked' } });
+      expect(revoke.status).toBe('rejected');
+      expect(appointments).toHaveLength(1);
+    } else {
+      expect(request?.state).toBe('revoked');
+      expect(appointments).toHaveLength(0);
+    }
+  });
+
+  it('stops provisioning when the request is withdrawn meanwhile', async () => {
+    const prepared = await service().prepare(input());
+    await ctx.store.scheduling.approve(prepared.requestId, prepared.digest);
+    // Withdraw right after the first hold is created.
+    const original = calendar.fetch;
+    calendar.fetch = async (url, init) => {
+      const response = await original(url, init);
+      if (init?.method === 'POST')
+        await ctx.store.scheduling.transition(prepared.requestId, ['provisioning'], 'revoked');
+      return response;
+    };
+    const scheduler = service({
+      sendMail: async () => {
+        throw new Error('must not send');
+      },
+    });
+    await scheduler.runDue();
+    expect(sent).toEqual([]);
+    expect(edge.removed).toEqual([]);
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.hasShare).toBe(false);
+    expect([...calendar.events.values()]).toHaveLength(1);
+  });
+
   it('never books the same time twice across overlapping requests', async () => {
     const scheduler = service();
     const anna = await openRequest(scheduler);

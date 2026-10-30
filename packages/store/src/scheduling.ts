@@ -303,8 +303,8 @@ export class SchedulingStore {
     const sets = [sql`state = ${to}`, ...this.patchSets(patch)];
     const result =
       await sql`update scheduling_requests set ${sql.join(sets)}, revision = revision + 1, updated_at = now()
-      where id = ${id} and state in (${sql.join([...from])})`.execute(this.db);
-    return Number(result.numAffectedRows ?? 0) === 1;
+      where id = ${id} and state in (${sql.join([...from])}) returning id`.execute(this.db);
+    return result.rows.length === 1;
   }
 
   /**
@@ -315,8 +315,8 @@ export class SchedulingStore {
     const result =
       await sql`update scheduling_requests set state = 'provisioning', approved_at = now(),
       approval_digest = ${digest}, revision = revision + 1, updated_at = now()
-      where id = ${id} and state = 'draft'`.execute(this.db);
-    return Number(result.numAffectedRows ?? 0) === 1;
+      where id = ${id} and state = 'draft' returning id`.execute(this.db);
+    return result.rows.length === 1;
   }
 
   async update(id: string, patch: SchedulingRequestPatch): Promise<void> {
@@ -364,13 +364,21 @@ export class SchedulingStore {
     if (sets.length === 0) return false;
     const result = await sql`update scheduling_holds set ${sql.join(sets)}, updated_at = now()
       where request_id = ${requestId} and position = ${position}
-      ${from ? sql`and state in (${sql.join([...from])})` : sql``}`.execute(this.db);
-    return Number(result.numAffectedRows ?? 0) === 1;
+      ${from ? sql`and state in (${sql.join([...from])})` : sql``} returning position`.execute(
+      this.db,
+    );
+    return result.rows.length === 1;
   }
 
   /** Schedule every hold of a request that may still exist for removal. */
-  async scheduleHoldCleanup(requestId: string, except?: number): Promise<void> {
-    await sql`update scheduling_holds set state = 'cancel_pending', next_attempt_at = now(), updated_at = now()
+  async scheduleHoldCleanup(
+    requestId: string,
+    options: { except?: number | undefined; at?: Date } = {},
+  ): Promise<void> {
+    // Due at the caller's clock, the one the scheduler compares against.
+    const at = options.at ?? new Date();
+    const except = options.except;
+    await sql`update scheduling_holds set state = 'cancel_pending', next_attempt_at = ${at}, updated_at = now()
       where request_id = ${requestId} and state in ('pending', 'active')
       ${except === undefined ? sql`` : sql`and position <> ${except}`}`.execute(this.db);
   }
@@ -416,10 +424,9 @@ export class SchedulingStore {
   async lease(id: string, owner: string, ms: number): Promise<boolean> {
     const result = await sql`update scheduling_requests set lease_owner = ${owner},
       lease_until = now() + ${`${String(ms)} milliseconds`}::interval
-      where id = ${id} and (lease_until is null or lease_until < now() or lease_owner = ${owner})`.execute(
-      this.db,
-    );
-    return Number(result.numAffectedRows ?? 0) === 1;
+      where id = ${id} and (lease_until is null or lease_until < now() or lease_owner = ${owner})
+      returning id`.execute(this.db);
+    return result.rows.length === 1;
   }
 
   async release(id: string, owner: string): Promise<void> {

@@ -55,6 +55,21 @@ export function schedulingApprovalSummary(input: unknown): SchedulingApprovalSum
     typeof draft['closesAt'] !== 'string'
   )
     return null;
+  // Every part the server acts on must render: a dropped window or invitee would let the
+  // card show less than the approval covers, so anything unreadable falls back to raw input.
+  const readable =
+    windows.every(
+      (window: unknown) =>
+        isRecord(window) &&
+        typeof window['start'] === 'string' &&
+        typeof window['end'] === 'string',
+    ) &&
+    (draft['colleagues'] === undefined ||
+      (Array.isArray(draft['colleagues']) &&
+        draft['colleagues'].every(
+          (colleague: unknown) => isRecord(colleague) && typeof colleague['email'] === 'string',
+        )));
+  if (!readable) return null;
   const guestLabel =
     typeof guest['name'] === 'string' ? `${guest['name']} (${guest['email']})` : guest['email'];
   const colleagues = Array.isArray(draft['colleagues'])
@@ -103,13 +118,12 @@ export function schedulingApprovalSummary(input: unknown): SchedulingApprovalSum
     ...(typeof draft['sender'] === 'string' ? [`Email sent from: ${draft['sender']}`] : []),
     `Booking closes ${format(draft['closesAt'], timeZone, { ...day, ...time })}`,
   ];
+  if (!isRecord(email) || typeof email['subject'] !== 'string' || typeof email['body'] !== 'string')
+    return null;
   return {
     title: `Send times to ${typeof guest['name'] === 'string' ? guest['name'] : guest['email']}?`,
     details,
-    email:
-      isRecord(email) && typeof email['subject'] === 'string' && typeof email['body'] === 'string'
-        ? { subject: email['subject'], body: email['body'] }
-        : null,
+    email: { subject: email['subject'], body: email['body'] },
     scope:
       'Approving lets Verity create the holds, send this email, book the time the guest picks for everyone, and remove the remaining holds when it is booked, expires or is withdrawn.',
   };

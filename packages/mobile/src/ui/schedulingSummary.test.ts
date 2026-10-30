@@ -45,6 +45,15 @@ describe('scheduling approval summary', () => {
     // presenting the agent's own arguments as the approved request.
     expect(schedulingApprovalSummary({ action: 'send', requestId: 'r', digest: 'd' })).toBeNull();
     expect(schedulingApprovalSummary({ action: 'prepare', scheduling: draft })).toBeNull();
+    expect(
+      schedulingApprovalSummary({ action: 'send', scheduling: { ...draft, email: undefined } }),
+    ).toBeNull();
+    expect(
+      schedulingApprovalSummary({
+        action: 'send',
+        scheduling: { ...draft, colleagues: [...draft.colleagues, { name: 'No address' }] },
+      }),
+    ).toBeNull();
   });
 
   it('names the consequences of withdrawing a request', () => {

@@ -124,7 +124,7 @@ describe('scheduling requests', () => {
 
     await ctx.store.scheduling.updateHold('open', 0, { state: 'active' });
     await ctx.store.scheduling.updateHold('open', 1, { state: 'active' });
-    await ctx.store.scheduling.scheduleHoldCleanup('open', 0);
+    await ctx.store.scheduling.scheduleHoldCleanup('open', { except: 0 });
     expect(
       (await ctx.store.scheduling.dueHoldCleanups(new Date(Date.now() + 1000))).map(
         (h) => h.position,

@@ -496,7 +496,21 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
       }
       const formZone = form.get('tz') ?? undefined;
       const note = form.get('note')?.trim().slice(0, MAX_NOTE_LENGTH) || undefined;
-      const result = await backend.book(requestId, start, note);
+      let result: SchedulingBookResult;
+      try {
+        result = await backend.book(requestId, start, note);
+      } catch {
+        // Nothing is promised either way: the page says it could not check, and a booking
+        // that did happen shows up as booked on the next visit.
+        const model = await backend.view(requestId).catch(() => undefined);
+        send(
+          renderSchedulingPage(
+            { kind: 'unavailable', request: model?.request },
+            { zone: formZone, nonce },
+          ),
+        );
+        return;
+      }
       if (result.kind === 'booked') {
         send(
           renderSchedulingPage(

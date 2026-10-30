@@ -488,16 +488,28 @@ export class SchedulingService {
     try {
       const token = await this.calendarToken(request);
       const text = holdText(request);
+      // A withdrawal can land while this runs; each external step checks the state first.
+      const still = async () => (await this.store.get(requestId))?.state === 'provisioning';
       for (const hold of await this.store.holds(requestId)) {
         if (hold.state !== 'pending') continue;
+        if (!(await still())) return;
         const created = await this.createHold(token, request, hold, text);
-        await this.store.updateHold(
+        const recorded = await this.store.updateHold(
           requestId,
           hold.position,
           { state: created ? 'active' : 'cancelled' },
           ['pending'],
         );
+        // Cleanup may already have looked for this hold before it existed; look again.
+        if (!recorded && created)
+          await this.store.updateHold(
+            requestId,
+            hold.position,
+            { state: 'cancel_pending', nextAttemptAt: this.now() },
+            ['cancel_pending', 'cancelled'],
+          );
       }
+      if (!(await still())) return;
       if (!request.hasShare) {
         if (!this.deps.edge || this.deps.edge.isAvailable?.() === false)
           throw new Error(
@@ -535,6 +547,7 @@ export class SchedulingService {
           });
           return;
         }
+        if (!(await still())) return;
         await this.store.update(requestId, { attempts: 1 });
         const gmail = await resolveGoogleServiceCredential(
           this.deps.store,
@@ -557,7 +570,7 @@ export class SchedulingService {
           failure: errorText(error),
         })
       ) {
-        await this.store.scheduleHoldCleanup(requestId);
+        await this.store.scheduleHoldCleanup(requestId, { at: this.now() });
         this.deps.wake?.();
       }
     }
@@ -688,10 +701,10 @@ export class SchedulingService {
       this.bookedNow.add(request.id);
       if (Number.isInteger(position))
         await scheduling.updateHold(request.id, position, { state: 'converted' });
-      await scheduling.scheduleHoldCleanup(
-        request.id,
-        Number.isInteger(position) ? position : undefined,
-      );
+      await scheduling.scheduleHoldCleanup(request.id, {
+        except: Number.isInteger(position) ? position : undefined,
+        at: this.now(),
+      });
     }
     return (await scheduling.get(request.id))!;
   }
@@ -739,9 +752,8 @@ export class SchedulingService {
   async book(requestId: string, start: string, note?: string): Promise<SchedulingBookResult> {
     const first = await this.store.get(requestId);
     if (!first) return { kind: 'unavailable', model: { kind: 'unavailable', request: undefined } };
-    const lockKey = `${first.googleAccountId ?? 'default'}:${first.calendarId}`;
     const result = await this.store.withCalendarLock(
-      lockKey,
+      this.lockKey(first),
       async (scheduling): Promise<SchedulingBookResult> => {
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const request = (await scheduling.get(requestId))!;
@@ -811,7 +823,10 @@ export class SchedulingService {
           )
             this.bookedNow.add(requestId);
           await scheduling.updateHold(requestId, slot.position, { state: 'converted' });
-          await scheduling.scheduleHoldCleanup(requestId, slot.position);
+          await scheduling.scheduleHoldCleanup(requestId, {
+            except: slot.position,
+            at: this.now(),
+          });
           return { kind: 'booked', request: (await scheduling.get(requestId))! };
         }
         const request = (await scheduling.get(requestId))!;
@@ -843,21 +858,38 @@ export class SchedulingService {
       await this.store.transition(requestId, ['draft'], 'revoked');
       return (await this.store.get(requestId))!;
     }
-    if (!(await this.store.transition(requestId, ['open', 'provisioning'], 'revoked')))
+    if (!(await this.closeRequest(request, ['open', 'provisioning'], 'revoked')))
       throw new Error(`This scheduling request is already ${request.state}`);
-    await this.store.scheduleHoldCleanup(requestId);
     this.deps.wake?.();
     return (await this.store.get(requestId))!;
+  }
+
+  private lockKey(request: SchedulingRequest): string {
+    return `${request.googleAccountId ?? 'default'}:${request.calendarId}`;
+  }
+
+  /**
+   * Close a request under the calendar lock bookings take, so a withdrawal or the deadline can
+   * never land between a booking's live check and its calendar change.
+   */
+  private async closeRequest(
+    request: SchedulingRequest,
+    from: SchedulingRequest['state'][],
+    to: SchedulingRequest['state'],
+    patch: { failure?: string } = {},
+  ): Promise<boolean> {
+    return this.store.withCalendarLock(this.lockKey(request), async (locked) => {
+      if (!(await locked.transition(request.id, from, to, patch))) return false;
+      await locked.scheduleHoldCleanup(request.id, { at: this.now() });
+      return true;
+    });
   }
 
   private async withdrawAll(reason: string): Promise<void> {
     for (const request of await this.store.listServed()) {
       if (
-        await this.store.transition(request.id, ['open', 'provisioning'], 'revoked', {
-          failure: reason,
-        })
+        await this.closeRequest(request, ['open', 'provisioning'], 'revoked', { failure: reason })
       ) {
-        await this.store.scheduleHoldCleanup(request.id);
         await this.deps.notify?.({
           kind: 'closed',
           request: (await this.store.get(request.id))!,
@@ -877,8 +909,7 @@ export class SchedulingService {
       try {
         if (request.state === 'provisioning') await this.provision(request.id);
         else if (request.state === 'open' && request.closesAt <= now) {
-          if (await this.store.transition(request.id, ['open'], 'expired'))
-            await this.store.scheduleHoldCleanup(request.id);
+          await this.closeRequest(request, ['open'], 'expired');
         }
         const current = (await this.store.get(request.id))!;
         if (
