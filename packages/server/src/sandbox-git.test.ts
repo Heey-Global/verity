@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DockerError } from './docker.js';
 import {
+  sandboxIsRunning,
   containerGitArgs,
   createSandboxGit,
   createSleepingSessionGit,
@@ -449,4 +450,42 @@ it('keeps maintenance writes and fetch networking opt-in, including a retired te
   expect(spec.network).toBeUndefined();
   expect(exec.mock.calls[0]![1]).toContain('core.hooksPath=/dev/null');
   expect(docker.removeContainer).toHaveBeenCalledOnce();
+});
+
+it('queries branches read-only using current sandbox policy after template retirement', async () => {
+  const docker = queryDocker();
+  docker.inspectContainer.mockRejectedValue(
+    new DockerError({ kind: 'container_not_found', id: 'parent' }),
+  );
+  expect(await sandboxIsRunning(() => docker.inspectContainer('parent'))).toBe(false);
+  const exec = vi.fn<SandboxExec>(async () => ({ stdout: 'main', stderr: '' }));
+  await withSleepingSessionGit(
+    {
+      docker,
+      templateContainer: 'parent',
+      projectId: 'p',
+      hostRoot: '/data/p',
+      exec,
+      fallback: {
+        imageId: 'sha256:current',
+        runtime: 'runsc-project',
+        memoryBytes: 512 * 1024 ** 2,
+        nanoCpus: 1_000_000_000,
+        pidsLimit: 128,
+      },
+    },
+    (git) => git(['-C', '/data/p', 'for-each-ref']),
+  );
+  expect(docker.createContainer.mock.calls[0]![0]).toMatchObject({
+    image: 'sha256:current',
+    binds: ['/data/p:/work:ro'],
+    network: 'none',
+    readOnlyRootfs: true,
+    runtime: 'runsc-project',
+  });
+  expect(exec.mock.calls[0]![1]).not.toContain('core.hooksPath=/dev/null');
+  docker.inspectContainer.mockRejectedValueOnce(
+    new DockerError({ kind: 'network', cause: new Error('offline') }),
+  );
+  await expect(sandboxIsRunning(() => docker.inspectContainer('parent'))).rejects.toThrow();
 });

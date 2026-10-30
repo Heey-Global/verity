@@ -197,6 +197,24 @@ export function createSandboxGit(opts: SandboxGitOptions): GitOutput {
   };
 }
 
+/** Missing retired containers are asleep; daemon failures must remain visible. */
+export async function sandboxIsRunning(inspect: SandboxInspect): Promise<boolean> {
+  try {
+    return (await inspect()).running;
+  } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') return false;
+    throw error;
+  }
+}
+
+interface SleepingGitFallback {
+  imageId: string;
+  runtime: string;
+  memoryBytes: number;
+  nanoCpus: number;
+  pidsLimit: number;
+}
+
 /** Metadata remains available while a session sleeps, without executing its startup hooks. */
 interface SleepingSessionGitOptions {
   docker: Pick<
@@ -206,14 +224,10 @@ interface SleepingSessionGitOptions {
   templateContainer: string;
   /** Storage maintenance holds the project lifecycle barrier and needs Git writes/fetches. */
   maintenance?: {
-    fallback: {
-      imageId: string;
-      runtime: string;
-      memoryBytes: number;
-      nanoCpus: number;
-      pidsLimit: number;
-    };
+    fallback: SleepingGitFallback;
   };
+  /** Current sandbox policy when GC has retired the template container. */
+  fallback?: SleepingGitFallback;
   projectId: string;
   hostRoot: string;
   dataVolume?: { name: string; root: string };
@@ -236,8 +250,9 @@ export async function withSleepingSessionGit<T>(
   const parent: ContainerInspect = await opts.docker
     .inspectContainer(opts.templateContainer)
     .catch((error: unknown) => {
-      if (opts.maintenance && error instanceof DockerError && error.kind === 'container_not_found')
-        return { ...opts.maintenance.fallback, running: false, id: opts.templateContainer };
+      const fallback = opts.fallback ?? opts.maintenance?.fallback;
+      if (fallback && error instanceof DockerError && error.kind === 'container_not_found')
+        return { ...fallback, running: false, id: opts.templateContainer };
       throw error;
     });
   const image = parent.imageId ?? parent.image;

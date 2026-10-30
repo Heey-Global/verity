@@ -107,6 +107,23 @@ function fixture() {
   };
 }
 describe('safe session storage reclamation', () => {
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'preserves tracked edits hidden by %s',
+    async (flag) => {
+      const f = fixture();
+      f.run(['-C', f.path, 'update-index', flag, '.gitignore']);
+      const source = 'local-only-edit\n';
+      writeFileSync(join(f.path, '.gitignore'), source);
+      await f.service.runOnce();
+      expect(f.service.lastReport?.blockers).toContainEqual({
+        path: f.path,
+        reason: 'Index flags may hide local changes',
+      });
+      expect(readFileSync(join(f.path, '.gitignore'), 'utf8')).toBe(source);
+      expect(existsSync(join(f.path, '.git'))).toBe(true);
+    },
+  );
+
   it('retires a saved clean session and restores its exact branch on resume', async () => {
     const f = fixture();
     await f.service.runOnce();

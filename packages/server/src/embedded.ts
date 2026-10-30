@@ -260,6 +260,7 @@ import { containerNameFor } from './canonical.js';
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
 import {
   createSleepingSessionGit,
+  sandboxIsRunning,
   createSandboxGit,
   withSleepingSessionGit,
 } from './sandbox-git.js';
@@ -2288,13 +2289,23 @@ export async function buildEmbeddedServer(
                       ? MANAGED_CONTROL_PLANE_RUNNER_NAME
                       : project.containerName;
                   const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-                  if (!(await docker.inspectContainer(containerName)).running) {
+                  if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return withSleepingSessionGit(
                       {
                         docker,
                         templateContainer: containerName,
+                        fallback: {
+                          imageId:
+                            typeof defaultProjectImage === 'function'
+                              ? await defaultProjectImage()
+                              : defaultProjectImage,
+                          runtime: PROJECT_RUNSC_RUNTIME,
+                          memoryBytes: 512 * 1024 ** 2,
+                          nanoCpus: 1_000_000_000,
+                          pidsLimit: 128,
+                        },
                         projectId: project.id,
                         hostRoot,
                         dockerBaseUrl: config.dockerBaseUrl,
@@ -2346,12 +2357,25 @@ export async function buildEmbeddedServer(
                       'show-ref',
                     ].includes(args[index + 2] ?? '') ||
                     (args[index + 2] === 'worktree' && args[index + 3] === 'list');
-                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
+                  if (
+                    readOnly &&
+                    !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
+                  ) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
                       templateContainer: containerName,
+                      fallback: {
+                        imageId:
+                          typeof defaultProjectImage === 'function'
+                            ? await defaultProjectImage()
+                            : defaultProjectImage,
+                        runtime: PROJECT_RUNSC_RUNTIME,
+                        memoryBytes: 512 * 1024 ** 2,
+                        nanoCpus: 1_000_000_000,
+                        pidsLimit: 128,
+                      },
                       projectId: project.id,
                       hostRoot: projectClonePath(config.hostCloneRoot!, project),
                       ...(config.dataVolume

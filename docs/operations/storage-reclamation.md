@@ -38,7 +38,7 @@ Source and Git metadata stay intact while regenerable dependencies are slimmed.
 
 A session with a closed or merged PR may have its whole worktree retired after
 seven idle days only when its current commit is reachable from a freshly fetched
-remote branch, the worktree has no changes or stashes, and no unknown untracked
+remote branch, the worktree has no changes, stashes or index flags that hide changes, and no unknown untracked
 or ignored files remain. A closed PR alone does not prove work has been saved.
 The base checkout, document workspaces and Knowledge are never retirement targets.
 Git errors and uncertain ownership retain the worktree and appear as blockers.

@@ -600,6 +600,10 @@ export class SessionStorage {
       if (!this.deps.dryRun) linkWorkspacePackages(root, path);
       return;
     }
+    // Git status and non-force removal can overlook edits hidden by index flags.
+    const indexEntries = (await git(['-C', path, 'ls-files', '-v', '-z'])).split('\0');
+    if (indexEntries.some((entry) => /^[a-zS] /.test(entry)))
+      throw new Error('Index flags may hide local changes');
     // Refresh remote evidence before trusting reachability; a failed fetch retains the worktree.
     await git(['-C', root, 'fetch', '--prune', 'origin']);
     const saved = (
