@@ -2,7 +2,7 @@
 import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus, SecretUnlocked } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Linking } from 'react-native';
+import { AppState, type AppStateStatus, Linking } from 'react-native';
 
 const mockReplace = jest.fn<void, [string]>();
 const mockPush = jest.fn<void, [string]>();
@@ -249,6 +249,125 @@ describe('device authorization unlock route', () => {
     );
     expect(await screen.findByText('Unlock Verity')).toBeOnTheScreen();
     expect(await screen.findByLabelText('Master password')).toBeOnTheScreen();
+  });
+});
+
+describe('device authorization recovery after a failed Face ID read', () => {
+  let appStateListeners: ((state: AppStateStatus) => void)[] = [];
+  let addListener: jest.SpyInstance;
+
+  beforeEach(() => {
+    appStateListeners = [];
+    addListener = jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+      appStateListeners.push(listener as (state: AppStateStatus) => void);
+      return {
+        remove: () => {
+          appStateListeners = appStateListeners.filter((item) => item !== listener);
+        },
+      } as ReturnType<typeof AppState.addEventListener>;
+    });
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockGetAuthToken.mockReturnValue(null);
+    mockIsBiometricUnlockEnabled.mockResolvedValue(true);
+    mockCanUseBiometricUnlock.mockResolvedValue(true);
+    const getSecretStatus = jest.fn<Promise<'unlocked'>, []>().mockResolvedValue('unlocked');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus }));
+  });
+
+  afterEach(() => {
+    addListener.mockRestore();
+    jest.restoreAllMocks();
+  });
+
+  const emitAppState = (state: AppStateStatus) =>
+    act(() => {
+      for (const listener of [...appStateListeners]) listener(state);
+    });
+
+  it('offers Face ID again instead of requiring an app restart', async () => {
+    mockUnlockAuthTokenWithBiometrics.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    render(<UnlockDevice />);
+
+    // Without the retry the only remaining control is the password form, which
+    // cannot prove this device: the server rejects it before reading the password.
+    fireEvent.press(await screen.findByLabelText('Unlock with Face ID'));
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
+    expect(mockUnlockAuthTokenWithBiometrics).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries Face ID when the app returns from the background, not when its prompt closes', async () => {
+    mockUnlockAuthTokenWithBiometrics.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    render(<UnlockDevice />);
+    await screen.findByLabelText('Unlock with Face ID');
+
+    // The Face ID sheet moves the app through `inactive`; retrying on that would
+    // reopen a prompt the user just cancelled, in a loop.
+    emitAppState('inactive');
+    emitAppState('active');
+    expect(mockUnlockAuthTokenWithBiometrics).toHaveBeenCalledTimes(1);
+
+    emitAppState('background');
+    emitAppState('active');
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
+    expect(mockUnlockAuthTokenWithBiometrics).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not offer Face ID when the device never enabled it', async () => {
+    mockIsBiometricUnlockEnabled.mockResolvedValue(false);
+
+    render(<UnlockDevice />);
+
+    expect(await screen.findByLabelText('Master password')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Unlock with Face ID')).toBeNull();
+  });
+
+  it('loads the Face ID-protected bearer before accepting a password on an open store', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    const unlockSecret = jest
+      .fn<Promise<SecretUnlocked>, [string]>()
+      .mockRejectedValue(new VerityApiError(401, 'valid device pairing is required'));
+    const getSecretStatus = jest.fn<Promise<'unlocked'>, []>().mockResolvedValue('unlocked');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus, unlockSecret }));
+    mockUnlockAuthTokenWithBiometrics.mockResolvedValue(true);
+
+    render(<OnboardingMasterPassword />);
+    fireEvent.changeText(await screen.findByLabelText('Master password'), 'correct-pw');
+    fireEvent.press(screen.getByLabelText('Unlock secret store'));
+
+    // The open store needed only the bearer; resubmitting the password would
+    // enroll this device a second time.
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
+    expect(unlockSecret).not.toHaveBeenCalled();
+    expect(screen.queryByText(/not authorized for this server/)).toBeNull();
+  });
+
+  it('loads the Face ID-protected bearer before unlocking a sealed store', async () => {
+    mockLocalSearchParams = { returnTo: '/' };
+    const calls: string[] = [];
+    mockUnlockAuthTokenWithBiometrics.mockImplementation(async () => {
+      calls.push('bearer');
+      return true;
+    });
+    const unlockSecret = jest
+      .fn<Promise<SecretUnlocked>, [string]>()
+      .mockImplementation(async () => {
+        calls.push('unlock');
+        return { status: 'unlocked', token: 'device-token' };
+      });
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus, unlockSecret }));
+
+    render(<OnboardingMasterPassword />);
+    fireEvent.changeText(await screen.findByLabelText('Master password'), 'correct-pw');
+    fireEvent.press(screen.getByLabelText('Unlock secret store'));
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
+    expect(calls).toEqual(['bearer', 'unlock']);
   });
 });
 
