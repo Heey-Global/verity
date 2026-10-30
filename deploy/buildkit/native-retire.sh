@@ -7,7 +7,7 @@ native_retire() (
     blocker() { blockers=$(jq -cn --argjson old "$blockers" --arg reason "$1" '$old + [$reason]'); }
     report() {
         temp=$(mktemp "$run_dir/.native-result.XXXXXX")
-        jq -cn --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg path "$target" \
+        jq -cn --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" --arg path "$target" \
             --arg state "$1" --argjson allocatedBytes "$allocated" --argjson overlayAllocatedBytes "$overlay_bytes" --argjson filesystemFreedBytes "$freed" --argjson blockers "$blockers" \
             '{version:1,observedAt:$observedAt,path:$path,dryRun:false,eligible:($blockers|length==0),state:$state,allocatedBytes:$allocatedBytes,overlayAllocatedBytes:$overlayAllocatedBytes,reclaimableBytes:null,filesystemFreedBytes:$filesystemFreedBytes,blockers:$blockers}' > "$temp"
         chmod 0644 "$temp"; sync -f "$temp"; mv -f "$temp" "$run_dir/native-retirement.json"
@@ -55,8 +55,10 @@ native_retire() (
             rm -f "$record" "$run_dir/migration-pending"; sync -f "$state"
         fi
         if [[ -f $state/native-retirement-completed.json ]]; then
-            cp -- "$state/native-retirement-completed.json" "$run_dir/native-retirement.json"
-            chmod 0644 "$run_dir/native-retirement.json"
+            temp=$(mktemp "$run_dir/.native-result.XXXXXX")
+            jq --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+              '.lastCompletedAt = .observedAt | .observedAt = $observedAt' "$state/native-retirement-completed.json" > "$temp"
+            chmod 0644 "$temp"; mv -f "$temp" "$run_dir/native-retirement.json"
         else report absent; fi
         exit 0
     fi
@@ -64,7 +66,7 @@ native_retire() (
     # A root-owned fresh challenge binds all evidence to this exclusive admission window.
     nonce=$(cat /proc/sys/kernel/random/uuid)
     temp=$(mktemp "$run_dir/.native-challenge.XXXXXX")
-    jq -cn --arg nonce "$nonce" --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{version:1,nonce:$nonce,observedAt:$observedAt}' > "$temp"
+    jq -cn --arg nonce "$nonce" --arg observedAt "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" '{version:1,nonce:$nonce,observedAt:$observedAt}' > "$temp"
     chmod 0644 "$temp"; mv -f "$temp" "$run_dir/native-challenge.json"
     # Include stopped socket consumers: without an independent inventory they cannot
     # prove old reservations safe. Keeping them is preferable to silently forgetting one.

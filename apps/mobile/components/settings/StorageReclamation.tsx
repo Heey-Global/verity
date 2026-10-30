@@ -41,6 +41,7 @@ export function StorageReclamation({ client }: { client: VerityClient }) {
       {pending ? <Text>Host builder cleanup is pending; refreshes while this screen is open.</Text> : null}
       {status?.nativeBuildkit && !pending ? <>
         <Text>{`Native builder: ${status.nativeBuildkit.state ?? 'inventory only'}.`}</Text>
+        {status.nativeBuildkit.lastCompletedAt ? <Text>{`Last native retirement: ${status.nativeBuildkit.lastCompletedAt}`}</Text> : null}
         {status.nativeBuildkit.filesystemFreedBytes != null ? <Text>{`Native cleanup filesystem change: ${(status.nativeBuildkit.filesystemFreedBytes / 1024 ** 3).toFixed(1)} GiB.`}</Text> : null}
         {status.nativeBuildkit.blockers.map((reason, index) => <Text key={index}>{reason}</Text>)}
       </> : null}

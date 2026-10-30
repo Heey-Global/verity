@@ -24,7 +24,7 @@ function fixture(options: { reserved?: boolean; stale?: boolean; busy?: boolean;
   tool('sleep', `jq '. + {identity:"server",empty:${!options.reserved}} ${options.stale ? '| .nonce = "stale"' : ''}' '${run}/native-challenge.json' > '${run}/reclamation-evidence/server.json'\n`);
   tool('systemctl', `echo "$*" >> '${dir}/systemctl.log'\n${options.crash ? `if [[ $1 == stop && ! -e '${dir}/crashed' ]]; then touch '${dir}/crashed'; kill -KILL "$PPID"; fi` : ''}\n`);
   const wrapper = join(dir, 'invoke.sh');
-  writeFileSync(wrapper, `set -euo pipefail\nroot='${root}'\nstate='${state}'\nrun_dir='${run}'\njournal='${state}/pending.json'\nselected() { echo overlayfs; }\nworker() { echo overlayfs; }\nclients_compatible() { ${options.unknown ? 'return 1' : 'return 0'}; }\nctl() { echo '${options.busy ? '[{"inUse":true}]' : '[]'}'; }\nprobe() { [[ ! -e '${dir}/fail-probe' ]]; }\nsource '${helper}'\nnative_retire\n`);
+  writeFileSync(wrapper, `set -euo pipefail\nroot='${root}'\nstate='${state}'\nrun_dir='${run}'\njournal='${state}/pending.json'\nselected() { echo overlayfs; }\nworker() { echo overlayfs; }\nclients_compatible() { ${options.unknown ? 'return 1' : 'return 0'}; }\nctl() { echo '${options.busy ? '[{"inUse":true}]' : '[]'}'; }\nprobe() { if flock --shared --nonblock '${run}/build-admission.lock' true; then return 1; fi; [[ ! -e '${dir}/fail-probe' ]]; }\nsource '${helper}'\nnative_retire\n`);
   if (options.failProbe) writeFileSync(join(dir, 'fail-probe'), '');
   const invoke = () => spawnSync('bash', [wrapper], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } });
   const report = () => JSON.parse(readFileSync(join(run, 'native-retirement.json'), 'utf8'));
@@ -39,6 +39,10 @@ function fixture(options: { reserved?: boolean; stale?: boolean; busy?: boolean;
     expect(f.report()).toMatchObject({ state: 'completed', dryRun: false, blockers: [] });
     expect(f.report().allocatedBytes).toBeGreaterThan(0);
     expect(existsSync(join(f.run, 'migration-pending'))).toBe(false);
+    const completedAt = f.report().observedAt;
+    expect(f.invoke().status).toBe(0);
+    expect(f.report().observedAt >= completedAt).toBe(true);
+    expect(f.report().lastCompletedAt).toBe(completedAt);
   });
   it.each([
     [{ reserved: true }, 'persistent-reservations-not-proven-empty'],

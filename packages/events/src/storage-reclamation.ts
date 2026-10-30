@@ -6,6 +6,7 @@ export const nativeRetirementSchema = z.object({
   state: z.enum(['deferred', 'blocked', 'absent', 'completed']).optional(),
   allocatedBytes: bytes.nullable(), overlayAllocatedBytes: bytes.nullable(), reclaimableBytes: bytes.nullable(),
   filesystemFreedBytes: bytes.nullable().optional(),
+  lastCompletedAt: z.iso.datetime({ offset: true }).optional(),
   blockers: z.array(z.string().max(200)).max(100),
 });
 export const storageReclamationActionSchema = z.object({
