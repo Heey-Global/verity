@@ -251,7 +251,10 @@ if __name__ == '__main__':
         status['last_receipt_ns'] = max((int(row['time_ns']) for row in rows if row['phase'] == sys.argv[2]), default=0)
         print(json.dumps(status))
     elif operation == 'stop-poll':
-        (worktree() / f'.boot-stop-{sys.argv[2]}').touch()
+        directory = worktree()
+        (directory / f'.boot-stop-{sys.argv[2]}').touch()
+        if json.loads(run('docker', 'inspect', sandbox()))[0]['State']['Running']:
+            wait(lambda: (directory / f'.boot-poll-{sys.argv[2]}-stopped').exists(), 5)
     elif operation == 'inflight':
         inflight(sys.argv[2])
     elif operation == 'stream':

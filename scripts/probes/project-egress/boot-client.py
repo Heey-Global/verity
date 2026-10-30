@@ -106,6 +106,7 @@ def main():
         }))
         checkpoint.replace(f'/work/.boot-stream-{phase}.json')
         time.sleep(0.05)
+    Path(f'/work/.boot-poll-{phase}-stopped').touch()
 
 
 if __name__ == '__main__':

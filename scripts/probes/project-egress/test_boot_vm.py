@@ -81,3 +81,67 @@ class RemovedFenceSensitivityTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(row) + '\n' for row in rows[1:]))
             with self.assertRaisesRegex(AssertionError, 'every sandbox probe'):
                 boot_proof.verify_removed_fences(path, 1)
+
+
+class FullBundleTests(unittest.TestCase):
+    def fixture(self, directory):
+        import base64
+        import copy
+        import json
+        initial = RetainedTopologyTests().fixture()
+        facts = {'boot_id': '11111111-1111-1111-1111-111111111111', 'init': 'systemd', 'systemd': 259}
+        events = []
+        broker = []
+        for index, name in enumerate(['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']):
+            when = (index + 1) * 10_000_000_000
+            after = copy.deepcopy(facts)
+            if name == 'reboot':
+                after['boot_id'] = '22222222-2222-2222-2222-222222222222'
+            events.append({'event': name, 'before': facts, 'after': after, 'event_time_ns': when,
+                           'retained': copy.deepcopy(initial), 'recovery_ns': 1,
+                           'stream_after': {'last_success_ns': when - 1, 'last_receipt_ns': when - 1}})
+            broker.append({'phase': name, 'time_ns': str(when - 1)})
+        proof = {'complete': True, 'removed_fences_detected': True, 'events': events,
+                 'protected_start_ns': 0, 'protected_end_ns': 100_000_000_000, 'mutation_started_ns': 101_000_000_000,
+                 'faults': ['corrupt-registry-denied', 'nftables-failure-denied', 'unsupported-live-restore-denied']}
+        rows = [{'kind': 'heartbeat', 'time_ns': n * 1_000_000_000} for n in range(101)]
+        rows += [{'kind': 'received', 'time_ns': 1, 'data': base64.b64encode(
+            f'outer-positive-{phase}-{family}-{protocol}-{port}'.encode()).decode()}
+            for phase in ('before', 'after') for family in (2, 10)
+            for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]]
+        protected = ''.join(json.dumps(row) + '\n' for row in rows)
+        markers = [f'direct-{family}-{protocol}-{port}-own-credential-marker'.encode() for family in (2, 10)
+                   for protocol, port in [('udp', 53), ('udp', 8080), ('tcp', 443)]]
+        markers += [b'host-startup-marker', b'transferred-startup-marker']
+        full = protected + ''.join(json.dumps({'kind': 'received', 'time_ns': 102_000_000_000,
+            'data': base64.b64encode(marker).decode()}) + '\n' for marker in markers)
+        for name, value in [('boot-proof', proof), ('topology-before', initial),
+                            ('inflight', {'positive': {'status': 200, 'started_ns': 1, 'finished_ns': 2},
+                                          'denied': {'status': None, 'started_ns': 1, 'finished_ns': 2}}),
+                            ('mutation-inflight', {'status': 200})]:
+            Path(directory, name + '.json').write_text(json.dumps(value))
+        Path(directory, 'protected-receipts.jsonl').write_text(protected)
+        Path(directory, 'external-receipts.jsonl').write_text(full)
+        Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
+        return proof, broker
+
+    def test_recomputes_delivery_bound_from_actual_handler_receipts(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proof, broker = self.fixture(directory)
+            self.assertTrue(boot_proof.verify_bundle(directory)['complete'])
+            broker[0]['time_ns'] = proof['events'][0]['event_time_ns'] + 2_000_000_001
+            Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
+            with self.assertRaisesRegex(AssertionError, 'Actual handler committed'):
+                boot_proof.verify_bundle(directory)
+
+    def test_rejects_a_missing_event_even_when_complete_is_true(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proof, _ = self.fixture(directory)
+            proof['events'].pop()
+            Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
+            with self.assertRaises(AssertionError):
+                boot_proof.verify_bundle(directory)

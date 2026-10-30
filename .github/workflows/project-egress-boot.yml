@@ -101,6 +101,7 @@ jobs:
           printf '%s  %s\n' "$EGRESS_VM_SHA256" "$RUNNER_TEMP/egress-base.img" | sha256sum --check
           cp scripts/probes/project-egress/vm-pins.env "$PROBE_EVIDENCE/"
           python3 scripts/probes/project-egress/boot-proof.py "$RUNNER_TEMP/egress-base.img" "$RUNNER_TEMP/verity-boot-assets.tar" "$PROBE_EVIDENCE"
+          python3 scripts/probes/project-egress/boot-proof.py verify "$PROBE_EVIDENCE"
       - name: Retain independent lifecycle evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -212,3 +212,9 @@ rules. Infrastructure reboot feasibility alone is not full topology acceptance;
 only a completed `boot-proof.json` together with its supporting observations can
 establish that narrower experimental-host result. No production installer loads
 these assets or enables the experimental composition seam.
+
+After downloading the complete evidence artifact, independently recompute its
+verdict with `python3 scripts/probes/project-egress/boot-proof.py verify <directory>`.
+The verifier checks original receiver observations, actual handler receipts,
+retained identities, required events, changed boot ID, failure controls and
+removed-fence sensitivity; it does not trust the `complete` flag alone.

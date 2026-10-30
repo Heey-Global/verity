@@ -16,9 +16,11 @@ def command(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT)
 
 
-def verify_receipts(path, start_ns, end_ns):
+def verify_receipts(path, start_ns, end_ns, through_ns=None):
     import base64
     records = [json.loads(line) for line in Path(path).read_text().splitlines()]
+    if through_ns is not None:
+        records = [row for row in records if row['time_ns'] <= through_ns]
     beats = [r['time_ns'] for r in records if r['kind'] in ('ready', 'heartbeat', 'stopped')]
     assert beats and beats[0] <= start_ns and beats[-1] >= end_ns, 'Receiver did not cover lifecycle window'
     assert max(b - a for a, b in zip(beats, beats[1:])) <= 2_000_000_000, 'Independent observation paused'
@@ -59,6 +61,41 @@ def verify_retained(before, after):
     for identity, container in current.items():
         assert container['restart'] == 'no' and container['running']
         assert container['mounts'] == prior[identity]['mounts'] and container['image'] == prior[identity]['image']
+
+
+def verify_bundle(directory):
+    directory = Path(directory)
+    proof = json.loads((directory / 'boot-proof.json').read_text())
+    assert proof['complete'] is True and proof['removed_fences_detected'] is True
+    initial = json.loads((directory / 'topology-before.json').read_text())
+    events = proof['events']
+    assert [event['event'] for event in events] == ['controller-kill', 'server-kill', 'docker-stop-start', 'docker-crash', 'reboot']
+    for event in events:
+        assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
+        verify_retained(initial, event['retained'])
+        assert event['recovery_ns'] > 0
+        for key in ('last_success_ns', 'last_receipt_ns'):
+            assert event['stream_after'][key] - event['event_time_ns'] <= 2_000_000_000
+        if event['event'] == 'reboot':
+            boot_vm.check_reboot(event['before'], event['after'])
+    verify_receipts(directory / 'protected-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'])
+    full = (directory / 'external-receipts.jsonl').read_text()
+    assert full.startswith((directory / 'protected-receipts.jsonl').read_text()), 'Protected evidence is not an original observation prefix'
+    verify_receipts(directory / 'external-receipts.jsonl', proof['protected_start_ns'], proof['protected_end_ns'], proof['mutation_started_ns'])
+    verify_removed_fences(directory / 'external-receipts.jsonl', proof['mutation_started_ns'])
+    receipts = [json.loads(line) for line in (directory / 'broker-receipts.jsonl').read_text().splitlines()]
+    for event in events:
+        matching = [int(row['time_ns']) for row in receipts if row['phase'] == event['event']]
+        assert matching, 'No actual authenticated handler positive control'
+        assert max(matching) - event['event_time_ns'] <= 2_000_000_000, 'Actual handler committed after revocation bound'
+    inflight = json.loads((directory / 'inflight.json').read_text())
+    for phase, result in inflight.items():
+        assert (result['status'] == 200) == (phase == 'positive')
+        assert result['finished_ns'] - result['started_ns'] < 10_000_000_000
+    assert set(inflight) == {'positive', 'denied'}
+    assert json.loads((directory / 'mutation-inflight.json').read_text())['status'] == 200
+    assert set(proof['faults']) == {'corrupt-registry-denied', 'nftables-failure-denied', 'unsupported-live-restore-denied'}
+    return {'events': len(events), 'removed_fence_paths': 8, 'complete': True}
 
 
 def main():
@@ -124,7 +161,6 @@ def main():
                     boot_vm.check_reboot(before, vm.wait_ready(before['boot_id']))
             # No Server process is allowed to count as recovery until a new explicit
             # real lifecycle wake has validated the retained identities and mounted secrets.
-            recovery_start = time.monotonic_ns()
             vm.ssh('sudo systemctl reset-failed verity-boot-server.service; sudo systemctl start verity-egress-host.service', timeout=60)
             if event != 'server-kill':
                 rules = vm.ssh('sudo nft list ruleset')
@@ -136,6 +172,7 @@ def main():
                 now = int(vm.ssh('date +%s%N').strip())
                 assert now - stream_after['heartbeat_ns'] < 2_000_000_000, 'Project poll stopped attempting authenticated requests'
             vm.ssh(guest + f'stop-poll {event}')
+            recovery_start = time.monotonic_ns()
             vm.ssh(guest + 'recover', timeout=240)
             after = json.loads(vm.ssh(guest + 'snapshot'))
             verify_retained(initial, after)
@@ -171,7 +208,8 @@ def main():
             raise AssertionError('Removing actual kernel fences was not detected')
         (evidence / 'boot-proof.json').write_text(json.dumps({
             'complete': True, 'events': events, 'protected_start_ns': start_ns,
-            'protected_end_ns': end_ns, 'removed_fences_detected': True, 'faults': faults,
+            'protected_end_ns': end_ns, 'mutation_started_ns': mutation_started_ns,
+            'removed_fences_detected': True, 'faults': faults,
         }, indent=2))
     finally:
         if vm.process and vm.process.poll() is None:
@@ -194,4 +232,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == 'verify':
+        print(json.dumps(verify_bundle(sys.argv[2])))
+    else:
+        main()
