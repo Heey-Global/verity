@@ -93,7 +93,7 @@ def setup():
         hosts.write('\n127.0.0.1 verity-agent-gateway\n')
     run('systemctl', 'restart', 'verity-egress-host.service')
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
-    wait(lambda: api('/health'))
+    wait(lambda: api('/healthz'))
     token = api('/secret/init', {'password': PASSWORD, 'deviceLabel': 'boot fixture'})['token']
     created = api('/projects', {'kind': 'local', 'name': 'Boot fixture'}, token)
     project = created.get('project', created)
@@ -105,7 +105,7 @@ def setup():
 
 def recover():
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
-    wait(lambda: api('/health'))
+    wait(lambda: api('/healthz'))
     token = api('/secret/unlock', {'password': PASSWORD, 'deviceLabel': 'boot recovery'})['token']
     # The real watchdog resumes the retained generation. A passing HTTP health route
     # alone never counts as project transport readiness.
