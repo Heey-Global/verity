@@ -352,7 +352,9 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
         const delay = RESUME_RETRY_DELAYS_MS[attempt];
         if (
           current === null ||
-          isPreparingPhase(current.phase) ||
+          // Standby preparation may already have migrated durable authority:
+          // it stays resumable and needs the same retries as cutover phases.
+          isFailablePhase(current.phase) ||
           isTerminalOperationState(projectUpdateOperation(current).state)
         )
           return;

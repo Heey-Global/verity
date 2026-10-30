@@ -57,6 +57,46 @@ export function ServerUpdateSection({
   );
   const [channelNeedsRefresh, setChannelNeedsRefresh] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
+  const [pendingRetry, setPendingRetry] = useState<
+    { updateId: string; attemptAt: string | undefined; accepted: boolean } | undefined
+  >(undefined);
+
+  useEffect(() => {
+    if (pendingRetry === undefined || status === undefined || status.state === 'unreachable')
+      return;
+    if (
+      status.operation?.updateId !== pendingRetry.updateId ||
+      status.stalled === false ||
+      ['completed', 'failed', 'rolled-back'].includes(status.operation.state)
+    ) {
+      setPendingRetry(undefined);
+      setActionError(undefined);
+    } else if (
+      status.attempt?.updateId === pendingRetry.updateId &&
+      status.attempt.lastAttemptAt !== pendingRetry.attemptAt
+    ) {
+      setPendingRetry({
+        updateId: pendingRetry.updateId,
+        attemptAt: status.attempt.lastAttemptAt,
+        accepted: false,
+      });
+      if (status.attempt.lastError !== null)
+        setActionError('The retry failed again. See the latest error above.');
+    }
+  }, [pendingRetry, status]);
+
+  useEffect(() => {
+    if (pendingRetry === undefined) return;
+    const timer = setTimeout(() => {
+      setPendingRetry(undefined);
+      setActionError(
+        pendingRetry.accepted
+          ? 'No new updater result received. You can try again.'
+          : 'You can retry the update now.',
+      );
+    }, 60_000);
+    return () => clearTimeout(timer);
+  }, [pendingRetry]);
   // Key of an install request whose outcome is still unknown: it was not
   // answered, and no status since has shown whether it started — which is what
   // a server replacing itself, or an Updater still journaling, looks like.
@@ -228,19 +268,32 @@ export function ServerUpdateSection({
   const [retrying, setRetrying] = useState<string | undefined>(undefined);
   const retry = useCallback(
     (updateId: string) => {
-      if (retrying !== undefined) return;
+      if (retrying !== undefined || pendingRetry !== undefined) return;
       setRetrying(updateId);
       setActionError(undefined);
       void client
         .retryServerUpdate(updateId)
         .then(
-          () => undefined,
+          () =>
+            setPendingRetry({
+              updateId,
+              attemptAt: status?.attempt?.lastAttemptAt,
+              accepted: true,
+            }),
           (caught: unknown) => {
             const refused = caught instanceof VerityApiError && caught.status === 409;
-            // `operation-in-progress`: a retry ran moments ago, or the update is
-            // moving again. The card would look unchanged, so say why.
-            if (refused && caught.message === 'operation-in-progress')
-              setActionError('A retry is already running. Check back in a minute.');
+            // The same refusal also covers rate limiting after a failed run;
+            // it does not prove that work is currently running.
+            if (refused && caught.message === 'operation-in-progress') {
+              setActionError(
+                'Retry was not accepted. The updater limits retries to once a minute.',
+              );
+              setPendingRetry({
+                updateId,
+                attemptAt: status?.attempt?.lastAttemptAt,
+                accepted: false,
+              });
+            }
             // Any other refusal means the operation moved on — finished, rolled
             // back or replaced — and the fresh status below shows how. Anything
             // else is a retry that may not have reached the Updater.
@@ -251,7 +304,7 @@ export function ServerUpdateSection({
         .then(() => refresh(true))
         .finally(() => setRetrying(undefined));
     },
-    [client, refresh, retrying],
+    [client, refresh, retrying, pendingRetry, status],
   );
 
   if (status === undefined) {
@@ -320,6 +373,12 @@ export function ServerUpdateSection({
             )
           }
         />
+        {pendingRetry?.accepted ? (
+          <HintBox
+            title="Retry requested"
+            message="Waiting for a new result from the updater. The last known status is shown below."
+          />
+        ) : null}
         {panel.cards.map((card) => (
           <UpdateBlock
             key={card.key}
@@ -328,7 +387,7 @@ export function ServerUpdateSection({
             busy={starting || retrying !== undefined}
             installing={starting}
             retrying={retrying}
-            disabled={changingChannel}
+            disabled={changingChannel || pendingRetry !== undefined}
             onInstall={install}
             onRetry={retry}
           />

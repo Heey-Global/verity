@@ -1018,11 +1018,64 @@ describe('stuck server update', () => {
     await waitFor(() => expect(retryServerUpdate).toHaveBeenCalledWith('update-155'));
     // The screen re-reads what the Updater is doing instead of assuming.
     await waitFor(() => expect(getServerUpdates.mock.calls.length).toBeGreaterThan(1));
+    expect(await screen.findByText('Retry requested')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/)).toBeDisabled();
+    fireEvent.press(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/));
+    expect(retryServerUpdate).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Could not retry the update.')).toBeNull();
   });
 
+  it('shows a new failed retry instead of leaving an accepted request waiting', async () => {
+    const getServerUpdates = jest.fn().mockResolvedValue(stuck);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getServerUpdates,
+        retryServerUpdate: jest.fn().mockResolvedValue(stuck.operation),
+      }),
+    );
+    render(<ServerUpdateScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+    await screen.findByText('Retry requested');
+    getServerUpdates.mockResolvedValue({
+      ...stuck,
+      attempt: { ...stuck.attempt, lastAttemptAt: '2026-10-21T11:56:00.000Z', failures: 13 },
+    });
+    await act(async () => {
+      for (const refresh of [...mockLiveRefresh]) await refresh();
+    });
+    expect(
+      await screen.findByText('The retry failed again. See the latest error above.'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText('Retry requested')).toBeNull();
+  });
+
+  it('releases an acknowledged retry when no new updater result arrives', async () => {
+    jest.useFakeTimers();
+    try {
+      mockCreateVerityClient.mockReturnValue(
+        makeClient('unlocked', {
+          getServerUpdates: jest.fn().mockResolvedValue(stuck),
+          retryServerUpdate: jest.fn().mockResolvedValue(stuck.operation),
+        }),
+      );
+      render(<ServerUpdateScreen />);
+      fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
+      await screen.findByText('Retry requested');
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(60_000);
+      });
+      expect(screen.queryByText('Retry requested')).toBeNull();
+      expect(
+        screen.getByText('No new updater result received. You can try again.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/)).toBeEnabled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   // Retries are paced; a refused one must not look like a tap that did nothing.
-  it('explains a retry refused because one is already running', async () => {
+  it('explains retry throttling without claiming the updater is running', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
         getServerUpdates: jest.fn().mockResolvedValue(stuck),
@@ -1035,8 +1088,11 @@ describe('stuck server update', () => {
 
     fireEvent.press(await screen.findByLabelText(/^Retry 4\.52\.0(,|$)/));
     expect(
-      await screen.findByText('A retry is already running. Check back in a minute.'),
+      await screen.findByText(
+        'Retry was not accepted. The updater limits retries to once a minute.',
+      ),
     ).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Retry 4\.52\.0(,|$)/)).toBeDisabled();
   });
 
   it('installs the newer release as a new request', async () => {
