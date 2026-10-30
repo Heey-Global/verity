@@ -4985,3 +4985,49 @@ migrations['0176_assistant'] = {
     await sql`drop table assistant_settings`.execute(db);
   },
 };
+
+migrations['0177_scheduling_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table scheduling_requests (
+      id text primary key, session_id text not null, project_id text,
+      google_account_id text, calendar_id text not null, time_zone text not null,
+      language text not null check (language in ('en', 'de')),
+      title text not null, duration_minutes integer not null check (duration_minutes between 5 and 480),
+      add_meet boolean not null, organizer_name text not null, organizer_email text not null,
+      guest_email text not null, guest_name text, colleagues jsonb not null default '[]',
+      email_subject text not null, email_body text not null,
+      state text not null check (state in ('draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed')),
+      failure text, closes_at timestamptz not null, link_expires_at timestamptz,
+      approved_at timestamptz, approval_digest text,
+      share_secret text, share_revoked_at timestamptz, email_sent_at timestamptz,
+      booked_event_id text, booked_start timestamptz, booked_end timestamptz, guest_note text,
+      notified_no_slots_at timestamptz,
+      attempts integer not null default 0, next_attempt_at timestamptz,
+      lease_owner text, lease_until timestamptz,
+      revision integer not null default 1,
+      created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create index scheduling_requests_session on scheduling_requests(session_id, created_at desc)`.execute(
+      db,
+    );
+    await sql`create index scheduling_requests_active on scheduling_requests(state) where state in ('provisioning', 'open') or (share_secret is not null and share_revoked_at is null)`.execute(
+      db,
+    );
+    await sql`create table scheduling_holds (
+      request_id text not null references scheduling_requests(id) on delete cascade,
+      position integer not null, window_start timestamptz not null, window_end timestamptz not null,
+      event_id text not null,
+      state text not null check (state in ('pending', 'active', 'converted', 'cancel_pending', 'cancelled')),
+      attempts integer not null default 0, next_attempt_at timestamptz, last_error text,
+      updated_at timestamptz not null default now(),
+      primary key (request_id, position), check (window_end > window_start)
+    )`.execute(db);
+    await sql`create index scheduling_holds_cleanup on scheduling_holds(next_attempt_at) where state = 'cancel_pending'`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table scheduling_holds`.execute(db);
+    await sql`drop table scheduling_requests`.execute(db);
+  },
+};
