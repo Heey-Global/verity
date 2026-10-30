@@ -1533,7 +1533,7 @@ jobs:
 
   stage-bundled-images:
     # The Server bakes the relay and connector in by digest. Their indexes are
-    # staged here under `candidate-vX.Y.Z`, ahead of the release gate, so the
+    # staged here under `candidate-vX.Y.Z-<source-sha>`, ahead of the release gate, so the
     # Server build does not wait for it; no Server resolves a candidate tag, and
     # the `vX.Y.Z` tags stay with the gated publish jobs.
     needs: [release-please, build-project-relay, build-matrix-connector]
@@ -1591,7 +1591,7 @@ jobs:
             # An index already released under vX.Y.Z is returned instead of a
             # staged twin, so a re-run bundles what was published.
             result="$(GITHUB_OUTPUT= IMAGE="$image" VERSION="$VERSION" \
-              SOURCE_SHA="$SOURCE_REVISION" STAGE_TAG="candidate-v${VERSION}" \
+              SOURCE_SHA="$SOURCE_REVISION" STAGE_TAG="candidate-v${VERSION}-${SOURCE_REVISION}" \
               node .release-tools/scripts/publish-release-index.mjs \
                 "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64")"
             digest="$(sed -n 's/^digest=//p' <<<"$result")"
