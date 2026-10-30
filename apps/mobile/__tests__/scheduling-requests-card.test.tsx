@@ -46,7 +46,9 @@ it('withdraws an open request only after confirmation', async () => {
   await waitFor(() => expect(revokeSchedulingRequest).toHaveBeenCalledWith('r1'));
 });
 
-it('keeps running requests, problems and upcoming bookings in view, and drops closed ones', () => {
+// A booked request already has its notice in the chat history; pinning it above the composer
+// until the meeting starts left an undismissable duplicate there.
+it('keeps running requests and problems in view, and drops bookings and closed ones', () => {
   const now = Date.parse('2099-11-01T00:00:00Z');
   expect(
     visibleSchedulingRequests(
@@ -67,5 +69,5 @@ it('keeps running requests, problems and upcoming bookings in view, and drops cl
       ],
       now,
     ).map((r) => r.id),
-  ).toEqual(['open', 'stuck', 'booked']);
+  ).toEqual(['open', 'stuck']);
 });
