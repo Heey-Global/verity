@@ -133,7 +133,9 @@ export function SchedulingRequestsCard({
                     size="compact"
                     icon="copy"
                     onPress={() =>
-                      void Clipboard.setStringAsync(request.link!).then(() => setCopied(request.id))
+                      void Clipboard.setStringAsync(request.link!)
+                        .then(() => setCopied(request.id))
+                        .catch(() => setCopied(undefined))
                     }
                   />
                 ) : null}

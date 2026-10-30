@@ -41,6 +41,7 @@ export const SCHEDULING_LINK_DAYS = 30;
 export const SCHEDULING_MAX_BOOKING_DAYS = 7;
 /** Range searched for a request's own holds; holds moved further away no longer count. */
 const HOLD_SEARCH_DAYS = 90;
+const MAX_WINDOW_DAYS = 60;
 const CLEANUP_ALERT_ATTEMPT = 5;
 const LEASE_MS = 2 * 60_000;
 export const SCHEDULING_LINK_PLACEHOLDER = '{link}';
@@ -310,6 +311,9 @@ export class SchedulingService {
       if (window.end.getTime() - window.start.getTime() < input.durationMinutes * 60_000)
         throw new Error('Every window must be at least as long as the meeting');
       if (window.end <= now) throw new Error('Every window must lie in the future');
+      // Holds are found again within HOLD_SEARCH_DAYS; anything later would never be offered.
+      if (window.start.getTime() > now.getTime() + MAX_WINDOW_DAYS * DAY)
+        throw new Error(`Windows must start within ${String(MAX_WINDOW_DAYS)} days`);
     }
     const lastEnd = windows.at(-1)!.end;
     const closesAt = new Date(
@@ -461,6 +465,8 @@ export class SchedulingService {
       throw new Error('Scheduling request not found');
     if (request.state !== 'draft')
       throw new Error(`This scheduling request is already ${request.state}`);
+    if (request.closesAt <= this.now())
+      throw new Error('This draft is out of date; prepare the request again');
     const holds = await this.store.holds(requestId);
     if (schedulingDigest(request, holds) !== digest)
       throw new Error('The scheduling request differs from the prepared one; prepare it again');
@@ -865,7 +871,9 @@ export class SchedulingService {
   }
 
   private lockKey(request: SchedulingRequest): string {
-    return `${request.googleAccountId ?? 'default'}:${request.calendarId}`;
+    // `primary` and the account's own address name the same calendar; they must share a lock.
+    const calendar = request.calendarId === 'primary' ? request.organizerEmail : request.calendarId;
+    return `${request.googleAccountId ?? 'default'}:${calendar.toLowerCase()}`;
   }
 
   /**

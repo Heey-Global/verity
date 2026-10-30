@@ -62,6 +62,9 @@ const TEXT = {
     withdrawn: 'This request was withdrawn',
     withdrawnCopy: (name: string) => `${name} closed this request. Ask them for new times.`,
     unavailable: 'We can’t check the calendar right now',
+    unconfirmed: 'We couldn’t confirm your booking',
+    unconfirmedCopy:
+      'Check your email for an invitation. If none arrives, open this page again to see whether the time is still free.',
     unavailableCopy: 'Nothing has been booked. Please try again in a moment.',
     notReady: 'This page isn’t ready yet',
     notReadyCopy: 'Please try again in a moment.',
@@ -107,6 +110,9 @@ const TEXT = {
     withdrawnCopy: (name: string) =>
       `${name} hat diese Anfrage geschlossen. Bitte um neue Terminvorschläge.`,
     unavailable: 'Der Kalender ist gerade nicht erreichbar',
+    unconfirmed: 'Die Buchung konnte nicht bestätigt werden',
+    unconfirmedCopy:
+      'Prüfe dein Postfach auf eine Einladung. Kommt keine an, öffne diese Seite erneut, um zu sehen, ob die Zeit noch frei ist.',
     unavailableCopy: 'Es wurde nichts gebucht. Bitte versuche es gleich noch einmal.',
     notReady: 'Diese Seite ist noch nicht bereit',
     notReadyCopy: 'Bitte versuche es gleich noch einmal.',
@@ -116,6 +122,14 @@ const TEXT = {
     footer: 'Geplant mit Verity',
   },
 } satisfies Record<Language, Record<string, unknown>>;
+
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (character) => {
@@ -480,7 +494,8 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
       // The edge only forwards same-origin posts. A browser reaching this loopback listener
       // directly, e.g. through DNS rebinding, sends its own Origin and is refused here.
       const origin = request.headers.origin;
-      if (origin !== undefined && origin !== (await backend.publicOrigin?.(requestId))) {
+      const expected = await backend.publicOrigin?.(requestId);
+      if (origin !== undefined && (!expected || !sameOrigin(origin, expected))) {
         response.writeHead(403).end();
         return;
       }
@@ -503,10 +518,16 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
         // Nothing is promised either way: the page says it could not check, and a booking
         // that did happen shows up as booked on the next visit.
         const model = await backend.view(requestId).catch(() => undefined);
+        const language = model?.request?.language ?? 'en';
+        const t = TEXT[language];
         send(
-          renderSchedulingPage(
-            { kind: 'unavailable', request: model?.request },
-            { zone: formZone, nonce },
+          messagePage(
+            language,
+            model?.request?.title ?? t.unknown,
+            t.unconfirmed,
+            t.unconfirmedCopy,
+            nonce,
+            `<a class="btn" href="/">${escapeHtml(t.retry)}</a>`,
           ),
         );
         return;
