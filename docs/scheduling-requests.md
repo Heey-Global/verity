@@ -76,7 +76,9 @@ Each request gets its own Uplink share with a 30-day lifetime and a six-digit PI
 carried in the link. Core serves the page from a loopback listener per request
 through an in-process connector, like online meetings. After the booking deadline
 the page explains that the request has expired until the link itself ends at day 30.
-Turning online sharing off withdraws every open request. Uplink may limit the number
+Losing Uplink — a dropped connection or online sharing switched off — withdraws
+nothing: requests and holds stay, links reconnect when Uplink is back, and a link that
+stays unreachable for 15 minutes is reported in the request's chat. Uplink may limit the number
 of concurrent shares; sending then fails with a clear error and removes the holds.
 
 ## In the app

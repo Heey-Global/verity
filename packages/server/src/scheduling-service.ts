@@ -44,6 +44,7 @@ const HOLD_SEARCH_DAYS = 90;
 const MAX_WINDOW_DAYS = 60;
 const PROVISION_PATIENCE_MS = 10 * 60_000;
 const CLEANUP_ALERT_ATTEMPT = 5;
+const LINK_DOWN_ALERT_MS = 15 * 60_000;
 const LEASE_MS = 2 * 60_000;
 export const SCHEDULING_LINK_PLACEHOLDER = '{link}';
 
@@ -61,7 +62,7 @@ export type SchedulingNotification =
   | { kind: 'no_slots'; request: SchedulingRequest }
   | { kind: 'cleanup_failed'; request: SchedulingRequest; error: string }
   | { kind: 'email_unconfirmed'; request: SchedulingRequest }
-  | { kind: 'closed'; request: SchedulingRequest; reason: string };
+  | { kind: 'link_down'; request: SchedulingRequest };
 
 export interface SchedulingServiceDeps {
   store: SchedulingStoreDeps;
@@ -260,6 +261,9 @@ export class SchedulingService {
   private readonly owner = randomUUID();
   private readonly connectors = new Map<string, SchedulingConnector>();
   private readonly connecting = new Map<string, Promise<void>>();
+  /** When each open request's link was first found unreachable, and which were reported. */
+  private readonly linkDownSince = new Map<string, number>();
+  private readonly linkDownAlerted = new Set<string>();
   /** Requests this process moved to `booked` and has not announced yet. */
   private readonly bookedNow = new Set<string>();
   private sharingGeneration = 0;
@@ -271,8 +275,9 @@ export class SchedulingService {
       this.sharingGeneration += 1;
       for (const connector of this.connectors.values()) connector.close();
       this.connectors.clear();
-      // Turning sharing off withdraws every public link; open requests cannot be booked anymore.
-      void this.withdrawAll('Online sharing was turned off').catch(() => undefined);
+      // Uplink reports a dropped control connection the same way as sharing switched off, so
+      // nothing is withdrawn here: requests and holds stay, links reconnect when Uplink is back,
+      // and a link that stays unreachable is reported to the operator by `ensureConnectors`.
     });
   }
 
@@ -949,22 +954,6 @@ export class SchedulingService {
     });
   }
 
-  private async withdrawAll(reason: string): Promise<void> {
-    for (const request of await this.store.listServed()) {
-      if (
-        await this.closeRequest(request, ['open', 'provisioning'], 'revoked', { failure: reason })
-      ) {
-        await this.deps.notify?.({
-          kind: 'closed',
-          request: (await this.store.get(request.id))!,
-          reason,
-        });
-      }
-      await this.retireShare(request.id).catch(() => undefined);
-    }
-    this.deps.wake?.();
-  }
-
   /** Run everything that is due; returns when the next work becomes due. */
   async runDue(): Promise<Date | undefined> {
     const now = this.now();
@@ -1104,10 +1093,31 @@ export class SchedulingService {
 
   /** Reconnect every served link, e.g. after a restart or a dropped connection. */
   async ensureConnectors(): Promise<void> {
-    if (this.closed || this.deps.edge?.isAvailable?.() === false) return;
+    if (this.closed) return;
+    const available = this.deps.edge?.isAvailable?.() !== false;
     for (const request of await this.store.listServed()) {
       if (request.linkExpiresAt && request.linkExpiresAt <= this.now()) continue;
-      await this.ensureConnector(request.id).catch(() => undefined);
+      const connected =
+        available &&
+        (await this.ensureConnector(request.id).then(
+          () => true,
+          () => false,
+        ));
+      if (connected) {
+        this.linkDownSince.delete(request.id);
+        continue;
+      }
+      // Only bookable requests need their link; a closed one only explains itself.
+      if (request.state !== 'open') continue;
+      const since = this.linkDownSince.get(request.id) ?? this.now().getTime();
+      this.linkDownSince.set(request.id, since);
+      if (
+        this.now().getTime() - since >= LINK_DOWN_ALERT_MS &&
+        !this.linkDownAlerted.has(request.id)
+      ) {
+        this.linkDownAlerted.add(request.id);
+        await this.deps.notify?.({ kind: 'link_down', request });
+      }
     }
   }
 

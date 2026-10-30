@@ -26,8 +26,8 @@ export function schedulingNoticeText(notification: SchedulingNotification): stri
       return `A hold for “${request.title}” could not be removed from the calendar yet (${notification.error}). Verity keeps retrying.`;
     case 'email_unconfirmed':
       return `The email to ${guest} for “${request.title}” could not be confirmed as sent. The booking link works; check your sent mail or send the link yourself.`;
-    case 'closed':
-      return `The scheduling request “${request.title}” for ${guest} was closed: ${notification.reason}. Its holds are being removed.`;
+    case 'link_down':
+      return `The booking link for ${guest} (“${request.title}”) has been unreachable for a while, so ${guest} cannot book right now. The request and its holds stay; check Online sharing, or withdraw the request in Settings → Google → Scheduling requests.`;
   }
 }
 
@@ -54,12 +54,14 @@ export function schedulingPush(notification: SchedulingNotification): PushNotifi
       };
     case 'no_slots':
     case 'email_unconfirmed':
-    case 'closed':
+    case 'link_down':
       return {
         title:
           notification.kind === 'no_slots'
             ? `No times left for ${guest}`
-            : 'Scheduling request needs a look',
+            : notification.kind === 'link_down'
+              ? `Booking link for ${guest} is unreachable`
+              : 'Scheduling request needs a look',
         body: request.title,
         categoryId: 'SCHEDULING',
         data,

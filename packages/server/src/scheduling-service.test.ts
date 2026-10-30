@@ -576,18 +576,29 @@ describe('scheduling requests', () => {
     expect((await scheduler.view(id)).kind).toBe('open');
   });
 
-  it('withdraws every open request when online sharing is turned off', async () => {
+  it('keeps requests through an Uplink outage and reports a link that stays unreachable', async () => {
     let disable: (() => void) | undefined;
+    let available = true;
     edge.onSharingDisabled = (listener) => {
       disable = listener;
       return () => undefined;
     };
+    edge.isAvailable = () => available;
     const scheduler = service();
     const id = await openRequest(scheduler);
+    available = false;
     disable!();
-    await vi.waitFor(async () => {
-      expect((await ctx.store.scheduling.get(id))?.state).toBe('revoked');
-    });
-    await vi.waitFor(() => expect(edge.removed).toEqual(['share-1']));
+    await scheduler.runDue();
+    expect((await ctx.store.scheduling.get(id))?.state).toBe('open');
+    expect([...calendar.events.values()].every((event) => event.status === 'confirmed')).toBe(true);
+    expect(edge.removed).toEqual([]);
+    now = new Date(now.getTime() + 16 * 60_000);
+    await scheduler.runDue();
+    await scheduler.runDue();
+    expect(notifications.filter((n) => n.kind === 'link_down')).toHaveLength(1);
+    // Back online: the link reconnects with the same binding the guest was sent.
+    available = true;
+    await scheduler.runDue();
+    expect(connected).toEqual(['share-1', 'share-1']);
   });
 });
