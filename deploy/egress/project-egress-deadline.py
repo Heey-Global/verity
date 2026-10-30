@@ -137,7 +137,12 @@ def attest_filters(filters, identity):
             programs.append(entry['options'])
         elif set(entry) - {'protocol', 'pref', 'kind', 'chain', 'parent'}:
             raise ValueError('Unexpected deadline classifier header')
-    if (len(programs) != 1 or programs[0].get('id') != identity
+    if len(programs) != 1:
+        raise ValueError('Expected exactly one deadline program')
+    options = programs[0]
+    # Newer tc nests BPF program details; older dumps expose the id directly.
+    program = options.get('prog', options)
+    if (program.get('id') != identity or options.get('id', identity) != identity
             or programs[0].get('direct-action') is not True
             or programs[0].get('skip_hw') is not True or programs[0].get('skip_sw', False)
             or programs[0].get('in_hw', False) or programs[0].get('actions')):

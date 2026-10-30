@@ -147,15 +147,21 @@ class DeadlineHostTests(unittest.TestCase):
         concrete = {**header, 'options': {'id': 7, 'not_in_hw': True,
                                             'direct-action': True, 'skip_hw': True}}
         host.attest_filters([header, concrete], 7)
+        nested = {**concrete['options'], 'prog': {'id': 7}}
+        del nested['id']
+        host.attest_filters([header, {**concrete, 'options': nested}], 7)
+        for options in ({**nested, 'prog': {'id': 8}}, {**nested, 'id': 8}):
+            with self.assertRaises(ValueError):
+                host.attest_filters([{**concrete, 'options': options}], 7)
         for option in ('direct-action', 'skip_hw'):
             missing = {**concrete['options']}
             del missing[option]
             with self.assertRaises(ValueError):
                 host.attest_filters([{**concrete, 'options': missing}], 7)
         for filters in ([header], [concrete, concrete], [{**concrete, 'protocol': 'ip'}],
-                        [{**concrete, 'options': {'id': 8}}],
-                        [{**concrete, 'options': {'id': 7, 'in_hw': True}}],
-                        [{**concrete, 'options': {'id': 7, 'actions': [{'kind': 'mirred'}]}}]):
+                        [{**concrete, 'options': {**concrete['options'], 'id': 8}}],
+                        [{**concrete, 'options': {**concrete['options'], 'in_hw': True}}],
+                        [{**concrete, 'options': {**concrete['options'], 'actions': [{'kind': 'mirred'}]}}]):
             with self.assertRaises(ValueError): host.attest_filters(filters, 7)
 
 
