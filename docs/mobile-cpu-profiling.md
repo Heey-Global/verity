@@ -16,11 +16,12 @@ Successful Apple processing does not establish installation or populated samplin
 
 Staging OTA uses one Hermes export with external source maps, retains the exact
 bundle/map hashes and publishes that same export with `--skip-bundler`. Before
-moving the staging channel, the pipeline checks the retained map and bundle hash
+moving the staging channel, the pipeline uploads its retained artifact and checks the retained map and bundle hash
 against the published iOS manifest. Download `staging-cpu-ota-<source-commit>`
 within 90 days. A retry restores this artifact instead of re-exporting its commit;
 missing or mismatched evidence blocks delivery. A cancellation before artifact
-upload may require recovery of the original export; a new export is no substitute.
+upload can require recovery of the original export and leaves the channel unchanged;
+a new export is no substitute.
 
 Captures record the actual launched bundle SHA-256, Expo update ID/runtime,
 embedded/OTA state, bundle ID and native version/build at recording start. An

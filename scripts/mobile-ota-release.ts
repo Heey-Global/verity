@@ -426,7 +426,7 @@ export function proposalBaseForSource(source: string, execute = git): string {
   return base;
 }
 
-function stage(runtime: string, version: string) {
+function stage(runtime: string, version: string, prepareOnly = false) {
   const stagingOAuth = process.env.STAGING_GOOGLE_AUTH_ID?.trim();
   if (!stagingOAuth || !/^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/.test(stagingOAuth))
     throw new Error('STAGING_GOOGLE_AUTH_ID must identify the Staging app OAuth client');
@@ -612,6 +612,7 @@ function stage(runtime: string, version: string) {
       2,
     ),
   );
+  if (prepareOnly) return;
   eas('channel:edit', 'staging', '--branch', stagingCandidate.branch, '--non-interactive');
   verifyChannel(
     easJson('channel:view', 'staging', '--non-interactive'),
@@ -1039,7 +1040,8 @@ function finishRelease(candidate: Artifact, staging = false) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv[2] === 'stage') stage(process.argv[3] ?? '', process.argv[4] ?? '');
+  if (['stage', 'stage-map'].includes(process.argv[2] ?? ''))
+    stage(process.argv[3] ?? '', process.argv[4] ?? '', process.argv[2] === 'stage-map');
   else if (process.argv[2] === 'promote') promote();
   else throw new Error('Usage: mobile-ota-release.ts stage <runtime> <version> | promote');
 }

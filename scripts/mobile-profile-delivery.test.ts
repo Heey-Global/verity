@@ -87,6 +87,26 @@ with tempfile.TemporaryDirectory() as tmp:
       );
     },
   );
+  it('uploads recoverable OTA maps before channel delivery', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8'));
+    const jobs = Object.values(workflow.jobs) as {
+      steps: { run?: string; uses?: string; with?: Record<string, unknown> }[];
+    }[];
+    const steps = jobs.flatMap((job) => job.steps);
+    const prepare = steps.findIndex((step) =>
+      step.run?.includes('mobile-ota-release.ts stage-map '),
+    );
+    const retain = steps.findIndex(
+      (step) =>
+        typeof step.with?.path === 'string' && step.with.path.includes('profiling-artifacts/ota-'),
+    );
+    const deliver = steps.findIndex((step) => step.run?.includes('mobile-ota-release.ts stage '));
+    expect(prepare).toBeGreaterThan(-1);
+    expect(retain).toBeGreaterThan(prepare);
+    expect(deliver).toBeGreaterThan(retain);
+    expect(steps[retain].with?.overwrite).toBe(true);
+    expect(steps[retain].with?.['if-no-files-found']).toBe('error');
+  });
   it('retains the validated map before upload and isolates diagnostics from release evidence', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
     const job = workflow.jobs.build;

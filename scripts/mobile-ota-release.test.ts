@@ -240,6 +240,7 @@ interface ServiceState {
   calls: string[];
   stagingOAuth?: string;
   wrongBundle?: boolean;
+  artifactArchive?: string;
   loseStagingUpload?: boolean;
   tags: Record<string, { commit: string; message: string }>;
   group?: string;
@@ -340,6 +341,8 @@ if(tool === 'gh') {
   if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}if(s.modelMetadataCommit){s.rollingHead='d'.repeat(40);const contents=args.find(a=>a.startsWith('contents=')).slice(9);fs.writeFileSync(process.env.OTA_FAKE_CWD+'/apps/mobile/ota-promotion.json',Buffer.from(contents,'base64'));}out({data:{createCommitOnBranch:{commit:{oid:s.modelMetadataCommit?s.rollingHead:sha,signature:{isValid:true}}}}});}
   if(args[0] === 'api') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
+    if(endpoint?.includes('/actions/artifacts?')) out({artifacts:s.artifactArchive?[{id:1,expired:false}]:[]});
+    if(endpoint?.endsWith('/actions/artifacts/1/zip')) {save();process.stdout.write(fs.readFileSync(s.artifactArchive));process.exit(0);}
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
       if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
@@ -388,7 +391,7 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
   }
   return {
     run: (
-      command: 'stage' | 'promote',
+      command: 'stage' | 'stage-map' | 'promote',
       overrides: Record<string, string> = {},
       version = artifact().version,
     ) =>
@@ -413,6 +416,19 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           },
         },
       ),
+    retainRemotely: () => {
+      const root = join(cwd, 'apps/mobile/profiling-artifacts/ota-' + sha);
+      const archive = join(cwd, 'retained.zip');
+      execFileSync('python3', [
+        '-c',
+        'import pathlib,sys,zipfile; root=pathlib.Path(sys.argv[1]); z=zipfile.ZipFile(sys.argv[2],"w"); [z.write(p,p.name) for p in root.iterdir()]; z.close()',
+        root,
+        archive,
+      ]);
+      const state = JSON.parse(readFileSync(statePath, 'utf8'));
+      writeFileSync(statePath, JSON.stringify({ ...state, artifactArchive: archive }));
+      rmSync(root, { recursive: true, force: true });
+    },
     output: () => readFileSync(join(cwd, 'output'), 'utf8'),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
@@ -442,6 +458,22 @@ describe('OTA CLI interrupted external operations', () => {
     expect(
       service.state().calls.filter((call) => call.includes('update --skip-bundler')),
     ).toHaveLength(1);
+  });
+  it('retains maps before channel delivery and restores them on a fresh runner', () => {
+    const service = serviceFixture();
+    const prepared = service.run('stage-map');
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(service.state().calls.some((call) => call.includes('channel:edit staging'))).toBe(false);
+    service.retainRemotely();
+    const delivered = service.run('stage');
+    expect(delivered.status, delivered.stderr).toBe(0);
+    expect(service.state().calls.some((call) => call.includes('/actions/artifacts/1/zip'))).toBe(
+      true,
+    );
+    expect(service.state().calls.filter((call) => call.startsWith('npx expo export'))).toHaveLength(
+      1,
+    );
+    expect(service.state().calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
   });
   it('exports Staging OTA with the native Staging OAuth identity', () => {
     const service = serviceFixture();
