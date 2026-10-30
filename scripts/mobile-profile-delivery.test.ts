@@ -88,10 +88,13 @@ with tempfile.TemporaryDirectory() as tmp:
     },
   );
   it('uploads recoverable OTA maps before channel delivery', () => {
-    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8'));
-    const jobs = Object.values(workflow.jobs) as {
-      steps: { run?: string; uses?: string; with?: Record<string, unknown> }[];
-    }[];
+    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+      jobs: Record<
+        string,
+        { steps: { run?: string; uses?: string; with?: Record<string, unknown> }[] }
+      >;
+    };
+    const jobs = Object.values(workflow.jobs);
     const steps = jobs.flatMap((job) => job.steps);
     const prepare = steps.findIndex((step) =>
       step.run?.includes('mobile-ota-release.ts stage-map '),
