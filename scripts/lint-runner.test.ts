@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { heapLimitMiB, runLint } from './lint-runner.mjs';
 
@@ -144,4 +144,27 @@ it('reuses clean local CLI results while CI and --no-cache always check afresh',
   expect(run([])).toContain('Reused clean lint results for 1 files');
   expect(run(['--no-cache'])).not.toContain('Reused clean lint results');
   expect(run([], 'true')).not.toContain('Reused clean lint results');
+});
+
+it('passes worker arguments literally and disables core dumps', () => {
+  mkdirSync('.cache', { recursive: true });
+  const root = mkdtempSync(resolve('.cache/lint-runner-'));
+  temporary.push(root);
+  const marker = join(root, 'injected');
+  const argument = `space ' " ; touch ${marker}; $(touch ${marker})`;
+  const result = spawnSync(
+    'bash',
+    [
+      'scripts/lint-worker.sh',
+      'bash',
+      '-c',
+      'ulimit -c; printf "%s" "$1"',
+      'argument-check',
+      argument,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe(`0\n${argument}`);
+  expect(existsSync(marker)).toBe(false);
 });

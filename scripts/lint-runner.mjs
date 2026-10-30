@@ -60,9 +60,7 @@ function executeLint(files, heapMiB, cache) {
   return spawnSync(
     'bash',
     [
-      '-c',
-      'ulimit -c 0; exec "$@"',
-      'lint-worker',
+      resolve(import.meta.dirname, 'lint-worker.sh'),
       process.execPath,
       `--max-old-space-size=${heapMiB}`,
       '--expose-gc',
