@@ -87,7 +87,7 @@ def setup():
     (ROOT / 'config.json').write_text(json.dumps(config))
     os.chmod(ROOT / 'config.json', 0o600)
     os.chown(ROOT / 'config.json', 1000, 1000)
-    policy = {'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 0,
+    policy = {'image': refs['relay'], 'dataVolume': 'verity-boot-data', 'socketOwnerUid': 1000,
               'relayGid': 1102, 'brokerSubpath': 'relay/broker', 'claudeSubpath': 'relay/claude', 'codexSubpath': 'relay/codex'}
     Path('/etc/verity-egress/relay.json').write_text(json.dumps(policy))
     os.chmod('/etc/verity-egress/relay.json', 0o600)

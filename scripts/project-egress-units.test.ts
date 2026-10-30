@@ -77,4 +77,5 @@ it('runs the native Server as the same identity as its actual Runner probes', ()
   expect(gid).toBeDefined();
   expect(uid).not.toBe('0');
   expect(guest).toContain(`'--user', '${uid}:${gid}'`);
+  expect(guest).toContain(`'socketOwnerUid': ${uid},`);
 });
