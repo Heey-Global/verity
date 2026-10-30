@@ -1709,13 +1709,14 @@ it('workspace relinking never rewrites links through a symlinked dependency pare
       outside = join(root, 'outside');
     mkdirSync(join(root, 'packages', 'pkg'), { recursive: true });
     writeFileSync(join(root, 'package.json'), '{"workspaces":["packages/*"]}');
-    writeFileSync(join(root, 'packages', 'pkg', 'package.json'), '{"name":"pkg"}');
+    writeFileSync(join(root, 'packages', 'pkg', 'package.json'), '{"name":"@local/pkg"}');
     mkdirSync(worktree);
     mkdirSync(outside);
     symlinkSync('preserved', join(outside, 'pkg'));
     symlinkSync(outside, join(worktree, 'node_modules'));
     linkWorkspacePackages(root, worktree);
     expect(readlinkSync(join(outside, 'pkg'))).toBe('preserved');
+    expect(existsSync(join(outside, '@local'))).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

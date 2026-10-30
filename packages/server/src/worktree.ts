@@ -796,6 +796,18 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
   // Guard: without a real worktree dir (e.g. a mocked git runner in tests) there
   // is nothing to link into.
   if (!existsSync(worktreePath)) return;
+  try {
+    const manifest = join(repoDir, 'package.json');
+    if (existsSync(manifest) && realpathSync(manifest) !== resolve(manifest)) return;
+    const modules = join(worktreePath, 'node_modules');
+    if (
+      existsSync(modules) &&
+      (!lstatSync(modules).isDirectory() || lstatSync(modules).isSymbolicLink())
+    )
+      return;
+  } catch {
+    return;
+  }
   const isWorkspace = workspaceMatcher(repoDir);
   for (const glob of ['packages', 'apps']) {
     const dir = join(repoDir, glob);
@@ -803,7 +815,9 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
     for (const entry of readdirSync(dir)) {
       let name: string;
       try {
-        const pkg: unknown = JSON.parse(readFileSync(join(dir, entry, 'package.json'), 'utf8'));
+        const manifest = join(dir, entry, 'package.json');
+        if (realpathSync(manifest) !== resolve(manifest) || !lstatSync(manifest).isFile()) continue;
+        const pkg: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
         const pkgName = (pkg as { name?: unknown }).name;
         if (typeof pkgName !== 'string' || pkgName.length === 0) continue;
         if (
