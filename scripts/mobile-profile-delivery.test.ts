@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -87,6 +89,35 @@ with tempfile.TemporaryDirectory() as tmp:
       );
     },
   );
+  it('preserves regular staging through native manifest generation and bundling', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8'));
+    const steps = workflow.jobs['verify-ios'].steps as {
+      name?: string;
+      run?: string;
+      env?: Record<string, string>;
+    }[];
+    const generate = steps.find((step) => step.name === 'Generate the iOS project');
+    expect(generate?.env?.VERITY_APP_VARIANT).toContain('inputs.regular_staging');
+    if (!generate?.run) throw new Error('Missing prebuild step');
+    const root = mkdtempSync(join(tmpdir(), 'verity-staging-env-'));
+    const exported = join(root, 'env');
+    try {
+      execFileSync('bash', ['-c', 'npx() { :; }\n' + generate.run], {
+        env: {
+          ...process.env,
+          VERITY_APP_VARIANT: 'staging',
+          VERITY_CPU_PROFILING: '0',
+          GITHUB_ENV: exported,
+        },
+      });
+      const entries = readFileSync(exported, 'utf8').split('\n');
+      expect(entries).toContain('VERITY_APP_VARIANT=staging');
+      expect(entries).toContain('VERITY_CPU_PROFILING=0');
+      expect(entries.some((line) => /^VERITY_PROFILE_COMMIT=[a-f0-9]{40}$/.test(line))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('uploads recoverable OTA maps before channel delivery', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
       jobs: Record<

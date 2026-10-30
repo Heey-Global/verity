@@ -224,8 +224,8 @@ jobs:
           VERITY_APP_VARIANT: ${{ (inputs.cpu_profiling || inputs.regular_staging) && 'staging' || 'production' }}
         run: |
           export VERITY_PROFILE_COMMIT="$(git rev-parse HEAD)"
-          if [ "$VERITY_CPU_PROFILING" = 1 ]; then
-            echo "VERITY_CPU_PROFILING=1" >> "$GITHUB_ENV"
+          if [ "$VERITY_APP_VARIANT" = staging ]; then
+            echo "VERITY_CPU_PROFILING=$VERITY_CPU_PROFILING" >> "$GITHUB_ENV"
             echo "VERITY_APP_VARIANT=staging" >> "$GITHUB_ENV"
             echo "VERITY_PROFILE_COMMIT=$VERITY_PROFILE_COMMIT" >> "$GITHUB_ENV"
           fi
