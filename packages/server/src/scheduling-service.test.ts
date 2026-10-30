@@ -1,5 +1,5 @@
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { GoogleFetch, GoogleHttpResponse } from './google-drive.js';
 import type { PreviewEdgeControl } from './preview-share-manager.js';
 import {
