@@ -1880,6 +1880,7 @@ interface SchedulingRequestsTable {
   link_expires_at: Date | null;
   approved_at: Date | null;
   approval_digest: string | null;
+  sender_account_id: string | null;
   share_secret: string | null;
   share_revoked_at: Date | null;
   email_sent_at: Date | null;

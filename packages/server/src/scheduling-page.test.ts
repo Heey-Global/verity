@@ -32,6 +32,7 @@ const request = (overrides: Partial<SchedulingRequest> = {}): SchedulingRequest 
   linkExpiresAt: null,
   approvedAt: null,
   approvalDigest: null,
+  senderAccountId: null,
   hasShare: true,
   shareRevokedAt: null,
   emailSentAt: null,

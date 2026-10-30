@@ -492,6 +492,19 @@ describe('scheduling requests', () => {
     expect(sent).toHaveLength(1);
   });
 
+  it('never sends from another Gmail account than the one approved', async () => {
+    const scheduler = service();
+    const prepared = await scheduler.prepare(input());
+    // Approved while the session used another account; it switched before provisioning resumed.
+    await ctx.store.scheduling.approve(prepared.requestId, prepared.digest, 'previous-account');
+    await scheduler.runDue();
+    expect(sent).toEqual([]);
+    expect(calendar.events.size).toBe(0);
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.failure).toMatch(
+      /Gmail account changed/u,
+    );
+  });
+
   it('does not resend an email whose outcome is unknown and tells the operator', async () => {
     const scheduler = service();
     const prepared = await scheduler.prepare(input());

@@ -54,6 +54,8 @@ export interface SchedulingRequest {
   linkExpiresAt: Date | null;
   approvedAt: Date | null;
   approvalDigest: string | null;
+  /** The Gmail account the operator approved the email to go out from. */
+  senderAccountId: string | null;
   hasShare: boolean;
   shareRevokedAt: Date | null;
   emailSentAt: Date | null;
@@ -178,6 +180,7 @@ function requestFromRow(row: Row): SchedulingRequest {
     linkExpiresAt: date(row.link_expires_at),
     approvedAt: date(row.approved_at),
     approvalDigest: row.approval_digest as string | null,
+    senderAccountId: row.sender_account_id as string | null,
     hasShare: row.share_secret !== null,
     shareRevokedAt: date(row.share_revoked_at),
     emailSentAt: date(row.email_sent_at),
@@ -311,10 +314,15 @@ export class SchedulingStore {
    * Record the operator's approval of exactly the draft they saw. The digest binds the grant to
    * the reviewed content; a draft edited after review cannot be approved with an old digest.
    */
-  async approve(id: string, digest: string): Promise<boolean> {
+  async approve(
+    id: string,
+    digest: string,
+    senderAccountId: string | null = null,
+  ): Promise<boolean> {
     const result =
       await sql`update scheduling_requests set state = 'provisioning', approved_at = now(),
-      approval_digest = ${digest}, revision = revision + 1, updated_at = now()
+      approval_digest = ${digest}, sender_account_id = ${senderAccountId},
+      revision = revision + 1, updated_at = now()
       where id = ${id} and state = 'draft' returning id`.execute(this.db);
     return result.rows.length === 1;
   }

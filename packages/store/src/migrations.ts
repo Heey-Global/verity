@@ -4998,7 +4998,7 @@ migrations['0177_scheduling_requests'] = {
       email_subject text not null, email_body text not null,
       state text not null check (state in ('draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed')),
       failure text, closes_at timestamptz not null, link_expires_at timestamptz,
-      approved_at timestamptz, approval_digest text,
+      approved_at timestamptz, approval_digest text, sender_account_id text,
       share_secret text, share_revoked_at timestamptz, email_sent_at timestamptz,
       booked_event_id text, booked_start timestamptz, booked_end timestamptz, guest_note text,
       notified_no_slots_at timestamptz,

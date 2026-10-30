@@ -471,7 +471,10 @@ export class SchedulingService {
     const holds = await this.store.holds(requestId);
     if (schedulingDigest(request, holds) !== digest)
       throw new Error('The scheduling request differs from the prepared one; prepare it again');
-    if (!(await this.store.approve(requestId, digest)))
+    // The sending account the card showed is bound to the approval; a later resume must not
+    // send from whatever account the session uses by then.
+    const sender = await resolveGoogleServiceCredential(this.deps.store, sessionId, 'gmail');
+    if (!(await this.store.approve(requestId, digest, sender.accountId)))
       throw new Error('This scheduling request was already sent');
     await this.provisionLeased(requestId);
     const current = (await this.store.get(requestId))!;
@@ -528,6 +531,8 @@ export class SchedulingService {
           request.sessionId,
           'gmail',
         );
+        if (request.senderAccountId !== null && gmail.accountId !== request.senderAccountId)
+          throw new Error('The Gmail account changed since approval; prepare the request again');
         if (!(await this.deps.googleAccessToken(gmail.accountId)))
           throw new Error('Gmail is not connected');
       }
@@ -596,6 +601,8 @@ export class SchedulingService {
           request.sessionId,
           'gmail',
         );
+        if (request.senderAccountId !== null && gmail.accountId !== request.senderAccountId)
+          throw new Error('The Gmail account changed since approval; prepare the request again');
         const gmailToken = await this.deps.googleAccessToken(gmail.accountId);
         if (!gmailToken) throw new Error('Gmail is not connected');
         // Claimed immediately before the send: only a send that may have happened counts, and
