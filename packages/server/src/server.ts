@@ -1,3 +1,5 @@
+import { createMcpAppsInterceptor } from './mcp-apps.js';
+import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
 import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRepairRoutes, registerQASettingsRoutes } from './repair-routes.js';
@@ -5989,26 +5991,79 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) => Promise<boolean>)
     | undefined;
   if (deps.mcpProxyResolveCaller !== undefined) {
+    const resolveMcpAppConnection: HttpMcpProxyDeps['resolveConnection'] = async ({
+      projectId,
+      connectionId,
+    }) => {
+      const [bindings, connections] = await Promise.all([
+        deps.eventStore.listProjectMcpBindings(projectId),
+        deps.eventStore.listHttpMcpConnections(),
+      ]);
+      const binding = bindings.find(
+        (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+      );
+      const connection = connections.find(
+        (candidate) => candidate.id === connectionId && candidate.enabled,
+      );
+      if (binding === undefined || connection === undefined) return undefined;
+      const authorization = await httpMcpAuthorization(deps.eventStore, connection);
+      return {
+        id: connection.id,
+        url: connection.url,
+        ...(authorization === undefined ? {} : { authorization }),
+      };
+    };
+    const emitMcpApp = (sessionId: string, event: Extract<AgentEvent, { t: 'mcp_app' }>) =>
+      emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
     registerHttpMcpProxyRoute(app, {
       resolveCaller: deps.mcpProxyResolveCaller,
-      resolveConnection: async ({ projectId, connectionId }) => {
-        const [bindings, connections] = await Promise.all([
-          deps.eventStore.listProjectMcpBindings(projectId),
-          deps.eventStore.listHttpMcpConnections(),
-        ]);
-        const binding = bindings.find(
-          (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+      resolveConnection: resolveMcpAppConnection,
+      intercept: createMcpAppsInterceptor({
+        emit: emitMcpApp,
+        onError: (error) => app.log.warn({ err: error }, 'MCP app snapshot unavailable'),
+      }),
+    });
+    registerMcpAppsRoutes(app, {
+      authorizeRequest: async (request) => {
+        const registry = deps.authRegistry;
+        if (registry === undefined || !registry.isEnabled()) return true;
+        const token = requestCredential(request);
+        if (!registry.verify(token)) return false;
+        const userId = registry.resolveUserId(token);
+        if (userId === undefined || userId !== request.localUserId) return false;
+        return (
+          (await authorizePairedRoute(
+            deps.eventStore,
+            userId,
+            request.method,
+            request.routeOptions.url ?? request.url,
+            (request.params ?? {}) as Record<string, unknown>,
+          )) === 'allow'
         );
-        const connection = connections.find(
-          (candidate) => candidate.id === connectionId && candidate.enabled,
-        );
-        if (binding === undefined || connection === undefined) return undefined;
-        const authorization = await httpMcpAuthorization(deps.eventStore, connection);
-        return {
-          id: connection.id,
-          url: connection.url,
-          ...(authorization === undefined ? {} : { authorization }),
-        };
+      },
+      resolveConnection: resolveMcpAppConnection,
+      getProjectId: async (sessionId) =>
+        (await deps.eventStore.getSession(sessionId))?.projectId ?? undefined,
+      getApp: (sessionId, appId) => deps.eventStore.getMcpAppEvent(sessionId, appId),
+      emit: emitMcpApp,
+      settled: (sessionId, callId) =>
+        emitSessionEvent(deps.eventStore, deps.bus, sessionId, {
+          t: 'tool_result',
+          id: callId,
+          output: 'MCP app permission settled',
+          isError: false,
+        }),
+      approve: async ({ sessionId, callId, toolName, input, signal }) => {
+        const answer = await conductor.requestExternalPermission({
+          sessionId,
+          toolUseId: callId,
+          toolName,
+          input,
+          signal,
+          channel: 'acp',
+          allowStandingGrant: false,
+        });
+        return answer.decision.behavior === 'allow';
       },
     });
   }

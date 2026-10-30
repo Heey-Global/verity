@@ -1,3 +1,4 @@
+import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
 import {
   managedServerApproval,
@@ -6744,6 +6745,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
+      if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
       return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;

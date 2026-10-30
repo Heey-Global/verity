@@ -1,3 +1,4 @@
+import { inspectEgressTransport } from './project-egress-transport.js';
 import { constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { egressRelayPolicy } from './project-egress-relay-policy.js';
@@ -62,6 +63,10 @@ const controller = new ProjectEgressHost(await store.load(), {
   inspectNetwork: inspectEgressHostNetwork,
   inspectContainer: (binding, id, role) =>
     inspectEgressHostContainer(binding, id, role, relayPolicy),
+  inspectTransport: (binding, ids) => {
+    if (!relayPolicy) throw new Error('Relay host policy is not configured');
+    return inspectEgressTransport(binding, ids, relayPolicy.codexSubpath !== undefined);
+  },
   startContainer: async (id) => {
     await projectEgressHostDocker('container', 'start', id);
   },

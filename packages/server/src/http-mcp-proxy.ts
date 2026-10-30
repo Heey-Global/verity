@@ -1,3 +1,4 @@
+import { transformMcpResponse } from './mcp-apps-stream.js';
 import { lookup as dnsLookup } from 'node:dns';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
@@ -21,7 +22,7 @@ const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
 
-interface HttpMcpProxyConnection {
+export interface HttpMcpProxyConnection {
   id: string;
   url: string;
   /** Server-resolved short-lived authorization. Never persisted in a project binding. */
@@ -29,6 +30,14 @@ interface HttpMcpProxyConnection {
 }
 
 export interface HttpMcpProxyDeps {
+  intercept?: (input: {
+    projectId: string;
+    caller: McpGatewayCaller;
+    connection: HttpMcpProxyConnection;
+    body: unknown;
+    protocolSessionId?: string;
+    protocolVersion?: string;
+  }) => Promise<{ body: unknown; transform: (message: unknown) => Promise<unknown> }>;
   resolveCaller(input: { projectId: string; token: string }): Promise<McpGatewayCaller | undefined>;
   resolveConnection(input: {
     projectId: string;
@@ -72,7 +81,7 @@ export function isHttpMcpEventStream(contentType: string | undefined): boolean {
   return contentType?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream';
 }
 
-async function forward(
+export async function forwardHttpMcp(
   connection: HttpMcpProxyConnection,
   method: 'POST' | 'GET' | 'DELETE',
   body: Buffer | undefined,
@@ -190,10 +199,47 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.code(401);
       return { error: 'unauthorized' };
     }
-    const body = method === 'POST' ? Buffer.from(JSON.stringify(request.body)) : undefined;
+    let interception;
+    try {
+      interception =
+        method !== 'DELETE' && deps.intercept !== undefined
+          ? await deps.intercept({
+              projectId: identity.projectId,
+              caller,
+              connection,
+              body: request.body,
+              ...(typeof request.headers['mcp-session-id'] === 'string'
+                ? { protocolSessionId: request.headers['mcp-session-id'] }
+                : {}),
+              ...(typeof request.headers['mcp-protocol-version'] === 'string'
+                ? { protocolVersion: request.headers['mcp-protocol-version'] }
+                : {}),
+            })
+          : undefined;
+    } catch {
+      return reply.code(502).send({ error: 'MCP request could not be authorized' });
+    }
+    if (interception !== undefined) {
+      const activeCaller = await deps.resolveCaller({ projectId: identity.projectId, token });
+      const activeConnection = await deps.resolveConnection({
+        projectId: identity.projectId,
+        connectionId,
+      });
+      if (
+        activeCaller?.sessionId !== caller.sessionId ||
+        activeCaller.turnId !== caller.turnId ||
+        activeConnection?.url !== connection.url ||
+        activeConnection.authorization !== connection.authorization
+      )
+        return reply.code(401).send({ error: 'MCP access changed' });
+    }
+    const body =
+      method === 'POST'
+        ? Buffer.from(JSON.stringify(interception?.body ?? request.body))
+        : undefined;
     let hijacked = false;
     try {
-      const response = await forward(connection, method, body, {
+      const response = await forwardHttpMcp(connection, method, body, {
         ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
         ...(typeof request.headers['content-type'] === 'string'
           ? { contentType: request.headers['content-type'] }
@@ -273,7 +319,18 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         : undefined;
       authorizationPoll?.unref();
       try {
-        await pipeline(response.body, limiter, reply.raw);
+        if (interception === undefined || response.status !== 200) {
+          await pipeline(response.body, limiter, reply.raw);
+        } else {
+          await pipeline(
+            response.body,
+            limiter,
+            async function* (source) {
+              yield* transformMcpResponse(source, response.eventStream, interception.transform);
+            },
+            reply.raw,
+          );
+        }
       } finally {
         if (lifetime !== undefined) clearTimeout(lifetime);
         if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
