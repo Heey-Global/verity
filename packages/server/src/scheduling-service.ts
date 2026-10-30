@@ -1105,6 +1105,7 @@ export class SchedulingService {
         ));
       if (connected) {
         this.linkDownSince.delete(request.id);
+        this.linkDownAlerted.delete(request.id);
         continue;
       }
       // Only bookable requests need their link; a closed one only explains itself.
