@@ -12,7 +12,15 @@ DevTools, start a Worklets profiler or run another Hermes sampler during capture
 Build from a clean, committed checkout with the repository's pinned Node and npm.
 The device binary uses the staging bundle ID and replaces the ordinary staging
 installation. Distribution/signing and TestFlight upload require the normal release
-authorization; the existing native publishing workflow does not select this profile.
+authorization; the diagnostic dispatch of the native publishing workflow selects this profile.
+
+For authorized TestFlight distribution, dispatch `mobile-native-build.yml` with
+`profile-source` set to the full merged commit. This diagnostic path selects only
+staging, disables OTA, retains the exact IPA-matched map before upload, and skips
+normal release publication/evidence. Download `staging-cpu-map-<run-id>` within
+14 days and keep it privately with the capture. `staging-cpu-build-<run-id>` records
+Apple's processed build identity. Successful upload/processing does not establish
+installation or populated sampling on the iPad.
 
 On an Apple build host, from `apps/mobile`:
 
