@@ -120,8 +120,9 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
   [
+    // Execute, not read: the view carries the guest's link with its PIN, which can book.
     routeScopeKey('GET', '/sessions/:id/scheduling-requests'),
-    { kind: 'session', parameter: 'id', permission: 'read' },
+    { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/scheduling-requests/:requestId/revoke'),

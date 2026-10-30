@@ -94,8 +94,9 @@ export function registerSchedulingRoutes(
     try {
       return { request: await view(await deps.service.revoke(requestId, id)) };
     } catch (error) {
-      reply.code(409);
-      return { error: error instanceof Error ? error.message : 'Could not revoke the request' };
+      const message = error instanceof Error ? error.message : 'Could not revoke the request';
+      reply.code(message === 'Scheduling request not found' ? 404 : 409);
+      return { error: message };
     }
   });
 }

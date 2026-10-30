@@ -152,6 +152,7 @@ export interface SlotInput {
  */
 export function bookableSlots(input: SlotInput): Slot[] {
   const duration = input.durationMinutes * 60_000;
+  if (!(duration > 0)) return [];
   const earliest = input.now.getTime() + (input.minimumNoticeMinutes ?? 60) * 60_000;
   const seen = new Set<number>();
   const slots: Slot[] = [];

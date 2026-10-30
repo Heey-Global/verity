@@ -2,7 +2,7 @@ import type { PushNotification } from './push-sender.js';
 import type { SchedulingNotification } from './scheduling-service.js';
 
 function when(start: Date | null, timeZone: string): string {
-  if (!start) return '';
+  if (!start) return 'a time';
   return new Intl.DateTimeFormat('en-GB', {
     timeZone,
     weekday: 'short',

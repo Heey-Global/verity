@@ -299,6 +299,7 @@ export class SchedulingStore {
     to: SchedulingRequestState,
     patch: SchedulingRequestPatch = {},
   ): Promise<boolean> {
+    if (from.length === 0) return false;
     const sets = [sql`state = ${to}`, ...this.patchSets(patch)];
     const result =
       await sql`update scheduling_requests set ${sql.join(sets)}, revision = revision + 1, updated_at = now()

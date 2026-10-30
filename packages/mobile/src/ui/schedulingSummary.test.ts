@@ -17,6 +17,7 @@ const draft = {
     },
   ],
   email: { to: 'anna@example.test', subject: 'Pick a time', body: 'Hi Anna {link}' },
+  sender: 'holger@example.test',
 };
 
 describe('scheduling approval summary', () => {
@@ -29,8 +30,9 @@ describe('scheduling approval summary', () => {
         'Intro call · 30 min · Google Meet',
         'Tue 3 Nov · 14:00–16:00 · 4 start times',
         'Times in Europe/Berlin',
-        'Holds in your calendar, invited: Lea (availability not checked)',
+        'Holds in your calendar, invited: Lea (lea@example.test) (availability not checked)',
         'Booking link to: Anna (anna@example.test)',
+        'Email sent from: holger@example.test',
         'Booking closes Fri 6 Nov, 11:41',
       ],
       email: { subject: 'Pick a time', body: 'Hi Anna {link}' },
@@ -48,6 +50,6 @@ describe('scheduling approval summary', () => {
   it('names the consequences of withdrawing a request', () => {
     expect(
       schedulingApprovalSummary({ action: 'revoke', requestId: 'r', scheduling: draft })?.scope,
-    ).toContain('Lea get the cancellation');
+    ).toContain('Lea (lea@example.test) get the cancellation');
   });
 });

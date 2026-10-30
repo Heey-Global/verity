@@ -34,14 +34,19 @@ function status(request: SchedulingRequestView): { intent: StatusIntent; label: 
 }
 
 function when(iso: string, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone,
+  const options = {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(iso));
+  } as const;
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone, ...options }).format(new Date(iso));
+  } catch {
+    // An unknown zone must not take the chat down; the device zone is still a real time.
+    return new Intl.DateTimeFormat('en-GB', options).format(new Date(iso));
+  }
 }
 
 function guestName(request: SchedulingRequestView): string {

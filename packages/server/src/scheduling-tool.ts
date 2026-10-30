@@ -88,6 +88,15 @@ export function createSchedulingTool(deps: {
     await resolveGoogleServiceCredential(deps.store, input.sessionId, 'calendar');
     if (request.action === 'prepare' || request.action === 'send')
       await resolveGoogleServiceCredential(deps.store, input.sessionId, 'gmail');
+    // Refuse before any card: a card for a request that does not exist here could only show
+    // the agent's own arguments.
+    if (request.action === 'send' || request.action === 'revoke') {
+      const stored = await deps.store.scheduling.get(request.requestId);
+      if (!stored || stored.sessionId !== input.sessionId)
+        throw new Error('Scheduling request not found');
+      if (request.action === 'send' && stored.state !== 'draft')
+        throw new Error(`This scheduling request is already ${stored.state}`);
+    }
     return request;
   };
 

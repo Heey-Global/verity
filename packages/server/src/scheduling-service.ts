@@ -116,6 +116,8 @@ export interface SchedulingSummary {
   failure: string | null;
   booked?: { start: string; end: string };
   emailSent: boolean;
+  /** The Gmail account the email is sent from; may differ from the calendar's account. */
+  sender?: string;
 }
 
 export type SchedulingPageModel =
@@ -256,6 +258,8 @@ export class SchedulingService {
   private readonly owner = randomUUID();
   private readonly connectors = new Map<string, SchedulingConnector>();
   private readonly connecting = new Map<string, Promise<void>>();
+  /** Requests this process moved to `booked` and has not announced yet. */
+  private readonly bookedNow = new Set<string>();
   private sharingGeneration = 0;
   private unsubscribeSharing: (() => void) | undefined;
   private closed = false;
@@ -299,6 +303,8 @@ export class SchedulingService {
     const windows = input.windows
       .map((window) => ({ start: new Date(window.start), end: new Date(window.end) }))
       .sort((a, b) => a.start.getTime() - b.start.getTime());
+    if (windows.length === 0 || !(input.durationMinutes > 0))
+      throw new Error('A scheduling request needs a window and a positive duration');
     for (const window of windows) {
       if (!(window.end > window.start)) throw new Error('Every window must end after it starts');
       if (window.end.getTime() - window.start.getTime() < input.durationMinutes * 60_000)
@@ -389,7 +395,11 @@ export class SchedulingService {
     const request = await this.store.get(requestId);
     if (!request || request.sessionId !== sessionId) return undefined;
     const holds = await this.store.holds(requestId);
-    return this.summarize(request, holds, (hold) =>
+    const sender = await resolveGoogleServiceCredential(this.deps.store, sessionId, 'gmail').then(
+      (credential) => credential.accountEmail,
+      () => undefined,
+    );
+    const summary = this.summarize(request, holds, (hold) =>
       bookableSlots({
         windows: [
           {
@@ -403,6 +413,7 @@ export class SchedulingService {
         closesAt: request.closesAt,
       }),
     );
+    return sender ? { ...summary, sender } : summary;
   }
 
   summarize(
@@ -674,6 +685,7 @@ export class SchedulingService {
         bookedEnd: end,
       })
     ) {
+      this.bookedNow.add(request.id);
       if (Number.isInteger(position))
         await scheduling.updateHold(request.id, position, { state: 'converted' });
       await scheduling.scheduleHoldCleanup(
@@ -689,8 +701,7 @@ export class SchedulingService {
     const request = await this.store.get(requestId);
     if (!request) return { kind: 'unavailable', request: undefined };
     const model = await this.modelFor(this.store, request);
-    if (model.kind === 'booked' && request.state !== 'booked')
-      await this.afterBooking(model.request);
+    await this.announceBooking(requestId);
     if (model.kind === 'no_slots' && request.notifiedNoSlotsAt === null) {
       await this.store.update(request.id, { notifiedNoSlotsAt: this.now() });
       await this.deps.notify?.({ kind: 'no_slots', request });
@@ -790,12 +801,15 @@ export class SchedulingService {
           );
           if (patched.status === 'conflict') continue; // Changed in the calendar meanwhile; look again.
           if (patched.status === 'missing') return { kind: 'taken', model };
-          await scheduling.transition(requestId, ['open'], 'booked', {
-            bookedEventId: hold.eventId,
-            bookedStart: slot.start,
-            bookedEnd: slot.end,
-            guestNote: note ?? null,
-          });
+          if (
+            await scheduling.transition(requestId, ['open'], 'booked', {
+              bookedEventId: hold.eventId,
+              bookedStart: slot.start,
+              bookedEnd: slot.end,
+              guestNote: note ?? null,
+            })
+          )
+            this.bookedNow.add(requestId);
           await scheduling.updateHold(requestId, slot.position, { state: 'converted' });
           await scheduling.scheduleHoldCleanup(requestId, slot.position);
           return { kind: 'booked', request: (await scheduling.get(requestId))! };
@@ -804,15 +818,19 @@ export class SchedulingService {
         return { kind: 'taken', model: await this.modelFor(scheduling, request) };
       },
     );
-    if (result.kind === 'booked') await this.afterBooking(result.request);
-    if (result.kind === 'closed' && result.model.kind === 'booked' && first.state === 'open')
-      await this.afterBooking(result.model.request);
+    await this.announceBooking(requestId);
     return result;
   }
 
-  private async afterBooking(request: SchedulingRequest): Promise<void> {
+  /**
+   * Announce a booking once: only the call whose transition to `booked` succeeded announces
+   * it, whether it booked itself or finished a booking a crash interrupted.
+   */
+  private async announceBooking(requestId: string): Promise<void> {
+    if (!this.bookedNow.delete(requestId)) return;
     this.deps.wake?.();
-    await this.deps.notify?.({ kind: 'booked', request });
+    const request = await this.store.get(requestId);
+    if (request) await this.deps.notify?.({ kind: 'booked', request });
   }
 
   // ---------------------------------------------------------------- revoke, expiry, cleanup

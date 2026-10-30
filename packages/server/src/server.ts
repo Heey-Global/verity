@@ -3781,6 +3781,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const schedulingPages: SchedulingPageListeners = new SchedulingPageListeners({
     view: (id) => schedulingService.view(id),
     book: (id, start, note) => schedulingService.book(id, start, note),
+    publicOrigin: async (id) => (await deps.eventStore.scheduling.share(id))?.publicOrigin,
   });
   const schedulingService: SchedulingService = new SchedulingService({
     store: deps.eventStore,
@@ -3813,14 +3814,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const push = schedulingPush(notification);
       if (push && pushRouter)
-        await pushRouter
-          .notify({
+        try {
+          await pushRouter.notify({
             key: `scheduling:${notification.request.id}:${notification.kind}`,
             sessionId,
             initiatorUserId: await pushFirePoints?.initiatorOf(sessionId),
             notification: push,
-          })
-          .catch((err: unknown) => app.log.warn({ err, sessionId }, 'scheduling push failed'));
+          });
+        } catch (err) {
+          app.log.warn({ err, sessionId }, 'scheduling push failed');
+        }
     },
     wake: () => schedulingScheduler?.wake(),
   });

@@ -60,7 +60,11 @@ export function schedulingApprovalSummary(input: unknown): SchedulingApprovalSum
   const colleagues = Array.isArray(draft['colleagues'])
     ? draft['colleagues'].flatMap((colleague: unknown) =>
         isRecord(colleague) && typeof colleague['email'] === 'string'
-          ? [typeof colleague['name'] === 'string' ? colleague['name'] : colleague['email']]
+          ? [
+              typeof colleague['name'] === 'string'
+                ? `${colleague['name']} (${colleague['email']})`
+                : colleague['email'],
+            ]
           : [],
       )
     : [];
@@ -96,6 +100,7 @@ export function schedulingApprovalSummary(input: unknown): SchedulingApprovalSum
     `Times in ${timeZone}`,
     `Holds in your calendar${colleagues.length > 0 ? `, invited: ${colleagues.join(', ')} (availability not checked)` : ''}`,
     `Booking link to: ${guestLabel}`,
+    ...(typeof draft['sender'] === 'string' ? [`Email sent from: ${draft['sender']}`] : []),
     `Booking closes ${format(draft['closesAt'], timeZone, { ...day, ...time })}`,
   ];
   return {

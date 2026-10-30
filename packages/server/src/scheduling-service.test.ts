@@ -323,6 +323,19 @@ describe('scheduling requests', () => {
     expect((await scheduler.book(id, '2026-11-04T09:00:00Z')).kind).toBe('closed');
   });
 
+  it('announces a booking once when the guest submits twice', async () => {
+    const scheduler = service();
+    const id = await openRequest(scheduler);
+    const results = await Promise.all([
+      scheduler.book(id, '2026-11-03T13:30:00Z'),
+      scheduler.book(id, '2026-11-03T13:30:00Z'),
+    ]);
+    expect(results.map((result) => result.kind).sort()).toEqual(['booked', 'closed']);
+    expect(notifications.filter((n) => n.kind === 'booked')).toHaveLength(1);
+    await scheduler.view(id);
+    expect(notifications.filter((n) => n.kind === 'booked')).toHaveLength(1);
+  });
+
   it('never books the same time twice across overlapping requests', async () => {
     const scheduler = service();
     const anna = await openRequest(scheduler);

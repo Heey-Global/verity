@@ -178,6 +178,35 @@ describe('booking page listener', () => {
     expect(book).toHaveBeenCalledWith('r1', '2099-11-03T13:00:00.000Z', 'Hello');
   });
 
+  it('refuses a post from a browser on another origin', async () => {
+    const book = vi.fn();
+    const origin = await serve({
+      view: async () => ({ kind: 'open', request: request(), slots: [] }),
+      book,
+      publicOrigin: async () => 'https://x.preview.example.test',
+    });
+    const response = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        `${origin}/book`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            origin: 'https://rebound.example.test',
+          },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on('error', reject);
+      req.end('start=2099-11-03T13%3A00%3A00.000Z');
+    });
+    expect(response).toBe(403);
+    expect(book).not.toHaveBeenCalled();
+  });
+
   it('answers a taken time with the remaining times and a hint', async () => {
     const origin = await serve({
       view: async () => ({ kind: 'open', request: request(), slots: [] }),

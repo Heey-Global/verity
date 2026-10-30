@@ -13,11 +13,15 @@ import type { Slot } from './scheduling-slots.js';
 export interface SchedulingPageBackend {
   view(requestId: string): Promise<SchedulingPageModel>;
   book(requestId: string, start: string, note?: string): Promise<SchedulingBookResult>;
+  /** The public origin the request is served under; browsers posting from elsewhere are refused. */
+  publicOrigin?(requestId: string): Promise<string | undefined>;
 }
 
 const MAX_BODY_BYTES = 16_384;
 const MAX_NOTE_LENGTH = 1_000;
 const BOOK_ATTEMPTS_PER_MINUTE = 20;
+// Every view reads the calendar twice; a link holder must not be able to drain its quota.
+const VIEWS_PER_MINUTE = 120;
 
 type Language = 'en' | 'de';
 
@@ -420,6 +424,14 @@ async function readForm(request: IncomingMessage): Promise<URLSearchParams | und
 /** The HTTP handler of one request's public page. */
 export function createSchedulingPageHandler(backend: SchedulingPageBackend, requestId: string) {
   const attempts: number[] = [];
+  const views: number[] = [];
+  const allow = (log: number[], limit: number): boolean => {
+    const now = Date.now();
+    while (log.length > 0 && log[0]! < now - 60_000) log.shift();
+    if (log.length >= limit) return false;
+    log.push(now);
+    return true;
+  };
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const nonce = randomBytes(16).toString('base64');
     const send = (rendered: Rendered) => {
@@ -434,6 +446,11 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
     };
     const url = new URL(request.url ?? '/', 'http://booking.invalid');
     const zone = url.searchParams.get('tz') ?? undefined;
+    const reading = request.method === 'GET' || request.method === 'HEAD';
+    if (reading && !allow(views, VIEWS_PER_MINUTE)) {
+      response.writeHead(429, { 'Retry-After': '60' }).end();
+      return;
+    }
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/') {
       send(renderSchedulingPage(await backend.view(requestId), { zone, nonce }));
       return;
@@ -460,13 +477,17 @@ export function createSchedulingPageHandler(backend: SchedulingPageBackend, requ
       return;
     }
     if (request.method === 'POST' && url.pathname === '/book') {
-      const now = Date.now();
-      while (attempts.length > 0 && attempts[0]! < now - 60_000) attempts.shift();
-      if (attempts.length >= BOOK_ATTEMPTS_PER_MINUTE) {
+      // The edge only forwards same-origin posts. A browser reaching this loopback listener
+      // directly, e.g. through DNS rebinding, sends its own Origin and is refused here.
+      const origin = request.headers.origin;
+      if (origin !== undefined && origin !== (await backend.publicOrigin?.(requestId))) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (!allow(attempts, BOOK_ATTEMPTS_PER_MINUTE)) {
         response.writeHead(429, { 'Retry-After': '60' }).end();
         return;
       }
-      attempts.push(now);
       const form = await readForm(request);
       const start = form?.get('start') ?? '';
       if (!form || !Number.isFinite(Date.parse(start))) {

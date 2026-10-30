@@ -8967,7 +8967,7 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
-      schedulingSummary?.title ?? null,
+      schedulingSummary === null ? null : spellOutBidiControls(schedulingSummary.title),
       matrixSummary === null
         ? null
         : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
@@ -9211,7 +9211,9 @@ function PermissionPrompt({
               </Text>
             </>
           )}
-          <Text style={styles.permissionHttpMeta}>{schedulingSummary.scope}</Text>
+          <Text style={styles.permissionHttpMeta}>
+            {spellOutBidiControls(schedulingSummary.scope)}
+          </Text>
         </View>
       ) : matrixSummary !== null ? (
         <MatrixSendPreview summary={matrixSummary} />
