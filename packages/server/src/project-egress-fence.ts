@@ -3,6 +3,11 @@ import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { canonicalEgressTarget, type EgressGrant } from '@verity/store';
+import {
+  projectDeadlineLease,
+  type ProjectDeadlineEnforcer,
+  type ProjectDeadlineLease,
+} from './project-egress-deadline.js';
 
 export interface ProjectFenceBinding {
   projectId: string;
@@ -20,6 +25,8 @@ export interface ProjectFenceSnapshot {
   grants: readonly EgressGrant[];
 }
 export interface ProjectFenceDependencies {
+  /** Required suspend-aware guard; absence must never select a weaker executor. */
+  deadline: ProjectDeadlineEnforcer;
   /** Trusted daemon inspection, not labels or a sandbox-provided attachment. */
   inspect(binding: ProjectFenceBinding): Promise<ProjectFenceBinding>;
   /** Must deny broker/system/overlapping destinations; absent classification denies. */
@@ -84,6 +91,7 @@ export function projectFenceRules(
   leases: readonly Lease[],
   now: number,
   replace: boolean,
+  admission?: ProjectDeadlineLease,
 ): string {
   validateBinding(binding);
   const table = tableName(binding.projectId + ':' + binding.generation);
@@ -118,16 +126,64 @@ export function projectFenceRules(
       return `set allow${f} { type ipv${f}_addr . inet_proto . inet_service; flags timeout;${values ? ` elements = { ${values} };` : ''} }`;
     })
     .join('\n');
+  if (leases.length && !admission) throw new Error('Packet deadline is required for admission');
+  if (admission && (!/^[a-f0-9]{32}$/u.test(admission.nonce) || /^0+$/u.test(admission.nonce)))
+    throw new Error('Invalid packet admission identity');
+  // Numeric ct-label tokens name bit indices, not a raw bitmap literal.
+  const bits = Array.from({ length: 128 }, (_, bit) => bit).filter(
+    (bit) => (BigInt(`0x${admission?.nonce ?? '0'}`) & (1n << BigInt(bit))) !== 0n,
+  );
+  const label = bits.length ? `(${bits.join(' | ')})` : '(0 & 1)';
+  const wall = admission?.authorityExpiresAt;
+  if (wall !== undefined && wall !== null && (!Number.isSafeInteger(wall) || wall < 0))
+    throw new Error('Invalid absolute packet expiry');
+  // nft's date syntax is second precision. Rounding down only closes early.
+  const date =
+    wall == null
+      ? null
+      : new Date(Math.floor(wall / 1000) * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const expiry = (reverse: boolean): string =>
+    [4, 6]
+      .map((family) => {
+        const ip = family === 4 ? 'ip' : 'ip6';
+        const address = family === 4 ? binding.ipv4 : binding.ipv6;
+        const source = reverse ? `${ip} daddr ${address}` : `${ip} saddr ${address}`;
+        return (
+          `${source} ${ip} ${reverse ? 'daddr' : 'saddr'} @expired${family} counter name expired drop\n` +
+          (date
+            ? `${source} meta time >= "${date}" add @expired${family} { ${ip} ${reverse ? 'daddr' : 'saddr'} } counter name expired drop\n`
+            : '')
+        );
+      })
+      .join('');
   commands.push(`table inet ${table} {
 ${sets}
+set expired4 { type ipv4_addr; flags dynamic; size 1; }
+set expired6 { type ipv6_addr; flags dynamic; size 1; }
+counter expired { }
 chain fence {
  ip saddr != ${binding.ipv4} drop
  ip6 saddr != ${binding.ipv6} drop
- ip daddr . meta l4proto . th dport @allow4 accept
- ip6 daddr . meta l4proto . th dport @allow6 accept
+ ${expiry(false)}
+ ct state new ct label == (0 & 1) tcp flags & (syn | ack | rst | fin) == syn ct label set ${label}
+ ct state new ct label == (0 & 1) meta l4proto udp ct label set ${label}
+ ct direction original ct label == ${label} ip daddr . meta l4proto . th dport @allow4 accept
+ ct direction original ct label == ${label} ip6 daddr . meta l4proto . th dport @allow6 accept
  counter drop
 }
-chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; }
+chain reply {
+ ip daddr != ${binding.ipv4} drop
+ ip6 daddr != ${binding.ipv6} drop
+ ${expiry(true)}
+ ct direction reply ct label == ${label} ip saddr . meta l4proto . th sport @allow4 accept
+ ct direction reply ct label == ${label} ip6 saddr . meta l4proto . th sport @allow6 accept
+ counter drop
+}
+chain forward { type filter hook forward priority -200; policy accept; iifname "${binding.bridge}" jump fence; oifname "${binding.bridge}" jump reply; }
+chain output { type filter hook output priority -200; policy accept;
+ oifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+ oifname "${binding.bridge}" jump reply
+}
 chain input { type filter hook input priority -200; policy accept;
  iifname "${binding.bridge}" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
  iifname "${binding.bridge}" counter drop
@@ -180,14 +236,18 @@ export class ProjectEgressFence {
         )
           throw new Error('Project fence bridge already bound');
       await this.verify(binding);
-      await this.deps.apply(
-        projectFenceRules(
-          binding,
-          [],
-          this.now(),
-          old !== undefined && bindingKey(old.binding) === key,
-        ),
-      );
+      try {
+        await this.deps.deadline.prepare(binding);
+      } finally {
+        await this.deps.apply(
+          projectFenceRules(
+            binding,
+            [],
+            this.now(),
+            old !== undefined && bindingKey(old.binding) === key,
+          ),
+        );
+      }
       this.bridges.set(binding.bridge, key);
       this.active.set(binding.projectId, {
         binding: { ...binding },
@@ -214,8 +274,29 @@ export class ProjectEgressFence {
         throw new Error('Stale or invalid project fence policy');
       // Close old access before inspecting or resolving. A failing refresh cannot
       // keep its previous grants alive; kernel timeouts also bound a killed process.
-      await this.deps.apply(projectFenceRules(current.binding, [], this.now(), true));
+      try {
+        await this.deps.deadline.revoke(current.binding);
+      } finally {
+        await this.deps.apply(projectFenceRules(current.binding, [], this.now(), true));
+      }
       current.revision = snapshot.revision;
+      // Capture before inspection, classification, DNS or either executor can pause.
+      const sample = await this.deps.deadline.clock();
+      const authority = snapshot.grants.filter(
+        (grant) =>
+          grant.revokedAt === undefined &&
+          (grant.expiresAt === null || grant.expiresAt > this.now()),
+      );
+      const expiry = authority.reduce<number | null>(
+        (earliest, grant) =>
+          grant.expiresAt === null
+            ? earliest
+            : earliest === null
+              ? grant.expiresAt
+              : Math.min(earliest, grant.expiresAt),
+        null,
+      );
+      const admission = projectDeadlineLease(snapshot.binding, snapshot.revision, expiry, sample);
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
@@ -252,7 +333,15 @@ export class ProjectEgressFence {
       await this.verify(snapshot.binding);
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
-      await this.deps.apply(projectFenceRules(snapshot.binding, leases, this.now(), true));
+      await this.deps.apply(
+        projectFenceRules(snapshot.binding, leases, this.now(), true, admission),
+      );
+      try {
+        if (leases.length) await this.deps.deadline.arm(snapshot.binding, admission);
+      } catch (error) {
+        await this.deps.deadline.revoke(snapshot.binding);
+        throw error;
+      }
     });
   }
   retire(binding: ProjectFenceBinding): Promise<void> {
@@ -261,7 +350,11 @@ export class ProjectEgressFence {
       const current = this.active.get(binding.projectId);
       if (!current || bindingKey(current.binding) !== bindingKey(binding))
         throw new Error('Inactive project fence generation');
-      await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+      try {
+        await this.deps.deadline.revoke(binding);
+      } finally {
+        await this.deps.apply(projectFenceRules(binding, [], this.now(), true));
+      }
       this.retired.add(generationKey(binding));
       // Keep the deny-only table and attachment reservation until explicit host cleanup.
     });
@@ -275,7 +368,7 @@ export function applyProjectFenceRules(script: string): Promise<void> {
       stdio: ['pipe', 'ignore', 'pipe'],
       timeout: APPLY_BUDGET_MS,
       killSignal: 'SIGKILL',
-      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
+      env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
     });
     child.stderr.resume();
     child.once('error', reject);

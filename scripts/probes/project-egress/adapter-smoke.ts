@@ -11,6 +11,7 @@ import {
   type ProjectFenceBinding,
 } from '../../../packages/server/src/project-egress-fence.js';
 import { inspectProjectFenceAttachment } from '../../../packages/server/src/project-egress-attachment.js';
+import { hostProjectDeadlineEnforcer } from '../../../packages/server/src/project-egress-deadline.js';
 const exec = promisify(execFile);
 assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
 const docker = async (...args: string[]) =>
@@ -26,6 +27,7 @@ const bindings: ProjectFenceBinding[] = [];
 let renewProjects: number[] = [];
 let revision = 0;
 const fence = new ProjectEgressFence({
+  deadline: hostProjectDeadlineEnforcer(),
   inspect: inspectProjectFenceAttachment,
   directTargetAllowed: (host) => Promise.resolve(addresses.includes(host)),
   destinationAllowed: (address) => Promise.resolve(addresses.includes(address)),

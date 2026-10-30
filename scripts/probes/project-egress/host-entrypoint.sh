@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+# Each disposable daemon owns its software BPF pins; no production mount is changed.
+if ! mountpoint -q /sys/fs/bpf; then
+  mount -t bpf bpf /sys/fs/bpf
+fi
 # Every daemon boot restores an empty fence before restart-policy containers can run.
 python3 - <<'PY'
 import subprocess
