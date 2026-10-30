@@ -24,3 +24,13 @@ docker save -o "$assets/images.tar" verity-boot-observed-runner:local verity-boo
 # Guest setup verifies actual binaries too; this records the bytes transported.
 (cd "$assets" && sha256sum node runtime/bin/docker runtime/bin/dockerd > runtime-sha256.txt)
 tar -C "$assets" -cf "$RUNNER_TEMP/verity-boot-assets.tar" .
+
+# Release duplicate staging and this dedicated CI job's build cache before KVM.
+# The guest must hold the image archive, unpacked layers and local registry blobs.
+du -sh "$assets" "$RUNNER_TEMP/verity-boot-assets.tar" > "$PROBE_EVIDENCE/asset-disk-usage.txt"
+docker rm -f "$runtime" >/dev/null
+trap - EXIT
+docker image rm verity-boot-observed-runner:local verity-boot-runner:local verity-boot-relay:local verity-boot-runtime:local verity-boot-registry:local "$registry"
+docker builder prune --all --force
+rm -rf -- "$assets"
+df -B1 "$RUNNER_TEMP" >> "$PROBE_EVIDENCE/asset-disk-usage.txt"

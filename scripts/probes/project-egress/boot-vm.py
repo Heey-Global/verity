@@ -44,7 +44,8 @@ def memory_mib():
 
 
 class BootVM:
-    def __init__(self, base, evidence, observation_link=None):
+    def __init__(self, base, evidence, observation_link=None, disk_gib=12):
+        self.disk_gib = disk_gib
         self.observation_link = observation_link
         self.base = Path(base).resolve()
         self.evidence = Path(evidence).resolve()
@@ -58,8 +59,8 @@ class BootVM:
         # Permission and device presence alone do not establish virtualization.
         with open('/dev/kvm', 'r+b', buffering=0):
             pass
-        if shutil.disk_usage(self.work).free < 8 * 1024 ** 3:
-            raise RuntimeError('Boot VM requires at least 8 GiB free disk')
+        if shutil.disk_usage(self.work).free < self.disk_gib * 1024 ** 3:
+            raise RuntimeError(f'Boot VM requires at least {self.disk_gib} GiB free disk')
         memory = memory_mib()
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.work / 'key')], check=True)
         public = (self.work / 'key.pub').read_text().strip()
@@ -70,7 +71,7 @@ class BootVM:
             'ssh_pwauth: false\ndisable_root: true\n')
         (self.work / 'meta-data').write_text('instance-id: verity-boot-probe\nlocal-hostname: verity-boot-probe\n')
         subprocess.run(['cloud-localds', str(self.work / 'seed.img'), str(self.work / 'user-data'), str(self.work / 'meta-data')], check=True)
-        subprocess.run(['qemu-img', 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(self.base), str(self.work / 'disk.qcow2'), '12G'], check=True)
+        subprocess.run(['qemu-img', 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(self.base), str(self.work / 'disk.qcow2'), f'{self.disk_gib}G'], check=True)
         with socket.socket() as channel:
             channel.bind(('127.0.0.1', 0))
             self.port = channel.getsockname()[1]
@@ -84,7 +85,7 @@ class BootVM:
             command.extend(['-netdev', f'tap,id=observe,ifname={self.observation_link},script=no,downscript=no',
                             '-device', 'virtio-net-pci,netdev=observe,mac=52:54:00:be:ef:02'])
         self.process = subprocess.Popen(command, stdout=self.log, stderr=subprocess.STDOUT)
-        (self.evidence / 'vm-launch.json').write_text(json.dumps({'accelerator': 'kvm', 'memoryMiB': memory, 'vcpus': 1}))
+        (self.evidence / 'vm-launch.json').write_text(json.dumps({'accelerator': 'kvm', 'memoryMiB': memory, 'vcpus': 1, 'diskGiB': self.disk_gib}))
         self.wait_ready()
 
     def ssh_command(self, command):

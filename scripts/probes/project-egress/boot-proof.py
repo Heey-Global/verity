@@ -118,7 +118,7 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     link = f'vebo{os.getpid()}'
     observer = None
-    vm = boot_vm.BootVM(sys.argv[1], evidence, link)
+    vm = boot_vm.BootVM(sys.argv[1], evidence, link, disk_gib=32)
     root = Path(__file__).resolve().parent
     ready = evidence / 'observer.pid'
     receipts = evidence / 'external-receipts.jsonl'
