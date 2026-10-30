@@ -248,6 +248,23 @@ try {
     /table inet (\w+)/,
   )![1];
   await applyProjectFenceRules(`delete table inet ${table}\ndelete table bridge ${table}\n`);
+  // Removing nft alone must not bypass the new required TC guard. This positive
+  // deliberately removes both layers, only on the disposable inspected endpoint.
+  await exec('/usr/bin/python3', [
+    '-c',
+    `
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('deadline', '/opt/verity-egress/project-egress-deadline.py')
+host = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(host)
+binding = json.loads(sys.argv[1])
+state = json.loads((host.STATE / (host.binding_key(binding) + '.json')).read_text())
+assert host.endpoint(binding) == state['peer']
+host.run('/sbin/tc', 'qdisc', 'del', 'dev', state['peer']['device'], 'clsact')
+`,
+    JSON.stringify(bindings[0]!),
+  ]);
   await matrix('ve-a', true, 'removed-fence');
   await writeFile('/evidence/adapter-receiver.jsonl', await docker('logs', 've-receiver'));
   await writeFile('/evidence/adapter-peer.jsonl', await docker('logs', 've-peer'));
