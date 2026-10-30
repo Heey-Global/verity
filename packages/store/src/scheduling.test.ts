@@ -145,6 +145,9 @@ describe('scheduling requests', () => {
 
   it('lets exactly one caller claim the email send', async () => {
     await ctx.store.scheduling.createDraft(draft('r1'));
+    // Only an approved request that is still being set up may email its guest.
+    expect(await ctx.store.scheduling.claimEmailSend('r1')).toBe(false);
+    await ctx.store.scheduling.approve('r1', 'digest');
     const claims = await Promise.all([
       ctx.store.scheduling.claimEmailSend('r1'),
       ctx.store.scheduling.claimEmailSend('r1'),

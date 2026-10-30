@@ -464,7 +464,8 @@ export class SchedulingStore {
     return (
       (
         await sql`update scheduling_requests set attempts = 1
-          where id = ${id} and attempts = 0 and email_sent_at is null returning id`.execute(this.db)
+          where id = ${id} and attempts = 0 and email_sent_at is null and state = 'provisioning'
+          returning id`.execute(this.db)
       ).rows.length === 1
     );
   }
