@@ -1,9 +1,24 @@
 # Diagnostic logs
 
-Administrators can open **Settings → Server → Logs** and switch between Audit
-and System. Audit records intent, initiator, outcome and provenance. Its detail
-view also shows duration and the event timeline. Failed image builds link to
-**Build output** using the audit operation ID.
+Administrators open **Settings → Server → Logs**. Builds, Images, Projects and
+System share one category bar. All combines individual audit events with available
+server messages and classified host signals, newest first in the selected time
+window. Build requests and outcomes have separate rows at their own timestamps.
+Older audit event pages retain stable ordering and filtering.
+
+Sources load independently, so unavailable sources do not hide other entries.
+Audit search queries event kind, operation IDs, image IDs and project labels;
+System search covers loaded entries only. System-only source filters apply to
+server/host entries, and severity filters are available for the server source
+alone. Unknown severity is not Info.
+
+Entries use local day groups and times. Messages are directly readable; tapping
+a row opens technical details and audit events link to the associated operation.
+Records use the log list (design system § 5.2a). With every source available there
+is no status text; the header info button opens retention, coverage and retry
+details, and an unavailable source is named in a hint box above the list.
+Build failure output expands inside its operation details;
+legacy system-log links redirect to the unified list or corresponding operation.
 
 ## Build output
 
@@ -34,7 +49,8 @@ storage failed, the record predates capture, or the total storage budget evicted
 
 - **Server container:** bounded Docker stdout/stderr from the current server
   container, with a requested time window of at most 24 hours and a tail of at
-  most 1,000 lines / approximately 64 KiB. Reaching a limit is marked as partial.
+  most 1,000 lines / approximately 64 KiB. The bounded decoder retains the newest
+  output across Docker frames on HTTP and Unix-socket transports. Reaching a limit is marked as partial.
   Severity filters apply to structured numeric server log levels; plain output
   has no inferred severity. Unexpected agent exits already logged by the server
   appear here too. Docker logging configuration controls retention; replacing a
@@ -44,6 +60,14 @@ storage failed, the record predates capture, or the total storage budget evicted
   Kernel/runtime events do not carry a trustworthy common severity, so the UI
   offers no severity filter for this source.
 
+The automatic server identity comes from the running kernel hostname rather than
+an inherited `HOSTNAME` environment value, and is used only when it matches
+Docker’s default 12- or 64-character hexadecimal container identity. Custom
+hostnames and non-container deployments require an explicit identity. An explicit
+`VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID` still overrides it. Server failures expose
+safe reason codes for missing configuration, missing containers, denied access,
+unreachable Docker and other read failures, without exposing daemon error text.
+
 Neither source is copied into the database. Missing, failed, stale and truncated
 sources are presented explicitly. No additional host privileges are requested.
 
@@ -52,7 +76,8 @@ sources are presented explicitly. No additional host privileges are requested.
 `GET /audit/operations/:operationId/diagnostics` returns the build capture state,
 operation provenance, safe phase/code, capture time, text and truncation state.
 `GET /diagnostics/logs` accepts `source=server|host`, `since`, `until` and optional
-`level=all|error|warning|info`. Responses are not cacheable. Both routes use the
+`level=all|error|warning|info`. Audit operation queries also accept optional
+`since` and `until` bounds. Responses are not cacheable. These routes use the
 existing administrator policy; project membership alone grants no access.
 
 Selections include source/window or operation provenance and
@@ -64,3 +89,19 @@ administrator access must never be treated as permission to send that data.
 
 Audit integrity verification, secret events in the unified list, additional
 audit domains, audit retention, export and agent read access remain separate work.
+
+### Individual event list
+
+The Logs screen lists individual audit events alongside available Server messages
+and classified host signals, newest first. A build request and its outcome are
+separate records with their own event timestamps. Categories filter the same
+list. The administrator-only `GET /audit/events` endpoint accepts `domain`, `q`,
+`since`, `until`, `before` and `limit`; its cursor orders by stored timestamp and
+unique event ID. Existing operation endpoints remain available for grouped details.
+Audit search matches event kind, operation ID, image ID and project label.
+
+Rows show readable messages directly. Tapping a row opens technical details;
+audit records link to their operation and captured build output. Source availability
+is shown separately from events. Audit pages can be loaded within the selected
+time window, while System search and history cover only the loaded source snapshot.
+This does not introduce Server or host log archiving.

@@ -89,3 +89,38 @@ it('rejects a current binding for another project even inside a matching envelop
   });
   await expect(command({ operation: 'current', projectId: 'p1' })).rejects.toThrow();
 });
+
+it.each(['start', 'connect'] as const)(
+  'accepts only generation-matched transport readiness for %s',
+  async (operation) => {
+    const state = operation === 'start' ? 'started-connected' : 'connected';
+    for (const generation of ['g1', 'foreign']) {
+      const reply = { state, generation, relayAddress: '172.20.0.3' };
+      const command = await fixture((req, res) => {
+        req.resume();
+        res.end(JSON.stringify(reply));
+      });
+      const request =
+        operation === 'start' ? start : { operation, projectId: 'p1', generation: 'g1' };
+      if (generation === 'g1') await expect(command(request)).resolves.toEqual(reply);
+      else await expect(command(request)).rejects.toThrow('outcome may be unknown');
+    }
+  },
+);
+it('does not confuse explicit connect readiness with start or denial acknowledgements', async () => {
+  for (const state of ['started-connected', 'started-denied', 'denied']) {
+    const command = await fixture((req, res) => {
+      req.resume();
+      res.end(
+        JSON.stringify({
+          state,
+          generation: 'g1',
+          ...(state === 'started-connected' ? { relayAddress: '172.20.0.3' } : {}),
+        }),
+      );
+    });
+    await expect(
+      command({ operation: 'connect', projectId: 'p1', generation: 'g1' }),
+    ).rejects.toThrow();
+  }
+});

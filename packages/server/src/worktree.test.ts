@@ -1682,3 +1682,42 @@ describe('repairProjectAdminGitdirs', () => {
     ).not.toThrow();
   });
 });
+
+it('workspace relinking preserves a private package directory with local patches', () => {
+  const root = mkdtempSync(join(tmpdir(), 'verity-workspace-patch-'));
+  try {
+    const repo = join(root, 'repo'),
+      worktree = join(root, 'worktree');
+    mkdirSync(join(repo, 'packages', 'pkg'), { recursive: true });
+    mkdirSync(join(worktree, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(repo, 'package.json'), '{"workspaces":["packages/*"]}');
+    writeFileSync(join(repo, 'packages', 'pkg', 'package.json'), '{"name":"pkg"}');
+    writeFileSync(join(worktree, 'node_modules', 'pkg', 'local.txt'), 'local patch');
+    linkWorkspacePackages(repo, worktree);
+    expect(readFileSync(join(worktree, 'node_modules', 'pkg', 'local.txt'), 'utf8')).toBe(
+      'local patch',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it('workspace relinking never rewrites links through a symlinked dependency parent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'verity-workspace-links-'));
+  try {
+    const worktree = join(root, 'session'),
+      outside = join(root, 'outside');
+    mkdirSync(join(root, 'packages', 'pkg'), { recursive: true });
+    writeFileSync(join(root, 'package.json'), '{"workspaces":["packages/*"]}');
+    writeFileSync(join(root, 'packages', 'pkg', 'package.json'), '{"name":"@local/pkg"}');
+    mkdirSync(worktree);
+    mkdirSync(outside);
+    symlinkSync('preserved', join(outside, 'pkg'));
+    symlinkSync(outside, join(worktree, 'node_modules'));
+    linkWorkspacePackages(root, worktree);
+    expect(readlinkSync(join(outside, 'pkg'))).toBe('preserved');
+    expect(existsSync(join(outside, '@local'))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

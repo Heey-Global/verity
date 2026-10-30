@@ -1,9 +1,14 @@
 # Installer recovery from a copied backup
 
-The recovery acceptance gate remains closed. This implementation must pass the
-complete v1 acceptance requirements in [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md)
-before backup setup and scheduling become available. A successful restore probe
-alone does not satisfy that gate.
+Backup setup and scheduling are available in the app (Settings → Backup) on every
+supported installer-managed installation. Normal app-initiated server updates
+prepare the backup directory, read-only database role and identity helper
+automatically on systemd hosts, including older installations; rerunning the
+installer is not required. Captures remain disabled until an administrator saves
+and confirms the recovery key in Settings → Backup. The production recovery gate was removed on
+2026-10-29 by product decision, before every v1 acceptance requirement in
+[ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md) was met; native-device
+trust reset, update safeguards and same-host rollback remain open.
 The [acceptance evidence matrix](BACKUP_RECOVERY_EVIDENCE.md) separates verified
 scenarios from remaining implementation and evidence gaps.
 
@@ -109,8 +114,9 @@ An administrator starts `POST /api/backups/key-replacement` with `reason` set to
 with `POST /api/backups/key-replacement/confirm` using the returned `id` and
 `recoveryKey`. Cancel an unconfirmed candidate with
 `POST /api/backups/key-replacement/cancel`; cancellation leaves the configured
-key and repository unchanged. These routes remain behind the closed backup
-acceptance gate.
+key and repository unchanged. The app always replaces a key as `lost`; the
+`exposed` path, which also needs live identity rotation, stays an administrator
+operation.
 
 Confirmation records a durable replacement intent and publishes a new repository
 and key generation. Retry interrupted publication; a confirmed intent cannot be
@@ -167,13 +173,13 @@ from persisted installer state is refused. It is not an archive migration comman
 the prerequisite helper rejects that mismatch before creating the new directory.
 Keep the original destination and repositories intact when repairing a host.
 
-Backend acceptance uses disposable Docker daemons and a locally built test image
-to exercise scheduled capture while the production recovery gate remains closed.
-That image is never published to an external registry. The fixture stops its Server
+Backend acceptance uses disposable Docker daemons. The ordinary image must capture a
+restored host on its own; a locally built derivative adds failure diagnostics for the
+exact-restart check. That image is never published to an external registry. The fixture stops its Server
 and Updater, prepares its disposable deployment authority for the exact test digest,
 and runs the ordinary installer; it does not exercise a supported paired-image
-upgrade or bypass production upgrade checks. These test results do not
-authorize enabling the production gate or establish native-device trust reset.
+upgrade or bypass production upgrade checks. These test results do not establish
+native-device trust reset.
 
 
 Private Git reconstruction covers both repositories with linked worktrees and

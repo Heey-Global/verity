@@ -1,4 +1,6 @@
+import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
+import { SchedulingRequestsCard } from '../../components/SchedulingRequestsCard';
 import {
   managedServerApproval,
   confirmManagedServerApproval,
@@ -14,7 +16,7 @@ import {
   VulnerabilityStarterCard,
 } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
-import { SPLIT_SCREEN_MIN_WIDTH } from '../../lib/sessionLayout';
+import { sessionLayout } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
 import type { ProjectDriveFolder } from '@verity/mobile';
@@ -109,6 +111,7 @@ import {
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
+  schedulingApprovalSummary,
   forgeRefUrl,
   providerName,
   isSessionImageFilePath,
@@ -539,6 +542,7 @@ export default function SessionScreen() {
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
   const { width } = useWindowDimensions();
+  const { wide: windowWide } = sessionLayout(width);
 
   if (!id) {
     return <CenteredMessage title="Session not found" subtitle="No session id was provided." />;
@@ -556,7 +560,7 @@ export default function SessionScreen() {
   // rather than the old per-route flat sidebar this screen used to render. Keeps
   // exactly one split implementation, so a new-session `replace('/session/[id]')`
   // (new.tsx) lands in the project-grouped overview like everywhere else.
-  if (width >= SPLIT_SCREEN_MIN_WIDTH) {
+  if (windowWide) {
     return (
       <SplitScreenRedirect
         id={id}
@@ -4787,6 +4791,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
+      {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
@@ -6744,6 +6749,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
+      if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
       return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;
@@ -8851,6 +8857,7 @@ function PermissionPrompt({
   const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isScheduling = pending.tool === 'verity_scheduling';
   const isKnowledge = pending.tool === 'verity_knowledge';
   const packageInstall =
     pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
@@ -8859,6 +8866,7 @@ function PermissionPrompt({
   const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
+  const schedulingSummary = isScheduling ? schedulingApprovalSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -8911,6 +8919,7 @@ function PermissionPrompt({
     (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
+    (isScheduling && schedulingSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
@@ -8959,6 +8968,7 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      schedulingSummary === null ? null : spellOutBidiControls(schedulingSummary.title),
       matrixSummary === null
         ? null
         : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
@@ -9184,6 +9194,27 @@ function PermissionPrompt({
               {spellOutBidiControls(detail)}
             </Text>
           ))}
+        </View>
+      ) : schedulingSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          {schedulingSummary.details.map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
+          {schedulingSummary.email === null ? null : (
+            <>
+              <Text style={styles.permissionSubtitle} selectable>
+                Subject: {spellOutBidiControls(schedulingSummary.email.subject)}
+              </Text>
+              <Text style={styles.permissionHttpMeta} selectable>
+                {spellOutBidiControls(schedulingSummary.email.body)}
+              </Text>
+            </>
+          )}
+          <Text style={styles.permissionHttpMeta}>
+            {spellOutBidiControls(schedulingSummary.scope)}
+          </Text>
         </View>
       ) : matrixSummary !== null ? (
         <MatrixSendPreview summary={matrixSummary} />

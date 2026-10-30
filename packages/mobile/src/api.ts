@@ -1,6 +1,7 @@
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
+  auditEventListSchema,
   auditOperationListSchema,
   auditOperationResponseSchema,
   type AuditHealth,
@@ -1165,6 +1166,47 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
+
+/** A restore probe as the server reports it. The server keeps no key in it.
+ *  `status` and `phase` stay plain strings so a newer server's values do not
+ *  make the whole backup status unreadable. */
+export const backupProbeJobSchema = z.object({
+  id: z.string().uuid(),
+  status: z.string(),
+  phase: z.string(),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+  snapshot: z.unknown(),
+  error: z.string().nullable(),
+});
+export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
+
+/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
+ *  older servers report reasons this app does not know. */
+export const backupStatusSchema = z.discriminatedUnion('available', [
+  z.object({ available: z.literal(false), reason: z.string() }),
+  z.object({
+    available: z.literal(true),
+    configured: z.boolean(),
+    paused: z.boolean().optional(),
+    intervalMs: z.number().optional(),
+    lastSuccess: z.number().nullable().optional(),
+    capturing: z.boolean().optional(),
+    keyGeneration: z.number().optional(),
+    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
+    probe: backupProbeJobSchema.nullable().optional(),
+    alerts: z.array(z.string()),
+  }),
+]);
+export type BackupStatus = z.infer<typeof backupStatusSchema>;
+
+/** A newly generated recovery key, shown once. It becomes active on confirmation. */
+const backupKeyOfferSchema = z.object({
+  id: z.string().uuid(),
+  recoveryKey: z.string().min(1),
+  expiresAt: z.number(),
+});
+export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -2397,7 +2439,51 @@ export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
+const schedulingRequestViewSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
+  title: z.string(),
+  durationMinutes: z.number(),
+  addGoogleMeet: z.boolean(),
+  timeZone: z.string(),
+  guest: z.object({ email: z.string(), name: z.string().nullable() }),
+  colleagues: z.array(z.object({ email: z.string(), name: z.string().optional() })),
+  closesAt: z.string(),
+  windows: z.array(z.object({ start: z.string(), end: z.string(), state: z.string() })),
+  emailSentAt: z.string().nullable(),
+  booked: z.object({ start: z.string(), end: z.string() }).nullable(),
+  failure: z.string().nullable(),
+  pendingCleanups: z.number(),
+  link: z.string().nullable(),
+  createdAt: z.string(),
+});
+const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestViewSchema) });
+/** A scheduling request as the app shows it: its state, windows and the guest's link. */
+export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
+
 export class VerityClient {
+  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
+      { method: 'GET', ...(signal ? { signal } : {}) },
+    );
+    return z.object({ document: z.string() }).parse(await response.json()).document;
+  }
+
+  async callMcpAppTool(
+    sessionId: string,
+    appId: string,
+    call: { name: string; arguments?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
+      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
+    );
+    return z.record(z.string(), z.unknown()).parse(await response.json());
+  }
+
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
       .object({ configured: z.boolean() })
@@ -3214,6 +3300,8 @@ export class VerityClient {
     // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
     // dropped parameters before, which would silently unfilter the list.
     const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
     if (query.domain !== undefined) params.push(['domain', query.domain]);
     if (query.search !== undefined && query.search.trim().length > 0)
       params.push(['q', query.search.trim()]);
@@ -3226,6 +3314,30 @@ export class VerityClient {
     try {
       const res = await this.request(`/audit/operations${suffix}`, { method: 'GET' });
       return auditOperationListSchema.parse(await res.json());
+    } catch (err) {
+      if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
+      throw err;
+    }
+  }
+
+  async auditEvents(query: AuditOperationQuery = {}) {
+    // Built by hand: React Native's URLSearchParams polyfill lacks `size` and has
+    // dropped parameters before, which would silently unfilter the list.
+    const params: [string, string][] = [];
+    if (query.since !== undefined) params.push(['since', query.since]);
+    if (query.until !== undefined) params.push(['until', query.until]);
+    if (query.domain !== undefined) params.push(['domain', query.domain]);
+    if (query.search !== undefined && query.search.trim().length > 0)
+      params.push(['q', query.search.trim()]);
+    if (query.before !== undefined) params.push(['before', query.before]);
+    if (query.limit !== undefined) params.push(['limit', String(query.limit)]);
+    const suffix =
+      params.length > 0
+        ? `?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+        : '';
+    try {
+      const res = await this.request(`/audit/events${suffix}`, { method: 'GET' });
+      return auditEventListSchema.parse(await res.json());
     } catch (err) {
       if (err instanceof VerityApiError && (err.status === 403 || err.status === 404)) return null;
       throw err;
@@ -3829,6 +3941,78 @@ export class VerityClient {
   async getSecretStatus(): Promise<SecretStatus> {
     const res = await this.request('/secret/status', { method: 'GET' });
     return secretStatusSchema.parse(await res.json()).status;
+  }
+
+  async getBackupStatus(): Promise<BackupStatus> {
+    const res = await this.request('/api/backups/status', { method: 'GET' });
+    return backupStatusSchema.parse(await res.json());
+  }
+  async beginBackupSetup(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(await this.backupPost('/api/backups/setup'));
+  }
+  /** Sends back the key the app was given; Verity keeps no copy of it. */
+  async confirmBackupSetup(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/setup/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupSetup(): Promise<void> {
+    await this.backupCommand('/api/backups/setup/cancel');
+  }
+  /** Always the "lost" replacement: older snapshots stay readable with the old key. */
+  async beginBackupKeyReplacement(): Promise<BackupKeyOffer> {
+    return backupKeyOfferSchema.parse(
+      await this.backupPost('/api/backups/key-replacement', { reason: 'lost' }),
+    );
+  }
+  async confirmBackupKeyReplacement(offer: BackupKeyOffer): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/confirm', {
+      id: offer.id,
+      recoveryKey: offer.recoveryKey,
+    });
+  }
+  async cancelBackupKeyReplacement(): Promise<void> {
+    await this.backupCommand('/api/backups/key-replacement/cancel');
+  }
+  async setBackupPolicy(policy: { paused?: boolean; intervalMs?: number }): Promise<void> {
+    await this.request('/api/backups/policy', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(policy),
+    });
+  }
+  async startBackupProbe(recoveryKey: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost('/api/backups/probes', { recoveryKey }),
+    );
+  }
+  async getBackupProbe(id: string): Promise<BackupProbeJob> {
+    const res = await this.request(`/api/backups/probes/${encodeURIComponent(id)}`, {
+      method: 'GET',
+    });
+    return backupProbeJobSchema.parse(await res.json());
+  }
+  async cancelBackupProbe(id: string): Promise<BackupProbeJob> {
+    return backupProbeJobSchema.parse(
+      await this.backupPost(`/api/backups/probes/${encodeURIComponent(id)}/cancel`),
+    );
+  }
+  /** Confirm and cancel ignore the reply, so an empty success body is fine. */
+  private async backupCommand(path: string, body: object = {}): Promise<void> {
+    await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  private async backupPost(path: string, body: object = {}): Promise<unknown> {
+    const res = await this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return res.json();
   }
 
   /** Pre-auth liveness probe carrying the server's own release version — used to
@@ -5673,6 +5857,22 @@ export class VerityClient {
         ),
       })
       .parse(await res.json());
+  }
+  async sessionSchedulingRequests(sessionId: string): Promise<SchedulingRequestView[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/scheduling-requests`,
+      { method: 'GET' },
+    );
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  async schedulingRequests(): Promise<SchedulingRequestView[]> {
+    const res = await this.request('/scheduling-requests', { method: 'GET' });
+    return schedulingRequestsSchema.parse(await res.json()).requests;
+  }
+  async revokeSchedulingRequest(requestId: string): Promise<void> {
+    await this.request(`/scheduling-requests/${encodeURIComponent(requestId)}/revoke`, {
+      method: 'POST',
+    });
   }
   async decideQAApproval(projectId: string, proposalId: string, allow: boolean) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/repairs/approval`, {

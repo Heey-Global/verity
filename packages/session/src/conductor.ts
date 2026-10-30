@@ -456,6 +456,7 @@ export interface ConductorDeps {
   /** Project migrations run before claiming a turn, so no live backend sees a replaced path. */
   prepareSession?: ((sessionId: string) => Promise<void>) | undefined;
   /** Filesystem preparation and publication, awaited while the turn owns its session. */
+  ensureWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
   prepareWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
   settleWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
   store: EventStore;
@@ -5204,6 +5205,7 @@ export class Conductor {
     try {
       const session = await this.deps.store.getSession(sessionId);
       if (!session) throw new UnknownSessionError(sessionId);
+      await this.deps.ensureWorkspace?.(session);
       // Pre-flight the worktree: a resume spawns `claude` with `cwd: worktree`, and
       // a missing dir fails with `spawn ENOENT`. Reject here (lock released below)
       // so a session whose worktree was cleaned up is plainly unresumable, never a

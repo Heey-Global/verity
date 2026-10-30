@@ -26,6 +26,7 @@ export const ASSISTANT_TOOLS: ReadonlySet<string> = new Set([
   'verity_app_help',
   'verity_gmail',
   'verity_google_calendar',
+  'verity_scheduling',
   'verity_google_contacts',
   'verity_start_planning',
   'verity_present_plan',

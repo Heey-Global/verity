@@ -1,3 +1,4 @@
+import { DockerError } from './docker.js';
 import Fastify from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
@@ -76,6 +77,21 @@ describe('administrator diagnostic reads', () => {
     expect((await app.inject('/diagnostics/logs')).json().state).toBe('failed');
     await app.close();
   });
+  it.each([
+    [new DockerError({ kind: 'container_not_found', id: 'retired' }), 'container_not_found'],
+    [new DockerError({ kind: 'other', status: 403, message: 'private details' }), 'access_denied'],
+    [new DockerError({ kind: 'network', cause: new Error('private path') }), 'docker_unreachable'],
+    [new Error('private error'), 'read_failed'],
+  ])('returns a safe actionable reason for %s', async (error, reason) => {
+    const d = deps();
+    d.serverLogs = vi.fn().mockRejectedValue(error);
+    const app = Fastify();
+    registerLogRoutes(app, d);
+    const result = await app.inject('/diagnostics/logs');
+    expect(result.json().reason).toBe(reason);
+    expect(result.body).not.toContain('private');
+    await app.close();
+  });
   it('exposes host freshness and coverage without raw journal text', async () => {
     const d = deps();
     const since = new Date(Date.now() - 3600_000).toISOString();
@@ -105,7 +121,9 @@ describe('administrator diagnostic reads', () => {
     expect(response.stale).toBe(true);
     expect(response.truncated).toBe(true);
     expect(response.sources.runtime).toBe('failed');
-    expect(response.entries).toEqual([{ at: since, level: null, text: 'kernel: oom_kill' }]);
+    expect(response.entries).toEqual([
+      { at: since, level: null, source: 'kernel', code: 'oom_kill', text: 'kernel: oom_kill' },
+    ]);
     await app.close();
   });
 });

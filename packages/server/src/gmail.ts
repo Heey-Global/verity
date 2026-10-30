@@ -806,6 +806,29 @@ export async function createGmailDraft(
   return { id: draft.id, messageId: draft.message?.id, threadId: draft.message?.threadId };
 }
 
+/**
+ * Send a message Verity composed itself, not a user draft. Used where the operator approved the
+ * exact text elsewhere (a scheduling request's email), so no draft round trip is needed.
+ */
+export async function sendGmailMessage(
+  accessToken: string,
+  input: Pick<GmailDraftInput, 'to' | 'subject' | 'body' | 'from'>,
+  fetchImpl: FetchLike = fetch,
+): Promise<{ id?: string; threadId?: string }> {
+  const sent = await postGmailMessage<GmailMessage>(
+    '/messages/send',
+    accessToken,
+    rawMessage(input),
+    false,
+    (message) => message,
+    fetchImpl,
+  );
+  return {
+    ...(sent.id ? { id: sent.id } : {}),
+    ...(sent.threadId ? { threadId: sent.threadId } : {}),
+  };
+}
+
 export interface GmailDraftSendSnapshot {
   attachments?: GmailDraftAttachment[];
   accountId?: string;

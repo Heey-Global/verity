@@ -259,7 +259,14 @@ EOF
       exit 2
     fi
 
-    if [ ! -d "${REPO_ROOT}/node_modules" ]; then
+    DEPENDENCIES_READY=false
+    if DEPENDENCIES_BIN=$(resolve_sibling verity-dependencies); then
+      if "$DEPENDENCIES_BIN" status; then DEPENDENCIES_READY=true; fi
+    elif [ -d "${REPO_ROOT}/node_modules" ]; then
+      # Compatibility with older seeds; new seeds always ship the helper.
+      DEPENDENCIES_READY=true
+    fi
+    if [ "$DEPENDENCIES_READY" != true ]; then
       if ! LOCAL_CHECKS_BIN=$(resolve_sibling verity-local-checks); then
         cat >&2 <<'EOF'
 ============================================================
@@ -279,6 +286,7 @@ EOF
       else
         INSTALL_CMD="npm install --ignore-scripts"
       fi
+      if [ -n "${DEPENDENCIES_BIN:-}" ]; then INSTALL_CMD="\"$DEPENDENCIES_BIN\" install"; fi
       case "$SKIP_STATUS" in
         0)
           echo "pre-push: Lint and format skipped (your choice for this session). Secret scan and code review still run." >&2
@@ -307,8 +315,8 @@ EOF
 ============================================================
 PUSH BLOCKED - lint and format checks can't run: dependencies are not installed
 
-This repository declares a lint or format check, but node_modules is missing.
-Installing runs code from the registry, so that is the operator's decision.
+This repository declares a lint or format check, but no complete compatible dependency installation was found.
+Installing runs code from the registry, so that is your decision.
 Ask which one to do, then run the matching command and push again:
 
     Install and run checks:          (cd "$REPO_ROOT" && $INSTALL_CMD)

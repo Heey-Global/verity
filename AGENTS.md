@@ -45,8 +45,16 @@ For localized changes, pass explicit file paths to
 Include all relevant branch changes, not just the most recent commit. Use the
 full format or lint check when shared configuration changes affect the tree.
 When types or shared APIs change, also lint affected unchanged consumers with
-`npx eslint --no-warn-ignored --no-cache -- <files>`: ESLint's file cache does not
-invalidate unchanged files when an imported type changes.
+`npm run lint:changed -- <files>`. The lint runner roots type analysis at the
+requested files and their imports, retains ambient declarations, and resolves
+project references to current sources. Local runs reuse clean file-group results only while
+recorded source/type dependencies, configuration, ambient declarations and module
+resolution inputs remain unchanged. CI always runs uncached. Use
+`npm run lint -- --no-cache` or `npm run lint:changed -- --no-cache <files>` to
+force a fresh local check. Workers run sequentially under a conservative heap
+budget, limit both file count and source bytes per group, and retry smaller groups
+after memory exhaustion; the heap budget never grows automatically. Full local lint
+includes new unignored files and skips files deleted from the working tree.
 
 For TypeScript changes, build the affected projects and consumers, for example
 `npx tsc -b packages/server`. Build mode includes referenced dependencies, but

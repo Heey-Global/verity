@@ -25,6 +25,15 @@ export const systemLogResponseSchema = z.object({
   window: z.object({ since: z.string(), until: z.string() }),
   supportConsent: z.literal('required'),
   state: z.enum(['available', 'unavailable', 'failed']),
+  reason: z
+    .enum([
+      'not_configured',
+      'container_not_found',
+      'access_denied',
+      'docker_unreachable',
+      'read_failed',
+    ])
+    .optional(),
   stale: z.boolean(),
   truncated: z.boolean(),
   observedAt: z.string().nullable().optional(),
@@ -34,6 +43,13 @@ export const systemLogResponseSchema = z.object({
     .nullable()
     .optional(),
   entries: z.array(
-    z.object({ at: z.string().nullable(), level: z.string().nullable(), text: z.string() }),
+    z.object({
+      at: z.string().nullable(),
+      level: z.string().nullable(),
+      text: z.string(),
+      source: z.string().optional(),
+      code: z.string().optional(),
+      exitCode: z.number().optional(),
+    }),
   ),
 });

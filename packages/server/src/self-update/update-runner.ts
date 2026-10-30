@@ -124,7 +124,7 @@ const defaultLog = (message: string): void => {
  */
 export function createOfficialImageVerifier(
   docker: Pick<DockerClient, 'inspectImageEnv'>,
-): (journal: UpdateJournal) => Promise<void> {
+): (journal: Pick<UpdateJournal, 'targetDigest'>) => Promise<void> {
   return async (journal) => {
     if (!OFFICIAL_DIGEST.test(journal.targetDigest))
       throw new Error('update target is not an official Verity Server digest');
@@ -442,12 +442,14 @@ export async function recoverManagedUpdater(
   const runner = createUpdateRunner(options);
   const verdict = (result: ManagedServerReconcileResult): ManagedServerReconcileVerdict =>
     (result.drift === undefined || result.drift.length === 0) &&
+    result.backupMountPending !== true &&
     result.diagnosticMountPending !== true &&
     result.devcontainerBuilderPending !== true
       ? { status: 'ok' }
       : {
           status: 'drift',
           environment: result.drift ?? [],
+          ...(result.backupMountPending ? { backupMountPending: true } : {}),
           ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
           ...(result.devcontainerBuilderPending ? { devcontainerBuilderPending: true } : {}),
         };

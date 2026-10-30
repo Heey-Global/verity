@@ -93,6 +93,14 @@ connected calendar and Google account. Contacts lookup is optional: email
 addresses supplied or confirmed by you also work without an address book.
 
 
+## Scheduling requests
+
+`verity_scheduling` builds on the same Calendar and Gmail connections: it holds
+offered windows in the session's calendar, emails the guest a booking link and books
+the chosen time without a separate approval per change. One approval covers the
+whole request and is limited to the events that request created. See
+[Scheduling requests](scheduling-requests.md).
+
 ## Gmail sender addresses
 
 Gmail drafts can use an existing verified “Send mail as” address. The Gmail tool's

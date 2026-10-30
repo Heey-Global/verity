@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { confirmRecoveryKey, generateBackupKeys, type BackupHostKeys } from './crypto.js';
 const SETUP_LIFETIME_MS = 10 * 60 * 1000;
 
+/** The offered key is gone (expired or replaced); only a new offer can succeed. */
+export class BackupSetupExpiredError extends Error {
+  constructor() {
+    super('Backup setup expired; start again');
+    this.name = 'BackupSetupExpiredError';
+  }
+}
+
 /** One in-memory setup candidate. Only its public recipient and host signing keys survive confirmation. */
 export class BackupSetup {
   private pending: { id: string; expiresAt: number; host: BackupHostKeys } | undefined;
@@ -42,7 +50,7 @@ export class BackupSetup {
       const candidate = this.pending;
       if (!candidate || candidate.id !== id || this.now() >= candidate.expiresAt) {
         this.pending = undefined;
-        throw new Error('Backup setup expired; start again');
+        throw new BackupSetupExpiredError();
       }
       if ((await this.configured()) !== this.replacement)
         throw new Error(

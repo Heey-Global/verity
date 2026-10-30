@@ -5,6 +5,13 @@ import {
   type ProjectFenceBinding,
 } from './project-egress-fence.js';
 import { verifyProjectFenceAttachment } from './project-egress-attachment.js';
+import { projectDeadlineLease, type ProjectDeadlineClock } from './project-egress-deadline.js';
+const sample: ProjectDeadlineClock = {
+  bootId: 'c5bc8433-b1ee-424e-94fe-fb91b0f77f69',
+  realNs: '1000000000',
+  bootBeforeNs: '1000000000',
+  bootAfterNs: '1000000000',
+};
 const binding: ProjectFenceBinding = {
   projectId: 'a',
   generation: 'g1',
@@ -25,6 +32,17 @@ const grant = {
 function fixture() {
   let now = 1000;
   const deps = {
+    deadline: {
+      prepare: vi.fn(async () => undefined),
+      revoke: vi.fn(async () => undefined),
+      clock: vi.fn(async () => ({
+        ...sample,
+        realNs: (BigInt(now) * 1000000n).toString(),
+        bootBeforeNs: (BigInt(now) * 1000000n).toString(),
+        bootAfterNs: (BigInt(now) * 1000000n).toString(),
+      })),
+      arm: vi.fn(async () => undefined),
+    },
     inspect: vi.fn(async (value: ProjectFenceBinding) => ({ ...value })),
     directTargetAllowed: vi.fn(async () => true),
     destinationAllowed: vi.fn(async () => true),
@@ -130,6 +148,7 @@ it('never emits a zero timeout and rejects nft syntax injection in bindings', ()
       [{ address: '8.8.8.8', protocol: 'tcp', port: 443, expiresAt: 1000.5 }],
       1000,
       false,
+      projectDeadlineLease(binding, 1, null, sample),
     ),
   ).not.toContain('timeout 0ms');
   expect(() => projectFenceRules({ ...binding, bridge: 'x";accept' }, [], 1000, false)).toThrow();
@@ -202,6 +221,7 @@ it('coalesces overlapping grants and canonical IPv6 addresses into one set eleme
     ],
     1000,
     false,
+    projectDeadlineLease(binding, 1, null, sample),
   );
   expect(rules.match(/2001:4860:4860::8888 \. tcp \. 443 timeout 1000ms/g)).toHaveLength(1);
 });
@@ -224,4 +244,136 @@ it('reserves executor delay before absolute grant expiry', async () => {
     if (remaining <= 1000) expect(rules).not.toContain('elements =');
     else expect(rules).toContain(`timeout ${Math.min(1000, remaining - 1000)}ms`);
   }
+});
+
+it('captures immutable BOOTTIME before DNS and keeps a delayed apply expired', async () => {
+  const { deps, fence, setNow } = fixture();
+  await fence.prepare(binding);
+  deps.resolve.mockImplementation(async () => {
+    setNow(5000);
+    return ['8.8.8.8'];
+  });
+  await fence.refresh({ binding, revision: 1, grants: [{ ...grant, expiresAt: 10000 }] });
+  expect(deps.deadline.arm.mock.calls[0]).toEqual([
+    binding,
+    expect.objectContaining({
+      capturedBootNs: '1000000000',
+      bootDeadlineNs: '2000000000',
+      authorityExpiresAt: 10000,
+    }),
+  ]);
+});
+
+it('captures before the revoke and deny executors can stall', async () => {
+  const { deps, fence, setNow } = fixture();
+  await fence.prepare(binding);
+  deps.deadline.revoke.mockImplementation(async () => {
+    setNow(5000);
+  });
+  await fence.refresh({ binding, revision: 1, grants: [{ ...grant, expiresAt: 10000 }] });
+  expect(deps.deadline.arm.mock.calls[0]).toEqual([
+    binding,
+    expect.objectContaining({ capturedBootNs: '1000000000', bootDeadlineNs: '2000000000' }),
+  ]);
+});
+
+it('installs nft denial even when the required kernel guard fails', async () => {
+  const { deps, fence } = fixture();
+  deps.deadline.prepare.mockRejectedValue(new Error('unsupported guard'));
+  await expect(fence.prepare(binding)).rejects.toThrow('unsupported guard');
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+  expect(deps.deadline.arm).not.toHaveBeenCalled();
+});
+
+it('denies previous access when a new clock sample cannot be trusted', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.deadline.clock.mockRejectedValue(new Error('clock unavailable'));
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'clock unavailable',
+  );
+  expect(deps.deadline.revoke).toHaveBeenCalled();
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+});
+
+it('preserves denial on revocation or admission failure', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  deps.deadline.revoke.mockRejectedValueOnce(new Error('lost expiry evidence'));
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'lost expiry evidence',
+  );
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toContain('elements =');
+  deps.deadline.arm.mockRejectedValueOnce(new Error('changed endpoint'));
+  await expect(fence.refresh({ binding, revision: 1, grants: [grant] })).rejects.toThrow(
+    'changed endpoint',
+  );
+  expect(deps.deadline.revoke).toHaveBeenCalledTimes(3);
+});
+
+it('binds both directions to fresh labels and absolute expiry tombstones', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  const first = deps.apply.mock.calls.at(-1)![0];
+  expect(first).toContain('meta time >= "1970-01-01 00:00:05"');
+  expect(first).toContain('add @expired4');
+  expect(first).toContain('ct direction reply ct label ==');
+  expect(first).toContain('oifname "ve-a-g1" jump reply');
+  expect(first).toContain('ct state new ct label == (0 & 1)');
+  await fence.refresh({ binding, revision: 1, grants: [grant] });
+  expect(deps.apply.mock.calls.at(-1)![0]).not.toBe(first);
+  const second = deps.apply.mock.calls.at(-1)![0];
+  expect(second).not.toContain('delete table inet');
+  expect(second).not.toMatch(/flush set.*expired/u);
+  expect(second.match(/set expired4_\w+/u)?.[0]).toBe(first.match(/set expired4_\w+/u)?.[0]);
+});
+
+it('never admits capture-expired grants after rollback during revocation', async () => {
+  for (const standing of [false, true]) {
+    const { deps, fence, setNow } = fixture();
+    await fence.prepare(binding);
+    deps.deadline.revoke.mockImplementation(async () => {
+      setNow(-2000);
+    });
+    const expired = { ...grant, expiresAt: 900, target: { ...grant.target, port: 444 } };
+    await fence.refresh({
+      binding,
+      revision: 1,
+      grants: standing ? [expired, { ...grant, expiresAt: null }] : [expired],
+    });
+    const rules = deps.apply.mock.calls.at(-1)![0];
+    expect(rules).not.toContain('8.8.8.8 . tcp . 444');
+    expect(deps.resolve).toHaveBeenCalledTimes(standing ? 1 : 0);
+    if (standing) {
+      expect(rules).toContain('8.8.8.8 . tcp . 443');
+      expect(deps.deadline.arm).toHaveBeenCalledOnce();
+    } else {
+      expect(rules).not.toContain('elements =');
+      expect(deps.deadline.arm).not.toHaveBeenCalled();
+    }
+  }
+});
+
+it('captures and latches every overlapping expiry before an earlier expiry can drop', async () => {
+  const { deps, fence } = fixture();
+  await fence.prepare(binding);
+  await fence.refresh({
+    binding,
+    revision: 1,
+    grants: [grant, { ...grant, id: 'later', expiresAt: 9000 }],
+  });
+  expect(deps.deadline.arm.mock.calls[0]).toEqual([
+    binding,
+    expect.objectContaining({
+      authorityBootDeadlines: { '5000': '5000000000', '9000': '9000000000' },
+    }),
+  ]);
+  const rules = deps.apply.mock.calls.at(-1)![0];
+  const lastLatch = rules.indexOf('meta time >= "1970-01-01 00:00:09" add @expired4');
+  const firstDrop = rules.indexOf('meta time >= "1970-01-01 00:00:05" counter name expired drop');
+  expect(lastLatch).toBeGreaterThan(0);
+  expect(firstDrop).toBeGreaterThan(lastLatch);
+  expect(rules).toContain('{ 172.30.1.2 }');
+  expect(rules).toContain('{ fd42::2 }');
 });

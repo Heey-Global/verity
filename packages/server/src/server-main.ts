@@ -867,8 +867,7 @@ async function main(): Promise<void> {
       // (optionally `…:/v1.41`). A `unix://` value selects the mounted-socket
       // transport in createDockerClient (ADR 0003 R2). Passed through unchanged.
       dockerBaseUrl: process.env.VERITY_DOCKER_BASE_URL,
-      diagnosticServerContainerId:
-        process.env.VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID ?? process.env.HOSTNAME,
+      diagnosticServerContainerId: process.env.VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID,
       hostDiagnosticSnapshotPath:
         process.env.VERITY_HOST_DIAGNOSTIC_SNAPSHOT ?? '/run/verity-host-diagnostics/snapshot.json',
       resolvePreviewConnectorImage: () =>

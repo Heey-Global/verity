@@ -9,7 +9,10 @@ on:
       - 'deploy/gvisor/versions.env'
       - 'deploy/egress/**'
       - 'scripts/build-project-egress-host.mjs'
-      - 'packages/server/src/provisioner.ts'
+      - 'features/verity-sandbox-toolkit/**'
+      - 'deploy/verity-sandbox.Dockerfile'
+      - 'deploy/project-relay.Dockerfile'
+      - 'packages/project-relay/**'
       - 'packages/server/src/project-egress-*.ts'
       - 'packages/server/src/project-relay-*.ts'
       - 'packages/server/src/provisioner.ts'
@@ -27,7 +30,7 @@ concurrency:
 jobs:
   project-boundary:
     runs-on: ubuntu-26.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

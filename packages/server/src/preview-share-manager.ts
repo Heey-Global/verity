@@ -806,6 +806,19 @@ export class PreviewShareManager {
     }
   }
 
+  /** Fence preview lifecycle changes while retaining every active share during GC. */
+  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+    return this.withLifecycleLocks([`project:${projectId}`], async () => {
+      if (
+        (await this.options.store.listPublicPreviewShares(projectId)).some((share) =>
+          ACTIVE_STATES.includes(share.state),
+        )
+      )
+        throw new Error('Project has an active public preview');
+      return mutation();
+    });
+  }
+
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       for (const share of await this.options.store.listPublicPreviewShares(projectId)) {

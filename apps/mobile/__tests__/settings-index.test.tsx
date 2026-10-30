@@ -81,7 +81,7 @@ describe('settings index — destinations', () => {
         'Verity Premium',
         'Verity Control',
       ],
-      ['Updates', 'Server address', 'Devices & Web Browsers', 'Logs'],
+      ['Updates', 'Backup', 'Server address', 'Devices & Web Browsers', 'Logs'],
       ['Show welcome tour again', 'Diagnostics', 'Try demo'],
     ];
     groups.forEach((group, index) => {
@@ -181,6 +181,55 @@ describe('settings index — destinations', () => {
     expect(screen.getByText('Needs review')).toBeOnTheScreen();
     fireEvent.press(row);
     expect(mockPush).toHaveBeenCalledWith('/settings/audit-logs');
+  });
+
+  // A successful status response authorizes discovery even before host preparation.
+  it('keeps Backup discoverable before preparation and reports its state', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    const { unmount } = render(<SettingsIndexScreen />);
+    await screen.findByLabelText(/^Updates(,|$)/);
+    await act(async () => undefined);
+    expect(
+      await screen.findByLabelText(/^Backup, Server preparation needed, Needs attention/),
+    ).toBeOnTheScreen();
+    unmount();
+
+    const getBackupStatus = jest
+      .fn()
+      .mockResolvedValue({ available: true, configured: false, alerts: [] });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getBackupStatus }));
+    const { unmount: unmountSetup } = render(<SettingsIndexScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Backup, Not set up, Set up/));
+    expect(mockPush).toHaveBeenCalledWith('/settings/backup');
+    unmountSetup();
+
+    getBackupStatus.mockResolvedValue({
+      available: true,
+      configured: true,
+      paused: false,
+      intervalMs: 21600000,
+      lastSuccess: null,
+      capturing: false,
+      lastProbe: null,
+      probe: null,
+      alerts: ['insufficient-space'],
+    });
+    render(<SettingsIndexScreen />);
+    expect(
+      await screen.findByLabelText(/^Backup, First backup starts shortly, Needs attention/),
+    ).toBeOnTheScreen();
+  });
+
+  it('hides Backup when the device cannot read its administrator status', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getBackupStatus: jest.fn().mockRejectedValue(new Error('Forbidden')),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    await screen.findByLabelText(/^Updates(,|$)/);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(rowLabel('Backup'))).toBeNull();
   });
 
   it('keeps update channel preferences inside server update', async () => {

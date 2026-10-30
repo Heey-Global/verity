@@ -143,6 +143,7 @@ export function Row({
   disabled = false,
   accessibilityLabel,
   accessibilityHint,
+  expanded,
 }: {
   title: string;
   subtitle?: string | undefined;
@@ -157,6 +158,7 @@ export function Row({
   disabled?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
+  expanded?: boolean;
 }) {
   const { theme } = useUnistyles();
   const choice = selected !== undefined;
@@ -203,7 +205,7 @@ export function Row({
         accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing)
       }
       accessibilityHint={accessibilityHint}
-      accessibilityState={choice ? { disabled, checked: selected } : { disabled }}
+      accessibilityState={choice ? { disabled, checked: selected } : { disabled, expanded }}
       style={({ pressed }) => [
         styles.row,
         disabled ? styles.muted : null,

@@ -7,7 +7,7 @@ import type {
   ProjectEgressNetworkBinding,
 } from './project-egress-host.js';
 
-/** Experimental, deny-only integration. Not installed by production configuration.
+/** Experimental, fixed relay-transport integration. Not installed by production configuration.
  * Every selected generation must be registered with the authoritative host; no
  * labels, missing host state or transport errors permit a legacy network fallback.
  */
@@ -69,11 +69,23 @@ export class ProjectEgressLifecycle {
     role: 'sandbox' | 'relay',
     containerId: string,
   ): Promise<void> {
-    await this.acknowledge(
-      { operation: 'start', ...this.reference(identity), role, containerId },
-      'started-denied',
-      identity.containerGeneration,
-    );
+    const result = await this.command({
+      operation: 'start',
+      ...this.reference(identity),
+      role,
+      containerId,
+    });
+    if (
+      (result.state !== 'started-denied' && result.state !== 'started-connected') ||
+      result.generation !== identity.containerGeneration
+    )
+      throw new Error('Mismatched host acknowledgement');
+  }
+  async connect(identity: InternalConnectionIdentity): Promise<string> {
+    const result = await this.command({ operation: 'connect', ...this.reference(identity) });
+    if (result.state !== 'connected' || result.generation !== identity.containerGeneration)
+      throw new Error('Transport readiness was not acknowledged');
+    return result.relayAddress;
   }
   async retire(identity: InternalConnectionIdentity): Promise<void> {
     await this.acknowledge(

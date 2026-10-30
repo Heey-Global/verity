@@ -1,4 +1,5 @@
 import { AssistantStore } from './assistant.js';
+import { SchedulingStore } from './scheduling.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
@@ -1423,6 +1424,7 @@ export class EventStore implements EventSink {
     this.tasks = new TaskStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
     this.assistant = new AssistantStore(db);
+    this.scheduling = new SchedulingStore(db, cipher);
   }
 
   readonly projectEgress: ProjectEgressStore;
@@ -1432,6 +1434,7 @@ export class EventStore implements EventSink {
   readonly tasks: TaskStore;
   readonly repairs: RepairSupervisionStore;
   readonly assistant: AssistantStore;
+  readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
@@ -4554,6 +4557,26 @@ export class EventStore implements EventSink {
     if (!parsed.success || parsed.data.t !== 'dev_servers_changed') {
       throw new Error(`corrupt listener snapshot in session ${sessionId}`);
     }
+    return parsed.data;
+  }
+
+  /** Fetch one app snapshot without hydrating the surrounding transcript. */
+  async getMcpAppEvent(
+    sessionId: string,
+    appId: string,
+  ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'mcp_app')
+      .where(sql<string>`payload->>'appId'`, '=', appId)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
     return parsed.data;
   }
 

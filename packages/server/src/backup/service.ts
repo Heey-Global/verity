@@ -475,6 +475,8 @@ export class BackupService {
     paused?: boolean;
     intervalMs?: number;
     lastSuccess?: number | null;
+    capturing?: boolean;
+    keyGeneration?: number;
     lastProbe?: BackupState['lastProbe'];
     probe?: ProbeJob | null;
     alerts: string[];
@@ -486,10 +488,12 @@ export class BackupService {
           paused: current.schedule.paused,
           intervalMs: current.schedule.intervalMs,
           lastSuccess: current.schedule.lastSuccess,
+          capturing: this.scheduler.capturing,
+          keyGeneration: current.keyGeneration,
           lastProbe: current.lastProbe,
           probe: this.probes?.status() ?? null,
           alerts: [
-            ...backupScheduleAlerts(current.schedule, Date.now()),
+            ...backupScheduleAlerts(current.schedule, Date.now(), current.confirmedAt),
             ...probeVerificationAlerts(current.confirmedAt, current.lastProbe, Date.now()),
             ...this.alerts
               .status()
@@ -518,7 +522,7 @@ export class BackupService {
   private async refreshAlerts(): Promise<void> {
     const current = await this.configured();
     const codes = [
-      ...backupScheduleAlerts(current.schedule, Date.now()),
+      ...backupScheduleAlerts(current.schedule, Date.now(), current.confirmedAt),
       ...probeVerificationAlerts(current.confirmedAt, current.lastProbe, Date.now()),
     ];
     let present = true;

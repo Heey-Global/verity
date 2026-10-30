@@ -75,8 +75,8 @@ export function installCli(
   if (dependencies.length !== 1) throw new Error('CLI bundle must contain exactly one dependency');
   const [name, pinned] = dependencies[0];
   const version = override ?? pinned;
-  if (id === 'codex-acp' && version !== '2.2.2')
-    throw new Error('Codex ACP security hardening requires audited adapter version 2.2.2');
+  if (id === 'codex-acp' && version !== '2.3.0')
+    throw new Error('Codex ACP security hardening requires audited adapter version 2.3.0');
   if (!/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/.test(version)) {
     throw new Error('CLI version must be exact');
   }
