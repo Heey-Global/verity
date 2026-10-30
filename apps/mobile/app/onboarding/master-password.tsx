@@ -247,7 +247,7 @@ function MasterPasswordStep({
       .catch(() => false)
       .then(async (loaded) => {
         // An open store needed only this device's bearer; the password has
-        // nothing left to unlock, and resubmitting it would enroll a new device.
+        // nothing left to unlock, and an older Core would enroll a new device for it.
         if (loaded && deviceOnly) return 'authorized' as const;
         return client.unlockSecret(password, deviceLabel(), pairingBootstrap);
       })
