@@ -21,7 +21,12 @@ function tool(stored: Partial<SchedulingRequest> | undefined) {
       scheduling: {
         get: async () =>
           stored
-            ? ({ sessionId: 's1', state: 'draft', ...stored } as SchedulingRequest)
+            ? ({
+                sessionId: 's1',
+                state: 'draft',
+                googleAccountId: 'a',
+                ...stored,
+              } as SchedulingRequest)
             : undefined,
       } as never,
     },
@@ -56,6 +61,9 @@ describe('scheduling tool', () => {
     );
     await expect(tool({ state: 'open' }).created.authorize(input)).rejects.toThrow('already open');
     await expect(tool({}).created.authorize(input)).resolves.toMatchObject({ action: 'send' });
+    await expect(tool({ googleAccountId: 'other' }).created.authorize(input)).rejects.toThrow(
+      'account changed',
+    );
   });
 
   it('rejects arguments the schema does not know, so an agent cannot inject card content', () => {

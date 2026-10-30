@@ -505,6 +505,35 @@ describe('scheduling requests', () => {
     expect(notifications.map((n) => n.kind)).toEqual(['email_unconfirmed']);
   });
 
+  it('waits for Uplink to reconnect after a restart instead of failing the request', async () => {
+    let available = false;
+    edge.isAvailable = () => available;
+    const scheduler = service();
+    const prepared = await scheduler.prepare(input());
+    await ctx.store.scheduling.approve(prepared.requestId, prepared.digest);
+    await scheduler.runDue();
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.state).toBe('provisioning');
+    available = true;
+    now = new Date(now.getTime() + 2 * 60_000);
+    await scheduler.runDue();
+    expect((await ctx.store.scheduling.get(prepared.requestId))?.state).toBe('open');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('pauses a failing link retirement instead of retrying it every pass', async () => {
+    const scheduler = service();
+    const id = await openRequest(scheduler, { bookingDays: 1 });
+    edge.remove = async () => {
+      throw new Error('Uplink down');
+    };
+    now = new Date('2026-11-29T10:00:01Z');
+    await scheduler.runDue();
+    const paused = await ctx.store.scheduling.get(id);
+    expect(paused?.shareRevokedAt).toBeNull();
+    expect(paused?.nextAttemptAt?.getTime()).toBeGreaterThan(now.getTime());
+    expect((await ctx.store.scheduling.dueRequests(now)).map((r) => r.id)).not.toContain(id);
+  });
+
   it('fails cleanly without a public link and removes the holds it created', async () => {
     const scheduler = service({ edge: undefined });
     const prepared = await scheduler.prepare(input());

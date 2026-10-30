@@ -42,6 +42,7 @@ export const SCHEDULING_MAX_BOOKING_DAYS = 7;
 /** Range searched for a request's own holds; holds moved further away no longer count. */
 const HOLD_SEARCH_DAYS = 90;
 const MAX_WINDOW_DAYS = 60;
+const PROVISION_PATIENCE_MS = 10 * 60_000;
 const CLEANUP_ALERT_ATTEMPT = 5;
 const LEASE_MS = 2 * 60_000;
 export const SCHEDULING_LINK_PLACEHOLDER = '{link}';
@@ -517,10 +518,25 @@ export class SchedulingService {
       }
       if (!(await still())) return;
       if (!request.hasShare) {
-        if (!this.deps.edge || this.deps.edge.isAvailable?.() === false)
+        if (!this.deps.edge)
           throw new Error(
             'Online sharing through Uplink is not available; turn it on to send booking links',
           );
+        // Right after a restart Uplink may still be connecting; wait for it a while.
+        if (this.deps.edge.isAvailable?.() === false) {
+          if (
+            this.now().getTime() - (request.approvedAt ?? request.createdAt).getTime() <
+            PROVISION_PATIENCE_MS
+          ) {
+            await this.store.update(requestId, {
+              nextAttemptAt: new Date(this.now().getTime() + 60_000),
+            });
+            return;
+          }
+          throw new Error(
+            'Online sharing through Uplink is not available; turn it on to send booking links',
+          );
+        }
         const pin = String(randomInt(100_000, 1_000_000));
         const binding = await this.deps.edge.create({
           durationSeconds: (SCHEDULING_LINK_DAYS * DAY) / 1000,
@@ -555,7 +571,6 @@ export class SchedulingService {
           return;
         }
         if (!(await still())) return;
-        await this.store.update(requestId, { attempts: 1 });
         const gmail = await resolveGoogleServiceCredential(
           this.deps.store,
           request.sessionId,
@@ -563,6 +578,8 @@ export class SchedulingService {
         );
         const gmailToken = await this.deps.googleAccessToken(gmail.accountId);
         if (!gmailToken) throw new Error('Gmail is not connected');
+        // Marked immediately before the send: only a send that may have happened counts.
+        await this.store.update(requestId, { attempts: 1 });
         await (this.deps.sendMail ?? sendGmailMessage)(gmailToken, {
           to: [request.guestEmail],
           subject: request.emailSubject,
@@ -761,6 +778,7 @@ export class SchedulingService {
   async book(requestId: string, start: string, note?: string): Promise<SchedulingBookResult> {
     const first = await this.store.get(requestId);
     if (!first) return { kind: 'unavailable', model: { kind: 'unavailable', request: undefined } };
+    let transitioned = false;
     const result = await this.store.withCalendarLock(
       this.lockKey(first),
       async (scheduling): Promise<SchedulingBookResult> => {
@@ -822,15 +840,13 @@ export class SchedulingService {
           );
           if (patched.status === 'conflict') continue; // Changed in the calendar meanwhile; look again.
           if (patched.status === 'missing') return { kind: 'taken', model };
-          if (
-            await scheduling.transition(requestId, ['open'], 'booked', {
-              bookedEventId: hold.eventId,
-              bookedStart: slot.start,
-              bookedEnd: slot.end,
-              guestNote: note ?? null,
-            })
-          )
-            this.bookedNow.add(requestId);
+          // Announced only once the lock's transaction has committed (see below).
+          transitioned = await scheduling.transition(requestId, ['open'], 'booked', {
+            bookedEventId: hold.eventId,
+            bookedStart: slot.start,
+            bookedEnd: slot.end,
+            guestNote: note ?? null,
+          });
           await scheduling.updateHold(requestId, slot.position, { state: 'converted' });
           await scheduling.scheduleHoldCleanup(requestId, {
             except: slot.position,
@@ -842,6 +858,7 @@ export class SchedulingService {
         return { kind: 'taken', model: await this.modelFor(scheduling, request) };
       },
     );
+    if (transitioned) this.bookedNow.add(requestId);
     await this.announceBooking(requestId);
     return result;
   }
@@ -931,7 +948,10 @@ export class SchedulingService {
         )
           await this.retireShare(request.id);
       } catch {
-        // Retried on the next run; the request keeps its state.
+        // Retried after a pause, so a lasting outage is not hammered every pass.
+        await this.store
+          .update(request.id, { nextAttemptAt: new Date(now.getTime() + 5 * 60_000) })
+          .catch(() => undefined);
       } finally {
         await this.store.release(request.id, this.owner);
       }

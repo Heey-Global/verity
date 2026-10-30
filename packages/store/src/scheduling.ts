@@ -397,9 +397,10 @@ export class SchedulingStore {
   async dueRequests(now: Date, limit = 20): Promise<SchedulingRequest[]> {
     return (
       await sql<Row>`select * from scheduling_requests where
-        ((state = 'provisioning' and (next_attempt_at is null or next_attempt_at <= ${now}))
+        ((state = 'provisioning')
         or (state = 'open' and closes_at <= ${now})
         or (share_secret is not null and share_revoked_at is null and link_expires_at <= ${now}))
+        and (next_attempt_at is null or next_attempt_at <= ${now})
         -- A leased row is being worked on; it must not crowd out the rest of the batch.
         and (lease_until is null or lease_until < now())
         order by updated_at limit ${limit}`.execute(this.db)
@@ -421,8 +422,8 @@ export class SchedulingStore {
     const row = (
       await sql<{ at: Date | string | null }>`select least(
         (select min(coalesce(next_attempt_at, updated_at)) from scheduling_requests where state = 'provisioning'),
-        (select min(closes_at) from scheduling_requests where state = 'open'),
-        (select min(link_expires_at) from scheduling_requests where share_secret is not null and share_revoked_at is null),
+        (select min(greatest(closes_at, coalesce(next_attempt_at, closes_at))) from scheduling_requests where state = 'open'),
+        (select min(greatest(link_expires_at, coalesce(next_attempt_at, link_expires_at))) from scheduling_requests where share_secret is not null and share_revoked_at is null),
         (select min(coalesce(next_attempt_at, updated_at)) from scheduling_holds where state = 'cancel_pending')
       ) as at`.execute(this.db)
     ).rows[0];

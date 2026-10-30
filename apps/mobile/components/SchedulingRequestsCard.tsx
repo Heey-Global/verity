@@ -124,7 +124,10 @@ export function SchedulingRequestsCard({
             {request.failure && request.state === 'open' ? (
               <Text variant="footnote">{request.failure}</Text>
             ) : null}
-            {request.link || request.state === 'open' || index === 0 ? (
+            {request.link ||
+            request.state === 'open' ||
+            request.state === 'provisioning' ||
+            index === 0 ? (
               <View style={settingsStyles.actionRowStart}>
                 {request.link ? (
                   <Button

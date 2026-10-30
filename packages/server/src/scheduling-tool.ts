@@ -85,7 +85,7 @@ export function createSchedulingTool(deps: {
       throw new ControlPlaneSessionAuthorityError(
         'Scheduling is restricted to the calling session',
       );
-    await resolveGoogleServiceCredential(deps.store, input.sessionId, 'calendar');
+    const calendar = await resolveGoogleServiceCredential(deps.store, input.sessionId, 'calendar');
     if (request.action === 'prepare' || request.action === 'send')
       await resolveGoogleServiceCredential(deps.store, input.sessionId, 'gmail');
     // Refuse before any card: a card for a request that does not exist here could only show
@@ -96,6 +96,12 @@ export function createSchedulingTool(deps: {
         throw new Error('Scheduling request not found');
       if (request.action === 'send' && stored.state !== 'draft')
         throw new Error(`This scheduling request is already ${stored.state}`);
+      // The card names the session's current account; the request acts on the one it was
+      // prepared with. They must be the same.
+      if (request.action === 'send' && stored.googleAccountId !== calendar.accountId)
+        throw new Error(
+          'The Google account changed since this request was prepared; prepare it again',
+        );
     }
     return request;
   };
