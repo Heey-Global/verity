@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { AGENT_SEED_MOUNT_PATH } from './self-update/agent-seed-stamp.js';
 import { createDockerClient } from './docker.js';
 import { recoverManagedUpdater } from './self-update/update-runner.js';
+import { scheduleLegacyBackupUpgrade } from './self-update/backup-upgrade.js';
 import {
   enableManagedMatrixConnector,
   reconcileManagedMatrixConnector,
@@ -156,6 +157,16 @@ export async function startManagedUpdaterMain(): Promise<void> {
   });
   // Connector failures must not keep the update control socket offline.
   scheduleMatrixReconcile();
+  // Open the control boundary first: the repair uses the normal standby and
+  // quiesce exchange. It never recreates a live Server outside that lifecycle.
+  void runner
+    .enqueueExclusive(async () => {
+      if (await scheduleLegacyBackupUpgrade({ managedRoot: MANAGED_DEPLOYMENT_ROOT, docker }))
+        runner.start();
+    })
+    .catch((error: unknown) => {
+      console.error('Automatic backup preparation could not be scheduled', error);
+    });
   const stop = async (): Promise<void> => {
     stopping = true;
     if (matrixRetry !== undefined) clearTimeout(matrixRetry);

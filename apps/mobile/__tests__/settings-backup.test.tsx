@@ -287,14 +287,16 @@ describe('backup setup', () => {
     expect(saved?.deleted).toBe(true);
   });
 
-  it('explains a Server that needs the installer once more', async () => {
+  it('explains automatic server preparation through updates', async () => {
     backupClient({
       getBackupStatus: jest
         .fn()
         .mockResolvedValue({ available: false, reason: 'installer-required' }),
     });
     render(<BackupScreen />);
-    expect(await screen.findByText('One-time server step needed')).toBeOnTheScreen();
+    expect(await screen.findByText('Server preparation needed')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Server updates' }));
+    expect(mockPush).toHaveBeenCalledWith('/settings/server-update');
     expect(screen.queryByText('Set up backup')).toBeNull();
   });
 });

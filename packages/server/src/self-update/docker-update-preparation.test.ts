@@ -28,7 +28,7 @@ type PreparedActions = UpdatePreparationDeps;
 const oldImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const newImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
 
-async function setup(options: { serverVersionSource?: boolean } = {}) {
+async function setup(options: { serverVersionSource?: boolean; pairing?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'docker-update-preparation-'));
   const spec: Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> = {
     image: oldImage,
@@ -45,6 +45,15 @@ async function setup(options: { serverVersionSource?: boolean } = {}) {
         : []),
     ],
     mounts: [
+      ...(options.pairing
+        ? [
+            {
+              source: { kind: 'bind' as const, path: '/etc/verity' },
+              target: '/run/verity-pairing',
+              readOnly: true,
+            },
+          ]
+        : []),
       { source: { kind: 'volume', name: 'verity-data' }, target: '/srv/verity', readOnly: false },
       {
         source: { kind: 'volume', name: 'verity-agent-gateway-control' },
@@ -1160,4 +1169,68 @@ describe('Docker update preparation', () => {
       /^managed Server authority unavailable: /,
     );
   });
+});
+
+describe('backup preparation before standby activation', () => {
+  it.each([false, true])(
+    'seals backup mounts only after host verification (fail=%s)',
+    async (fail) => {
+      const { root, journal } = await setup({ pairing: true });
+      const docker = fakeDocker();
+      docker.inspectImageLabels.mockResolvedValue({ 'org.verity.backup-provisioning': '1' });
+      docker.listContainers.mockResolvedValue([
+        {
+          id: 'b'.repeat(64),
+          imageId: 'sha256:' + 'c'.repeat(64),
+          labels: { 'com.docker.compose.service': 'postgres' },
+        },
+      ]);
+      docker.inspectContainer.mockResolvedValue({
+        running: true,
+        networks: { 'verity-net': {} },
+      } as unknown as ContainerInspect);
+      const plan = {
+        version: 1,
+        statePath: '/etc/verity',
+        backupPath: '/srv/archives',
+        identityPath: '/var/lib/verity/backup-identity',
+        provisioned: false,
+      };
+      docker.containerLogs
+        .mockResolvedValueOnce(JSON.stringify(plan))
+        .mockResolvedValueOnce('')
+        .mockResolvedValueOnce('')
+        .mockResolvedValueOnce(JSON.stringify({ ...plan, provisioned: true }));
+      if (fail) docker.waitContainer.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+      const actions = await dockerUpdatePreparation({
+        managedRoot: root,
+        docker,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+      });
+      if (fail) {
+        await expect(actions.prepareStandby!(journal)).rejects.toThrow(
+          'previous Server remains active',
+        );
+        const state = await readManagedDeployment(root);
+        expect(
+          state.managed &&
+            state.spec.mounts.some((mount) => mount.target === '/run/verity-backups'),
+        ).toBe(false);
+        expect(
+          docker.createContainer.mock.calls.every(
+            ([request]) => request.labels?.['verity.managed-role'] === 'backup-provisioning',
+          ),
+        ).toBe(true);
+      } else {
+        await actions.prepareStandby!(journal);
+        await actions.ensureStandby(journal);
+        expect(docker.createContainer.mock.calls.at(-1)?.[0].binds).toContain(
+          '/srv/archives:/run/verity-backups',
+        );
+      }
+      // Host preparation never stops or removes the serving generation.
+      expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
+    },
+  );
 });
