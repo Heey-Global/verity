@@ -266,7 +266,14 @@ export class SessionStorage {
       return;
     // Ordinary sessions need no recovery and may use unmanaged repository layouts.
     // Require the stricter retirement boundary only when a journal actually exists.
-    if (!(await exists(this.manifest(resolve(this.deps.root(project)), session.worktree)))) return;
+    try {
+      if (!(await exists(this.manifest(resolve(this.deps.root(project)), session.worktree))))
+        return;
+    } catch (error) {
+      // Linked checkouts use a .git file and cannot contain our retirement journal.
+      if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') return;
+      throw error;
+    }
     const root = await this.safeRoot(project, session.worktree);
     const path = this.manifest(root, session.worktree);
     const source = await this.retirementSource(root, session.worktree);

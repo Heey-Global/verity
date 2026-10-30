@@ -107,12 +107,16 @@ function fixture() {
   };
 }
 describe('safe session storage reclamation', () => {
-  it('leaves ordinary sessions without retirement journals outside recovery checks', async () => {
-    const f = fixture();
-    rmSync(join(f.root, '.git'), { recursive: true });
-    await expect(f.service.ensureWorkspace(f.session)).resolves.toBeUndefined();
-    expect(existsSync(f.path)).toBe(true);
-  });
+  it.each([false, true])(
+    'leaves ordinary sessions outside recovery checks (.git file=%s)',
+    async (asFile) => {
+      const f = fixture();
+      rmSync(join(f.root, '.git'), { recursive: true });
+      if (asFile) writeFileSync(join(f.root, '.git'), 'gitdir: /unmanaged/metadata');
+      await expect(f.service.ensureWorkspace(f.session)).resolves.toBeUndefined();
+      expect(existsSync(f.path)).toBe(true);
+    },
+  );
 
   it.each(['--assume-unchanged', '--skip-worktree'])(
     'preserves tracked edits hidden by %s',
