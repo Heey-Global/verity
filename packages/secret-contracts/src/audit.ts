@@ -120,6 +120,7 @@ export const gatewayToolNameSchema = z.enum([
   'verity_gmail',
   'verity_matrix',
   'verity_google_calendar',
+  'verity_scheduling',
   'verity_google_contacts',
   'verity_google_drive',
 ]);

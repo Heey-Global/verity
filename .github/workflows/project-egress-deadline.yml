@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/workflows/project-egress-deadline.yml'
       - 'deploy/egress/project-egress-deadline.bpf.c'
+      - 'deploy/egress/project-egress-deadline.py'
+      - 'packages/server/src/project-egress-deadline*.ts'
+      - 'packages/server/src/project-egress-fence*.ts'
       - 'scripts/probes/project-egress/deadline-*'
       - 'scripts/probes/project-egress/test_deadline*'
       - 'scripts/probes/project-egress/boot-vm.py'

@@ -1,4 +1,5 @@
 import { AssistantStore } from './assistant.js';
+import { SchedulingStore } from './scheduling.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
@@ -1423,6 +1424,7 @@ export class EventStore implements EventSink {
     this.tasks = new TaskStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
     this.assistant = new AssistantStore(db);
+    this.scheduling = new SchedulingStore(db, cipher);
   }
 
   readonly projectEgress: ProjectEgressStore;
@@ -1432,6 +1434,7 @@ export class EventStore implements EventSink {
   readonly tasks: TaskStore;
   readonly repairs: RepairSupervisionStore;
   readonly assistant: AssistantStore;
+  readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
 
