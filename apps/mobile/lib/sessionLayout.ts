@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 
 /** Window width in points, shared by the overview and session entry routes. */
-export const SPLIT_SCREEN_MIN_WIDTH = 768;
+const SPLIT_SCREEN_MIN_WIDTH = 768;
 
 export function sessionLayout(
   width: number,
