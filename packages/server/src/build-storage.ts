@@ -205,6 +205,7 @@ export interface BuildStorageLease {
   /** Remote work may still use the context or archive; preserve both and admission. */
   readonly retainArtifacts: boolean;
   reserveBuild(imageBytes?: number): void;
+  reserveBuildWithReclamation?(imageBytes?: number): Promise<void>;
   run(
     this: void,
     command: string,
@@ -337,7 +338,14 @@ const activeDirectories = new Set<string>();
  * longer blocks other builds; {@link BuildStorage.reconcile} releases it once the
  * worker, the boot or the elapsed time proves it ended.
  */
+class BuildStorageCapacityError extends Error {}
+
 export class BuildStorage {
+  private reclaimer?: () => Promise<void>;
+  setReclaimer(reclaim: () => Promise<void>): void {
+    this.reclaimer = reclaim;
+  }
+
   private held = false;
   /** Builds waiting for this Server's one lease, first come first served. */
   private readonly waiting: Array<() => void> = [];
@@ -373,7 +381,7 @@ export class BuildStorage {
       this.reportEvidence(evidence.problems);
     }
     if (available < bytes + this.policy.reserveBytes || inodes < this.policy.reserveInodes) {
-      throw new Error(
+      throw new BuildStorageCapacityError(
         `Build storage admission rejected: available ${Math.floor(available / GiB)} GiB and ${inodes} free inodes; requires ${Math.ceil(bytes / GiB)} GiB estimated growth plus ${Math.ceil(this.policy.reserveBytes / GiB)} GiB reserve and ${this.policy.reserveInodes} free inodes.` +
           (unresolvedBytes > 0
             ? ` ${Math.ceil(unresolvedBytes / GiB)} GiB of that is held by ${this.unresolved.length} earlier build attempt(s) whose end is not yet confirmed (${this.unresolved.map((entry) => entry.attempt).join(', ')}); they are released automatically once the builder confirms they ended.`
@@ -440,10 +448,39 @@ export class BuildStorage {
       this.handingOver = false;
     }
     try {
-      return this.admit();
+      try {
+        return this.admit();
+      } catch (error) {
+        if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
+        this.handingOver = true;
+        try {
+          await this.reclaimCapacity();
+        } finally {
+          this.handingOver = false;
+        }
+        return this.admit();
+      }
     } finally {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
       if (!this.held) this.wakeNext();
+    }
+  }
+
+  private async reclaimCapacity(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.reclaimer?.(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Storage reclamation timed out; retry after cleanup finishes')),
+            120_000,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -901,16 +938,26 @@ export class BuildStorage {
         closeSync(fd);
       }
     };
+    const reserveBuild = (imageBytes?: number) => {
+      if (disposed) throw new Error('Build storage lease was released');
+      estimateBytes = estimateBuildStorageBytes(this.policy, imageBytes);
+      this.check(estimateBytes, true);
+      reserved = true;
+    };
     return {
       directory,
       get retainArtifacts() {
         return existsSync(remoteRecord);
       },
-      reserveBuild: (imageBytes) => {
-        if (disposed) throw new Error('Build storage lease was released');
-        estimateBytes = estimateBuildStorageBytes(this.policy, imageBytes);
-        this.check(estimateBytes, true);
-        reserved = true;
+      reserveBuild,
+      reserveBuildWithReclamation: async (imageBytes) => {
+        try {
+          reserveBuild(imageBytes);
+        } catch (error) {
+          if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
+          await this.reclaimCapacity();
+          reserveBuild(imageBytes);
+        }
       },
       run: async (command, args, options) => {
         if (disposed || running) throw new Error('Build storage command lease is not available');

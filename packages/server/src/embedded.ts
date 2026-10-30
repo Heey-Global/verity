@@ -1,3 +1,10 @@
+import type { GitOutput } from './branches.js';
+import { SessionStorage } from './session-storage.js';
+import {
+  retireStoppedContainers,
+  retireCompletedUpdateContainers,
+} from './stopped-container-gc.js';
+import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
 import {
   selectBranchStatus,
@@ -76,7 +83,7 @@ import {
   type ProjectRecord,
 } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 
 import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -102,7 +109,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
-import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
+import { createRuntimeDiagnostics, nativeRetirementSchema } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -253,6 +260,7 @@ import { containerNameFor } from './canonical.js';
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
 import {
   createSleepingSessionGit,
+  sandboxIsRunning,
   createSandboxGit,
   withSleepingSessionGit,
 } from './sandbox-git.js';
@@ -2284,13 +2292,23 @@ export async function buildEmbeddedServer(
                       ? MANAGED_CONTROL_PLANE_RUNNER_NAME
                       : project.containerName;
                   const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-                  if (!(await docker.inspectContainer(containerName)).running) {
+                  if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return withSleepingSessionGit(
                       {
                         docker,
                         templateContainer: containerName,
+                        fallback: {
+                          imageId:
+                            typeof defaultProjectImage === 'function'
+                              ? await defaultProjectImage()
+                              : defaultProjectImage,
+                          runtime: PROJECT_RUNSC_RUNTIME,
+                          memoryBytes: 512 * 1024 ** 2,
+                          nanoCpus: 1_000_000_000,
+                          pidsLimit: 128,
+                        },
                         projectId: project.id,
                         hostRoot,
                         dockerBaseUrl: config.dockerBaseUrl,
@@ -2342,12 +2360,25 @@ export async function buildEmbeddedServer(
                       'show-ref',
                     ].includes(args[index + 2] ?? '') ||
                     (args[index + 2] === 'worktree' && args[index + 3] === 'list');
-                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
+                  if (
+                    readOnly &&
+                    !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
+                  ) {
                     if (config.dataVolume && !dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
                       docker: projectDocker,
                       templateContainer: containerName,
+                      fallback: {
+                        imageId:
+                          typeof defaultProjectImage === 'function'
+                            ? await defaultProjectImage()
+                            : defaultProjectImage,
+                        runtime: PROJECT_RUNSC_RUNTIME,
+                        memoryBytes: 512 * 1024 ** 2,
+                        nanoCpus: 1_000_000_000,
+                        pidsLimit: 128,
+                      },
                       projectId: project.id,
                       hostRoot: projectClonePath(config.hostCloneRoot!, project),
                       ...(config.dataVolume
@@ -2685,6 +2716,18 @@ export async function buildEmbeddedServer(
         : mutation();
     return localPreviewManager
       ? localPreviewManager.withProjectMutation(projectId, runPublic)
+      : runPublic();
+  };
+  const withStorageProjectMutation = async <T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+  ): Promise<T> => {
+    const runPublic = () =>
+      previewShareManager
+        ? previewShareManager.withProjectStorageMutation(projectId, mutation)
+        : mutation();
+    return localPreviewManager
+      ? localPreviewManager.withProjectStorageMutation(projectId, runPublic)
       : runPublic();
   };
   // Every line the Uplink client writes is conditional on this option being
@@ -4598,7 +4641,110 @@ export async function buildEmbeddedServer(
           },
         })
       : undefined;
+  let lastDockerGcReport: DockerGcReport | undefined;
+  const sessionStorage =
+    config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
+      ? new SessionStorage({
+          gitRoot: '/work',
+          listProjects: () => eventStore.listProjects(),
+          listSessions: () => eventStore.listSessions(),
+          activity: async (id) =>
+            (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
+          root: (project) => projectClonePath(config.hostCloneRoot!, project),
+          mutate: (projectId, sessionId, operation) =>
+            withStorageProjectMutation(projectId, () =>
+              provisioner.withProjectExclusiveMutation(
+                projectId,
+                async () => {
+                  if (managedDevServerManager?.hasRunningServers(projectId))
+                    throw new Error('Managed dev server is active');
+                  if (
+                    (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
+                      ['creating', 'active', 'revoking'].includes(s.state),
+                    )
+                  )
+                    throw new Error('Public preview is active');
+                  await operation();
+                },
+                sessionId ? new Set([sessionId]) : undefined,
+              ),
+            ),
+          withGit: async (project, operation) => {
+            if (config.dataVolume && !dataVolumeRoot)
+              throw new Error('Data volume root is unavailable');
+            const containerName = project.containerName;
+            const hostRoot = projectClonePath(config.hostCloneRoot!, project);
+            const inspect = await projectDocker
+              .inspectContainer(containerName)
+              .catch((error: unknown) => {
+                if (error instanceof DockerError && error.kind === 'container_not_found')
+                  return null;
+                throw error;
+              });
+            const authenticated = async (git: GitOutput) =>
+              operation(async (args) => {
+                if (!args.includes('fetch')) return git(args);
+                // Keep provider credentials out of persistent Git config and cleanup reports.
+                if (project.kind === 'forgejo')
+                  throw new Error('Forgejo retirement fetch is unavailable; worktree retained');
+                const token =
+                  project.kind === 'local' ? undefined : await cachedProjectTokenMint(project);
+                try {
+                  return await git([
+                    ...(token
+                      ? ['-c', `http.https://github.com/.extraHeader=${gitAuthHeader(token)}`]
+                      : []),
+                    ...args,
+                  ]);
+                } catch {
+                  throw new Error('Retirement remote verification failed; worktree retained');
+                }
+              });
+            if (!inspect?.running)
+              return withSleepingSessionGit(
+                {
+                  docker: projectDocker,
+                  templateContainer: containerName,
+                  projectId: project.id,
+                  hostRoot,
+                  dockerBaseUrl: config.dockerBaseUrl!,
+                  maintenance: {
+                    fallback: {
+                      imageId:
+                        typeof defaultProjectImage === 'function'
+                          ? await defaultProjectImage()
+                          : defaultProjectImage,
+                      runtime: PROJECT_RUNSC_RUNTIME,
+                      memoryBytes: 512 * 1024 ** 2,
+                      nanoCpus: 1_000_000_000,
+                      pidsLimit: 128,
+                    },
+                  },
+                  ...(config.dataVolume && dataVolumeRoot
+                    ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                    : {}),
+                },
+                authenticated,
+              );
+            return authenticated(
+              createSandboxGit({
+                containerName,
+                hostRoot,
+                dockerBaseUrl: config.dockerBaseUrl!,
+                inspect: () => projectDocker.inspectContainer(containerName),
+                timeoutMs: 15_000,
+              }),
+            );
+          },
+          wake: async (project, sessionId) => {
+            if (project.state === 'sleeping')
+              await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
+          },
+          pr: (project, branch) => readProjectStatus(project, branch),
+        })
+      : undefined;
   const app = buildControlPlane({
+    ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
     ...(backup ? { backup } : {}),
     ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
@@ -4783,6 +4929,70 @@ export async function buildEmbeddedServer(
       builderAdmissionDirectory: '/run/verity-buildkit',
       buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
       buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      storageReclamation: async () => {
+        const report = sessionStorage?.lastReport;
+        let databaseBytes: number | null = null;
+        try {
+          const row = await sql<{
+            bytes: string;
+          }>`select pg_database_size(current_database())::text as bytes`.execute(db);
+          const value = Number(row.rows[0]?.bytes);
+          if (Number.isSafeInteger(value) && value >= 0) databaseBytes = value;
+        } catch {
+          /* Database usage is unknown, not zero. */
+        }
+        let nativeBuildkit: ReturnType<typeof nativeRetirementSchema.parse> | null = null;
+        try {
+          const value = nativeRetirementSchema.parse(
+            JSON.parse(
+              await readFile('/run/verity-buildkit/native-retirement.json', 'utf8'),
+            ) as unknown,
+          );
+          if (
+            Date.now() - Date.parse(value.observedAt) >= 0 &&
+            Date.now() - Date.parse(value.observedAt) < 120_000
+          )
+            nativeBuildkit = value;
+        } catch {
+          /* Host inventory may not yet exist. */
+        }
+        return {
+          accounting:
+            'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
+          lastGc: lastDockerGcReport
+            ? {
+                observedAt: lastDockerGcReport.observedAt,
+                containersRemoved: lastDockerGcReport.containersRemoved.slice(0, 100),
+                imagesRemoved: lastDockerGcReport.imagesRemoved.length,
+                lowDisk: lastDockerGcReport.lowDisk,
+                errors: lastDockerGcReport.errors.length,
+                stoppedContainerPins: lastDockerGcReport.stoppedContainerPins,
+                keptImageReasons: lastDockerGcReport.keptImageReasons,
+              }
+            : null,
+          worktrees: report
+            ? {
+                observedAt: report.observedAt,
+                dependenciesRemoved: report.dependenciesRemoved.length,
+                worktreesRetired: report.worktreesRetired.length,
+                comparedDependencyBytes: report.comparedDependencyBytes,
+                worktreeSampledBytes: report.worktreeSampledBytes,
+                dependencySampledBytes: report.dependencySampledBytes,
+                usageComplete: report.usageComplete,
+                dryRun: report.dryRun,
+                blockers: report.blockers
+                  .slice(0, 100)
+                  .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
+              }
+            : null,
+          databaseBytes,
+          nativeBuildkit,
+          activeBuildkitBytes:
+            typeof nativeBuildkit?.overlayAllocatedBytes === 'number'
+              ? nativeBuildkit.overlayAllocatedBytes
+              : null,
+        };
+      },
       projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
@@ -5098,6 +5308,7 @@ export async function buildEmbeddedServer(
     // are configured — same guard as `refreshProjectToken`).
     ...(projectWorktrees !== undefined ? { projectWorktrees } : {}),
     conductor: {
+      ensureWorkspace: (session) => sessionStorage?.ensureWorkspace(session) ?? Promise.resolve(),
       // Stable ACP v1 is the only Claude transport (ADR 0012); the native
       // stream-json backend it replaced has been removed, rollback included.
       backend: new AcpClaudeBackend(),
@@ -5899,9 +6110,40 @@ export async function buildEmbeddedServer(
       // provision. This is what keeps the sweep off a relay whose sandbox has not
       // been created yet — neither the listing nor elapsed time can see that.
       heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
+      beforeSweep: () => sessionStorage?.runOnce() ?? Promise.resolve(),
+      onReport: (report) => {
+        lastDockerGcReport = report;
+      },
+      retireContainers: async () => {
+        const removed = await retireCompletedUpdateContainers(projectDocker);
+        if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
+        const result = await retireStoppedContainers({
+          docker: projectDocker,
+          listProjects: () => eventStore.listProjects(),
+          withProjectMutation: (id, run) =>
+            withStorageProjectMutation(id, () =>
+              provisioner.withProjectExclusiveMutation(id, async () => {
+                if (managedDevServerManager?.hasRunningServers(id))
+                  throw new Error('Managed dev server is active');
+                if (
+                  (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
+                  (await eventStore.listPublicPreviewShares(id)).some((s) =>
+                    ['creating', 'active', 'revoking'].includes(s.state),
+                  )
+                )
+                  throw new Error('Preview is active');
+                await run();
+              }),
+            ),
+        });
+        return { removed: [...removed, ...result.removed], errors: result.errors };
+      },
       imageReferences,
       onProjectImageRemoved: (image) =>
         auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
+    });
+    buildStorage?.setReclaimer(async () => {
+      await dockerGc.runOnce();
     });
     app.addHook('onClose', () => {
       dockerGc.stop();

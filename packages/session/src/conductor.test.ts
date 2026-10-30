@@ -990,6 +990,38 @@ describe('Conductor.sendTurn', () => {
     expect(conductor.isBusy('ghost')).toBe(false);
   });
 
+  it('restores a retired workspace under the turn lock before checking existence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/retired', model: 'm' });
+    const fake = scriptedBackend();
+    let restored = false;
+    const conductor: Conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      ensureWorkspace: async () => {
+        expect(conductor.isBusy('s1')).toBe(true);
+        restored = true;
+      },
+      worktreeExists: async () => restored,
+    });
+    await conductor.sendTurn('s1', 'Resume');
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('releases the session lock after interrupted workspace restoration', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/retired', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      ensureWorkspace: async () => {
+        throw new Error('restore interrupted');
+      },
+    });
+    await expect(conductor.sendTurn('s1', 'Resume')).rejects.toThrow('restore interrupted');
+    expect(conductor.isBusy('s1')).toBe(false);
+    expect(fake.calls).toHaveLength(0);
+  });
+
   it('rejects resuming a session whose worktree is gone, without spawning', async () => {
     // A session pointing at a dir that no longer exists (e.g. an isolated worktree
     // cleaned up after its PR merged). No `worktreeExists` stub → the real fs probe

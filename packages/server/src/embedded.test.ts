@@ -3454,9 +3454,9 @@ process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-
       });
       expect(res.statusCode).toBe(202);
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const calls = readFileSync(argsFile, 'utf8')
-        .trim()
-        .split('\n')
+      // A rejected relay-era turn need not invoke the Docker CLI at all.
+      const calls = (existsSync(argsFile) ? readFileSync(argsFile, 'utf8').trim().split('\n') : [])
+        .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]);
       expect(calls.some((call) => call.includes('codex'))).toBe(false);
     } finally {

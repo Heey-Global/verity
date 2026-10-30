@@ -1905,7 +1905,11 @@ export interface Provisioner {
   ): Promise<LinkCloneToGitHubResult>;
   /** Run a project mutation while new turns wait at the same admission barrier
    * used by Sandbox repair, and reject when existing work is active. */
-  withProjectExclusiveMutation?<T>(projectId: string, mutation: () => Promise<T>): Promise<T>;
+  withProjectExclusiveMutation?<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<T>;
   /** Stop and retain an idle Sandbox, revoking all of its live authority first. */
   sleepProject?(
     projectId: string,
@@ -6311,7 +6315,9 @@ export class ProvisionerImpl implements Provisioner {
             // Missing/pruned images and unavailable diagnostics use the fallback.
           }
         }
-        storageLease.reserveBuild(imageBytes);
+        if (storageLease.reserveBuildWithReclamation)
+          await storageLease.reserveBuildWithReclamation(imageBytes);
+        else storageLease.reserveBuild(imageBytes);
       }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
