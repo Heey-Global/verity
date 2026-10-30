@@ -18,7 +18,7 @@ import {
 import type { UpdatePreparationDeps } from './update-preparation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
-import { beginUpdate, readUpdateJournal } from './update-journal.js';
+import { advanceUpdate, beginUpdate, readUpdateJournal } from './update-journal.js';
 import { UPDATE_PULL_RETRY_DELAYS_MS } from './pull-retry.js';
 
 /** The two candidate builders share every refusal below, so the cases that apply
@@ -1172,6 +1172,88 @@ describe('Docker update preparation', () => {
 });
 
 describe('backup preparation before standby activation', () => {
+  it('requires corrected updater orchestration to resume the original pinned operation, even after a receipt exists', async () => {
+    const { root } = await setup({ pairing: true });
+    for (const [from, to] of [
+      ['requested', 'pulling'],
+      ['pulling', 'verifying-image'],
+      ['verifying-image', 'preflight'],
+      ['preflight', 'creating-standby'],
+    ] as const)
+      await advanceUpdate(root, from, to);
+    const journal = await readUpdateJournal(root);
+    if (!journal) throw new Error('missing recovery journal');
+    const docker = fakeDocker();
+    docker.inspectImageLabels.mockResolvedValue({ 'org.verity.backup-provisioning': '1' });
+    docker.listContainers.mockResolvedValue([
+      {
+        id: 'b'.repeat(64),
+        imageId: 'sha256:' + 'c'.repeat(64),
+        labels: { 'com.docker.compose.service': 'postgres' },
+      },
+    ]);
+    docker.inspectContainer.mockResolvedValue({
+      running: true,
+      networks: { 'verity-net': {} },
+    } as unknown as ContainerInspect);
+    let provisioned = false;
+    const lastJob = () => docker.createContainer.mock.calls.at(-1)?.[0];
+    docker.containerLogs.mockImplementation(async () =>
+      JSON.stringify({
+        version: 1,
+        statePath: '/etc/verity',
+        backupPath: '/srv/archives',
+        identityPath: '/var/lib/verity/backup-identity',
+        provisioned,
+      }),
+    );
+    docker.waitContainer.mockImplementation(async () => {
+      const job = lastJob();
+      if (job?.command?.[0] !== '/opt/verity-install/deploy/host/verity-backup-provision') return 0;
+      if (job.pidMode !== 'host' || !job.env?.includes('SYSTEMD_IGNORE_CHROOT=1')) return 1;
+      provisioned = true;
+      return 0;
+    });
+    // Model the old creator's omitted fields, using the actual preparation and
+    // provisioning implementations rather than mocking the host hook away.
+    const legacy = {
+      ...docker,
+      createContainer: async (spec: ContainerSpec) => {
+        const copy = {
+          ...spec,
+          env: (spec.env ?? []).filter((entry) => entry !== 'SYSTEMD_IGNORE_CHROOT=1'),
+        };
+        delete copy.pidMode;
+        return docker.createContainer(copy);
+      },
+    };
+    const actions = (client: UpdatePreparationDocker) =>
+      dockerUpdatePreparation({
+        managedRoot: root,
+        docker: client,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+      });
+    const oldUpdater = await actions(legacy);
+    await expect(oldUpdater.prepareStandby!(journal)).rejects.toThrow(
+      'previous Server remains active',
+    );
+    provisioned = true;
+    await expect(oldUpdater.prepareStandby!(journal)).rejects.toThrow(
+      'previous Server remains active',
+    );
+    const correctedUpdater = await actions(docker);
+    await correctedUpdater.prepareStandby!(journal);
+    await correctedUpdater.ensureStandby(journal);
+    expect(lastJob()).toMatchObject({
+      image: journal.targetDigest,
+      name: `verity-managed-server-g${String(journal.generation)}`,
+    });
+    expect(lastJob()?.binds).toContain('/srv/archives:/run/verity-backups');
+    expect(await readUpdateJournal(root)).toEqual(journal);
+    expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
+  });
+
   it.each([false, true])(
     'seals backup mounts only after host verification (fail=%s)',
     async (fail) => {

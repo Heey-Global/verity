@@ -1,87 +1,79 @@
 # Recover backup provisioning before standby creation
 
-Use this only when an update is stuck in `creating-standby` and the release-owned
-backup provisioning helper reports `Failed to connect to bus: No data available`.
-The original Server remains active. Repeated retries cannot repair the old
-Updater's missing host PID visibility.
+Use this only when an update is stuck in `creating-standby` and its release-owned
+backup helper reports `Failed to connect to bus: No data available`. The previous
+Server remains active; retries through the old Updater repeat the same failure.
 
 The fixed Updater grants host PID visibility only to the bounded provisioning
-job. Planning, write probes and ordinary Server containers retain their PID
-isolation. This lets systemctl verify the peer credentials on the existing host
-systemd private socket without adding capabilities or mounting the system bus.
-The provisioning job also sets `SYSTEMD_IGNORE_CHROOT=1` so systemctl targets that
-live manager instead of silently treating the container filesystem as offline.
+job and sets `SYSTEMD_IGNORE_CHROOT=1`. systemctl can then verify the peer on the
+mounted host manager socket and operate that manager instead of treating the
+container filesystem as offline. Planning, write probes and ordinary Server
+containers retain their PID isolation and existing security/resource settings.
 
-## One-time recovery authorization
+## Recovery needs the corrected Updater
 
-An already running old Updater cannot load the fixed orchestration code. Recovery
-therefore requires a **one-time root command on the deployment host**, using a
-verified fixed release image. This is an explicit local recovery action, not an
-automatic app-only update. It invokes the same Updater provisioning implementation
-against the existing operation's original target image, rather than editing host
-configuration by hand or replacing the Server or Updater.
+An already running old Updater cannot load the fixed orchestration. Provisioning
+backup prerequisites separately is insufficient: the old Updater always launches
+its original failing helper again, even when a provisioning receipt already exists.
 
-The command shares the Updater's crash-released journal lease. It refuses an active
-attempt, any phase other than `creating-standby`, an existing journaled candidate,
-or a sealed predecessor that no longer matches. Apply requires the exact operation,
-generation, target and both checksums printed by check. No journal, release target
-or sealed deployment is rewritten. The helper performs the normal installation
-of backup prerequisites, so applying does write the backup host configuration.
+Recovery requires an explicitly authorized **Updater-only replacement on the
+host**, using a verified fixed release image. This is a one-time recovery
+procedure, not an automatic app-only fix. Do not edit backup/systemd configuration
+by hand, replace the Server, change the operation target, delete the journal,
+or rerun managed bootstrap.
 
-## Check and apply
+## Prepare the replacement
 
-First obtain and verify a published release containing this command through the
-normal signed-release verification process. Set `VERITY_REPAIR_IMAGE` to that
-exact official digest, never a floating tag or an unverified image. The repair
-image may be newer than the operation's pinned target; it only supplies the fixed
-orchestration, not a replacement update target.
+Obtain and verify a published release containing the fix through the normal
+signed-release verification process. Use that exact official image digest,
+never a floating tag or an unverified PR image. The fixed Updater can execute the
+existing operation's original pinned target helper; changing the Server target
+is unnecessary.
 
-On the deployment host, as root:
+Before applying, confirm the operation is still at `creating-standby`, the old
+Server is serving, and no provisioning helper is running. Wait for any active
+helper to exit rather than overlapping host preparation. Record the existing
+Updater container identity, its image and its mounts using bounded read-only
+inspection; do not print its full environment or inspect payload because those
+may contain secrets.
 
-```bash
-docker volume inspect verity-managed-deployment >/dev/null
-
-backup_repair() {
-  docker run --rm --network none --read-only --user 0:0 \
-    --cap-drop ALL --security-opt no-new-privileges=true \
-    --pids-limit 64 --memory 256m --tmpfs /tmp:rw,nosuid,nodev,size=16m \
-    --mount type=volume,source=verity-managed-deployment,target=/var/lib/verity/updater/managed-deployment \
-    --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
-    --entrypoint node "${VERITY_REPAIR_IMAGE:?verified fixed release digest required}" \
-    /app/packages/server/dist/backup-provision-recovery-command.js "$@"
-}
-
-backup_repair --check
-```
-
-Review the output's `snapshot`. Check launches only the read-only plan helper,
-alongside the temporary journal lease; it does not provision the host. If another
-Updater attempt holds the lease, wait for that attempt to finish and check again.
-Never remove its lock or stop the serving generation.
-
-With explicit authorization, pass only the exact `snapshot` object as one argument:
+Using the installation's original Compose project, environment, file selection
+and overlays, recreate **only** `verity-updater` with the verified fixed digest.
+For the standard managed file selection the command is:
 
 ```bash
-backup_repair --apply '<snapshot JSON from --check>'
+VERITY_SERVER_IMAGE='<verified fixed release digest>' docker compose \
+  -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
+  --profile managed up -d --no-deps verity-updater
 ```
 
-If the operation or sealed deployment changed, apply refuses before starting any
-provisioning job: check and review again. Helper failures leave the original
-operation available for retry. A successful apply verifies both the durable
-provisioning receipt and directory access as the Server user. An already completed
-repair is safe to apply again without repeating host provisioning.
+Run this in the existing installation context with its original Compose settings;
+never guess a different project or regenerate credentials. If that context cannot
+be established, stop and prepare a reviewed replacement preserving the actual
+container's configuration instead. No host mutation is authorized merely by
+reading this procedure.
 
-After `provisioned: true`, retry the existing update in the app. Normal Updater
-preparation verifies the receipt, seals the backup mounts and resumes standby
-creation. Do not start a different release or delete update state to bypass this
-operation.
+## Resume and verify
+
+The corrected Updater reads and resumes the existing journal on startup. It repeats
+backup provisioning using host PID visibility, verifies the durable receipt and
+Server-user directory access, and continues the normal guarded Server replacement.
+If an attempt fails for another reason, inspect its bounded failure details before
+retrying the same operation. Do not bypass the journal or activation fencing.
+
+Companion reconciliation follows the original operation's target image. If that
+release predates the fix, completion may hand the Updater back to its old version.
+Before requesting another update, inspect its actual image and, if necessary,
+repeat the same Updater-only recreation with the verified fixed digest. Then
+request the fixed Server release normally so all companions converge on it.
 
 ## Verification limits
 
-The peer-credential regression uses real systemctl and Linux PID/mount namespaces
-with a deliberately rejecting socket, not a complete systemd host. It reproduces
-the original connection error and proves shared PID visibility passes that check.
-Provisioning fixtures cover durable receipts and failed attempts; recovery tests
-cover the journal lease, stale snapshots, idempotence and preservation of the
-serving generation. Full recovery on a disposable Docker/systemd host is still
-required before claiming live end-to-end verification.
+The regression uses real systemctl and Linux PID/mount namespaces with a rejecting
+socket and a controlled offline-root fixture. It reproduces the peer connection
+failure and verifies the corrected connection path; it is not a complete systemd
+host. Preparation tests exercise the actual provisioning orchestration and prove
+an old executor still fails despite an existing receipt, while the corrected one
+can prepare the original target without rewriting its journal. Full recovery on
+a disposable Docker/systemd host remains required before claiming end-to-end
+verification. This procedure has not been executed on a production host.
