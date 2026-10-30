@@ -36,7 +36,7 @@ import {
 
 const DAY = 24 * 60 * 60 * 1000;
 /** How long a request's public link lives: past the booking deadline, to explain it closed. */
-export const SCHEDULING_LINK_DAYS = 30;
+const SCHEDULING_LINK_DAYS = 30;
 /** The longest a request stays bookable. */
 export const SCHEDULING_MAX_BOOKING_DAYS = 7;
 /** Range searched for a request's own holds; holds moved further away no longer count. */
@@ -47,7 +47,7 @@ const CLEANUP_ALERT_ATTEMPT = 5;
 const LEASE_MS = 2 * 60_000;
 export const SCHEDULING_LINK_PLACEHOLDER = '{link}';
 
-export type SchedulingStoreDeps = Pick<EventStore, 'getSession' | 'getGoogleServiceCredentials'> & {
+type SchedulingStoreDeps = Pick<EventStore, 'getSession' | 'getGoogleServiceCredentials'> & {
   scheduling: SchedulingStore;
 };
 
@@ -80,7 +80,7 @@ export interface SchedulingServiceDeps {
   now?: () => Date;
 }
 
-export interface SchedulingWindowInput {
+interface SchedulingWindowInput {
   start: string;
   end: string;
 }
@@ -136,7 +136,7 @@ export type SchedulingBookResult =
   | { kind: 'unavailable'; model: SchedulingPageModel };
 
 /** The calendar event id of a hold: deterministic, so a retried create cannot add a second hold. */
-export function holdEventId(requestId: string, position: number): string {
+function holdEventId(requestId: string, position: number): string {
   // Google allows base32hex characters (a-v, 0-9); hex digits are a subset.
   return `vs${createHash('sha256')
     .update(`${requestId}:${String(position)}`)
@@ -148,7 +148,7 @@ export function holdEventId(requestId: string, position: number): string {
  * Digest of everything the operator approves. Approval is bound to it, so a draft whose content
  * differs from what the card showed can never be provisioned under that approval.
  */
-export function schedulingDigest(request: SchedulingRequest, holds: SchedulingHold[]): string {
+function schedulingDigest(request: SchedulingRequest, holds: SchedulingHold[]): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -201,7 +201,7 @@ export function formatInZone(
   }).format(date);
 }
 
-export function publicLink(binding: Pick<SchedulingShareBinding, 'publicOrigin' | 'pin'>): string {
+function publicLink(binding: Pick<SchedulingShareBinding, 'publicOrigin' | 'pin'>): string {
   return `${binding.publicOrigin.replace(/\/$/u, '')}/?pin=${encodeURIComponent(binding.pin)}`;
 }
 

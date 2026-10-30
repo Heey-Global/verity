@@ -436,7 +436,7 @@ async function readForm(request: IncomingMessage): Promise<URLSearchParams | und
 }
 
 /** The HTTP handler of one request's public page. */
-export function createSchedulingPageHandler(backend: SchedulingPageBackend, requestId: string) {
+function createSchedulingPageHandler(backend: SchedulingPageBackend, requestId: string) {
   const attempts: number[] = [];
   const views: number[] = [];
   const allow = (log: number[], limit: number): boolean => {

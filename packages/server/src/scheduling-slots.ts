@@ -3,7 +3,7 @@ import type { CalendarEventRecord } from './google-calendar.js';
 /** Private extended property naming the scheduling request an event belongs to. */
 export const SCHEDULING_REQUEST_PROPERTY = 'verityScheduling';
 /** Private extended property: `hold` while offered, `booked` once it is the appointment. */
-export const SCHEDULING_ROLE_PROPERTY = 'verityRole';
+const SCHEDULING_ROLE_PROPERTY = 'verityRole';
 /** Private extended property: which offered window of the request a hold stands for. */
 export const SCHEDULING_POSITION_PROPERTY = 'verityPosition';
 
@@ -98,7 +98,7 @@ function eventInterval(event: CalendarEventRecord, timeZone: string): Interval |
  * may overlap freely — while everything the organizer actually attends does: other meetings,
  * busy all-day events, and appointments booked through other requests.
  */
-export function isBlocking(event: CalendarEventRecord): boolean {
+function isBlocking(event: CalendarEventRecord): boolean {
   if (event.status === 'cancelled') return false;
   if (event.transparency === 'transparent') return false;
   if (schedulingRole(event) === 'hold') return false;

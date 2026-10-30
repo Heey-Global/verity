@@ -9,7 +9,7 @@ import type { SchedulingService } from './scheduling-service.js';
 const sessionParams = z.object({ id: z.string().min(1) });
 const revokeParams = z.object({ requestId: z.string().uuid() });
 
-export interface SchedulingRequestView {
+interface SchedulingRequestView {
   id: string;
   sessionId: string;
   state: SchedulingRequest['state'];
@@ -31,7 +31,7 @@ export interface SchedulingRequestView {
   createdAt: string;
 }
 
-export async function schedulingRequestView(
+async function schedulingRequestView(
   store: Pick<EventStore, 'scheduling'>,
   service: Pick<SchedulingService, 'publicLink'>,
   request: SchedulingRequest,

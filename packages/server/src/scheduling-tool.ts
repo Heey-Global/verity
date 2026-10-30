@@ -58,7 +58,6 @@ export const schedulingRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list') }).strict(),
   z.object({ action: z.literal('revoke'), requestId }).strict(),
 ]);
-export type SchedulingToolRequest = z.infer<typeof schedulingRequestSchema>;
 
 export const SCHEDULING_TOOL_DESCRIPTION = `Offer meeting times to one guest through a booking link. prepare checks the organizer's calendar, derives the start times (each window is cut into slots of durationMinutes from its start; a slot must fit completely) and stores a draft; nothing leaves Verity yet. Ask the user whether to add Google Meet before prepare. Use only email addresses supplied or confirmed by the user. Colleagues are invited to the holds and the final meeting; the guest only gets the link. The email body must contain ${SCHEDULING_LINK_PLACEHOLDER} where the link goes, and should not list times; omit email to use the default text. Show the user the prepared summary, then call send with the requestId and digest unchanged: the user approves the whole request at once (holds in the calendar, the email, booking the time the guest picks, and removing the remaining holds afterwards). After sending, Verity runs the request on its own until it is booked, expires (at most ${String(SCHEDULING_MAX_BOOKING_DAYS)} days) or is revoked. status reports one request, list this session's requests, revoke withdraws a request after approval.`;
 
