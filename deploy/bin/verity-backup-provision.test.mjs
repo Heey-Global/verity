@@ -34,7 +34,7 @@ test(
       socket.on('data', () => socket.end('REJECTED\r\n'));
     });
     await new Promise((resolve) => server.listen(join(root, 'systemd/private'), resolve));
-    const run = (flags, chroot = false, ignoreChroot = false) =>
+    const run = (flags, offlineRoot = false, ignoreChroot = false) =>
       new Promise((resolve, reject) => {
         const child = spawn(
           'unshare',
@@ -42,20 +42,15 @@ test(
             flags,
             'bash',
             '-c',
-            chroot
+            offlineRoot
               ? `set -e
-for path in usr lib lib64; do
-  mkdir -p "$1/chroot/$path"
-  mount --rbind "/$path" "$1/chroot/$path"
-done
-# Make the offline-root inode check deterministic even when the sandbox
-# prevents access to the real /proc/1/root across user namespaces.
-mkdir -p "$1/chroot/run" "$1/chroot/proc/1" "$1/chroot/host-root"
-ln -sfn /host-root "$1/chroot/proc/1/root"
-touch "$1/chroot/systemctl"
-mount --bind "$(command -v "$2")" "$1/chroot/systemctl"
-mount --bind "$1" "$1/chroot/run"
-exec timeout 5 chroot "$1/chroot" /systemctl daemon-reload`
+# Model the different host root inode without a chroot syscall: the CI
+# fixture has SYS_ADMIN for bind mounts, but deliberately no SYS_CHROOT.
+mkdir -p "$1/proc/1" "$1/host-root"
+ln -sfn "$1/host-root" "$1/proc/1/root"
+mount --bind "$1/proc" /proc
+mount --bind "$1" /run
+exec timeout 5 "$2" daemon-reload`
               : 'mount --bind "$1" /run && exec timeout 5 "$2" daemon-reload',
             'fixture',
             root,
