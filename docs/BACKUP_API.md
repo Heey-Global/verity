@@ -2,8 +2,9 @@
 
 These administrator-only routes implement setup, status and restore probes
 of [ADR 0025](adr/0025-encrypted-backup-and-installer-recovery.md). They are
-available on every installation whose installer provisioned the backup
-prerequisites; the app's Backup settings use them.
+available when backup prerequisites are ready; the app's Backup settings use
+them. Normal updates provision these automatically for supported installer-managed
+systemd hosts, preserving existing identities, credentials and archives.
 
 Every request requires a paired device and current installation administrator
 authority. Project credentials and agent capabilities grant no access. Responses
@@ -47,7 +48,7 @@ is durably retired by the root helper before replacement publication; old local
 CA material is deleted without claiming deletion of external copies. Live identity
 rotation and device trust reset are separate required steps after exposure.
 
-Hosts without the installer prerequisites return
+Hosts whose backup preparation has not completed return
 `{ available: false, reason: "installer-required" }`. Servers released before the
 gate was removed may still report `reason: "recovery-validation-pending"`; clients
 treat any unknown reason as unavailable. A runtime initialization

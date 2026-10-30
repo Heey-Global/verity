@@ -65,6 +65,7 @@ interface Dependencies {
     binding: ProjectEgressNetworkBinding,
     id: string,
     role: 'sandbox' | 'relay',
+    restoring?: boolean,
   ): Promise<void>;
   inspectTransport?(
     binding: ProjectEgressNetworkBinding,
@@ -186,6 +187,28 @@ export class ProjectEgressHost {
       throw error;
     }
   }
+  /** Reject queued/new commands before waiting for any in-flight kernel write. */
+  shutdown(): Promise<void> {
+    this.healthy = false;
+    return this.queue.then(async () => {
+      this.transports.clear();
+      try {
+        await this.deps.apply(projectEgressBootstrapRules());
+      } catch (error) {
+        const stopped = await Promise.allSettled(
+          this.state.records.flatMap(containerIds).map((id) => this.deps.stopContainer(id)),
+        );
+        throw new AggregateError(
+          [
+            error,
+            ...stopped.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : [])),
+          ],
+          'Host shutdown denial failed; containment attempted',
+          { cause: error },
+        );
+      }
+    });
+  }
   /** Must finish before opening the control socket; does not require Docker. */
   restore(): Promise<void> {
     return this.serialize(async () => {
@@ -221,7 +244,7 @@ export class ProjectEgressHost {
           const id = record.containers[role];
           if (!id) continue;
           try {
-            await this.deps.inspectContainer(record.binding, id, role);
+            await this.deps.inspectContainer(record.binding, id, role, true);
             await this.deps.inspectNetwork(record.binding, containerIds(record));
           } catch (error) {
             failures.push(error);

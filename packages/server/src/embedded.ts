@@ -297,6 +297,7 @@ import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import {
   readCodexAccessToken,
   type AgentGatewayConfiguration,
@@ -745,6 +746,8 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
+  /** Experimental composition seam; production configuration never enables project egress. */
+  projectEgress?: ProjectEgressLifecycle | undefined;
   diagnosticServerContainerId?: string | undefined;
   hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
@@ -2057,6 +2060,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ]
@@ -2079,6 +2083,7 @@ export async function buildEmbeddedServer(
             'verity_gmail',
             'verity_matrix',
             'verity_google_calendar',
+            'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
           ],
@@ -3302,7 +3307,9 @@ export async function buildEmbeddedServer(
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
-  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  // The protected relay profile has no Forge route; never add it implicitly.
+  const forgeProxyEnabled = (): boolean =>
+    projectRelayEnabled && config.projectEgress === undefined;
   const forgeCertificates = new Map<
     string,
     { expires: number; certificate: ReturnType<typeof issueGatewayServerCertificate> }
@@ -3858,6 +3865,7 @@ export async function buildEmbeddedServer(
       '/run/verity-buildkit',
     );
     provisioner = new ProvisionerImpl({
+      ...(config.projectEgress === undefined ? {} : { projectEgress: config.projectEgress }),
       buildStorage,
       buildFailureLogDirectory: join(
         config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
@@ -3973,7 +3981,9 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.publicPreviews !== undefined || config.resolvePreviewConnectorImage !== undefined
+      ...(config.projectEgress !== undefined ||
+      config.publicPreviews !== undefined ||
+      config.resolvePreviewConnectorImage !== undefined
         ? (() => {
             const verifier = createDockerGvisorRuntimeVerifier({
               docker,
@@ -4826,6 +4836,7 @@ export async function buildEmbeddedServer(
         }
       : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    googleAccessToken,
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();
@@ -4852,6 +4863,20 @@ export async function buildEmbeddedServer(
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
     onSecretUnlocked: async () => {
+      // Restore process-local relay listeners before filtering persisted gateway
+      // certificates. A new Server owns none yet; treating that as identity drift
+      // would recreate a valid retained Sandbox while checking its unlock state.
+      for (const project of await eventStore.listProjects()) {
+        if (project.kind === 'control_plane' || project.state !== 'active') continue;
+        try {
+          await provisioner?.resumeProjectRelay?.(project.id);
+        } catch (error) {
+          app.log.warn(
+            { err: error, projectId: project.id },
+            'Retained relay resume deferred until project recovery',
+          );
+        }
+      }
       await projectAgentGatewayIdentity();
       let inspected = 0;
       let repaired = 0;

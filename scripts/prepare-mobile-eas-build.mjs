@@ -16,7 +16,11 @@ if (verify || ['true', '1'].includes(process.env.EAS_BUILD ?? '')) {
       throw new Error('EAS preparation did not run in this build directory');
     }
   } else {
-    if (['testflight', 'staging', 'production'].includes(process.env.EAS_BUILD_PROFILE ?? '')) {
+    if (
+      ['testflight', 'staging', 'production', 'profiling'].includes(
+        process.env.EAS_BUILD_PROFILE ?? '',
+      )
+    ) {
       // Change only EAS's unpacked manifest before prebuild discovers native pods.
       const manifest = new URL('../apps/mobile/package.json', import.meta.url);
       /** @type {unknown} */

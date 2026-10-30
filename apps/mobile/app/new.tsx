@@ -1,4 +1,4 @@
-import { SPLIT_SCREEN_MIN_WIDTH } from '../lib/sessionLayout';
+import { sessionLayout } from '../lib/sessionLayout';
 // New-session entry: open the chat for a brand-new session immediately and create
 // it in the background. Plain plus-clicks stay LLM-idle; prepared prompts from
 // explicit flows (issues, tasks) are sent as the first turn.
@@ -79,9 +79,10 @@ function NewSessionLauncher({
   restoredSessionId?: string;
 }) {
   const { width } = useWindowDimensions();
+  const { wide: windowWide } = sessionLayout(width);
   // Capture the initial launch layout so a resize cannot rerun launch navigation.
   // Later expansion transfers the already-minted session separately below.
-  const wide = useRef(width >= SPLIT_SCREEN_MIN_WIDTH).current;
+  const wide = useRef(windowWide).current;
   const baseUrl = getVerityBaseUrl();
   const launched = useRef(false);
   const focused = useIsFocused();
@@ -195,10 +196,10 @@ function NewSessionLauncher({
   // later grows, transfer that same pending session into the split exactly once;
   // never restart the create or change its prepared first prompt.
   useEffect(() => {
-    if (wide || width < SPLIT_SCREEN_MIN_WIDTH || !focused || promotedToSplit.current) return;
+    if (wide || !windowWide || !focused || promotedToSplit.current) return;
     promotedToSplit.current = true;
     router.replace({ pathname: '/session/[id]', params: { id: sessionId } });
-  }, [wide, width, focused, sessionId]);
+  }, [wide, windowWide, focused, sessionId]);
 
   // Wide redirects into the split home (above); rendering the chat here too would
   // mount a second copy of it for the same session, so that layout only ever sees

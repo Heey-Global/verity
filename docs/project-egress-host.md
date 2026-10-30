@@ -63,7 +63,8 @@ subsequent increments, not hidden exceptions in this protocol.
 are uninstalled fixture templates, not a production installation command:
 
 - `verity-egress-bootstrap.service` restores denial before Docker.
-- `docker-egress.conf` makes Docker require successful bootstrap.
+- `docker-egress.conf` makes Docker require successful bootstrap and repeats
+  locked denial restoration in `ExecStartPre` on every daemon start.
 - `verity-egress-host.service` restores denial again before binding the socket,
   then accepts the trusted Server's commands after Docker starts.
 
@@ -72,8 +73,25 @@ bundle at `/opt/verity-egress`, Node 26, nftables, a local rootful Docker daemon
 and the unit/drop-in files together. RuntimeDirectory cleanup removes stale
 sockets between service invocations; the application never steals an existing
 socket pathname. `LiveRestoreEnabled` and rootless Docker are rejected by the
-control entrypoint. Systemd ordering and restart behavior still require full
-managed-host integration evidence before these templates may be installed.
+control entrypoint. The experimental entrypoint accepts Docker 29.9.2, matching
+the pinned runtime fixture; other daemon versions require explicit validation.
+Systemd >=249 must run as PID 1: Docker continuously upholds
+the controller, and `BindsTo`/`PartOf` plus ordering couple controller teardown and
+revalidation to daemon transitions. `Type=notify` reports readiness only after
+denial, host checks, binding revalidation and control-socket creation. Shutdown
+rejects queued admissions before fencing after in-flight writes; independent
+`ExecStopPost` denial also runs after crashes or failed startup, without needing
+the registry or Docker. Both preflight and cleanup share the controller lock.
+Kernel-denial failure attempts registered-container containment during graceful
+shutdown; systemd ordering alone cannot guarantee containment if the kernel and
+container stop operations both fail.
+
+The separate `project-egress-boot` workflow preflights an actual KVM guest from a
+dated, SHA256-pinned Canonical image and requires a changed guest kernel boot ID.
+Missing KVM is a failure, not a skipped acceptance result or container fallback.
+This establishes boot-VM feasibility only; actual-unit ordering, retained
+Runner/relay topology and daemon/Server recovery still require the subsequent
+VM integration matrix before these templates may be installed in production.
 
 ## Evidence and remaining gates
 
@@ -147,8 +165,17 @@ filesystem changes, not socket operations: existing broker/account/action and
 model authorization remain required.
 
 After Docker becomes available, the host service revalidates restored container
-bindings before serving control requests. Mismatches cause attempted container
-stops and leave the controller unavailable. The bootstrap rule restoration remains
+bindings before serving control requests. During this deny-only restoration, a
+stopped relay may have empty trusted socket directories: its Server-owned
+listeners cannot exist until Server recovery. Ownership, permissions, generation
+mounts and container identity remain mandatory. Running relays and all ordinary
+start/admission checks still require the socket inodes. Server unlock restores
+verified relay listeners before projecting gateway identity, preventing an empty
+process-local listener map from triggering Sandbox replacement. Individual relay
+recovery failures are logged without blocking administrative unlock.
+
+Mismatches cause attempted container stops and leave the controller unavailable.
+The bootstrap rule restoration remains
 independent of Docker. This does not establish daemon boot acceptance or hard lease
 expiry under host suspension.
 
@@ -191,3 +218,29 @@ controller and attempts to stop both registered containers.
 This remains experimental and uninstalled. It does not implement general DNS or
 Internet admission, connector/preview transport expansion, the full attack matrix,
 daemon boot acceptance, or hard expiry during host/controller suspension.
+
+## Native boot and recovery evidence
+
+[Native KVM run 41033733062](https://github.com/Heey-Global/verity/actions/runs/41033733062)
+passed on source commit `b798d4604b75d756dcdc655ac4169542e27c1bb0`.
+The downloaded artifact also passed the independent `boot-proof.py verify` check:
+five lifecycle events, eight removed-fence observation paths, and complete raw
+evidence. Controller SIGKILL, actual Server SIGKILL, Docker stop/start, Docker
+SIGKILL and a real kernel reboot retained the same Sandbox/relay container IDs,
+images, mounts and registry. The reboot changed the kernel boot ID.
+
+Independent dual-stack receivers observed no unauthorized protected traffic.
+Old streams and the bounded in-flight request stayed denied after re-admission;
+fresh authenticated memory requests succeeded. Corrupt registry, nftables failure
+and unsupported live-restore configuration were rejected. Removing the fences
+restored receipt on all eight observation paths, including inherited and
+transferred descriptors.
+
+The largest observed post-event successful-request/handler-receipt offset was
+0.408 seconds, within the two-second fixture bound. The separately measured
+explicit recovery phase took 6.752–12.880 seconds; this excludes event handling
+and reboot waiting and is not total outage duration. These observations apply to
+the pinned experimental Linux/systemd, Docker and gVisor configuration in this
+run. They do not establish hard expiry during host/controller suspension, general
+Internet/package/connector/preview access, the remaining attack matrix, or
+production readiness. The templates remain uninstalled and protection inactive.
