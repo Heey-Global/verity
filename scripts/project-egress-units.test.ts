@@ -47,3 +47,15 @@ it('uses actual validated readiness and independent post-crash denial', () => {
     'project-egress-host-main.mjs deny',
   );
 });
+
+it('waits for native Docker readiness before loading fixture images', () => {
+  const installer = readFileSync(
+    new URL('./probes/project-egress/boot-native-install.sh', import.meta.url),
+    'utf8',
+  );
+  const dockerUnit = installer.match(
+    /Description=Pinned disposable Docker daemon[\s\S]*?\nUNIT/u,
+  )?.[0];
+  expect(dockerUnit).toBeDefined();
+  expect(dockerUnit).toMatch(/^Type=notify$/mu);
+});

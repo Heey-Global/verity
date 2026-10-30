@@ -41,6 +41,7 @@ Description=Pinned disposable Docker daemon
 After=network-online.target
 Wants=network-online.target
 [Service]
+Type=notify
 ExecStart=/usr/local/bin/dockerd --host=unix:///var/run/docker.sock
 Restart=on-failure
 RestartSec=1

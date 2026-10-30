@@ -52,6 +52,7 @@ class BootVM:
         self.process = None
         self.log = None
         self.port = None
+        self.failures = 0
 
     def start(self):
         # Permission and device presence alone do not establish virtualization.
@@ -93,7 +94,15 @@ class BootVM:
                                         'verity-probe@127.0.0.1', command]
 
     def ssh(self, command, timeout=30):
-        return subprocess.check_output(self.ssh_command(command), text=True, timeout=timeout, stderr=subprocess.STDOUT)
+        try:
+            return subprocess.check_output(self.ssh_command(command), text=True, timeout=timeout, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as error:
+            # Keep the command's actual diagnostic; CalledProcessError.__str__
+            # otherwise discards all apt/Docker/service output after guest cleanup.
+            if error.returncode != 255:
+                self.failures += 1
+                (self.evidence / f'ssh-failure-{self.failures:03d}.txt').write_text(error.output or '')
+            raise
 
     def upload(self, archive, destination='/opt/verity-fixture'):
         if destination != '/opt/verity-fixture':
