@@ -15,7 +15,9 @@ const require = createRequire(import.meta.url);
 export function nativePathKind(path) {
   if (
     /^apps\/mobile\/(?:ios|android|native|plugins|patches|cng-patches|targets)\//u.test(path) ||
-    /^scripts\/(?:patch-mobile-native-deps|prepare-mobile-eas-build)\.mjs$/u.test(path) ||
+    /^scripts\/(?:patch-mobile-native-deps|prepare-mobile-eas-build|mobile-cpu-profile)\.mjs$/u.test(
+      path,
+    ) ||
     /^apps\/mobile\/(?:fingerprint\.config\.[^/]+|\.fingerprintignore)$/u.test(path)
   )
     return 'native';
