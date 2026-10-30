@@ -160,6 +160,59 @@ describe('repository supervision discovery', () => {
     await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    { status: 429, headers: {} },
+    { status: 403, headers: { 'x-ratelimit-remaining': '0' } },
+    { status: 403, headers: { 'retry-after': '120' } },
+  ])('shares actual rate limiting with PR readers (%j)', async ({ status, headers }) => {
+    const fetch = vi.fn<HttpFetch>(async () => ({
+      ok: false,
+      status,
+      headers: { get: (name) => (headers as Record<string, string>)[name] ?? null },
+      json: async () => ({}),
+    }));
+    const forge = provider(fetch);
+    await expect(forge.discover!(project, 1)).rejects.toThrow(String(status));
+    await forge.repositoryPrService!(project).prStatusForBranch('feature');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([403, 404, 500])(
+    'keeps PR status readable when workflow discovery fails with %s',
+    async (status) => {
+      const fetch = vi.fn<HttpFetch>(async (url) => {
+        if (url.includes('/actions/runs?')) return { ok: false, status, json: async () => ({}) };
+        if (url.includes('/pulls?'))
+          return json([
+            {
+              number: 7,
+              state: 'open',
+              title: 'Feature',
+              head: { sha: 'abc', ref: 'feature', repo: { full_name: 'acme/app' } },
+            },
+          ]);
+        if (url.endsWith('/pulls/7')) return json({ mergeable: true, mergeable_state: 'clean' });
+        if (url.includes('/check-runs?'))
+          return json({ check_runs: [{ status: 'completed', conclusion: 'success' }] });
+        if (url.includes('/status?')) return json({ statuses: [] });
+        return json({ default_branch: 'main' });
+      });
+      const forge = provider(fetch);
+      const service = forge.repositoryPrService!(project);
+      expect((await service.prStatusForBranch('feature'))?.pipeline).toBe('success');
+
+      await expect(forge.discover!(project, 1)).rejects.toThrow(String(status));
+      await expect(forge.discover!(project, 1)).rejects.toThrow('backing off');
+
+      // A failing Actions endpoint must not erase readable checks and mergeability
+      // in the PR bar, even when discovery keeps retrying in the background.
+      expect(await service.prStatusForBranch('feature')).toMatchObject({
+        pipeline: 'success',
+        mergeable: true,
+      });
+    },
+  );
 });
 
 it('refetches repository status after the shared cache is invalidated', async () => {
