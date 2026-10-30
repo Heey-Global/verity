@@ -96,6 +96,7 @@ export default defineConfig({
       // run rather than by a unit test.
       exclude: [
         '**/*.test.ts',
+        'packages/server/src/server-fixture.test-helper.ts',
         '**/testing.ts',
         'packages/mobile/**',
         'packages/server/src/main.ts',

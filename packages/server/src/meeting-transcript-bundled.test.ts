@@ -1,6 +1,6 @@
 // End-to-end cover for the seam no other meeting-audio test spans.
 //
-// `server.test.ts` exercises the route against a stub transcriber, and
+// `server-meetings.test.ts` exercises the route against a stub transcriber, and
 // `scripts/verity-transcribe-meeting.test.ts` exercises the bundled script against a
 // stub backend — so each half is verified against a fake of the other. This test
 // runs the REAL script (deploy/bin, resolved off PATH the way the deployed image

@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from './path-text.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import type { BuildStorage, BuildStorageLease } from './build-storage.js';
@@ -1028,7 +1029,7 @@ export { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL };
  *  to one, so the rewritten `(owner, repo)` cannot silently point the mount — and
  *  every session worktree persisted underneath it — at a different directory. */
 export function projectClonePath(hostCloneRoot: string, project: ProjectRecord): string {
-  const root = hostCloneRoot.replace(/\/+$/, '');
+  const root = stripTrailingSlashes(hostCloneRoot);
   return `${root}/${project.cloneDir ?? `${project.owner}-${project.repo}`}`;
 }
 

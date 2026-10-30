@@ -3416,7 +3416,7 @@ describe('CI runner footprint', () => {
     expect(cached).toBe(true);
   });
 
-  it('never caches the ESLint result, because that cache fails OPEN', () => {
+  it('keeps CI lint uncached and never enables ESLint single-file result caching', () => {
     // Prettier's cache above is safe; ESLint's is not, and the difference is not
     // visible from the shape of the two steps — which is why this is asserted and
     // not left to the comment in ci.yml. An ESLint cache entry is invalidated by
@@ -3435,8 +3435,9 @@ describe('CI runner footprint', () => {
     // the next. Both halves are asserted because "add --cache, it is free" is the
     // obvious review comment and the flag costs one line to reintroduce.
     //
-    // The scoped command uses the same uncached runner. Its explicit targets
-    // still do not replace the full CI check of unchanged consumers.
+    // Local dependency-aware reuse belongs to the bounded runner; its CLI tests
+    // verify that CI disables it. Explicit local targets still do not replace
+    // the full CI check of unchanged consumers.
     const scripts = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { scripts?: Record<string, string> }
     ).scripts;
@@ -3454,16 +3455,17 @@ describe('CI runner footprint', () => {
     const runner = scripts?.lint?.match(/^bash (scripts\/[A-Za-z0-9_-]+\.sh)$/)?.[1];
     expect(runner).toBeDefined();
     const source = readFileSync(runner!, 'utf8');
-    expect(source).toMatch(/^\s*node scripts\/lint-files\.mjs\s/m);
+    expect(source).toMatch(/^\s*node scripts\/lint-runner\.mjs\s/m);
     expect(source).toContain('git ls-files');
     const eslintStep = (ci.jobs.lint?.steps ?? []).find((step) => step.name === 'ESLint');
     expect(eslintStep?.run).toBe('npm run lint');
-    // Comments document why caching is forbidden; inspect executable lines.
+    // Inspect executable flags, without confusing git's --cached file listing
+    // with ESLint's --cache flag.
     const flags = [scripts?.lint ?? '', eslintStep?.run ?? '', source]
       .join('\n')
       .split('\n')
       .filter((line) => !line.trim().startsWith('#'));
-    expect(flags.filter((line) => line.includes('--cache'))).toEqual([]);
+    expect(flags.filter((line) => /(?:^|\s)--cache(?:[=\s]|$)/u.test(line))).toEqual([]);
   });
 });
 
