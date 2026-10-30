@@ -6315,7 +6315,9 @@ export class ProvisionerImpl implements Provisioner {
             // Missing/pruned images and unavailable diagnostics use the fallback.
           }
         }
-        storageLease.reserveBuild(imageBytes);
+        if (storageLease.reserveBuildWithReclamation)
+          await storageLease.reserveBuildWithReclamation(imageBytes);
+        else storageLease.reserveBuild(imageBytes);
       }
       // Mint a ghcr token (GitHub App installation, packages:read) so the build can
       // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as

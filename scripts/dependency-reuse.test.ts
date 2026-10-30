@@ -95,6 +95,27 @@ describe('shared dependency reuse', () => {
     writeFileSync(join(f.worktree, 'package-lock.json'), lock);
     expect(f.run('status').status).toBe(1);
   });
+  it('recognizes npm v1 source locks against modern installation receipts', () => {
+    const f = fixture();
+    for (const root of [f.root, f.worktree])
+      writeFileSync(
+        join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 1,
+          dependencies: { dep: { version: '1.0.0', integrity: 'hash' } },
+        }),
+      );
+    mkdirSync(join(f.root, 'node_modules', 'dep'));
+    writeFileSync(join(f.root, 'node_modules', 'dep', 'package.json'), '{"version":"1.0.0"}');
+    writeFileSync(
+      join(f.root, 'node_modules', '.package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/dep': { version: '1.0.0', integrity: 'hash' } },
+      }),
+    );
+    expect(f.run('status').status).toBe(0);
+  });
   it.each(['yarn', 'pnpm'])(
     'recognizes an existing %s install without switching package managers',
     (manager) => {

@@ -1083,6 +1083,31 @@ describe('admission reclamation', () => {
     expect(reclaim).toHaveBeenCalledOnce();
     lease.dispose();
   });
+  it('reclaims after the later full build reservation rejects host capacity', async () => {
+    const f = fixture();
+    f.writeReport(6 * GiB);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {
+      f.writeReport();
+    });
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    expect(reclaim).not.toHaveBeenCalled();
+    await lease.reserveBuildWithReclamation?.();
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
+  it('retries full build reservations only once without discarding evidence', async () => {
+    const f = fixture();
+    f.writeReport(6 * GiB);
+    const manager = f.manager();
+    const reclaim = vi.fn(async () => {});
+    manager.setReclaimer(reclaim);
+    const lease = await manager.admitInTurn();
+    await expect(lease.reserveBuildWithReclamation?.()).rejects.toThrow('admission rejected');
+    expect(reclaim).toHaveBeenCalledOnce();
+    lease.dispose();
+  });
   it('keeps FIFO ownership while reclamation awaits', async () => {
     const f = fixture();
     f.local.availableBytes = 0;

@@ -156,6 +156,24 @@ describe('safe session storage reclamation', () => {
     expect(sidecar.service.lastReport?.worktreesRetired).toEqual([]);
     expect(existsSync(sidecar.path)).toBe(true);
   });
+  it('preserves matching relative links with different source targets and local file deletions', async () => {
+    const f = fixture();
+    for (const root of [f.root, f.path]) {
+      mkdirSync(join(root, 'vendor', 'dep'), { recursive: true });
+      writeFileSync(
+        join(root, 'vendor', 'dep', 'index.js'),
+        root === f.path ? 'patched' : 'shared',
+      );
+      symlinkSync('../vendor/dep', join(root, 'node_modules', 'linked'));
+    }
+    await f.service.runOnce();
+    expect(readlinkSync(join(f.path, 'node_modules', 'linked'))).toBe('../vendor/dep');
+    const missing = fixture();
+    rmSync(join(missing.path, 'node_modules', 'dep', 'index.js'));
+    await missing.service.runOnce();
+    expect(existsSync(join(missing.path, 'node_modules', 'dep'))).toBe(true);
+    expect(missing.service.lastReport?.dependenciesRemoved).toEqual([]);
+  });
   it('preserves runtime resolution of patched transitive dependencies', async () => {
     const f = fixture();
     for (const root of [f.root, f.path]) {

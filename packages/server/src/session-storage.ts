@@ -12,7 +12,7 @@ import {
   rename,
   rm,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import type { GitOutput } from './branches.js';
 import { linkWorkspacePackages, WORKTREE_SIDECAR } from './worktree.js';
@@ -96,22 +96,45 @@ export async function compareDependencyTrees(
   privatePath: string,
   sharedPath: string,
   signal: AbortSignal,
+  roots = { local: privatePath, shared: sharedPath },
 ): Promise<number> {
   signal.throwIfAborted();
   const [local, shared] = await Promise.all([lstat(privatePath), lstat(sharedPath)]);
   if (local.isSymbolicLink()) {
     if (!shared.isSymbolicLink() || (await readlink(privatePath)) !== (await readlink(sharedPath)))
       throw new Error('Dependency link differs');
+    const target = await readlink(privatePath);
+    const localRelative = relative(roots.local, resolve(dirname(privatePath), target));
+    const sharedRelative = relative(roots.shared, resolve(dirname(sharedPath), target));
+    const internal =
+      !isAbsolute(target) &&
+      !isAbsolute(localRelative) &&
+      !isAbsolute(sharedRelative) &&
+      localRelative !== '..' &&
+      !localRelative.startsWith('../') &&
+      sharedRelative !== '..' &&
+      !sharedRelative.startsWith('../');
+    if (!internal && (await realpath(privatePath)) !== (await realpath(sharedPath)))
+      throw new Error('Dependency link resolves to different source trees');
     return 0;
   }
   if (local.isDirectory() && shared.isDirectory()) {
     let bytes = 0;
-    for (const entry of await readdir(privatePath)) {
+    const entries = (await readdir(privatePath))
+      .filter((entry) => entry !== '.package-lock.json' || !privatePath.endsWith('/node_modules'))
+      .sort();
+    const sharedEntries = (await readdir(sharedPath))
+      .filter((entry) => entry !== '.package-lock.json' || !sharedPath.endsWith('/node_modules'))
+      .sort();
+    if (JSON.stringify(entries) !== JSON.stringify(sharedEntries))
+      throw new Error('Dependency directory entries differ');
+    for (const entry of entries) {
       if (entry === '.package-lock.json' && privatePath.endsWith('/node_modules')) continue; // npm-generated installation receipt, never source.
       bytes += await compareDependencyTrees(
         join(privatePath, entry),
         join(sharedPath, entry),
         signal,
+        roots,
       );
     }
     return bytes;
@@ -482,6 +505,7 @@ export class SessionStorage {
     // Nested installations are outside Node's ancestor lookup from a worktree.
     // Retain them until equivalent private resolution can be restored safely.
     const modulePaths = ['node_modules'];
+    let dependencyMismatch = false;
     for (const modules of modulePaths) {
       let ancestor = path;
       for (const part of modules.split('/').slice(0, -1)) {
@@ -518,8 +542,9 @@ export class SessionStorage {
       };
       // Keep the entire private graph when any package differs: shared dependents
       // would otherwise resolve shared versions instead of retained local patches.
-      await removeVerified(local, join(root, modules));
+      if (!(await removeVerified(local, join(root, modules)))) dependencyMismatch = true;
     }
+    if (dependencyMismatch) throw new Error('Private dependency differences remain');
     const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
     const branch =
       (

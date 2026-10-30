@@ -205,6 +205,7 @@ export interface BuildStorageLease {
   /** Remote work may still use the context or archive; preserve both and admission. */
   readonly retainArtifacts: boolean;
   reserveBuild(imageBytes?: number): void;
+  reserveBuildWithReclamation?(imageBytes?: number): Promise<void>;
   run(
     this: void,
     command: string,
@@ -451,23 +452,10 @@ export class BuildStorage {
         return this.admit();
       } catch (error) {
         if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
-        // One bounded pass; a timeout fails closed while the coalesced collector finishes.
-        let timer: ReturnType<typeof setTimeout> | undefined;
         this.handingOver = true;
         try {
-          await Promise.race([
-            this.reclaimer(),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(
-                () =>
-                  reject(new Error('Storage reclamation timed out; retry after cleanup finishes')),
-                120_000,
-              );
-              timer.unref();
-            }),
-          ]);
+          await this.reclaimCapacity();
         } finally {
-          if (timer) clearTimeout(timer);
           this.handingOver = false;
         }
         return this.admit();
@@ -475,6 +463,24 @@ export class BuildStorage {
     } finally {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
       if (!this.held) this.wakeNext();
+    }
+  }
+
+  private async reclaimCapacity(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.reclaimer?.(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Storage reclamation timed out; retry after cleanup finishes')),
+            120_000,
+          );
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -932,16 +938,26 @@ export class BuildStorage {
         closeSync(fd);
       }
     };
+    const reserveBuild = (imageBytes?: number) => {
+      if (disposed) throw new Error('Build storage lease was released');
+      estimateBytes = estimateBuildStorageBytes(this.policy, imageBytes);
+      this.check(estimateBytes, true);
+      reserved = true;
+    };
     return {
       directory,
       get retainArtifacts() {
         return existsSync(remoteRecord);
       },
-      reserveBuild: (imageBytes) => {
-        if (disposed) throw new Error('Build storage lease was released');
-        estimateBytes = estimateBuildStorageBytes(this.policy, imageBytes);
-        this.check(estimateBytes, true);
-        reserved = true;
+      reserveBuild,
+      reserveBuildWithReclamation: async (imageBytes) => {
+        try {
+          reserveBuild(imageBytes);
+        } catch (error) {
+          if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
+          await this.reclaimCapacity();
+          reserveBuild(imageBytes);
+        }
       },
       run: async (command, args, options) => {
         if (disposed || running) throw new Error('Build storage command lease is not available');

@@ -14,7 +14,7 @@ compatible installation reachable through Node's ancestor lookup. It compares
 tracked manifests, lockfiles, workspace metadata and npm configuration against
 the base checkout and rejects unknown workspace manifests. Workspace symlinks
 alone do not count as installed dependencies. The pre-push hook uses this check. Existing Yarn/pnpm installation metadata is
-recognized; this helper installs only npm projects and never changes the package
+recognized, including npm v1 source lockfiles; this helper installs only npm projects and never changes the package
 manager of another project.
 When installation is authorized, `verity-dependencies install` reuses compatible
 shared dependencies, or installs privately with lifecycle scripts disabled when
@@ -25,7 +25,9 @@ After seven days without session activity, collection compares private
 and matching links in compatible installations qualify. Local patches, unknown
 packages, tracked dependencies, unknown build output and symlink targets remain
 protected. A modified or unknown package protects the entire private installation,
-preserving dependency resolution through locally patched transitive packages. Nested private installations remain protected because their base-checkout
+preserving dependency resolution through locally patched transitive packages.
+Matching relative links to different source trees also protect an installation;
+matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
 copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
 
 ## Worktree lifecycle and recovery

@@ -55,8 +55,24 @@ function installed(root) {
     const source = read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json'));
     if (!source) return true;
     const lock = JSON.parse(source);
-    if (!lock.packages || typeof lock.packages !== 'object') return false;
-    return Object.entries(lock.packages).every(([path, wanted]) => {
+    let packages = lock.packages;
+    if (
+      lock.lockfileVersion === 1 &&
+      !packages &&
+      (lock.dependencies === undefined || typeof lock.dependencies === 'object')
+    ) {
+      packages = {};
+      const collect = (dependencies, prefix = '') => {
+        for (const [name, entry] of Object.entries(dependencies)) {
+          const path = `${prefix}node_modules/${name}`;
+          packages[path] = entry;
+          if (entry.dependencies) collect(entry.dependencies, `${path}/`);
+        }
+      };
+      collect(lock.dependencies ?? {});
+    }
+    if (!packages || typeof packages !== 'object') return false;
+    return Object.entries(packages).every(([path, wanted]) => {
       if ((!path.startsWith('node_modules/') && !path.includes('/node_modules/')) || wanted.link)
         return true;
       if (path.split('/').includes('..')) return false;
