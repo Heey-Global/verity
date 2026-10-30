@@ -165,8 +165,17 @@ filesystem changes, not socket operations: existing broker/account/action and
 model authorization remain required.
 
 After Docker becomes available, the host service revalidates restored container
-bindings before serving control requests. Mismatches cause attempted container
-stops and leave the controller unavailable. The bootstrap rule restoration remains
+bindings before serving control requests. During this deny-only restoration, a
+stopped relay may have empty trusted socket directories: its Server-owned
+listeners cannot exist until Server recovery. Ownership, permissions, generation
+mounts and container identity remain mandatory. Running relays and all ordinary
+start/admission checks still require the socket inodes. Server unlock restores
+verified relay listeners before projecting gateway identity, preventing an empty
+process-local listener map from triggering Sandbox replacement. Individual relay
+recovery failures are logged without blocking administrative unlock.
+
+Mismatches cause attempted container stops and leave the controller unavailable.
+The bootstrap rule restoration remains
 independent of Docker. This does not establish daemon boot acceptance or hard lease
 expiry under host suspension.
 
@@ -209,3 +218,29 @@ controller and attempts to stop both registered containers.
 This remains experimental and uninstalled. It does not implement general DNS or
 Internet admission, connector/preview transport expansion, the full attack matrix,
 daemon boot acceptance, or hard expiry during host/controller suspension.
+
+## Native boot and recovery evidence
+
+[Native KVM run 41033733062](https://github.com/Heey-Global/verity/actions/runs/41033733062)
+passed on source commit `b798d4604b75d756dcdc655ac4169542e27c1bb0`.
+The downloaded artifact also passed the independent `boot-proof.py verify` check:
+five lifecycle events, eight removed-fence observation paths, and complete raw
+evidence. Controller SIGKILL, actual Server SIGKILL, Docker stop/start, Docker
+SIGKILL and a real kernel reboot retained the same Sandbox/relay container IDs,
+images, mounts and registry. The reboot changed the kernel boot ID.
+
+Independent dual-stack receivers observed no unauthorized protected traffic.
+Old streams and the bounded in-flight request stayed denied after re-admission;
+fresh authenticated memory requests succeeded. Corrupt registry, nftables failure
+and unsupported live-restore configuration were rejected. Removing the fences
+restored receipt on all eight observation paths, including inherited and
+transferred descriptors.
+
+The largest observed post-event successful-request/handler-receipt offset was
+0.408 seconds, within the two-second fixture bound. The separately measured
+explicit recovery phase took 6.752–12.880 seconds; this excludes event handling
+and reboot waiting and is not total outage duration. These observations apply to
+the pinned experimental Linux/systemd, Docker and gVisor configuration in this
+run. They do not establish hard expiry during host/controller suspension, general
+Internet/package/connector/preview access, the remaining attack matrix, or
+production readiness. The templates remain uninstalled and protection inactive.

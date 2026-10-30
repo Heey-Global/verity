@@ -55,8 +55,8 @@
     "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.95.0",
-    "@agentclientprotocol/codex-acp": "2.2.2",
+    "@agentclientprotocol/claude-agent-acp": "0.97.0",
+    "@agentclientprotocol/codex-acp": "2.3.0",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@expo/plist": "0.10.1",
@@ -81,6 +81,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-unistyles": "3.5.1",
     "release-please": "17.11.2",
     "semver": "7.8.5",
     "typescript": "6.0.3",

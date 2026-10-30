@@ -65,6 +65,7 @@ interface Dependencies {
     binding: ProjectEgressNetworkBinding,
     id: string,
     role: 'sandbox' | 'relay',
+    restoring?: boolean,
   ): Promise<void>;
   inspectTransport?(
     binding: ProjectEgressNetworkBinding,
@@ -243,7 +244,7 @@ export class ProjectEgressHost {
           const id = record.containers[role];
           if (!id) continue;
           try {
-            await this.deps.inspectContainer(record.binding, id, role);
+            await this.deps.inspectContainer(record.binding, id, role, true);
             await this.deps.inspectNetwork(record.binding, containerIds(record));
           } catch (error) {
             failures.push(error);
