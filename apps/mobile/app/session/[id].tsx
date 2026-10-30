@@ -1,5 +1,6 @@
 import { McpAppCard } from '../../components/McpAppCard';
 import { QAApprovalCard } from '../../components/QAApprovalCard';
+import { SchedulingRequestsCard } from '../../components/SchedulingRequestsCard';
 import {
   managedServerApproval,
   confirmManagedServerApproval,
@@ -110,6 +111,7 @@ import {
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
+  schedulingApprovalSummary,
   forgeRefUrl,
   providerName,
   isSessionImageFilePath,
@@ -4788,6 +4790,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
+      {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
       {/* Last above the composer: below the plan and the PR bar, never above them. */}
       {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
@@ -8853,6 +8856,7 @@ function PermissionPrompt({
   const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isScheduling = pending.tool === 'verity_scheduling';
   const isKnowledge = pending.tool === 'verity_knowledge';
   const packageInstall =
     pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
@@ -8861,6 +8865,7 @@ function PermissionPrompt({
   const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
+  const schedulingSummary = isScheduling ? schedulingApprovalSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -8913,6 +8918,7 @@ function PermissionPrompt({
     (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
+    (isScheduling && schedulingSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
@@ -8961,6 +8967,7 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      schedulingSummary?.title ?? null,
       matrixSummary === null
         ? null
         : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
@@ -9186,6 +9193,25 @@ function PermissionPrompt({
               {spellOutBidiControls(detail)}
             </Text>
           ))}
+        </View>
+      ) : schedulingSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          {schedulingSummary.details.map((detail, index) => (
+            <Text key={index} style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(detail)}
+            </Text>
+          ))}
+          {schedulingSummary.email === null ? null : (
+            <>
+              <Text style={styles.permissionSubtitle} selectable>
+                Subject: {spellOutBidiControls(schedulingSummary.email.subject)}
+              </Text>
+              <Text style={styles.permissionHttpMeta} selectable>
+                {spellOutBidiControls(schedulingSummary.email.body)}
+              </Text>
+            </>
+          )}
+          <Text style={styles.permissionHttpMeta}>{schedulingSummary.scope}</Text>
         </View>
       ) : matrixSummary !== null ? (
         <MatrixSendPreview summary={matrixSummary} />

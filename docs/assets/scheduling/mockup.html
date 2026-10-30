@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Scheduling requests · Mockup</title>
+<style>
+  /* Roles from docs/design-system.md (dark theme). */
+  :root {
+    --background: #07080d; --surface: #0c0e17; --surfaceAlt: #111422; --border: #22263a;
+    --text: #f5f5f8; --muted: #a5a8b8; --faint: #80849a;
+    --action: #18c8f5; --actionLabel: #6fdcf8; --onAction: #03141a;
+    --signature: #ff18b7; --success: #2ee6a6; --attention: #ff5c8a; --scrim: rgba(3,4,8,0.72);
+    --action14: rgba(24,200,245,0.14); --action35: rgba(24,200,245,0.35); --action20: rgba(24,200,245,0.2);
+    --signature14: rgba(255,24,183,0.14); --success14: rgba(46,230,166,0.14); --attention14: rgba(255,92,138,0.14);
+    --attention35: rgba(255,92,138,0.35); --neutral6: rgba(245,245,248,0.06);
+  }
+  * { box-sizing: border-box; }
+  html { background: #030409; }
+  body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); padding: 48px 32px 96px; }
+  svg { display: block; flex: none; }
+
+  /* ---------- Page chrome of the mockup itself ---------- */
+  .intro { max-width: 1180px; margin: 0 auto 48px; }
+  .intro .eyebrow { color: var(--signature); }
+  .intro h1 { font-size: 34px; letter-spacing: -0.035em; line-height: 1.15; margin: 8px 0 12px; }
+  .intro p { color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 820px; margin: 0 0 8px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .flow span { font-size: 13px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; }
+  .flow span b { color: var(--text); font-weight: 600; }
+  .part { max-width: 1680px; margin: 0 auto 64px; }
+  .part > h2 { font-size: 22px; letter-spacing: -0.02em; margin: 0 0 4px; }
+  .part > p { color: var(--muted); font-size: 14px; margin: 0 0 24px; max-width: 900px; line-height: 1.55; }
+  .row { display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start; }
+  .shot { display: flex; flex-direction: column; gap: 12px; width: 390px; }
+  .shot.wide { width: 820px; }
+  .cap { font-size: 15px; font-weight: 600; padding-left: 4px; }
+  .cap small { display: block; color: var(--muted); font-weight: 400; font-size: 13px; line-height: 1.5; margin-top: 4px; }
+  .cap .n { color: var(--signature); font-weight: 800; margin-right: 6px; }
+
+  /* ---------- Shared type and components ---------- */
+  .eyebrow { font-size: 11px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--signature); margin: 0; }
+  .label { font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; }
+  .rowt { font-size: 16px; font-weight: 600; line-height: 1.3; }
+  .sub { font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .foot { font-size: 12px; color: var(--faint); line-height: 1.4; }
+  .body { font-size: 15px; line-height: 1.5; }
+  .small { font-size: 14px; line-height: 1.43; }
+
+  .btn { height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; font-weight: 700; width: 100%; border: 1px solid transparent; }
+  .btn.compact { height: 36px; width: auto; padding: 0 14px; display: inline-flex; }
+  .btn.primary { background: var(--action14); border-color: var(--action35); color: var(--actionLabel); }
+  .btn.secondary { background: var(--surfaceAlt); border-color: var(--border); color: var(--text); }
+  .btn.text { color: var(--action); background: none; width: auto; height: 36px; padding: 0 4px; display: inline-flex; }
+  .btn.destructive { border-color: var(--attention); color: var(--attention); background: none; }
+  .btns { display: flex; gap: 8px; }
+  .btns .btn { flex: 1; }
+  .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--action35); border-top-color: var(--actionLabel); }
+
+  .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+  .tag.neutral { background: var(--neutral6); color: var(--muted); }
+  .tag.success { background: var(--success14); color: var(--success); }
+  .tag.attention { background: var(--attention14); color: var(--attention); }
+  .tag.action { background: var(--action14); color: var(--actionLabel); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.success { background: var(--success); box-shadow: 0 0 8px rgba(46,230,166,.6); }
+  .dot.attention { background: var(--attention); box-shadow: 0 0 8px rgba(255,92,138,.6); }
+  .dot.faint { background: var(--faint); }
+  .dot.action { background: var(--action); }
+  .dw { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+  .sec { padding: 12px 16px; border-top: 1px solid var(--border); }
+  .sec:first-child { border-top: 0; }
+  .sec > .label { display: block; margin-bottom: 8px; }
+  .lrow { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+  .lrow + .lrow { border-top: 1px solid var(--border); }
+  .lrow .c { flex: 1; min-width: 0; }
+  .lrow .t { font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .lrow .s { font-size: 13px; color: var(--muted); line-height: 1.4; margin-top: 2px; }
+  .tile { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex: none; background: var(--neutral6); color: var(--muted); }
+  .tile.action { background: var(--action14); color: var(--action); }
+  .tile.success { background: var(--success14); color: var(--success); }
+  .tile.attention { background: var(--attention14); color: var(--attention); }
+  .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; font-size: 12px; font-weight: 700; background: var(--surfaceAlt); border: 1px solid var(--border); color: var(--muted); }
+  .hint { border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.43; display: flex; gap: 10px; }
+  .hint b { display: block; font-weight: 700; margin-bottom: 2px; }
+  .hint.attention { background: var(--attention14); border: 1px solid var(--attention35); color: #ffd6e2; }
+  .hint.attention svg { color: var(--attention); margin-top: 2px; }
+  .hint.neutral { background: var(--neutral6); border: 1px solid var(--border); color: var(--muted); }
+  .hint.neutral b { color: var(--text); }
+
+  /* ---------- Phone ---------- */
+  .phone { width: 390px; height: 844px; background: var(--background); border-radius: 50px; border: 10px solid #1a1d29; position: relative; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.55); }
+  .phone .island { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 120px; height: 34px; background: #000; border-radius: 20px; z-index: 60; }
+  .statusbar { height: 50px; display: flex; justify-content: space-between; align-items: center; padding: 8px 30px 0 36px; font-size: 15px; font-weight: 600; position: relative; z-index: 50; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 3px; background: rgba(245,245,248,.75); z-index: 70; }
+
+  /* ---------- App: session chat ---------- */
+  .apphead { height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+  .apphead .back { color: var(--action); }
+  .apphead .ttl { flex: 1; min-width: 0; }
+  .apphead .ttl div:first-child { font-size: 16px; font-weight: 600; }
+  .apphead .ttl div:last-child { font-size: 12px; color: var(--muted); }
+  .transcript { padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 15px; line-height: 1.5; height: calc(844px - 20px - 50px - 52px - 86px); overflow: hidden; }
+  .msg.user { align-self: flex-end; max-width: 86%; background: var(--surfaceAlt); border: 1px solid var(--border); padding: 10px 12px; border-radius: 16px 16px 4px 16px; font-size: 14px; line-height: 1.43; }
+  .msg.agent { font-size: 14px; line-height: 1.5; color: var(--text); }
+  .msg.agent .muted { color: var(--muted); }
+  .composer { position: absolute; left: 0; right: 0; bottom: 0; height: 86px; padding: 10px 12px 30px; background: var(--background); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .composer .input { flex: 1; height: 44px; border-radius: 22px; background: var(--surfaceAlt); border: 1px solid var(--border); color: var(--faint); font-size: 14px; display: flex; align-items: center; padding: 0 16px; }
+  .composer .send { width: 40px; height: 40px; border-radius: 20px; background: var(--action14); border: 1px solid var(--action35); color: var(--actionLabel); display: flex; align-items: center; justify-content: center; }
+
+  .chead { display: flex; gap: 12px; align-items: center; padding: 14px 16px 12px; }
+  .chead .c { flex: 1; min-width: 0; }
+  .slots-mini { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .slots-mini span { font-size: 12px; color: var(--muted); background: var(--neutral6); border-radius: 6px; padding: 2px 6px; font-variant-numeric: tabular-nums; }
+  .mail { background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+  .mail b { color: var(--text); font-weight: 600; }
+  .mail .lnk { color: var(--action); }
+  .covers { font-size: 12.5px; color: var(--muted); line-height: 1.5; padding: 12px 16px 0; }
+  .covers ul { margin: 4px 0 0; padding-left: 18px; }
+  .cfoot { padding: 12px 16px 16px; }
+
+  /* sheet */
+  .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 40; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface); border-radius: 16px 16px 0 0; z-index: 45; padding: 8px 16px 40px; box-shadow: 0 -18px 50px rgba(0,0,0,.6); border-top: 1px solid var(--border); }
+  .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--border); margin: 0 auto 12px; }
+  .sheet .shead { display: flex; align-items: center; margin-bottom: 4px; }
+  .sheet .shead .title { flex: 1; }
+  .xbtn { width: 32px; height: 32px; border-radius: 16px; background: var(--surfaceAlt); display: flex; align-items: center; justify-content: center; color: var(--muted); }
+
+  /* ---------- Public booking page (Uplink style) ---------- */
+  .browser { position: relative; z-index: 50; height: 44px; margin: 0 12px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #161925; border-radius: 12px; color: var(--muted); font-size: 13px; }
+  .browser svg { color: var(--faint); }
+  .pub { position: absolute; top: 100px; left: 0; right: 0; bottom: 0; overflow: hidden;
+    background: radial-gradient(circle at 10% 0%, rgba(24,200,245,.13) 0, transparent 38%), radial-gradient(circle at 95% 95%, rgba(255,24,183,.10) 0, transparent 34%), var(--background); }
+  .pub .scroll { padding: 20px 16px 120px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin: 4px 4px 20px; color: #b9bccb; font-size: 12px; font-weight: 800; letter-spacing: .18em; }
+  .brand img { width: 30px; height: 22px; object-fit: contain; }
+  .pcard { position: relative; overflow: hidden; padding: 24px 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+  .pcard:before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, var(--action) 0 68%, var(--signature)); }
+  .pcard .eyebrow { margin-bottom: 14px; }
+  .pcard h1 { margin: 0 0 8px; font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; font-weight: 750; }
+  .pcard .copy { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
+  .host { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .host .avatar { width: 36px; height: 36px; background: var(--signature14); border-color: rgba(255,24,183,.35); color: #ff8bd8; }
+  .host .sub b { color: var(--text); font-weight: 600; }
+  .meta { display: flex; flex-direction: column; gap: 8px; margin: 16px 0 4px; }
+  .meta div { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+  .meta svg { color: var(--faint); }
+  .meta a { color: var(--action); text-decoration: none; margin-left: auto; font-weight: 600; font-size: 13px; }
+  .day { margin-top: 20px; }
+  .day .dh { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .day .dh .label { color: var(--text); }
+  .slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .slot { height: 48px; border-radius: 12px; background: var(--surfaceAlt); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .slot small { font-weight: 400; color: var(--faint); margin-left: 6px; font-size: 13px; }
+  .slot.sel { background: var(--action14); border-color: var(--action); color: var(--actionLabel); box-shadow: 0 0 18px rgba(24,200,245,.35); }
+  .slot.sel small { color: var(--actionLabel); opacity: .8; }
+  .live { display: flex; align-items: center; gap: 6px; margin-top: 16px; }
+  .sticky { position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 16px 30px; background: linear-gradient(180deg, rgba(7,8,13,0) 0, var(--background) 30%); z-index: 20; }
+  .sticky .foot { text-align: center; margin-top: 8px; }
+  .poweredby { text-align: center; margin-top: 20px; }
+  .poweredby a { color: var(--action); text-decoration: none; }
+  .summary { margin-top: 16px; }
+  .field { margin-top: 16px; }
+  .field .sub { margin-bottom: 8px; }
+  .field .box { min-height: 72px; border-radius: 12px; background: var(--surfaceAlt); border: 1px solid var(--border); padding: 12px 14px; font-size: 15px; color: var(--faint); }
+  .check { width: 56px; height: 56px; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: var(--signature14); color: var(--signature); box-shadow: 0 0 28px rgba(255,24,183,.45); margin-bottom: 20px; }
+  .bigicon { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; background: var(--neutral6); color: var(--muted); margin-bottom: 18px; }
+  .gone { text-decoration: line-through; color: var(--faint); background: transparent; border-style: dashed; }
+
+  /* ---------- Calendar illustration ---------- */
+  .cal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  .cal .bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .cal .bar .rowt { flex: 1; }
+  .grid { display: grid; grid-template-columns: 56px 1fr 1fr; position: relative; }
+  .grid .colh { padding: 10px 12px; border-bottom: 1px solid var(--border); border-left: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+  .grid .colh b { color: var(--text); font-size: 15px; margin-right: 6px; }
+  .hours { position: relative; }
+  .hours div { height: 52px; font-size: 11px; color: var(--faint); text-align: right; padding: 0 8px; transform: translateY(-7px); }
+  .daycol { position: relative; border-left: 1px solid var(--border); background-image: repeating-linear-gradient(180deg, transparent 0 51px, var(--border) 51px 52px); }
+  .ev { position: absolute; border-radius: 8px; padding: 6px 8px; font-size: 12px; line-height: 1.35; overflow: hidden; }
+  .ev b { display: block; font-size: 12.5px; }
+  .ev.busy { background: #1d2133; border: 1px solid #2c3148; color: var(--muted); }
+  .ev.busy b { color: var(--text); }
+  .ev.hold { background: repeating-linear-gradient(135deg, rgba(24,200,245,.10) 0 6px, rgba(24,200,245,.04) 6px 12px); border: 1px dashed rgba(24,200,245,.6); color: var(--actionLabel); }
+  .ev.hold.other { background: repeating-linear-gradient(135deg, rgba(165,168,184,.10) 0 6px, rgba(165,168,184,.03) 6px 12px); border-color: rgba(165,168,184,.5); color: var(--muted); }
+  .ev.booked { background: rgba(24,200,245,.22); border: 1px solid var(--action); color: var(--text); }
+  .ev.cancel { background: transparent; border: 1px dashed var(--border); color: var(--faint); text-decoration: line-through; }
+  .popover { position: absolute; width: 330px; background: var(--surfaceAlt); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: 0 18px 50px rgba(0,0,0,.6); z-index: 5; }
+  .popover .t { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  .popover p { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 8px 0 0; }
+  .popover .ppl { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .popover .ppl span { display: flex; align-items: center; gap: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 18px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  .notes { max-width: 1180px; margin: 0 auto; }
+  .notes .card { padding: 20px 24px; }
+  .notes h3 { margin: 0 0 8px; font-size: 16px; }
+  .notes ul { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.65; }
+  .notes li b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m23 7-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="m22 6-10 7L2 6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-slash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 14.14 14.14"/></symbol>
+    <symbol id="i-hourglass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/></symbol>
+    <symbol id="i-cloudoff" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0 4 15h9a5 5 0 0 0 1.7-.3M1 1l22 22"/></symbol>
+  </defs>
+</svg>
+
+<header class="intro">
+  <p class="eyebrow">Mockup · Scheduling requests</p>
+  <h1>Offer times, let the guest pick, book it for everyone</h1>
+  <p>You name the windows in chat. Verity holds them in your calendar — colleagues are invited to the same holds — and sends the guest a PIN link served through Uplink. The guest picks a start time; Verity re-checks the calendars, turns the hold into the appointment and cancels the rest. The calendar stays the source of truth: every page view reads it live.</p>
+  <div class="flow">
+    <span><b>1</b> Ask in chat</span><span><b>2</b> Approve once</span><span><b>3</b> Holds + email</span><span><b>4</b> Guest picks</span><span><b>5</b> Booked for all</span><span><b>6</b> Expiry &amp; cleanup</span>
+  </div>
+</header>
+
+<!-- ======================================================= -->
+<section class="part">
+  <h2>In Verity</h2>
+  <p>One approval covers the whole request: creating the holds and inviting colleagues, sending the email, booking the time the guest picks and cancelling the remaining holds. Several requests run in parallel and survive restarts.</p>
+  <div class="row">
+
+    <!-- A1 approval -->
+    <div class="shot">
+      <div class="cap"><span class="n">A1</span>Approval in chat<small>Windows, derived start times, who gets holds and who gets the link, closing date and email in one card.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>11:41</span><span>●●● 5G</span></div>
+        <div class="apphead"><svg class="back" width="22" height="22"><use href="#i-left"/></svg><div class="ttl"><div>Intro call Berger GmbH</div><div>Assistant</div></div></div>
+        <div class="transcript">
+          <div class="msg user">Send Anna Berger times for a 30-minute intro call with Lea and me: Tue 14–16, Wed 10–11. With Meet.</div>
+          <div class="msg agent">Tuesday is free. On Wednesday your board call starts at 10:30, so only 10:00 fits. <span class="muted">Tuesday 14–15 overlaps your open hold for Ben Ott — fine until one of them books.</span></div>
+          <div class="card">
+            <div class="chead">
+              <div class="tile action"><svg width="16" height="16"><use href="#i-cal"/></svg></div>
+              <div class="c"><div class="rowt">Scheduling request</div><div class="sub">Intro call · 30 min · Google Meet</div></div>
+              <span class="tag neutral">Draft</span>
+            </div>
+            <div class="sec">
+              <span class="label">Times · Europe/Berlin</span>
+              <div class="lrow"><div class="c"><div class="t">Tue 3 Nov · 14:00–16:00</div><div class="slots-mini"><span>14:00</span><span>14:30</span><span>15:00</span><span>15:30</span></div></div></div>
+              <div class="lrow"><div class="c"><div class="t">Wed 4 Nov · 10:00–11:00</div><div class="slots-mini"><span>10:00</span><span style="text-decoration:line-through;opacity:.6">10:30</span></div></div></div>
+            </div>
+            <div class="sec">
+              <span class="label">People</span>
+              <div class="lrow"><div class="avatar">HT</div><div class="c"><div class="t">You</div><div class="s">Holds in your calendar</div></div><span class="dw"><span class="dot success"></span>Free</span></div>
+              <div class="lrow"><div class="avatar">LK</div><div class="c"><div class="t">Lea Kramer</div><div class="s">Invited to the holds</div></div><span class="dw"><span class="dot faint"></span>Not checked</span></div>
+              <div class="lrow"><div class="avatar">AB</div><div class="c"><div class="t">Anna Berger</div><div class="s">Booking link · no holds</div></div><span class="dw">Picks</span></div>
+            </div>
+            <div class="sec" style="display:flex;gap:12px;align-items:center">
+              <div class="c" style="flex:1"><div class="t" style="font-size:15px;font-weight:600">Booking closes Fri 6 Nov, 11:41</div><div class="sub">After 7 days the remaining holds are removed</div></div>
+              <a class="btn text">Change</a>
+            </div>
+          </div>
+        </div>
+        <div class="composer" style="height:auto;padding:12px 12px 30px;flex-direction:column;align-items:stretch;gap:8px">
+          <div class="foot" style="text-align:center">Next: review the email, then approve</div>
+          <div class="btns"><a class="btn secondary">Cancel</a><a class="btn primary">Review email</a></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- A2 email + scope -->
+    <div class="shot">
+      <div class="cap"><span class="n">A2</span>Email and approval scope<small>The email names no times — just the link. The sheet spells out everything the approval covers before anything happens.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>11:41</span><span>●●● 5G</span></div>
+        <div class="apphead"><svg class="back" width="22" height="22"><use href="#i-left"/></svg><div class="ttl"><div>Intro call Berger GmbH</div><div>Assistant</div></div></div>
+        <div class="scrim"></div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="shead"><div class="title">Send scheduling request?</div></div>
+          <div class="sub" style="margin-bottom:16px">To anna.berger@berger-gmbh.de</div>
+          <div class="mail">
+            <b>Subject: Pick a time for our intro call</b><br><br>
+            Hi Anna,<br><br>
+            Lea and I would like to set up a 30-minute intro call. Pick a time that suits you here:<br>
+            <span class="lnk">x7k2q9.preview.verity.build/?pin=…</span><br><br>
+            The link is open until Friday, 6 November.<br><br>
+            Best,<br>Holger
+          </div>
+          <a class="btn text" style="margin:4px 0 8px">Edit email</a>
+          <div class="label" style="margin-bottom:8px">This approval lets Verity</div>
+          <div class="card" style="padding:4px 16px">
+            <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-cal"/></svg></div><div class="c"><div class="t">Create 2 holds</div><div class="s">In your calendar, Lea invited</div></div></div>
+            <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-mail"/></svg></div><div class="c"><div class="t">Send this email</div><div class="s">From your Gmail</div></div></div>
+            <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-check"/></svg></div><div class="c"><div class="t">Book the time Anna picks</div><div class="s">Invite Anna and Lea, add Meet</div></div></div>
+            <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-x"/></svg></div><div class="c"><div class="t">Cancel the other holds</div><div class="s">After booking, expiry or revoke</div></div></div>
+          </div>
+          <div class="btns" style="margin-top:16px"><a class="btn secondary">Back</a><a class="btn primary">Approve and send</a></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- A3 status in chat -->
+    <div class="shot">
+      <div class="cap"><span class="n">A3</span>Status in chat<small>The card keeps updating after the chat ends. Booking arrives as a new message, with the cleanup it caused.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>15:02</span><span>●●● 5G</span></div>
+        <div class="apphead"><svg class="back" width="22" height="22"><use href="#i-left"/></svg><div class="ttl"><div>Intro call Berger GmbH</div><div>Assistant</div></div></div>
+        <div class="transcript">
+          <div class="card">
+            <div class="chead">
+              <div class="tile action"><svg width="16" height="16"><use href="#i-cal"/></svg></div>
+              <div class="c"><div class="rowt">Anna Berger</div><div class="sub">Intro call · 30 min</div></div>
+              <span class="tag action">Open</span>
+            </div>
+            <div class="sec" style="padding-top:4px;padding-bottom:4px">
+              <div class="lrow"><span class="dot success"></span><div class="c"><div class="t">2 holds created</div><div class="s">Your calendar · Lea invited</div></div></div>
+              <div class="lrow"><span class="dot success"></span><div class="c"><div class="t">Email sent</div><div class="s">Today, 11:42</div></div></div>
+              <div class="lrow"><span class="dot faint"></span><div class="c"><div class="t">5 times available</div><div class="s">Checked live on every page visit</div></div></div>
+              <div class="lrow"><span class="dot faint"></span><div class="c"><div class="t">Closes Fri 6 Nov, 11:41</div><div class="s">In 7 days</div></div></div>
+            </div>
+            <div class="sec" style="display:flex;gap:8px;align-items:center">
+              <a class="btn text"><svg width="16" height="16"><use href="#i-copy"/></svg>Copy link</a>
+              <a class="btn text">Open page</a>
+              <span style="flex:1"></span>
+              <a class="btn compact destructive">Revoke</a>
+            </div>
+          </div>
+          <div class="msg agent" style="margin-top:4px">Anna booked a time.</div>
+          <div class="card">
+            <div class="chead">
+              <div class="tile success"><svg width="16" height="16"><use href="#i-check"/></svg></div>
+              <div class="c"><div class="rowt">Tue 3 Nov · 14:30–15:00</div><div class="sub">Intro call with Anna Berger</div></div>
+              <span class="tag success">Booked</span>
+            </div>
+            <div class="sec" style="padding-top:4px;padding-bottom:4px">
+              <div class="lrow"><span class="dot success"></span><div class="c"><div class="t">Invitations sent</div><div class="s">Anna, Lea · Meet link added</div></div></div>
+              <div class="lrow"><span class="dot success"></span><div class="c"><div class="t">Holds cleaned up</div><div class="s">Tue hold became the appointment, Wed hold cancelled</div></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="composer"><div class="input">Message</div><div class="send"><svg width="18" height="18"><use href="#i-send"/></svg></div></div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- A4 overview -->
+    <div class="shot">
+      <div class="cap"><span class="n">A4</span>All open requests<small>Parallel requests at a glance. Problems that need you — like a hold that could not be removed — come first.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>15:04</span><span>●●● 5G</span></div>
+        <div class="apphead"><svg class="back" width="22" height="22"><use href="#i-left"/></svg><div class="ttl"><div>Intro call Berger GmbH</div><div>Assistant</div></div></div>
+        <div class="scrim"></div>
+        <div class="sheet" style="padding-bottom:40px">
+          <div class="grab"></div>
+          <div class="shead"><div class="title">Scheduling requests</div><div class="xbtn"><svg width="16" height="16"><use href="#i-x"/></svg></div></div>
+          <div class="sub" style="margin-bottom:16px">Each request has its own link and holds</div>
+          <div class="hint attention" style="margin-bottom:16px"><svg width="18" height="18"><use href="#i-alert"/></svg><div><b>A hold could not be removed</b>Dana Novak's request expired, but the calendar did not respond. Verity keeps retrying.</div></div>
+          <div class="label" style="margin-bottom:8px">Open</div>
+          <div class="card" style="padding:0 16px">
+            <div class="lrow" style="min-height:60px"><div class="c"><div class="t">Anna Berger</div><div class="s">5 times available · closes Fri 6 Nov</div></div><span class="dw"><span class="dot action"></span>Open</span><svg width="16" height="16" style="color:var(--faint)"><use href="#i-right"/></svg></div>
+            <div class="lrow" style="min-height:60px"><div class="c"><div class="t">Ben Ott</div><div class="s">3 times available · closes Thu 5 Nov</div></div><span class="dw"><span class="dot action"></span>Open</span><svg width="16" height="16" style="color:var(--faint)"><use href="#i-right"/></svg></div>
+            <div class="lrow" style="min-height:60px"><div class="c"><div class="t">Clara Weiss</div><div class="s">All times taken · you were notified</div></div><span class="dw"><span class="dot faint"></span>No times</span><svg width="16" height="16" style="color:var(--faint)"><use href="#i-right"/></svg></div>
+          </div>
+          <div class="label" style="margin:24px 0 8px">Recent</div>
+          <div class="card" style="padding:0 16px">
+            <div class="lrow" style="min-height:60px"><div class="c"><div class="t">Dana Novak</div><div class="s">Expired · cleanup retrying</div></div><span class="dw"><span class="dot attention"></span>Problem</span><svg width="16" height="16" style="color:var(--faint)"><use href="#i-right"/></svg></div>
+            <div class="lrow" style="min-height:60px"><div class="c"><div class="t">Erik Lund</div><div class="s">Booked Mon 2 Nov, 09:00</div></div><span class="dw"><span class="dot success"></span>Booked</span><svg width="16" height="16" style="color:var(--faint)"><use href="#i-right"/></svg></div>
+          </div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ======================================================= -->
+<section class="part">
+  <h2>In your calendar</h2>
+  <p>One hold per offered window, marked busy. Colleagues are invited to the same event. Holds of different requests may overlap; only a real appointment blocks a time for everyone. Deleting, moving or resizing a hold changes what the booking page offers.</p>
+  <div class="row">
+    <div class="shot wide">
+      <div class="cap"><span class="n">C1</span>While the request is open<small>Anna's Tuesday hold overlaps Ben's. The existing meeting on Wednesday at 10:30 doesn't block the 10:00 start: 10:00–10:30 still fits.</small></div>
+      <div class="cal">
+        <div class="bar"><div class="rowt">Holger Teske · Calendar</div><span class="sub">3 – 4 Nov 2026</span></div>
+        <div class="grid">
+          <div class="colh" style="border-left:0"></div>
+          <div class="colh"><b>Tue 3</b>November</div>
+          <div class="colh"><b>Wed 4</b>November</div>
+          <div class="hours"><div>09:00</div><div>10:00</div><div>11:00</div><div>12:00</div><div>13:00</div><div>14:00</div><div>15:00</div><div>16:00</div></div>
+          <div class="daycol">
+            <div class="ev busy" style="top:52px;height:48px;left:6px;right:6px"><b>Team standup</b>10:00–10:45</div>
+            <div class="ev hold" style="top:260px;height:102px;left:6px;right:46%"><b>Hold · Anna Berger</b>Intro call · 14:00–16:00<br>Lea invited</div>
+            <div class="ev hold other" style="top:260px;height:50px;left:56%;right:6px"><b>Hold · Ben Ott</b>14:00–15:00</div>
+          </div>
+          <div class="daycol">
+            <div class="ev hold" style="top:52px;height:50px;left:6px;right:6px"><b>Hold · Anna Berger</b>Intro call · 10:00–11:00</div>
+            <div class="ev busy" style="top:78px;height:50px;left:50%;right:6px"><b>Board call</b>10:30–11:30</div>
+            <div class="popover" style="top:120px;left:-10px">
+              <div class="t">Hold · Anna Berger · Intro call</div>
+              <div class="sub">Wed 4 Nov · 10:00–11:00 · Busy</div>
+              <div class="ppl"><span><span class="dot faint"></span>Holger Teske · organizer</span><span><span class="dot faint"></span>Lea Kramer</span></div>
+              <p>Held by Verity until Anna Berger picks a time (open until Fri 6 Nov). Delete this hold to stop offering these times; move or resize it to change them.</p>
+            </div>
+          </div>
+        </div>
+        <div class="legend"><span><i style="background:repeating-linear-gradient(135deg,rgba(24,200,245,.25) 0 4px,transparent 4px 8px);border:1px dashed var(--action)"></i>Hold of this request</span><span><i style="background:repeating-linear-gradient(135deg,rgba(165,168,184,.25) 0 4px,transparent 4px 8px);border:1px dashed var(--muted)"></i>Hold of another request — doesn't block</span><span><i style="background:#1d2133;border:1px solid #2c3148"></i>Appointment — blocks every request</span></div>
+      </div>
+    </div>
+
+    <div class="shot wide">
+      <div class="cap"><span class="n">C2</span>After Anna books Tue 14:30<small>The Tuesday hold shrinks to 14:30–15:00, gets the real title and invites Anna. Wednesday's hold is cancelled. Ben's overlapping hold stays, but 14:30 disappears from Ben's page.</small></div>
+      <div class="cal">
+        <div class="bar"><div class="rowt">Holger Teske · Calendar</div><span class="sub">3 – 4 Nov 2026</span></div>
+        <div class="grid">
+          <div class="colh" style="border-left:0"></div>
+          <div class="colh"><b>Tue 3</b>November</div>
+          <div class="colh"><b>Wed 4</b>November</div>
+          <div class="hours"><div>09:00</div><div>10:00</div><div>11:00</div><div>12:00</div><div>13:00</div><div>14:00</div><div>15:00</div><div>16:00</div></div>
+          <div class="daycol">
+            <div class="ev busy" style="top:52px;height:48px;left:6px;right:6px"><b>Team standup</b>10:00–10:45</div>
+            <div class="ev booked" style="top:286px;height:24px;left:6px;right:46%;padding:3px 8px"><b>Intro call · Berger GmbH</b></div>
+            <div class="ev hold other" style="top:260px;height:50px;left:56%;right:6px"><b>Hold · Ben Ott</b>14:00 still free</div>
+          </div>
+          <div class="daycol">
+            <div class="ev cancel" style="top:52px;height:50px;left:6px;right:52%"><b>Hold · Anna Berger</b>cancelled</div>
+            <div class="ev busy" style="top:78px;height:50px;left:50%;right:6px"><b>Board call</b>10:30–11:30</div>
+          </div>
+        </div>
+        <div class="legend"><span><i style="background:rgba(24,200,245,.22);border:1px solid var(--action)"></i>Booked: Holger, Lea, Anna · Meet</span><span><i style="border:1px dashed var(--border)"></i>Cancelled hold — Lea gets the cancellation</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================= -->
+<section class="part">
+  <h2>The guest's booking page (Uplink)</h2>
+  <p>Same shell as the existing Uplink pages: Verity mark, one card with the action-to-signature edge, no account. The PIN travels in the link, so the guest lands straight on the times. Opening the page never books anything — only the explicit button does.</p>
+  <div class="row">
+
+    <!-- B1 pick -->
+    <div class="shot">
+      <div class="cap"><span class="n">B1</span>Pick a time<small>Start times derived from the windows (grid = duration). Read live from the calendars on every visit and refreshed while open.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:12</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <p class="eyebrow">Pick a time</p>
+            <div class="host"><div class="avatar">HT</div><div class="sub"><b>Holger Teske</b> invites you</div></div>
+            <h1>Intro call with Berger GmbH</h1>
+            <div class="meta">
+              <div><svg width="16" height="16"><use href="#i-clock"/></svg>30 minutes</div>
+              <div><svg width="16" height="16"><use href="#i-video"/></svg>Google Meet</div>
+              <div><svg width="16" height="16"><use href="#i-users"/></svg>Holger Teske, Lea Kramer</div>
+              <div><svg width="16" height="16"><use href="#i-globe"/></svg>Berlin time (CET)<a>Change</a></div>
+            </div>
+            <div class="day"><div class="dh"><span class="label">Tuesday, 3 Nov</span></div>
+              <div class="slots"><div class="slot">14:00</div><div class="slot sel">14:30</div><div class="slot">15:00</div><div class="slot">15:30</div></div></div>
+            <div class="day"><div class="dh"><span class="label">Wednesday, 4 Nov</span></div>
+              <div class="slots"><div class="slot">10:00</div></div></div>
+            <div class="live foot"><span class="dot success" style="width:6px;height:6px"></span>Up to date · open until Fri 6 Nov</div>
+          </div>
+        </div>
+        <div class="sticky"><a class="btn primary">Continue · Tue 14:30</a></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- B2 confirm -->
+    <div class="shot">
+      <div class="cap"><span class="n">B2</span>Confirm<small>Guest and participants are fixed by the request. An optional note goes into the invitation. While booking, the button shows a spinner and locks.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:12</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <p class="eyebrow">Confirm your time</p>
+            <h1>Tue 3 Nov<br>14:30 – 15:00</h1>
+            <p class="copy">Intro call with Berger GmbH · Berlin time</p>
+            <div class="card summary" style="padding:0 16px;background:var(--surfaceAlt)">
+              <div class="lrow"><div class="avatar">AB</div><div class="c"><div class="t">Anna Berger</div><div class="s">anna.berger@berger-gmbh.de · you</div></div></div>
+              <div class="lrow"><div class="avatar">HT</div><div class="c"><div class="t">Holger Teske</div><div class="s">Organizer</div></div></div>
+              <div class="lrow"><div class="avatar">LK</div><div class="c"><div class="t">Lea Kramer</div></div></div>
+            </div>
+            <div class="field"><div class="sub">Note for Holger (optional)</div><div class="box">Anything to prepare?</div></div>
+            <p class="foot" style="margin:12px 0 0">The calendar invitation with the Meet link goes to anna.berger@berger-gmbh.de.</p>
+          </div>
+        </div>
+        <div class="sticky"><a class="btn primary"><span class="spinner"></span>Booking…</a><div style="text-align:center;margin-top:4px"><a class="btn text" style="opacity:.4">Choose another time</a></div></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- B3 booked -->
+    <div class="shot">
+      <div class="cap"><span class="n">B3</span>Booked<small>Shown only once the appointment exists in the calendar. Revisiting the link later shows the same page as "Already booked".</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:13</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <div class="check"><svg width="26" height="26"><use href="#i-check"/></svg></div>
+            <p class="eyebrow">Booked</p>
+            <h1>See you on Tuesday</h1>
+            <p class="copy">The invitation is on its way to anna.berger@berger-gmbh.de.</p>
+            <div class="card summary" style="padding:0 16px;background:var(--surfaceAlt)">
+              <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-cal"/></svg></div><div class="c"><div class="t">Tue 3 Nov · 14:30–15:00</div><div class="s">Berlin time (CET)</div></div></div>
+              <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-video"/></svg></div><div class="c"><div class="t">Google Meet</div><div class="s">Link in the invitation</div></div></div>
+              <div class="lrow"><div class="tile"><svg width="16" height="16"><use href="#i-users"/></svg></div><div class="c"><div class="t">Holger Teske, Lea Kramer</div><div class="s">and you</div></div></div>
+            </div>
+            <div style="margin-top:16px"><a class="btn secondary">Add to calendar (.ics)</a></div>
+            <p class="foot" style="margin:12px 0 0">Need a different time? Reply to the invitation.</p>
+          </div>
+          <p class="foot poweredby">Scheduled with Verity · <a>verity.build</a></p>
+        </div></div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ======================================================= -->
+<section class="part">
+  <h2>Edge states of the booking page</h2>
+  <p>Every state says what happened and what the guest can do next. Nothing is booked from stale data; if the calendar can't be read, nothing is offered.</p>
+  <div class="row">
+
+    <!-- E1 just taken -->
+    <div class="shot">
+      <div class="cap"><span class="n">E1</span>Time just taken<small>Another request booked 14:30 a moment earlier. The re-check before booking catches it; the list is fresh, no reload needed.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:12</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <p class="eyebrow">Pick a time</p>
+            <h1>Intro call with Berger GmbH</h1>
+            <p class="copy">30 minutes · Google Meet · Berlin time</p>
+            <div class="hint attention" style="margin-top:16px"><svg width="18" height="18"><use href="#i-alert"/></svg><div><b>Tue 14:30 was just booked</b>Nothing was booked for you. Please pick another time.</div></div>
+            <div class="day"><div class="dh"><span class="label">Tuesday, 3 Nov</span></div>
+              <div class="slots"><div class="slot">14:00</div><div class="slot gone">14:30</div><div class="slot">15:00</div><div class="slot">15:30</div></div></div>
+            <div class="day"><div class="dh"><span class="label">Wednesday, 4 Nov</span></div>
+              <div class="slots"><div class="slot">10:00</div></div></div>
+          </div>
+        </div>
+        <div class="sticky"><a class="btn primary" style="opacity:.4">Continue</a></div>
+        </div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- E2 none left -->
+    <div class="shot">
+      <div class="cap"><span class="n">E2</span>No times left<small>All windows are booked or their holds were deleted. The page stays open: if a time frees up before the deadline, it reappears. You get notified in Verity.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:12</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <div class="bigicon"><svg width="22" height="22"><use href="#i-cal"/></svg></div>
+            <p class="eyebrow">Intro call with Berger GmbH</p>
+            <h1>No times left right now</h1>
+            <p class="copy">All proposed times have been taken. Holger Teske has been told and may send new ones.</p>
+            <div style="margin-top:24px"><a class="btn secondary"><svg width="16" height="16"><use href="#i-mail"/></svg>Email Holger</a></div>
+            <div class="live foot"><span class="dot faint" style="width:6px;height:6px"></span>This page updates until Fri 6 Nov</div>
+          </div>
+          <p class="foot poweredby">Scheduled with Verity · <a>verity.build</a></p>
+        </div></div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- E3 expired -->
+    <div class="shot">
+      <div class="cap"><span class="n">E3</span>Expired or withdrawn<small>After the 7-day deadline (or a revoke), until the Uplink link itself ends on day 30. Holds were already removed at the deadline.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>09:30</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <div class="bigicon"><svg width="22" height="22"><use href="#i-hourglass"/></svg></div>
+            <p class="eyebrow">Intro call with Berger GmbH</p>
+            <h1>This request has expired</h1>
+            <p class="copy">Booking closed on Friday, 6 November. Ask Holger Teske for new times.</p>
+            <div style="margin-top:24px"><a class="btn secondary"><svg width="16" height="16"><use href="#i-mail"/></svg>Email Holger</a></div>
+            <div class="hint neutral" style="margin-top:24px"><div><b>Withdrawn instead of expired</b>Same page, title "This request was withdrawn" and "Holger Teske closed this request."</div></div>
+          </div>
+          <p class="foot poweredby">Scheduled with Verity · <a>verity.build</a></p>
+        </div></div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+    <!-- E4 calendar unavailable -->
+    <div class="shot">
+      <div class="cap"><span class="n">E4</span>Calendar can't be checked<small>Google or the Verity server is unreachable. No times are shown from memory; the guest can retry. If the server itself is offline, Uplink shows its existing reconnect page.</small></div>
+      <div class="phone"><div class="island"></div>
+        <div class="statusbar"><span>14:12</span><span>●●● 5G</span></div>
+        <div class="browser"><svg width="12" height="12"><use href="#i-lock"/></svg>x7k2q9.preview.verity.build</div>
+        <div class="pub"><div class="scroll">
+          <div class="brand"><img src="../../website/site/assets/verity-mark.png" alt="">VERITY</div>
+          <div class="pcard">
+            <div class="bigicon"><svg width="22" height="22"><use href="#i-cloudoff"/></svg></div>
+            <p class="eyebrow">Intro call with Berger GmbH</p>
+            <h1>We can't check the calendar right now</h1>
+            <p class="copy">Nothing has been booked. Please try again in a moment.</p>
+            <div style="margin-top:24px"><a class="btn primary"><svg width="16" height="16"><use href="#i-refresh"/></svg>Try again</a></div>
+            <p class="foot" style="margin:12px 0 0">Open until Fri 6 Nov</p>
+          </div>
+          <p class="foot poweredby">Scheduled with Verity · <a>verity.build</a></p>
+        </div></div>
+        <div class="homebar"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section class="notes">
+  <div class="card">
+    <h3>Decisions shown in this mockup</h3>
+    <ul>
+      <li><b>One hold per window</b>, not per slot. Its live position in the calendar defines the offered window, so moving or resizing a hold needs no extra rule.</li>
+      <li><b>Start times = window ÷ duration</b>, starting at the window's beginning; a slot must fit completely. Each slot is also checked against appointments of every participant whose calendar Verity can read.</li>
+      <li><b>Holds don't block each other</b>; appointments do. Partial overlap with an appointment removes a slot.</li>
+      <li><b>Colleagues are invited to the holds</b>. Whether a hold shows as busy for them depends on their calendar; without read access their availability is shown as "Not checked".</li>
+      <li><b>Booking closes after 7 days</b> (adjustable, shorter); holds are removed at that moment. The Uplink link stays up to day 30 to show the expiry page.</li>
+      <li><b>Booking requires an explicit button</b> (POST). Link previews and mail scanners that open the URL never book.</li>
+      <li><b>The guest page shows names, not calendars</b>: no other events or busy times of you or your colleagues are visible.</li>
+    </ul>
+  </div>
+</section>
+
+</body>
+</html>
