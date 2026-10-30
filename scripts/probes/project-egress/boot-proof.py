@@ -74,6 +74,18 @@ def verify_bundle(directory):
         assert proof['protected_start_ns'] <= event['event_time_ns'] <= proof['protected_end_ns']
         verify_retained(initial, event['retained'])
         assert event['recovery_ns'] > 0
+        before = event['stream_before']
+        after = event['stream_after']
+        assert before['successes'] >= 3 and before['attempts'] >= before['successes']
+        for key in ('last_success_ns', 'last_receipt_ns', 'heartbeat_ns'):
+            assert 0 <= event['event_time_ns'] - before[key] <= 2_000_000_000, 'Polling positive was stale before disruption'
+        if event['event'] in ('controller-kill', 'server-kill'):
+            assert after['attempts'] > before['attempts'], 'Polling stopped before disruption'
+            assert after['heartbeat_ns'] >= event['event_time_ns'] + 2_000_000_000, 'Polling did not continue after disruption'
+        process = {'controller-kill': 'controller', 'server-kill': 'server', 'docker-stop-start': 'docker', 'docker-crash': 'docker'}.get(event['event'])
+        if process:
+            assert event['process_before'][process] > 0 and event['process_after'][process] > 0
+            assert event['process_before'][process] != event['process_after'][process], 'Required process was not restarted'
         for key in ('last_success_ns', 'last_receipt_ns'):
             assert event['stream_after'][key] - event['event_time_ns'] <= 2_000_000_000
         if event['event'] == 'reboot':
@@ -141,6 +153,7 @@ def main():
             stream_before = json.loads(vm.ssh(guest + f'stream-status {event}'))
             assert stream_before['successes'] >= 3 and stream_before['last_receipt_ns'], 'Authenticated polling positive control failed'
             before = vm.facts()
+            process_before = json.loads(vm.ssh(guest + 'process-facts'))
             event_time = int(vm.ssh('date +%s%N').strip())
             if event == 'controller-kill':
                 vm.ssh('sudo systemctl kill --kill-whom=main --signal=SIGKILL verity-egress-host.service')
@@ -179,6 +192,7 @@ def main():
             vm.ssh(guest + 'external')
             events.append({'event': event, 'event_time_ns': event_time, 'before': before, 'after': vm.facts(),
                            'recovery_ns': time.monotonic_ns() - recovery_start, 'retained': after,
+                           'process_before': process_before, 'process_after': json.loads(vm.ssh(guest + 'process-facts')),
                            'stream_before': stream_before, 'stream_after': stream_after})
             (evidence / 'events.json').write_text(json.dumps(events, indent=2))
         faults = json.loads(vm.ssh(guest + 'faults', timeout=180))

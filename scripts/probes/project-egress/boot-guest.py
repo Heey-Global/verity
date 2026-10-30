@@ -242,6 +242,10 @@ if __name__ == '__main__':
         faults()
     elif operation == 'external':
         run('docker', 'exec', '--user', '1000:1000', sandbox(), 'python3', '/opt/verity-boot/boot-client.py', 'external')
+    elif operation == 'process-facts':
+        print(json.dumps({key: int(run('systemctl', 'show', unit, '--property=MainPID', '--value'))
+                          for key, unit in [('docker', 'docker.service'), ('controller', 'verity-egress-host.service'),
+                                            ('server', 'verity-boot-server.service')]}))
     elif operation == 'snapshot':
         print(json.dumps(snapshot()))
     elif operation == 'stream-status':

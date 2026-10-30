@@ -99,7 +99,12 @@ class FullBundleTests(unittest.TestCase):
                 after['boot_id'] = '22222222-2222-2222-2222-222222222222'
             events.append({'event': name, 'before': facts, 'after': after, 'event_time_ns': when,
                            'retained': copy.deepcopy(initial), 'recovery_ns': 1,
-                           'stream_after': {'last_success_ns': when - 1, 'last_receipt_ns': when - 1}})
+                           'process_before': {'docker': 10, 'controller': 20, 'server': 30},
+                           'process_after': {'docker': 11, 'controller': 21, 'server': 31},
+                           'stream_before': {'attempts': 4, 'successes': 3, 'last_success_ns': when - 1,
+                                             'last_receipt_ns': when - 1, 'heartbeat_ns': when - 1},
+                           'stream_after': {'attempts': 5, 'last_success_ns': when - 1, 'last_receipt_ns': when - 1,
+                                            'heartbeat_ns': when + 2_000_000_000}})
             broker.append({'phase': name, 'time_ns': str(when - 1)})
         proof = {'complete': True, 'removed_fences_detected': True, 'events': events,
                  'protected_start_ns': 0, 'protected_end_ns': 100_000_000_000, 'mutation_started_ns': 101_000_000_000,
@@ -145,3 +150,19 @@ class FullBundleTests(unittest.TestCase):
             Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
             with self.assertRaises(AssertionError):
                 boot_proof.verify_bundle(directory)
+
+
+    def test_rejects_stopped_poller_and_unrestarted_process(self):
+        import json
+        import tempfile
+        for change in ('stopped-poller', 'unchanged-process'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                proof, _ = self.fixture(directory)
+                event = proof['events'][0]
+                if change == 'stopped-poller':
+                    event['stream_after']['attempts'] = event['stream_before']['attempts']
+                else:
+                    event['process_after'] = event['process_before']
+                Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
+                with self.assertRaises(AssertionError):
+                    boot_proof.verify_bundle(directory)
