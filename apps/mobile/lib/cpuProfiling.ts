@@ -4,7 +4,7 @@ import { exportSessionSwitchTimings } from '@verity/mobile';
 import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 import { exportRuntimeDiagnostics } from './runtimeDiagnostics';
 
-export type CPUCapture = {
+type CPUCapture = {
   recording: boolean;
   captureId: string;
   startedAt: number;

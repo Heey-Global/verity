@@ -143,6 +143,26 @@ namespace hermes { class IHermesRootAPI; void *makeHermesRootAPI(); }
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   });
+  it('loads the bundle-phase helper when Expo is omitted from contract CI', () => {
+    execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `
+      const Module = require('node:module');
+      const original = Module._load;
+      Module._load = function(name, ...args) {
+        if (name === '@expo/config-plugins') throw new Error('Expo omitted in contract CI');
+        return original.call(this, name, ...args);
+      };
+      const plugin = require(${JSON.stringify(resolve('apps/mobile/plugins/withCPUProfiling.js'))});
+      if (typeof plugin.profileBundleScript !== 'function') throw new Error('Missing phase helper');
+      plugin.profileBundleScript('exit 0\\n', ${JSON.stringify(commit)});
+    `,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+  });
   it('runs the generated map phase and refreshes its identity on repeated prebuilds', () => {
     const plugin = createRequire(import.meta.url)(
       resolve('apps/mobile/plugins/withCPUProfiling.js'),

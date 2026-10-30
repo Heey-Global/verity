@@ -1,8 +1,7 @@
-const { withPodfile, withXcodeProject } = require('@expo/config-plugins');
-
 // Only the dedicated optimized diagnostic build links the sampler. Normal
 // staging/production builds cannot activate it through JavaScript or OTA.
 module.exports = function withCPUProfiling(config) {
+  const { withPodfile, withXcodeProject } = require('@expo/config-plugins');
   config = withPodfile(config, (mod) => {
     const anchor = '  use_expo_modules!';
     const pod = "  pod 'VerityCPUProfiler', :path => '../plugins/cpu-profiler'";
