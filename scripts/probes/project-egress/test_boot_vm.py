@@ -104,7 +104,7 @@ class FullBundleTests(unittest.TestCase):
                            'stream_before': {'attempts': 4, 'successes': 3, 'last_success_ns': when - 1,
                                              'last_receipt_ns': when - 1, 'heartbeat_ns': when - 1},
                            'stream_after': {'attempts': 5, 'last_success_ns': when - 1, 'last_receipt_ns': when - 1,
-                                            'heartbeat_ns': when + 2_000_000_000}})
+                                            'heartbeat_ns': when + 2_000_000_000, 'observed_ns': when + 2_000_000_001}})
             broker.append({'phase': name, 'time_ns': str(when - 1)})
         proof = {'complete': True, 'removed_fences_detected': True, 'events': events,
                  'protected_start_ns': 0, 'protected_end_ns': 100_000_000_000, 'mutation_started_ns': 101_000_000_000,
@@ -136,7 +136,7 @@ class FullBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             proof, broker = self.fixture(directory)
             self.assertTrue(boot_proof.verify_bundle(directory)['complete'])
-            broker[0]['time_ns'] = proof['events'][0]['event_time_ns'] + 2_000_000_001
+            broker.append({'phase': broker[0]['phase'], 'time_ns': proof['events'][0]['event_time_ns'] + 2_000_000_001})
             Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
             with self.assertRaisesRegex(AssertionError, 'Actual handler committed'):
                 boot_proof.verify_bundle(directory)
@@ -166,3 +166,14 @@ class FullBundleTests(unittest.TestCase):
                 Path(directory, 'boot-proof.json').write_text(json.dumps(proof))
                 with self.assertRaises(AssertionError):
                     boot_proof.verify_bundle(directory)
+
+
+    def test_rejects_unsupported_fresh_receipt_claim(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proof, broker = self.fixture(directory)
+            broker[0]['time_ns'] = proof['events'][0]['event_time_ns'] - 3_000_000_000
+            Path(directory, 'broker-receipts.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in broker))
+            with self.assertRaisesRegex(AssertionError, 'no actual handler evidence'):
+                boot_proof.verify_bundle(directory)

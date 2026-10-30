@@ -81,7 +81,8 @@ def verify_bundle(directory):
             assert 0 <= event['event_time_ns'] - before[key] <= 2_000_000_000, 'Polling positive was stale before disruption'
         if event['event'] in ('controller-kill', 'server-kill'):
             assert after['attempts'] > before['attempts'], 'Polling stopped before disruption'
-            assert after['heartbeat_ns'] >= event['event_time_ns'] + 2_000_000_000, 'Polling did not continue after disruption'
+            assert after['observed_ns'] - event['event_time_ns'] >= 2_000_000_000, 'Revocation window was not observed'
+            assert 0 <= after['observed_ns'] - after['heartbeat_ns'] < 2_000_000_000, 'Polling did not continue after disruption'
         process = {'controller-kill': 'controller', 'server-kill': 'server', 'docker-stop-start': 'docker', 'docker-crash': 'docker'}.get(event['event'])
         if process:
             assert event['process_before'][process] > 0 and event['process_after'][process] > 0
@@ -99,6 +100,7 @@ def verify_bundle(directory):
     for event in events:
         matching = [int(row['time_ns']) for row in receipts if row['phase'] == event['event']]
         assert matching, 'No actual authenticated handler positive control'
+        assert event['stream_before']['last_receipt_ns'] in matching, 'Fresh polling receipt has no actual handler evidence'
         assert max(matching) - event['event_time_ns'] <= 2_000_000_000, 'Actual handler committed after revocation bound'
     inflight = json.loads((directory / 'inflight.json').read_text())
     for phase, result in inflight.items():

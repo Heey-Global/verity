@@ -252,6 +252,7 @@ if __name__ == '__main__':
         status = json.loads((worktree() / f'.boot-stream-{sys.argv[2]}.json').read_text())
         receipts = ROOT / 'broker-receipts.jsonl'
         rows = [json.loads(line) for line in receipts.read_text().splitlines()] if receipts.exists() else []
+        status['observed_ns'] = time.time_ns()
         status['last_receipt_ns'] = max((int(row['time_ns']) for row in rows if row['phase'] == sys.argv[2]), default=0)
         print(json.dumps(status))
     elif operation == 'stop-poll':
