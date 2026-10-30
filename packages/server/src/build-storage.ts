@@ -338,7 +338,7 @@ const activeDirectories = new Set<string>();
  * longer blocks other builds; {@link BuildStorage.reconcile} releases it once the
  * worker, the boot or the elapsed time proves it ended.
  */
-export class BuildStorageCapacityError extends Error {}
+class BuildStorageCapacityError extends Error {}
 
 export class BuildStorage {
   private reclaimer?: () => Promise<void>;

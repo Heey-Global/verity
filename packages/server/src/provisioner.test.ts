@@ -7338,7 +7338,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         });
         const admission = vi.spyOn(storage, 'admit').mockImplementation(() => {
           const lease = storage.acquire();
-          vi.spyOn(lease, 'reserveBuild');
+          vi.spyOn(lease, 'reserveBuildWithReclamation');
           return lease;
         });
         const { client: docker } = fakeDocker({
@@ -7359,7 +7359,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         await expect(provisioner.provision(id)).rejects.toThrow();
         expect(inspect).toHaveBeenCalled();
         expect(inspect).toHaveBeenCalledTimes(measurement === 'previous' ? 2 : 1);
-        expect(admission.mock.results[0]!.value.reserveBuild).toHaveBeenCalledWith(
+        expect(admission.mock.results[0]!.value.reserveBuildWithReclamation).toHaveBeenCalledWith(
           measurement === 'measured' || measurement === 'previous' ? 10 * 1024 ** 3 : undefined,
         );
         expect(snapshot).not.toBe('');

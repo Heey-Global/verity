@@ -264,6 +264,9 @@ export class SessionStorage {
     if (!project || project.kind === 'control_plane') return;
     if (dirname(session.worktree) !== join(resolve(this.deps.root(project)), '.verity-sessions'))
       return;
+    // Ordinary sessions need no recovery and may use unmanaged repository layouts.
+    // Require the stricter retirement boundary only when a journal actually exists.
+    if (!(await exists(this.manifest(resolve(this.deps.root(project)), session.worktree)))) return;
     const root = await this.safeRoot(project, session.worktree);
     const path = this.manifest(root, session.worktree);
     const source = await this.retirementSource(root, session.worktree);

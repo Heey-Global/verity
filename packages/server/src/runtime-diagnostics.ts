@@ -159,7 +159,7 @@ export const nativeRetirementSchema = z.object({
   reclaimableBytes: number.nullable(),
   blockers: z.array(z.string().max(200)).max(20),
 });
-export const storageReclamationSchema = z.object({
+const storageReclamationSchema = z.object({
   accounting: z.string().max(300),
   lastGc: z
     .object({
