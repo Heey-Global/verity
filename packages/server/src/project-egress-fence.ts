@@ -296,12 +296,14 @@ export class ProjectEgressFence {
         throw new Error('Stale or invalid project fence policy');
       // Capture before inspection, classification, DNS or either executor can pause.
       let admission: ProjectDeadlineLease;
+      let authority: ProjectFenceSnapshot['grants'];
       try {
         const sample = await this.deps.deadline.clock();
-        const authority = snapshot.grants.filter(
+        const capturedAt = Number(BigInt(sample.realNs) / 1_000_000n);
+        authority = snapshot.grants.filter(
           (grant) =>
             grant.revokedAt === undefined &&
-            (grant.expiresAt === null || grant.expiresAt > this.now()),
+            (grant.expiresAt === null || grant.expiresAt > capturedAt),
         );
         const expiry = authority.reduce<number | null>(
           (earliest, grant) =>
@@ -325,7 +327,8 @@ export class ProjectEgressFence {
       if (!(await this.deps.policyCurrent(snapshot)))
         throw new Error('Project fence authority changed');
       const leases: Lease[] = [];
-      for (const grant of snapshot.grants) {
+      // Never reconsider excluded grants after an asynchronous wall-clock rollback.
+      for (const grant of authority) {
         if (
           grant.revokedAt !== undefined ||
           (grant.expiresAt !== null && grant.expiresAt <= this.now())

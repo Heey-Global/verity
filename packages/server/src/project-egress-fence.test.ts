@@ -328,3 +328,29 @@ it('binds both directions to fresh labels and absolute expiry tombstones', async
   expect(second).not.toMatch(/flush set.*expired/u);
   expect(second.match(/set expired4_\w+/u)?.[0]).toBe(first.match(/set expired4_\w+/u)?.[0]);
 });
+
+it('never admits capture-expired grants after rollback during revocation', async () => {
+  for (const standing of [false, true]) {
+    const { deps, fence, setNow } = fixture();
+    await fence.prepare(binding);
+    deps.deadline.revoke.mockImplementation(async () => {
+      setNow(-2000);
+    });
+    const expired = { ...grant, expiresAt: 900, target: { ...grant.target, port: 444 } };
+    await fence.refresh({
+      binding,
+      revision: 1,
+      grants: standing ? [expired, { ...grant, expiresAt: null }] : [expired],
+    });
+    const rules = deps.apply.mock.calls.at(-1)![0];
+    expect(rules).not.toContain('8.8.8.8 . tcp . 444');
+    expect(deps.resolve).toHaveBeenCalledTimes(standing ? 1 : 0);
+    if (standing) {
+      expect(rules).toContain('8.8.8.8 . tcp . 443');
+      expect(deps.deadline.arm).toHaveBeenCalledOnce();
+    } else {
+      expect(rules).not.toContain('elements =');
+      expect(deps.deadline.arm).not.toHaveBeenCalled();
+    }
+  }
+});
