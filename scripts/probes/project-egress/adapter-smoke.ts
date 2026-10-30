@@ -20,6 +20,7 @@ assert.equal(process.env.PROJECT_EGRESS_DISPOSABLE, 'yes');
 const docker = async (...args: string[]) =>
   (await exec('/usr/bin/docker', args, { timeout: 10000, maxBuffer: 2 * 1024 * 1024 })).stdout;
 const evidence: Array<{ case: string; expected: boolean; observed: boolean }> = [];
+const attemptTimings: Array<Record<string, unknown>> = [];
 const addresses = ['11.77.3.2', '2001:4860:feed:3::2'];
 const nets = [
   ['ve-fa', '172.30.101.0/24', 'fd42:feed:1::/64'],
@@ -125,8 +126,13 @@ async function observe(
   // Probe an acknowledged lease instead of racing the deliberate deny-first gap.
   // Expiry/revocation phases leave renewProjects empty.
   for (let attempt = 0; attempt < (expected ? 5 : 1); attempt++) {
+    const started = process.hrtime.bigint();
+    // Refresh only this sender: renewing an unrelated project consumes its lease
+    // budget before any positive packet is attempted.
     for (const index of renewProjects)
-      await fence.refresh({ binding: bindings[index]!, revision, grants: grants() });
+      if (bindings[index]!.projectId === project)
+        await fence.refresh({ binding: bindings[index]!, revision, grants: grants() });
+    const ready = process.hrtime.bigint();
     await docker(
       'exec',
       project,
@@ -135,6 +141,15 @@ async function observe(
       'send',
       JSON.stringify({ host, kind, marker, port: 8080 }),
     );
+    const sent = process.hrtime.bigint();
+    attemptTimings.push({
+      name,
+      attempt,
+      project,
+      refreshMs: Number(ready - started) / 1e6,
+      sendMs: Number(sent - ready) / 1e6,
+      lease: stagedLease,
+    });
     const logs = await docker('logs', receiver);
     observed = logs.split('\n').some((line) => {
       try {
@@ -466,6 +481,19 @@ host.run('/sbin/tc', 'qdisc', 'del', 'dev', state['peer']['device'], 'clsact')
     JSON.stringify({ complete: true, cases: evidence }, null, 2),
   );
 } catch (error) {
+  await writeFile(
+    '/evidence/adapter-attempt-timings.json',
+    JSON.stringify(attemptTimings, null, 2),
+  );
+  if (bindings.length)
+    await writeFile(
+      '/evidence/adapter-failure-kernel.json',
+      JSON.stringify(
+        await kernelObservation().catch((failure: unknown) => String(failure)),
+        null,
+        2,
+      ),
+    );
   await writeFile(
     '/evidence/adapter-result.json',
     JSON.stringify({ complete: false, cases: evidence, error: String(error) }, null, 2),
