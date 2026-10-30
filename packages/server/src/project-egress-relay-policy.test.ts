@@ -35,6 +35,7 @@ function fixture(root = '/var/lib/docker/volumes/data/_data') {
     reply: [
       {
         Id: 'c'.repeat(64),
+        State: { Running: true },
         Image: image[0]!.Id,
         Config: {
           Image: policy.image,
@@ -270,4 +271,36 @@ it('checks actual socket ownership, contents and non-symlinked ancestors', async
       ),
     ),
   ).rejects.toThrow();
+});
+
+it('accepts absent listeners only for deny-only restoration of a stopped relay', async () => {
+  const root = await mkdtemp(
+    join(process.getuid!() === 0 ? '/root' : dirname(process.cwd()), 'eg-'),
+  );
+  roots.push(root);
+  const f = fixture(root);
+  f.reply[0]!.State.Running = false;
+  const expected = relaySocketMounts(binding, policy);
+  for (const item of expected) {
+    const dir = join(root, item.subpath);
+    await mkdir(dir, { recursive: true });
+    await chown(dir, policy.socketOwnerUid, policy.relayGid);
+    await chmod(dir, 0o710);
+  }
+  const docker = async (kind: string) =>
+    JSON.stringify(kind === 'container' ? f.reply : kind === 'image' ? image : f.volume);
+  await expect(
+    inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true),
+  ).resolves.toBeUndefined();
+  // Start/admission must not inherit the restoration exception.
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker)).rejects.toThrow();
+  f.reply[0]!.State.Running = true;
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
+  f.reply[0]!.State.Running = false;
+  const dir = join(root, expected[0]!.subpath);
+  await writeFile(join(dir, 'extra'), 'unexpected');
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
+  await rm(join(dir, 'extra'));
+  await chmod(dir, 0o777);
+  await expect(inspectEgressRelay(binding, f.reply[0]!.Id, policy, docker, true)).rejects.toThrow();
 });

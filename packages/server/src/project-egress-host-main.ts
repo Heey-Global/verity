@@ -75,8 +75,8 @@ const controller = new ProjectEgressHost(await store.load(), {
   save: (state) => store.save(state),
   apply: applyProjectFenceRules,
   inspectNetwork: inspectEgressHostNetwork,
-  inspectContainer: (binding, id, role) =>
-    inspectEgressHostContainer(binding, id, role, relayPolicy),
+  inspectContainer: (binding, id, role, restoring) =>
+    inspectEgressHostContainer(binding, id, role, relayPolicy, restoring),
   inspectTransport: (binding, ids) => {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
     return inspectEgressTransport(binding, ids, relayPolicy.codexSubpath !== undefined);

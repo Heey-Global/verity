@@ -4860,6 +4860,20 @@ export async function buildEmbeddedServer(
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
     onSecretUnlocked: async () => {
+      // Restore process-local relay listeners before filtering persisted gateway
+      // certificates. A new Server owns none yet; treating that as identity drift
+      // would recreate a valid retained Sandbox while checking its unlock state.
+      for (const project of await eventStore.listProjects()) {
+        if (project.kind === 'control_plane' || project.state !== 'active') continue;
+        try {
+          await provisioner?.resumeProjectRelay?.(project.id);
+        } catch (error) {
+          app.log.warn(
+            { err: error, projectId: project.id },
+            'Retained relay resume deferred until project recovery',
+          );
+        }
+      }
       await projectAgentGatewayIdentity();
       let inspected = 0;
       let repaired = 0;

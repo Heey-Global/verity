@@ -1933,6 +1933,8 @@ export interface Provisioner {
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
+  /** Reattach a verified retained relay without replacing its Sandbox. */
+  resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
@@ -2812,6 +2814,16 @@ export class ProvisionerImpl implements Provisioner {
         }
       });
     this.localConfigState = opts.localConfigState ?? inspectLocalConfig;
+  }
+
+  async resumeProjectRelay(projectId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined || project.state !== 'active' || project.kind === 'control_plane')
+      return;
+    // Classification already validates and resumes the retained generation. It
+    // makes no migration/replacement decision; an empty process-local map alone
+    // must not force a fresh Sandbox during secret-unlock identity projection.
+    await this.classifyProjectSandbox(project);
   }
 
   async reconcileRunnerSupervisors(projects: readonly ProjectRecord[]): Promise<void> {

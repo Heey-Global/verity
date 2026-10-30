@@ -138,6 +138,7 @@ export async function inspectEgressHostContainer(
   id: string,
   role: 'sandbox' | 'relay',
   relayPolicy?: EgressRelayPolicy,
+  restoring = false,
 ): Promise<void> {
   verifyEgressHostRuntime(
     JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .Runtimes}}')),
@@ -145,7 +146,7 @@ export async function inspectEgressHostContainer(
   );
   if (role === 'relay') {
     if (!relayPolicy) throw new Error('Relay host policy is not configured');
-    await inspectEgressRelay(binding, id, relayPolicy, projectEgressHostDocker);
+    await inspectEgressRelay(binding, id, relayPolicy, projectEgressHostDocker, restoring);
   }
   verifyEgressHostContainer(
     binding,
