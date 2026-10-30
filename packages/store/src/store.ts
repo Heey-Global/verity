@@ -4557,6 +4557,26 @@ export class EventStore implements EventSink {
     return parsed.data;
   }
 
+  /** Fetch one app snapshot without hydrating the surrounding transcript. */
+  async getMcpAppEvent(
+    sessionId: string,
+    appId: string,
+  ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('payload')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'mcp_app')
+      .where(sql<string>`payload->>'appId'`, '=', appId)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
+    return parsed.data;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
